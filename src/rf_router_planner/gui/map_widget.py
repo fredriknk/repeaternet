@@ -15,22 +15,48 @@ MAP_HTML = r"""<!doctype html>
 <script src="leaflet/leaflet.js"></script></head>
 <body><div id="map"></div><script>
 const map=L.map('map').setView([64.5,11.0],5);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+const osm=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
  maxZoom:19,
  attribution:'© OpenStreetMap contributors',
  crossOrigin:true
-}).addTo(map);
+});
+const kartverketTopo=L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
+ maxZoom:18,
+ attribution:'© Kartverket',
+ crossOrigin:true
+});
+const kartverketHiking=L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/toporaster/default/webmercator/{z}/{y}/{x}.png', {
+ maxZoom:18,
+ attribution:'© Kartverket',
+ crossOrigin:true
+});
+osm.addTo(map);
 let bridge=null, mode=null, markers={}, candidateLayer=L.layerGroup(), routeLayer=L.layerGroup();
+const contourLayer=L.geoJSON(null,{
+ style:feature=>({
+  color:feature.properties.index?'#5b3a29':'#785643',
+  weight:feature.properties.index ? 1.7 : 0.8,
+  opacity:feature.properties.index ? 0.85 : 0.58,
+  interactive:true
+ }),
+ onEachFeature:(feature,layer)=>layer.bindTooltip(`${feature.properties.elevation_m} m`,{sticky:true})
+});
+L.control.layers(
+ {'OpenStreetMap':osm,'Kartverket topo':kartverketTopo,'Kartverket hiking':kartverketHiking},
+ {'Local DTM contours':contourLayer}
+).addTo(map);
 new QWebChannel(qt.webChannelTransport, channel=>{bridge=channel.objects.bridge;});
 map.on('click', e=>{if(bridge&&mode){bridge.mapClicked(mode,e.latlng.lat,e.latlng.lng);mode=null;}});
 function setMode(value){mode=value;}
-function clearAll(){Object.values(markers).forEach(m=>map.removeLayer(m));markers={};candidateLayer.clearLayers();routeLayer.clearLayers();}
+function clearAll(){Object.values(markers).forEach(m=>map.removeLayer(m));markers={};candidateLayer.clearLayers();routeLayer.clearLayers();clearContours();}
 function setPoint(id,lat,lon,label,draggable){
  if(markers[id]) map.removeLayer(markers[id]);
  const m=L.marker([lat,lon],{draggable:draggable}).addTo(map).bindTooltip(label,{permanent:true,direction:'top'});
  m.on('dragend',()=>{const p=m.getLatLng();if(bridge)bridge.markerMoved(id,p.lat,p.lng);});m.on('click',()=>{if(bridge)bridge.siteClicked(id);});markers[id]=m;
 }
 function setCandidates(items,visible){candidateLayer.clearLayers();if(!visible)return;items.forEach(p=>L.circleMarker([p.lat,p.lon],{radius:3,color:'#777',fillOpacity:.5}).addTo(candidateLayer).bindTooltip(p.id));candidateLayer.addTo(map);}
+function setContours(data,visible){contourLayer.clearLayers();if(data)contourLayer.addData(data);if(visible){contourLayer.addTo(map);}else{map.removeLayer(contourLayer);}}
+function clearContours(){contourLayer.clearLayers();map.removeLayer(contourLayer);}
 function setRoute(points,links){
  routeLayer.clearLayers();Object.keys(markers).filter(k=>k.startsWith('R')).forEach(k=>{map.removeLayer(markers[k]);delete markers[k];});
  points.forEach(p=>setPoint(p.id,p.lat,p.lon,p.id,true));
@@ -98,6 +124,12 @@ class MapWidget(QWebEngineView):
 
     def set_candidates(self, points: list[dict[str, object]], visible: bool) -> None:
         self._js(f"setCandidates({json.dumps(points)},{str(visible).lower()})")
+
+    def set_contours(self, geojson: dict[str, object], visible: bool = True) -> None:
+        self._js(f"setContours({json.dumps(geojson)},{str(visible).lower()})")
+
+    def clear_contours(self) -> None:
+        self._js("clearContours()")
 
     def set_route(self, points: list[dict[str, object]], links: list[dict[str, object]]) -> None:
         self._js(f"setRoute({json.dumps(points)},{json.dumps(links)})")

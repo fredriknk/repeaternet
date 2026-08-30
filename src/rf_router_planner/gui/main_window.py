@@ -9,8 +9,10 @@ import numpy as np
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -32,6 +34,7 @@ from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
 from rf_router_planner.project import Project, load_project, save_project
 from rf_router_planner.rf.propagation import LinkEvaluator
+from rf_router_planner.terrain.contours import contour_geojson
 from rf_router_planner.terrain.kartverket import (
     DownloadPlan,
     KartverketProvider,
@@ -235,6 +238,7 @@ class MainWindow(QMainWindow):
             ("Lock/unlock", self.toggle_selected_lock),
             ("Re-optimize unlocked", self.reoptimize_unlocked),
             ("Copy coordinates", self.copy_coordinates),
+            ("DTM contours", self.toggle_dtm_contours),
             ("Optimize", self.optimize),
             ("Cancel", self.cancel_optimization),
             ("Export CSV", self.export_csv),
@@ -242,6 +246,9 @@ class MainWindow(QMainWindow):
         ]
         for label, callback in actions:
             action = QAction(label, self)
+            if label == "DTM contours":
+                action.setCheckable(True)
+                self.contour_action = action
             action.triggered.connect(callback)
             toolbar.addAction(action)
             if label == "Optimize":
@@ -355,6 +362,7 @@ class MainWindow(QMainWindow):
             )
         try:
             self._clear_detail_terrain()
+            self._clear_dtm_contours()
             if self.terrain:
                 self.terrain.close()
             self.terrain = RasterTerrain(dtm_paths, dom_paths)
@@ -540,6 +548,7 @@ class MainWindow(QMainWindow):
         try:
             dtm_paths, dom_paths, plan = payload
             self._clear_detail_terrain()
+            self._clear_dtm_contours()
             if self.terrain:
                 self.terrain.close()
             self.terrain = RasterTerrain(dtm_paths, dom_paths)
@@ -621,6 +630,47 @@ class MainWindow(QMainWindow):
             self.detail_terrain.close()
         self.detail_terrain = None
         self.detail_validation_note = None
+
+    def _clear_dtm_contours(self) -> None:
+        self.map_widget.clear_contours()
+        if hasattr(self, "contour_action"):
+            self.contour_action.setChecked(False)
+
+    @Slot(bool)
+    def toggle_dtm_contours(self, checked: bool) -> None:
+        if not checked:
+            self.map_widget.clear_contours()
+            self.progress_label.setText("DTM contours hidden")
+            return
+        if not self.terrain:
+            self.contour_action.setChecked(False)
+            QMessageBox.information(self, "DTM contours", "Load DTM terrain first.")
+            return
+        interval_m, accepted = QInputDialog.getDouble(
+            self,
+            "DTM contours",
+            "Contour interval (metres):",
+            20.0,
+            1.0,
+            500.0,
+            1,
+        )
+        if not accepted:
+            self.contour_action.setChecked(False)
+            return
+        try:
+            self.progress_label.setText("Generating DTM contours…")
+            QApplication.processEvents()
+            geojson = contour_geojson(self.terrain, interval_m)
+            self.map_widget.set_contours(geojson, True)
+            features = geojson.get("features", [])
+            self.progress_label.setText(
+                f"Showing {len(features)} contour levels at {interval_m:g} m intervals"
+            )
+        except Exception as exc:
+            self.contour_action.setChecked(False)
+            self.map_widget.clear_contours()
+            QMessageBox.critical(self, "DTM contours", str(exc))
 
     @Slot(str)
     def _download_failed(self, message: str) -> None:
@@ -903,6 +953,7 @@ class MainWindow(QMainWindow):
 
     def new_project(self) -> None:
         self._clear_detail_terrain()
+        self._clear_dtm_contours()
         self.endpoint_a = self.endpoint_b = None
         self.result, self.project_path = None, None
         self.map_widget.clear()
@@ -983,6 +1034,7 @@ class MainWindow(QMainWindow):
                 project.terrain_settings.detail_corridor_width_m / 1000
             )
             self._clear_detail_terrain()
+            self._clear_dtm_contours()
             if project.terrain_settings.dtm_paths:
                 if self.terrain:
                     self.terrain.close()

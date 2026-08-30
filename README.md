@@ -6,7 +6,7 @@ RF Router Planner is a Python desktop engineering tool that searches for the sma
 
 ## Capabilities
 
-- Leaflet map embedded in QtWebEngine: click or type endpoints, drag sites, inspect links, and optionally show candidate sites.
+- Leaflet map embedded in QtWebEngine: switch between OpenStreetMap and Kartverket topo/hiking backgrounds, generate local DTM contour overlays, click or type endpoints, drag sites, inspect links, and optionally show candidate sites.
 - Local tiled DTM and optional DOM GeoTIFF loading. Raster CRS, transform, resolution, nodata, and bounds are read from the files; samples are taken from raster windows rather than a nationwide in-memory mosaic.
 - Configurable Kartverket WCS retrieval for EPSG:25832, 25833, and 25835 with corridor-aware tiling, automatic resolution, estimates, pixel budgets, and disk caching.
 - DTM as ground/base elevation; DOM as the RF obstruction surface. Without DOM the UI explicitly reports `Surface obstruction data unavailable — terrain only`.
@@ -36,14 +36,15 @@ Or run `python -m rf_router_planner`. Use `--debug` for detailed logs and `--log
 ## Typical workflow
 
 1. Start the application and load one or more DTM GeoTIFF tiles. Optionally select matching DOM tiles. Alternatively, set A and B and use **Download terrain**.
-2. Click **Set A** and **Set B**, then click the map. Markers remain draggable. Coordinates can also be entered on the left.
-3. Choose RF, antenna, propagation, and optimizer settings. Manual sensitivity is the default. Checking **Calculate LoRa sensitivity** uses bandwidth, spreading factor, noise figure, and the configurable threshold table.
-4. Click **Optimize**. Candidate markers are hidden unless **Show candidate sites** is enabled.
-5. For a large-area coarse search, click **Validate route detail** to download a narrow high-resolution DTM/DOM strip following the selected multi-hop route and recalculate every hop.
-6. Select a link in the table or map to inspect terrain, curvature, Fresnel boundaries, obstruction, diffraction, and budget terms.
-7. Adjust routers manually if useful, save the project, or export CSV/GeoJSON.
+2. Use the map layer control to choose OpenStreetMap, Kartverket topo, or Kartverket hiking. **DTM contours** generates a selectable contour overlay from the loaded terrain at an interval you choose.
+3. Click **Set A** and **Set B**, then click the map. Markers remain draggable. Coordinates can also be entered on the left.
+4. Choose RF, antenna, propagation, and optimizer settings. Manual sensitivity is the default. Checking **Calculate LoRa sensitivity** uses bandwidth, spreading factor, noise figure, and the configurable threshold table.
+5. Click **Optimize**. Candidate markers are hidden unless **Show candidate sites** is enabled.
+6. For a large-area coarse search, click **Validate route detail** to download a narrow high-resolution DTM/DOM strip following the selected multi-hop route and recalculate every hop.
+7. Select a link in the table or map to inspect terrain, curvature, Fresnel boundaries, obstruction, diffraction, and budget terms.
+8. Adjust routers manually if useful, save the project, or export CSV/GeoJSON.
 
-The map control and local Leaflet library work offline. The OpenStreetMap basemap is a network tile layer, so an offline session displays the map canvas and planning overlays without background tiles. All RF planning with local GeoTIFFs remains offline.
+The map control, local Leaflet library, DTM contours, and planning overlays work offline. OpenStreetMap and Kartverket backgrounds are network tile layers, so an offline session displays the map canvas and local overlays without background tiles. All RF planning with local GeoTIFFs remains offline.
 
 ## Kartverket terrain
 
