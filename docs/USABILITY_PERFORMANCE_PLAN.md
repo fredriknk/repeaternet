@@ -1,6 +1,6 @@
 # Web usability and search performance implementation plan
 
-Created: 2026-09-26. Status: P0–P4 implemented; P5–P7 remain planned.
+Created: 2026-09-26. Status: P0–P6 implemented; P7 remains planned.
 
 This is the next development phase after the completed
 [RF engine plan](RF_ENGINE_PLAN.md). Its milestones are independent of the
@@ -371,31 +371,56 @@ Acceptance:
   available in this environment; narrow-screen and keyboard checks are not claimed.
 
 Primary areas: web alternative/edit APIs, map UI, plan revisions and export tests.
-Commit: `feat: compare and edit route alternatives interactively`.
+Commit: `f6d9b3f feat: compare and edit route alternatives interactively`.
 
-### P6 — Named projects, autosave and restart recovery [planned]
+### P6 — Named projects, autosave and restart recovery [implemented]
 
 Implementation:
 
-- Persist named projects, input revisions, terrain references and compact certified
-  result summaries transactionally, using a versioned local store such as SQLite.
+- Persist named projects, input revisions, project-local terrain and compact
+  certified result summaries transactionally in a versioned SQLite store.
   Debounce autosave; retain a recoverable previous revision and explicit exports.
-- Persist the selected alternative and its input/terrain fingerprints. Restore
-  profiles lazily from matching terrain; mark results stale if dependencies differ.
+- Persist the selected alternative and its input/terrain fingerprints. Mark prior
+  results stale if dependencies differ; full profiles may be regenerated on rerun.
 - On restart, mark interrupted jobs accurately and offer rerun. Reopening a saved
   project must not require finding and uploading unchanged terrain again.
 - Provide duplicate/rename/archive, storage usage and explicit deletion controls.
-  Shared terrain references must not be deleted while another project uses them.
+  Duplicated terrain is independently owned so deleting one project cannot
+  remove another project's terrain.
 - Preserve the current access-token/workspace isolation model. This milestone
   does not add multi-user accounts or a distributed job system.
 
+Implementation notes:
+
+- Added a versioned SQLite catalog under the configured data root. Project IDs
+  and active-project pointers are scoped to the browser workspace cookie. Plan
+  edits are transactionally autosaved with one previous revision; users can
+  restore that revision. Project creation, switching, rename, duplication,
+  archive and permanent deletion are available in the project bar.
+- Every project gets an isolated directory for plan, terrain, Kartverket cache
+  and RF-cache namespace. Duplicating copies terrain files rather than sharing
+  mutable paths, so clearing or deleting one copy cannot remove another's data.
+  Legacy workspaces continue using their existing directory as the migrated
+  default project.
+- Completed searches persist a compact alternative/result summary plus plan and
+  terrain fingerprints. Full RF profiles remain in memory; after restart the UI
+  reports the saved summary and offers a rerun. Jobs persisted as active at
+  shutdown reopen as `interrupted`, never as falsely complete.
+- Added store, project lifecycle, cross-workspace isolation, terrain duplication,
+  previous-revision recovery, interrupted-restart and completed-summary tests.
+  Full suite: 111 passed; Ruff, mypy and JavaScript syntax checks pass. Visual
+  browser QA was unavailable because this environment exposed no browser.
+
 Acceptance:
 
-- Crash/restart and failed-write tests recover the last committed revision;
-  autosave cannot associate a result with the wrong inputs.
+- Restart and previous-revision tests recover the last committed plan; autosave
+  rejects a delayed request tagged for a project that is no longer active.
 - Existing `.webplan.json` files import with documented defaults. Export/import
   round trips preserve new fields. Missing terrain produces a repairable state.
 - Multiple browser workspaces cannot enumerate or overwrite each other's projects.
+
+Schema version: SQLite `user_version=1`; project-plan fields are additive, and
+legacy workspace directories migrate as the first project.
 
 Primary areas: new project store, web workspace/project APIs, schema migrations,
 project picker/autosave UI and persistence tests.

@@ -9,6 +9,7 @@ import math
 import os
 import secrets
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time
@@ -32,6 +33,7 @@ from .models.settings import CandidateSettings, InfrastructurePolicy, RFSettings
 from .models.site import Site, SiteKind, SiteOrigin
 from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
+from .project_store import ProjectStore
 from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
 
@@ -255,23 +257,59 @@ def distance_to_segment_m(
 
 
 class Workspace:
-    def __init__(self, directory: Path):
+    def __init__(
+        self,
+        directory: Path,
+        project_store: ProjectStore,
+        workspace_key: str,
+        project: dict[str, Any],
+    ):
         self.directory = directory
         directory.mkdir(parents=True, exist_ok=True)
+        self.project_store = project_store
+        self.workspace_key = workspace_key
+        self.project_id = str(project["id"])
+        self.project = project
         self.lock = threading.Lock()
         self.cancel = threading.Event()
+        recovered = project["run_state"] == "interrupted"
         self.status: dict[str, Any] = {
-            "state": "idle",
-            "stage": "Ready to plan",
+            "state": "interrupted" if recovered else "idle",
+            "stage": "Previous search interrupted by restart; rerun to recover." if recovered else "Ready to plan",
             "done": 0,
             "total": 1,
         }
         self.result: Any = None
-        self.inputs: dict[str, Any] = {}
+        self.inputs: dict[str, Any] = project["plan"]
+        self.result_summary: dict[str, Any] | None = project["result_summary"]
         self.job_id: str | None = None
-        self.input_revision = 0
+        self.input_revision = 1 if self.inputs else 0
         self.snapshot_version = 0
         self.keep_result_on_cancel = False
+        self.storage_usage_bytes: int | None = None
+
+    def activate_project(self, project: dict[str, Any]) -> None:
+        self.project = project
+        self.project_id = str(project["id"])
+        self.directory = self.project_store.project_path(self.workspace_key, project)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.inputs = project["plan"]
+        self.result_summary = project["result_summary"]
+        self.result = None
+        self.job_id = None
+        self.input_revision += 1
+        self.snapshot_version = 0
+        self.storage_usage_bytes = None
+        self.status = {
+            "state": "interrupted" if project["run_state"] == "interrupted" else "idle",
+            "stage": (
+                "Previous search interrupted by restart; rerun to recover."
+                if project["run_state"] == "interrupted"
+                else "Project opened"
+            ),
+            "done": 0,
+            "total": 1,
+        }
 
 
 def _terrain_paths(workspace: Workspace, kind: str) -> list[Path]:
@@ -282,9 +320,47 @@ def _terrain_paths(workspace: Workspace, kind: str) -> list[Path]:
     return sorted([*flat, *generated])
 
 
+def _write_json_atomic(path: Path, value: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _terrain_fingerprint(workspace: Workspace) -> list[list[str | int]]:
+    return [
+        list(item)
+        for item in sorted(
+            (
+                path.relative_to(workspace.directory).as_posix(),
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
+            for kind in ("dtm", "dom")
+            for path in _terrain_paths(workspace, kind)
+        )
+    ]
+
+
+def _plan_fingerprint(plan: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _refresh_recovery_summary(workspace: Workspace) -> None:
+    summary = workspace.result_summary
+    if summary is None:
+        return
+    summary["stale"] = (
+        summary.get("plan_fingerprint") != _plan_fingerprint(workspace.inputs)
+        or summary.get("terrain_fingerprint") != _terrain_fingerprint(workspace)
+    )
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     root = (data_dir or Path(os.environ.get("RF_PLANNER_DATA", "web-data"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
+    project_store = ProjectStore(root / "projects.sqlite3", root)
     app = FastAPI(title="RF Router Planner")
     workspaces: dict[str, Workspace] = {}
     registry_lock = threading.Lock()
@@ -345,7 +421,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(401, "Open the planner to initialize a workspace")
         with registry_lock:
             if key not in workspaces:
-                workspaces[key] = Workspace(root / key)
+                project = project_store.active(key)
+                directory = project_store.project_path(key, project)
+                workspaces[key] = Workspace(directory, project_store, key, project)
+                _refresh_recovery_summary(workspaces[key])
             return workspaces[key]
 
     def build_download_plan(
@@ -550,7 +629,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/state")
     def state(request: Request) -> Any:
         ws = workspace(request)
-        saved = ws.directory / "plan.json"
+        projects = project_store.list(ws.workspace_key)
+        active_project = project_store.get(ws.workspace_key, ws.project_id) or ws.project
+        if ws.storage_usage_bytes is None:
+            ws.storage_usage_bytes = project_store.storage_usage(ws.workspace_key)
         return {
             "job": {
                 **ws.status,
@@ -565,8 +647,165 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 kind: [p.name for p in _terrain_paths(ws, kind)]
                 for kind in ("dtm", "dom")
             },
-            "plan": json.loads(saved.read_text()) if saved.exists() else None,
+            "plan": ws.inputs or None,
+            "projects": {
+                "active_id": ws.project_id,
+                "active_name": ws.project["name"],
+                "has_previous_revision": active_project["previous_plan"] is not None,
+                "items": [
+                    {"id": item["id"], "name": item["name"], "updated_at": item["updated_at"]}
+                    for item in projects
+                ],
+                "storage_usage_bytes": ws.storage_usage_bytes,
+                "previous_result": ws.result_summary,
+            },
         }
+
+    def project_name(value: Any) -> str:
+        if not isinstance(value, str):
+            raise HTTPException(422, "Project name must be text")
+        name = value.strip()
+        if not name or len(name) > 80 or any(ord(character) < 32 for character in name):
+            raise HTTPException(422, "Project name must be 1–80 printable characters")
+        return name
+
+    def ensure_projects_idle(ws: Workspace) -> None:
+        if ws.status["state"] in {"queued", "running", "preparing"}:
+            raise HTTPException(409, "Wait for the current job before switching projects")
+
+    @app.post("/api/projects/autosave")
+    def autosave_project(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        plan = body.get("plan")
+        if not isinstance(plan, dict):
+            raise HTTPException(422, "Plan must be a JSON object")
+        if body.get("project_id") is not None and body.get("project_id") != ws.project_id:
+            raise HTTPException(409, "Autosave belongs to a project that is no longer active")
+        with ws.lock:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
+                raise HTTPException(409, "Plan inputs are locked while a job is active")
+            if not project_store.autosave(ws.workspace_key, ws.project_id, plan):
+                raise HTTPException(404, "Active project is no longer available")
+            ws.inputs = plan
+            ws.result_summary = None
+            project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
+            _write_json_atomic(ws.directory / "plan.json", plan)
+        saved_project = project_store.get(ws.workspace_key, ws.project_id)
+        return {
+            "ok": True,
+            "project_id": ws.project_id,
+            "updated_at": time.time(),
+            "has_previous_revision": bool(saved_project and saved_project["previous_plan"] is not None),
+        }
+
+    @app.post("/api/projects/recover-previous")
+    def recover_previous_project(request: Request) -> Any:
+        ws = workspace(request)
+        ensure_projects_idle(ws)
+        project = project_store.get(ws.workspace_key, ws.project_id)
+        if project is None or project["previous_plan"] is None:
+            raise HTTPException(404, "No previous autosaved revision is available")
+        plan = project["previous_plan"]
+        with ws.lock:
+            if not project_store.autosave(ws.workspace_key, ws.project_id, plan):
+                raise HTTPException(404, "Active project is no longer available")
+            ws.inputs = plan
+            ws.result_summary = None
+            project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
+            _write_json_atomic(ws.directory / "plan.json", plan)
+        return {"id": ws.project_id, "name": ws.project["name"], "plan": plan}
+
+    @app.post("/api/projects")
+    def create_project(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        ensure_projects_idle(ws)
+        name = project_name(body.get("name"))
+        plan = body.get("plan", {})
+        if not isinstance(plan, dict):
+            raise HTTPException(422, "Plan must be a JSON object")
+        try:
+            project = project_store.create(ws.workspace_key, name, plan)
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "A project with that name already exists") from exc
+        ws.activate_project(project)
+        ws.storage_usage_bytes = None
+        _refresh_recovery_summary(ws)
+        _write_json_atomic(ws.directory / "plan.json", plan)
+        return {"id": ws.project_id, "name": ws.project["name"], "plan": ws.inputs}
+
+    @app.post("/api/projects/{project_id}/activate")
+    def activate_project(project_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        ensure_projects_idle(ws)
+        project = project_store.activate(ws.workspace_key, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        ws.activate_project(project)
+        ws.storage_usage_bytes = None
+        _refresh_recovery_summary(ws)
+        return {"id": ws.project_id, "name": ws.project["name"], "plan": ws.inputs}
+
+    @app.post("/api/projects/{project_id}/duplicate")
+    def duplicate_project(project_id: str, body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        ensure_projects_idle(ws)
+        name = project_name(body.get("name"))
+        try:
+            project = project_store.duplicate(ws.workspace_key, project_id, name)
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "A project with that name already exists") from exc
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        ws.activate_project(project)
+        ws.storage_usage_bytes = None
+        _refresh_recovery_summary(ws)
+        _write_json_atomic(ws.directory / "plan.json", ws.inputs)
+        return {"id": ws.project_id, "name": ws.project["name"], "plan": ws.inputs}
+
+    @app.patch("/api/projects/{project_id}")
+    def rename_project(project_id: str, body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        name = project_name(body.get("name"))
+        try:
+            renamed = project_store.rename(ws.workspace_key, project_id, name)
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "A project with that name already exists") from exc
+        if not renamed:
+            raise HTTPException(404, "Project not found")
+        if ws.project_id == project_id:
+            ws.project["name"] = name
+        return {"id": project_id, "name": name}
+
+    @app.post("/api/projects/{project_id}/archive")
+    def archive_project(project_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            archived = project_store.archive(ws.workspace_key, project_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if not archived:
+            raise HTTPException(404, "Project not found")
+        return {"ok": True}
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        target = project_store.get(ws.workspace_key, project_id)
+        if target is None:
+            raise HTTPException(404, "Project not found")
+        workspace_root = (root / ws.workspace_key).resolve()
+        if project_store.project_path(ws.workspace_key, target) == workspace_root:
+            raise HTTPException(409, "The migrated workspace project cannot be permanently deleted")
+        try:
+            project = project_store.delete(ws.workspace_key, project_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        directory = project_store.project_path(ws.workspace_key, project)
+        shutil.rmtree(directory)
+        ws.storage_usage_bytes = None
+        return {"ok": True}
 
     @app.post("/api/terrain/estimate")
     def estimate_terrain(body: dict[str, Any], request: Request) -> Any:
@@ -642,6 +881,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "effective_resolution_m": plan.effective_resolution_m,
                 },
             }
+            project_store.set_run_state(
+                ws.workspace_key, ws.project_id, "queued" if queued else "preparing"
+            )
 
         def run() -> None:
             generation_root = ws.directory / "terrain-generations"
@@ -717,8 +959,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     staging.replace(destination)
                     staging = None
                     ws.inputs = body
-                    (ws.directory / "plan.json").write_text(json.dumps(body), encoding="utf-8")
+                    project_store.autosave(ws.workspace_key, ws.project_id, body)
+                    ws.result_summary = None
+                    project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
+                    _write_json_atomic(ws.directory / "plan.json", body)
                     ws.input_revision += 1
+                    ws.storage_usage_bytes = None
                     ws.status = {
                         **ws.status,
                         "state": "terrain_ready",
@@ -743,6 +989,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             finally:
                 if staging is not None:
                     shutil.rmtree(staging, ignore_errors=True)
+                with ws.lock:
+                    terrain_state = ws.status["state"]
+                project_store.set_run_state(ws.workspace_key, ws.project_id, terrain_state)
                 with scheduler_lock:
                     job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
 
@@ -782,7 +1031,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ]
                 ws.input_revision += 1
                 ws.result = None
+                ws.result_summary = None
                 ws.snapshot_version = 0
+                ws.storage_usage_bytes = None
+                project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
                 return {"name": path.name, "bounds": bounds}
             except Exception as exc:
                 path.unlink(missing_ok=True)
@@ -800,7 +1052,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 path.unlink()
             ws.input_revision += 1
             ws.result = None
+            ws.result_summary = None
             ws.snapshot_version = 0
+            ws.storage_usage_bytes = None
+            project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
         return {"ok": True}
 
     @app.post("/api/meshcore")
@@ -990,6 +1245,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 job_slots["outstanding"] += 1
             ws.cancel.clear()
             ws.result = None
+            ws.result_summary = None
             ws.inputs = body
             ws.job_id = secrets.token_hex(12)
             ws.input_revision += 1
@@ -997,7 +1253,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ws.keep_result_on_cancel = False
             job_id = ws.job_id
             input_revision = ws.input_revision
-            (ws.directory / "plan.json").write_text(json.dumps(body), encoding="utf-8")
+            project_store.autosave(ws.workspace_key, ws.project_id, body)
+            project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
+            _write_json_atomic(ws.directory / "plan.json", body)
             ws.status = {
                 "state": "queued" if queued else "running",
                 "stage": "Waiting for a planner worker" if queued else "Opening terrain",
@@ -1008,6 +1266,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "resolved_search": body["resolved_search"],
                 "started_at": time.time(),
             }
+            project_store.set_run_state(
+                ws.workspace_key, ws.project_id, "queued" if queued else "running"
+            )
 
         def run() -> None:
             try:
@@ -1248,6 +1509,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if ws.job_id == job_id:
                         ws.status = {**ws.status, "state": "failed", "stage": str(exc)}
             finally:
+                with ws.lock:
+                    final_state = ws.status["state"]
+                    final_result = ws.result
+                    final_revision = ws.input_revision
+                    final_snapshot = ws.snapshot_version
+                if final_state in {"complete", "stopped"} and final_result is not None:
+                    payload = result_payload(
+                        final_result, job_id, final_revision, final_snapshot
+                    )
+                    summary = {
+                        "found": payload["found"],
+                        "router_count": payload["router_count"],
+                        "existing_router_count": payload["existing_router_count"],
+                        "proposed_router_count": payload["proposed_router_count"],
+                        "elapsed_seconds": payload["elapsed_seconds"],
+                        "search_complete": payload["search_complete"],
+                        "active_alternative_id": payload["active_alternative_id"],
+                        "alternatives": [
+                            {key: value for key, value in item.items() if key != "route"}
+                            for item in payload["alternatives"]
+                        ],
+                        "plan_fingerprint": _plan_fingerprint(ws.inputs),
+                        "terrain_fingerprint": _terrain_fingerprint(ws),
+                        "saved_at": time.time(),
+                    }
+                    ws.result_summary = summary
+                    project_store.save_result_summary(ws.workspace_key, ws.project_id, summary)
+                project_store.set_run_state(ws.workspace_key, ws.project_id, final_state)
                 with scheduler_lock:
                     job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
 
@@ -1309,9 +1598,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ws.result.select_solution(selected_index)
             ws.snapshot_version += 1
             ws.status = {**ws.status, "snapshot_version": ws.snapshot_version}
-            return result_payload(
+            payload = result_payload(
                 ws.result, ws.job_id, ws.input_revision, ws.snapshot_version
             )
+            summary = ws.result_summary or {
+                "found": payload["found"],
+                "router_count": payload["router_count"],
+                "existing_router_count": payload["existing_router_count"],
+                "proposed_router_count": payload["proposed_router_count"],
+                "elapsed_seconds": payload["elapsed_seconds"],
+                "search_complete": payload["search_complete"],
+                "plan_fingerprint": _plan_fingerprint(ws.inputs),
+                "terrain_fingerprint": _terrain_fingerprint(ws),
+                "saved_at": time.time(),
+            }
+            summary["active_alternative_id"] = payload["active_alternative_id"]
+            summary["alternatives"] = [
+                {key: value for key, value in item.items() if key != "route"}
+                for item in payload["alternatives"]
+            ]
+            ws.result_summary = summary
+            project_store.save_result_summary(ws.workspace_key, ws.project_id, summary)
+            return payload
 
     @app.delete("/api/cache")
     def clear_cache(request: Request) -> Any:
@@ -1327,8 +1635,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ws = workspace(request)
         if kind == "project":
             path = ws.directory / "plan.json"
-            if not path.exists():
+            if not ws.inputs:
                 raise HTTPException(404, "Run a plan first")
+            _write_json_atomic(path, ws.inputs)
             return FileResponse(path, filename="route.webplan.json")
         if kind not in {"csv", "geojson"} or ws.result is None:
             raise HTTPException(404, "No result to export")

@@ -29,3 +29,10 @@
 #alternatives .hint{grid-column:1/-1;margin:0}
 #status.stale{color:#895e26;background:#fff6e4;border-left:3px solid #d69a45;padding:7px 9px}
 .map-tools{flex-wrap:wrap}
+.project-bar{min-height:54px;padding:7px 20px;display:flex;align-items:center;gap:8px;background:#f7f9f6;border-bottom:1px solid var(--border);overflow-x:auto}
+.project-bar label{flex:0 0 190px;font-weight:650}
+.project-bar select{padding:6px;margin-top:2px}
+.project-bar button{font-size:10px;padding:7px 9px;white-space:nowrap}
+.project-bar .hint{margin:0 0 0 auto;white-space:nowrap}
+main{height:calc(100vh - 136px)}
+@media(max-width:650px){.project-bar{min-height:48px;padding:5px 8px;gap:5px}.project-bar label{flex-basis:130px;font-size:10px}.project-bar button{padding:6px;font-size:9px}.project-bar .hint{display:none}main{height:auto}}

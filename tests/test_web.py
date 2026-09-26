@@ -13,6 +13,7 @@ from rf_router_planner.integrations.corescope import CoreScopeClient, CoreScopeR
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
+from rf_router_planner.project_store import ProjectStore
 from rf_router_planner.web import create_app
 
 
@@ -57,7 +58,7 @@ def tile_with_nodata_gap():
         return memory.read()
 
 
-def test_real_route_upload_optimize_profile_export(client):
+def test_real_route_upload_optimize_profile_export(client, tmp_path):
     assert (
         client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
     )
@@ -81,6 +82,12 @@ def test_real_route_upload_optimize_profile_export(client):
     result = client.get("/api/result").json()
     assert result["found"]
     assert result["router_count"] == 0
+    assert client.get("/api/state").json()["projects"]["previous_result"]["found"]
+    with TestClient(create_app(tmp_path)) as restarted:
+        restarted.cookies.set("planner_workspace", client.cookies.get("planner_workspace"))
+        recovered = restarted.get("/api/state").json()
+        assert recovered["plan"]["a"] == a
+        assert recovered["projects"]["previous_result"]["stale"] is False
     assert result["active_alternative_id"]
     assert result["alternatives"]
     alternative = next(
@@ -193,12 +200,96 @@ def test_selecting_an_alternative_changes_active_route_without_search(client, mo
     assert "M-alt" in {site["id"] for site in selected["route"]}
     assert selected["input_revision"] == revision
     assert client.get("/api/state").json()["rf_cache"]["misses"] == misses
+    assert (
+        client.get("/api/state").json()["projects"]["previous_result"]["active_alternative_id"]
+        == selected_id
+    )
     exported = client.get("/api/export/geojson").json()
     assert "M-alt" in {
         feature["properties"]["id"]
         for feature in exported["features"]
         if feature["geometry"]["type"] == "Point"
     }
+
+
+def test_named_projects_autosave_switch_and_duplicate_terrain(client, tmp_path):
+    initial = client.get("/api/state").json()
+    source_id = initial["projects"]["active_id"]
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    saved_plan = {
+        "format": "repeaternet-web",
+        "version": 1,
+        "a": [59.1, 10.2],
+        "b": [59.2, 10.3],
+        "rf": {},
+        "candidates": {},
+        "manual_routers": [{"id": "M-one", "policy": "optional"}],
+    }
+    assert client.post("/api/projects/autosave", json={"plan": saved_plan}).status_code == 200
+    created = client.post("/api/projects", json={"name": "Second plan", "plan": saved_plan})
+    assert created.status_code == 200, created.text
+    second_id = created.json()["id"]
+    assert second_id != source_id
+    assert client.post(
+        "/api/projects/autosave",
+        json={"project_id": source_id, "plan": {"wrong_project": True}},
+    ).status_code == 409
+    switched = client.post(f"/api/projects/{source_id}/activate")
+    assert switched.status_code == 200
+    assert client.get("/api/state").json()["plan"] == saved_plan
+    duplicate = client.post(
+        f"/api/projects/{source_id}/duplicate", json={"name": "Terrain copy"}
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    duplicate_id = duplicate.json()["id"]
+    state = client.get("/api/state").json()
+    assert state["terrain"]["dtm"]
+    assert {item["name"] for item in state["projects"]["items"]} >= {
+        "Untitled plan",
+        "Second plan",
+        "Terrain copy",
+    }
+
+    other = TestClient(create_app(tmp_path))
+    try:
+        isolated = other.get("/")
+        assert isolated.status_code == 200
+        other_state = other.get("/api/state").json()
+        assert {item["name"] for item in other_state["projects"]["items"]} == {"Untitled plan"}
+    finally:
+        other.close()
+
+    replacement = client.post("/api/projects", json={"name": "Replacement", "plan": {}})
+    assert replacement.status_code == 200
+    assert client.delete(f"/api/projects/{duplicate_id}").status_code == 200
+    assert client.post(f"/api/projects/{source_id}/archive").status_code == 200
+
+
+def test_autosaved_plan_and_interrupted_state_recover_after_app_restart(tmp_path, monkeypatch):
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    first_app = create_app(tmp_path)
+    with TestClient(first_app) as first:
+        first.get("/")
+        state = first.get("/api/state").json()
+        workspace_key = first.cookies.get("planner_workspace")
+        project_id = state["projects"]["active_id"]
+        old_plan = {"a": [58.0, 9.0], "b": [59.0, 10.0], "rf": {}, "candidates": {}}
+        current_plan = {"a": [60.0, 11.0], "b": [61.0, 12.0], "rf": {}, "candidates": {}}
+        assert first.post("/api/projects/autosave", json={"plan": old_plan}).status_code == 200
+        assert first.post("/api/projects/autosave", json={"plan": current_plan}).status_code == 200
+        store = ProjectStore(tmp_path / "projects.sqlite3", tmp_path)
+        store.set_run_state(workspace_key, project_id, "running")
+
+    with TestClient(create_app(tmp_path)) as restarted:
+        restarted.cookies.set("planner_workspace", workspace_key)
+        state = restarted.get("/api/state").json()
+        assert state["plan"] == current_plan
+        assert state["job"]["state"] == "interrupted"
+        assert state["projects"]["has_previous_revision"]
+        recovered = restarted.post("/api/projects/recover-previous")
+        assert recovered.status_code == 200
+        assert recovered.json()["plan"] == old_plan
+        assert restarted.get("/api/state").json()["plan"] == old_plan
 
 
 def test_quick_effort_reports_resolved_search_scope(client):
@@ -269,6 +360,12 @@ def test_stop_or_cancel_handles_certified_snapshot(client, monkeypatch, keep):
             break
         time.sleep(0.01)
     assert job["snapshot_version"] == 1
+    active_project = client.get("/api/state").json()["projects"]["active_id"]
+    locked_plan = {"a": a, "b": b, "rf": {}, "candidates": {"new_input": True}}
+    assert client.post(
+        "/api/projects/autosave",
+        json={"project_id": active_project, "plan": locked_plan},
+    ).status_code == 409
     action = "/api/stop-and-keep" if keep else "/api/cancel"
     assert client.post(action, json={"job_id": job_id}).status_code == 200
     for _ in range(200):
