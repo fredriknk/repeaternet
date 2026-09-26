@@ -8,6 +8,7 @@ from typing import Any
 from rf_router_planner.models.settings import (
     AntennaSettings,
     CandidateSettings,
+    DiffractionModel,
     LoRaSettings,
     OptimizationPriority,
     RFSettings,
@@ -78,6 +79,9 @@ def load_project(path: str | Path) -> Project:
     if data.get("format") != "rf-router-planner" or data.get("version") not in {1, 2}:
         raise ValueError("Unsupported project file")
     rf_data = data.get("rf_settings", {})
+    rf_data["diffraction_model"] = DiffractionModel(
+        rf_data.get("diffraction_model", DiffractionModel.DEYGOUT.value)
+    )
     endpoint_a_antenna = AntennaSettings(**rf_data.pop("endpoint_a", {}))
     endpoint_b_antenna = AntennaSettings(**rf_data.pop("endpoint_b", {}))
     router_antenna = AntennaSettings(**rf_data.pop("router", {}))

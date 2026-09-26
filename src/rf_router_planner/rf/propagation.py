@@ -3,13 +3,18 @@ from __future__ import annotations
 import numpy as np
 
 from rf_router_planner.models.link import DirectionResult, LinkResult
-from rf_router_planner.models.settings import AntennaSettings, RFSettings, ValidationMode
+from rf_router_planner.models.settings import (
+    AntennaSettings,
+    DiffractionModel,
+    RFSettings,
+    ValidationMode,
+)
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.terrain.raster import TerrainSource
 from rf_router_planner.terrain.sampling import TerrainProfile, sample_profile
 
 from .antennas import ConstantGain, ElevationPattern, elevation_angle_deg
-from .diffraction import deygout_loss_db
+from .diffraction import bullington_loss_db, deygout_loss_db
 from .link import free_space_path_loss_db, received_power_dbm
 
 
@@ -68,7 +73,9 @@ class LinkEvaluator:
         los_clear = bool(np.all(profile.clearance_m[interior] >= 0.0))
         min_ratio = float(profile.fresnel_clearance_ratio[min_ratio_index])
         fresnel_clear = min_ratio >= self.settings.required_fresnel_clearance
-        diffraction = deygout_loss_db(
+        model = DiffractionModel(self.settings.diffraction_model)
+        diffraction_function = bullington_loss_db if model == DiffractionModel.BULLINGTON else deygout_loss_db
+        diffraction = diffraction_function(
             profile.distances_m,
             profile.effective_obstruction_m,
             profile.los_elevation_m,

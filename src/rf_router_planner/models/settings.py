@@ -17,6 +17,11 @@ class ValidationMode(str, Enum):
     STRICT_LOS = "strict_los"
 
 
+class DiffractionModel(str, Enum):
+    BULLINGTON = "bullington"
+    DEYGOUT = "deygout"
+
+
 class OptimizationPriority(str, Enum):
     MINIMUM_ROUTERS = "minimum_routers"
     MINIMUM_INFRASTRUCTURE = "minimum_infrastructure"
@@ -68,6 +73,7 @@ class RFSettings:
     lora: LoRaSettings = field(default_factory=LoRaSettings)
     clutter_loss_enabled: bool = False
     clutter_loss_db_per_m: float = 0.0
+    diffraction_model: DiffractionModel = DiffractionModel.BULLINGTON
 
     @property
     def effective_sensitivity_dbm(self) -> float:

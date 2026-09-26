@@ -3,6 +3,20 @@ from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.project import Project, load_project, save_project
 
 
+def test_diffraction_model_new_and_legacy_projects(tmp_path):
+    import json
+
+    from rf_router_planner.models.settings import DiffractionModel
+
+    path = tmp_path / "model.json"
+    save_project(Project(), path)
+    assert load_project(path).rf_settings.diffraction_model == DiffractionModel.BULLINGTON
+    document = json.loads(path.read_text())
+    del document["rf_settings"]["diffraction_model"]
+    path.write_text(json.dumps(document))
+    assert load_project(path).rf_settings.diffraction_model == DiffractionModel.DEYGOUT
+
+
 def test_project_round_trip(tmp_path) -> None:
     project = Project(
         endpoint_a=Site("A", 1, 2, 60, 10, SiteKind.ENDPOINT_A), rf_settings=RFSettings()

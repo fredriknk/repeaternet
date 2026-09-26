@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from rf_router_planner.models.settings import (
     CandidateSettings,
+    DiffractionModel,
     OptimizationPriority,
     RFSettings,
     ValidationMode,
@@ -261,6 +262,10 @@ class SettingsPanel(QScrollArea):
         self.validation = QComboBox()
         self.validation.addItem("RF propagation (diffraction)", ValidationMode.PROPAGATION)
         self.validation.addItem("Strict LOS + Fresnel", ValidationMode.STRICT_LOS)
+        self.diffraction = QComboBox()
+        self.diffraction.addItem("Bullington (terrain component)", DiffractionModel.BULLINGTON)
+        self.diffraction.addItem("Legacy Deygout", DiffractionModel.DEYGOUT)
+        form.addRow("Diffraction model", self.diffraction)
         self.k_factor = _spin(0.1, 10, 4 / 3, "", 3)
         self.fresnel = _spin(0, 100, 60, " %", 0)
         form.addRow("Validation", self.validation)
@@ -319,6 +324,7 @@ class SettingsPanel(QScrollArea):
         settings.k_factor = self.k_factor.value()
         settings.required_fresnel_clearance = self.fresnel.value() / 100.0
         settings.validation_mode = self.validation.currentData()
+        settings.diffraction_model = self.diffraction.currentData()
         settings.endpoint_a.gain_dbi = self.a_gain.value()
         settings.endpoint_b.gain_dbi = self.b_gain.value()
         settings.router.gain_dbi = self.router_gain.value()
@@ -363,6 +369,7 @@ class SettingsPanel(QScrollArea):
         self.k_factor.setValue(settings.k_factor)
         self.fresnel.setValue(settings.required_fresnel_clearance * 100)
         self.validation.setCurrentIndex(self.validation.findData(settings.validation_mode))
+        self.diffraction.setCurrentIndex(self.diffraction.findData(settings.diffraction_model))
         self.a_gain.setValue(settings.endpoint_a.gain_dbi)
         self.b_gain.setValue(settings.endpoint_b.gain_dbi)
         self.router_gain.setValue(settings.router.gain_dbi)

@@ -28,7 +28,7 @@ optimality over continuous terrain.
 
 ## Milestones
 
-### M1 — Stable diffraction model and numerical contracts [in progress]
+### M1 — Stable diffraction model and numerical contracts [complete]
 
 - Implement the Bullington component of ITU-R P.526-16 §4.5.1 using the existing
   curvature-adjusted metric profile, with explicit finite/order/shape validation.
@@ -40,7 +40,7 @@ optimality over continuous terrain.
   §4.5.2; do not label it as a full P.526 implementation.
 - Commit after RF and integration regression tests pass.
 
-### M2 — Complete low-hop search and final-only results [pending]
+### M2 — Complete low-hop search and final-only results [in progress]
 
 - Run the existing exact 0/1/2-repeater search for eligible two-client minimum
   router plans even when a sparse longer route exists; merge discovered edges
@@ -92,6 +92,11 @@ changes and are not prerequisites for this release.
 
 - Baseline verified during web release: 46 passed, 1 mesh failure.
 - Plan committed before engine implementation.
+- M1: Bullington component implemented and made default for new settings;
+  old desktop project files without a model explicitly retain legacy Deygout.
+  Desktop selector and API settings support both. Full suite: 54 passed before
+  adding the explicit legacy/new serialization regression; targeted rerun below.
+  The original mesh failure is resolved by the stable RF model.
 
 ## Reference
 
