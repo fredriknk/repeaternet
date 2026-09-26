@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from rf_router_planner.models.link import LinkResult
 from rf_router_planner.models.network import NetworkSolution
@@ -112,13 +113,52 @@ def screening_pair_indices(
         for candidate in range(len(sites)):
             if candidate != terminal:
                 allowed.add((min(terminal, candidate), max(terminal, candidate)))
-    for i, source in enumerate(sites):
-        nearest = sorted(
-            ((source.distance_to(target), j) for j, target in enumerate(sites) if j != i),
-            key=lambda item: item[0],
-        )
-        for _, j in nearest[:limit]:
-            allowed.add((min(i, j), max(i, j)))
+    if limit >= len(sites) - 1:
+        for i in range(len(sites)):
+            for j in range(len(sites)):
+                if j != i:
+                    allowed.add((min(i, j), max(i, j)))
+    else:
+        coordinates = np.asarray([(site.x, site.y) for site in sites], dtype=np.float64)
+        if not np.isfinite(coordinates).all():
+            # Preserve the historical ordering for malformed inputs; valid map
+            # coordinates take the indexed path below.
+            nearest_by_index = []
+            for i, source in enumerate(sites):
+                ordered_distances = sorted(
+                    (
+                        (source.distance_to(target), j)
+                        for j, target in enumerate(sites)
+                        if j != i
+                    ),
+                    key=lambda item: item[0],
+                )
+                nearest_by_index.append([j for _, j in ordered_distances[:limit]])
+        else:
+            tree = cKDTree(coordinates)
+            neighbor_count = min(len(sites), limit + 1)
+            distances, _ = tree.query(coordinates, k=neighbor_count, eps=0.0, workers=1)
+            nearest_by_index = []
+            for i, source in enumerate(sites):
+                cutoff = float(distances[i, -1])
+                # Include floating-point ties at the k-th distance. Recompute
+                # with Site.distance_to and use the original index as the
+                # stable tie-breaker, exactly matching the former full sort.
+                radius = cutoff + max(1e-9, abs(cutoff) * 1e-12)
+                nearby = tree.query_ball_point(coordinates[i], radius, eps=0.0)
+                nearest_by_index.append(
+                    [
+                        j
+                        for _, j in sorted(
+                            (source.distance_to(sites[j]), j)
+                            for j in nearby
+                            if j != i
+                        )[:limit]
+                    ]
+                )
+        for i, nearest in enumerate(nearest_by_index):
+            for neighbor_index in nearest:
+                allowed.add((min(i, neighbor_index), max(i, neighbor_index)))
     return sorted(allowed)
 
 

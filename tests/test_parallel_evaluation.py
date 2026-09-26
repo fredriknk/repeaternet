@@ -41,17 +41,21 @@ def test_process_and_sequential_rf_evaluation_are_equivalent(tmp_path: Path) -> 
     settings = RFSettings(receiver_sensitivity_dbm=-150, fade_margin_db=0)
     with RasterTerrain([path]) as terrain:
         sequential = evaluate_link_pairs(terrain, settings, pairs, 20, workers=1)
-        parallel = evaluate_link_pairs(terrain, settings, pairs, 20, workers=2)
+        parallel_by_worker_count = {
+            workers: evaluate_link_pairs(terrain, settings, pairs, 20, workers=workers)
+            for workers in (2, 4)
+        }
         cache = LinkMetricsCache(max_entries=512)
         evaluator = LinkEvaluator(terrain, settings, cache, "parallel-test")
         cold = evaluate_link_pairs(terrain, settings, pairs, 20, workers=2, evaluator=evaluator)
         warm = evaluate_link_pairs(terrain, settings, pairs, 20, workers=2, evaluator=evaluator)
-    assert len(parallel) == len(sequential) == len(pairs)
-    assert [link.source_id for link in parallel] == [link.source_id for link in sequential]
-    assert [link.target_id for link in parallel] == [link.target_id for link in sequential]
-    assert [link.worst_margin_db for link in parallel] == [
-        link.worst_margin_db for link in sequential
-    ]
+    for parallel in parallel_by_worker_count.values():
+        assert len(parallel) == len(sequential) == len(pairs)
+        assert [link.source_id for link in parallel] == [link.source_id for link in sequential]
+        assert [link.target_id for link in parallel] == [link.target_id for link in sequential]
+        assert [link.worst_margin_db for link in parallel] == [
+            link.worst_margin_db for link in sequential
+        ]
     assert [link.worst_margin_db for link in cold] == [link.worst_margin_db for link in warm]
     assert all(link.profile is None for link in warm)
     assert cache.stats("parallel-test")["misses"] == 205

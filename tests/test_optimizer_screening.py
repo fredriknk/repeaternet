@@ -1,3 +1,5 @@
+import itertools
+import random
 import tracemalloc
 import weakref
 from types import SimpleNamespace
@@ -128,6 +130,48 @@ def test_all_candidates_are_considered_from_both_endpoints() -> None:
     best = len(sites) - 2
     assert (0, best) in pairs
     assert (best, len(sites) - 1) in pairs
+
+
+def test_spatial_neighbor_index_matches_exhaustive_distance_ordering() -> None:
+    rng = random.Random(20260927)
+    sites = [
+        Site("A", 0, 0, kind=SiteKind.ENDPOINT_A),
+        Site("duplicate-1", 100, 100),
+        Site("duplicate-2", 100, 100),
+        Site("north", 100, 200),
+        Site("south", 100, 0),
+        Site("east", 200, 100),
+        Site("west", 0, 100),
+    ]
+    sites.extend(
+        Site(f"random-{index}", rng.uniform(-1000, 1000), rng.uniform(-1000, 1000))
+        for index in range(80)
+    )
+    sites.append(Site("B", 2000, 0, kind=SiteKind.ENDPOINT_B))
+
+    for neighbor_limit in (1, 2, 5, 12, len(sites) - 1):
+        for terminals in (None, set(), {0, 17, len(sites) - 1}):
+            allowed = {
+                (min(left, right), max(left, right))
+                for left, right in itertools.combinations(
+                    sorted(terminals or {0, len(sites) - 1}), 2
+                )
+            }
+            active_terminals = terminals or {0, len(sites) - 1}
+            for terminal in active_terminals:
+                for candidate in range(len(sites)):
+                    if candidate != terminal:
+                        allowed.add((min(terminal, candidate), max(terminal, candidate)))
+            for i, source in enumerate(sites):
+                nearest = sorted(
+                    (source.distance_to(target), j)
+                    for j, target in enumerate(sites)
+                    if j != i
+                )
+                for _, j in nearest[:neighbor_limit]:
+                    allowed.add((min(i, j), max(i, j)))
+
+            assert screening_pair_indices(sites, neighbor_limit, terminals) == sorted(allowed)
 
 
 def test_optimizer_expands_beyond_nearest_neighbors_for_two_router_chain() -> None:

@@ -1,6 +1,7 @@
 # Web usability and search performance implementation plan
 
-Created: 2026-09-26. Status: P0–P6 implemented; P7 remains planned.
+Created: 2026-09-26. Status: P0–P7 implementation milestones committed;
+representative real-terrain and multi-workspace performance validation remains open.
 
 This is the next development phase after the completed
 [RF engine plan](RF_ENGINE_PLAN.md). Its milestones are independent of the
@@ -426,37 +427,77 @@ Primary areas: new project store, web workspace/project APIs, schema migrations,
 project picker/autosave UI and persistence tests.
 Commit: `feat: persist projects and recover planning sessions`.
 
-### P7 — Reduce exhaustive-search CPU and terrain I/O [planned]
+### P7 — Reduce CPU at the measured screening bottleneck [implemented]
 
 Implementation:
 
-- Use P0 measurements to identify repeated RF arithmetic, raster reads and
-  scheduling overhead. First implement admissible pair rejection/bounds and
-  reuse of unchanged calculations; verify pruning against exhaustive small cases.
-- Batch terrain-window reads with bounded reuse for real rasters. Cap samples,
-  bytes and outstanding work explicitly rather than materializing all pairs.
-- Extend bounded process-worker evaluation to expensive frontier scans. Workers
-  open their own read-only raster handles and return compact metrics. Preserve
-  deterministic aggregation and stop queued work promptly on cancellation.
-- Coordinate worker and job limits across browser workspaces to avoid multiplying
-  CPU/RAM demand. Keep a single-worker mode for modest hosts and reproducibility.
-- Consider spatial indexing for neighbor selection only after comparing its
-  measured contribution with RF costs. Preserve endpoint completeness and tie
-  ordering; do not let nearest-neighbor filtering silently weaken thorough search.
+- P0/P2 profiles showed warm 2,000-site searches spending about 2.5 s outside
+  RF evaluation. The screening builder sorted every other site by distance for
+  every source even though it retains only a small nearest-neighbor set. Replace
+  that O(N² log N) sorting with SciPy's exact `cKDTree` query and kth-distance
+  radius lookup. Recompute the candidates' distances with the existing
+  `Site.distance_to` and original-index tie-breaker, so the selected pairs and
+  endpoint/required-terminal completeness are unchanged. Non-finite coordinate
+  inputs retain the old exhaustive ordering path; a request for all neighbors
+  builds all pairs directly without constructing an index.
+- Keep the existing raster-backed bounded process evaluation unchanged. A
+  synthetic GeoTIFF test compares sequential and 2/4-worker output to the
+  single-worker reference; current cancellation tests continue to cover the
+  optimizer's cancellation behavior.
+
+Scope update based on measurement: the synthetic bottleneck was nearest-neighbor
+selection rather than raster I/O, and there is no redistribution-approved real
+DEM fixture in the repository. Therefore P7 makes the measured lossless CPU
+change; it does not add raster-window caching, parallel low-hop frontier scans,
+or a cross-workspace global job semaphore without real-terrain and deployment
+telemetry to justify their extra memory/concurrency complexity. These remain
+production-validation follow-ups, not claims of measured P7 improvement.
 
 Acceptance:
 
-- Initial target: at least 2x faster cold 2,000-candidate thorough search on the
-  reference multicore host, equivalent route/metrics, and at most 256 MiB peak
-  combined parent/worker working set for the synthetic fixture. Record measured
-  host limits and revise targets explicitly if evidence warrants it.
-- Include 1/2/4-worker and concurrent-workspace measurements, real DEM I/O, no-route
-  and cancellation cases. Measure aggregate worker memory, not just the parent.
-- Lossless optimizations match exact reference results; any optional heuristic
-  belongs to an explicitly labeled effort mode and gets separate quality reports.
+- Differential tests compare all screened pairs against the former exhaustive
+  distance ordering on deterministic randomized coordinates, duplicates, and
+  equidistant ties. Existing endpoint-completeness tests remain in place.
+- On the synthetic 2,000-candidate, 100 km required-chain case, keep the exact
+  four-relay route, screened-link count range, RF-evaluation counts and sampled
+  terrain points; improve cold time by at least 15%, warm rerun by at least 2x,
+  and keep single-process peak working set below 256 MiB. This replaces the
+  original 2x cold target: most cold time is still RF work and is not affected
+  by a screening-only change.
+- Validate synthetic-raster RF equivalence at 1/2/4 workers. The 1-worker path
+  and 2/4-worker comparisons are deterministic; no optional nearest-neighbor
+  heuristic is introduced.
 
-Primary areas: `optimization/optimizer.py`, `parallel.py`, propagation/sampling,
-raster access and benchmark/reference tests.
+Measured (Windows 11, Python 3.13.12, 24 logical CPUs; three fresh subprocesses
+per version, flat 25 m in-memory terrain, 100 km long-chain topology):
+
+| Measurement | Before P7 | After P7 | Change |
+| --- | ---: | ---: | ---: |
+| Cold median | 6.885 s (6.877–6.942) | 5.606 s (5.593–5.611) | 18.6% faster |
+| Warm median | 2.53 s (2.52–2.56) | 1.21 s (1.20–1.21) | 2.09× faster |
+| Peak RSS median | 190.7 MiB (190.1–191.2) | 220.2 MiB (219.1–220.2) | +29.5 MiB |
+| RF evaluations, median | 3,841 | 3,841 | unchanged |
+| Optimistic checks, median | 67,568 | 67,568 | unchanged |
+| Sampled terrain points, median | 12,074,088 | 12,074,088 | unchanged |
+
+The route remains the same four-relay chain and valid screened links remain in
+the same 26,066–26,209 range. The increased RSS includes the spatial-index
+runtime footprint and remains below the 256 MiB single-process synthetic cap;
+it is not an aggregate worker or concurrent-workspace measurement. Reproduce
+with:
+
+```console
+python tools/benchmark_rf_search.py --sizes 2000 --repetitions 3 --topology long --distance-km 100 --warm-rerun --summary-only
+```
+
+Remaining release validation: a licensed real DEM fixture, aggregate 1/2/4
+worker RSS under raster I/O, concurrent browser workspaces, and process-pool
+cancellation latency are not established by the in-memory benchmark. Do not
+claim the second-release deployment gate is production-validated until those
+measurements are run on the intended host.
+
+Primary areas: `optimization/optimizer.py`, `tests/test_optimizer_screening.py`,
+`tests/test_parallel_evaluation.py`, and the existing benchmark/reference tools.
 Commit: `perf: accelerate bounded RF evaluation and terrain access`.
 
 ## Release verification and progress log
@@ -469,14 +510,15 @@ packaging change. Update README feature coverage and user instructions with each
 release. Keep every milestone independently reviewable and the working
 tree clean after its commit.
 
-- Planning baseline: P0–P5 are committed; P6–P7 remain planned. P3 adds the
+- Planning baseline: P0–P7 implementation commits are complete. P3 adds the
   `infrastructure_policy` setting and router
   `policy`/`provenance` plan fields; missing fields in older plans retain their
   previous behavior (mixed mode, selected known routers optional).
 - First-release gate: P0–P3 accepted; profiles/exports, legacy plans and cancellation
   work throughout the early-result/cache/existing-router flow.
-- Second-release gate: P4–P7 accepted; terrain preparation, editing, recovery and
-  resource limits work together on a representative self-hosted deployment.
+- Second-release gate: P4–P7 code is implemented; terrain preparation, editing,
+  recovery and resource limits still require real-terrain and concurrent-workspace
+  verification on a representative self-hosted deployment.
 
 Out of scope for these releases: field calibration or a new propagation model,
 global optimality over arbitrary terrain, mobile-native clients, multi-host job
