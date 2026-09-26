@@ -51,12 +51,13 @@
         </section>
         <section>
           <h2><span>03</span> Existing MeshCore routers</h2>
-          <p class="hint">Load nearby CoreScope repeaters, then select all or just a few. Selected routers are optional candidates—the solver uses them only when they improve the route.</p>
+          <p class="hint">Feed activity is context, not proof of a usable RF link. Missing antenna data uses the configured repeater antenna assumptions shown below. Excluded and stale entries stay in saved plans.</p>
           <button id="load-meshcore" class="wide-button">Find nearby MeshCore routers</button>
           <div class="file-row known-count"><span id="meshcore-count">No routers loaded</span></div>
+          <label>Show routers<select id="meshcore-filter"><option value="all">All saved routers</option><option value="active">Relay active</option><option value="recent">Heard within 7 days</option><option value="active_recent">Active and heard within 7 days</option></select></label>
           <div class="known-controls">
-            <button id="include-all" class="text-button" disabled>Select all</button>
-            <button id="include-none" class="text-button" disabled>Clear selection</button>
+            <button id="include-all" class="text-button" disabled>Mark visible optional</button>
+            <button id="include-none" class="text-button" disabled>Exclude visible</button>
           </div>
           <div id="meshcore-list" class="known-list"><p class="hint">Routers within the search corridor will appear here.</p></div>
         </section>

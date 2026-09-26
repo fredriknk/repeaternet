@@ -10,7 +10,9 @@ import networkx as nx
 from rf_router_planner.models.link import LinkResult
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.settings import CandidateSettings, OptimizationPriority
-from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
+
+from .graph import fewest_new_installations_path
 
 CLIENT_KINDS = frozenset({SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT})
 _EXACT_COMBINATION_LIMIT = 100_000
@@ -72,22 +74,43 @@ def _representative_paths(
     graph: nx.Graph,
     clients: Sequence[Site],
     cutoff: int,
+    priority: OptimizationPriority | None = None,
 ) -> tuple[dict[tuple[str, str], list[list[str]]], int]:
     paths_by_pair: dict[tuple[str, str], list[list[str]]] = {}
     minimum_count = math.inf
     for left, right in itertools.combinations(clients, 2):
-        paths = list(nx.node_disjoint_paths(graph, left.id, right.id, cutoff=cutoff))
-        paths.sort(
-            key=lambda path: (
-                len(path),
-                -min(
-                    float(graph.edges[a, b]["margin"]) for a, b in zip(path, path[1:], strict=False)
-                ),
-                tuple(path),
+        if priority == OptimizationPriority.FEWEST_NEW_INSTALLATIONS:
+            preferred = fewest_new_installations_path(graph, left.id, right.id)
+            if preferred is not None:
+                remainder = graph.copy()
+                remainder.remove_nodes_from(preferred[1:-1])
+                additional = (
+                    list(
+                        nx.node_disjoint_paths(
+                            remainder, left.id, right.id, cutoff=max(0, cutoff - 1)
+                        )
+                    )
+                    if cutoff > 1
+                    else []
+                )
+                paths = [preferred, *additional]
+            else:
+                paths = []
+        else:
+            paths = list(nx.node_disjoint_paths(graph, left.id, right.id, cutoff=cutoff))
+            paths.sort(
+                key=lambda path: (
+                    len(path),
+                    -min(
+                        float(graph.edges[a, b]["margin"])
+                        for a, b in zip(path, path[1:], strict=False)
+                    ),
+                    tuple(path),
+                )
             )
-        )
-        paths_by_pair[(left.id, right.id)] = paths
-        minimum_count = min(minimum_count, len(paths))
+        achieved_count = min(len(paths), cutoff)
+        paths_by_pair[(left.id, right.id)] = paths[:cutoff]
+        minimum_count = min(minimum_count, achieved_count)
     return paths_by_pair, int(minimum_count if minimum_count != math.inf else 0)
 
 
@@ -103,7 +126,9 @@ def _evaluate_router_subset(
     if len(graph) != len(selected_ids) or not nx.is_connected(graph):
         return None
 
-    client_paths, achieved_paths = _representative_paths(graph, clients, max(1, requested_paths))
+    client_paths, achieved_paths = _representative_paths(
+        graph, clients, max(1, requested_paths), priority
+    )
     pair_margins = [
         _widest_path_margin(graph, left.id, right.id)
         for left, right in itertools.combinations(clients, 2)
@@ -123,11 +148,24 @@ def _evaluate_router_subset(
         site_quality,
         -total_distance,
     )
+    minimum_router_quality = (
+        minimum_pair_margin,
+        min(
+            attributes["link"].minimum_fresnel_clearance_ratio
+            for _, _, attributes in graph.edges(data=True)
+        ),
+        -sum(router.antenna_height_m for router in routers),
+        site_quality,
+        -total_distance,
+    )
     score: tuple[float, ...]
     if priority == OptimizationPriority.MAXIMUM_RELIABILITY:
         score = (float(achieved_paths), *quality_score)
     elif priority == OptimizationPriority.MINIMUM_INFRASTRUCTURE:
         score = (-sum(100 + router.antenna_height_m for router in routers), *quality_score)
+    elif priority == OptimizationPriority.FEWEST_NEW_INSTALLATIONS:
+        new_count = sum(router.origin != SiteOrigin.KNOWN for router in routers)
+        score = (-float(new_count), *minimum_router_quality)
     else:
         score = (
             minimum_pair_margin,
@@ -439,6 +477,31 @@ def select_active_solution_index(
             return cost, -solution.minimum_margin_db, tuple(sorted(routers))
 
         return min(range(len(alternatives)), key=infrastructure_score)
+    if priority == OptimizationPriority.FEWEST_NEW_INSTALLATIONS:
+        def fewest_new_score(index: int) -> tuple[float | int | str, ...]:
+            solution = alternatives[index]
+            sites_by_id = {site.id: site for site in solution.sites}
+            selected = [sites_by_id[site_id] for site_id in solution.router_ids]
+            fresnel = min(
+                (link.minimum_fresnel_clearance_ratio for link in solution.links),
+                default=float("-inf"),
+            )
+            distance = sum(link.distance_m for link in solution.links)
+            return (
+                solution.proposed_router_count,
+                solution.router_count,
+                -solution.minimum_margin_db,
+                -fresnel,
+                sum(site.antenna_height_m for site in selected),
+                -sum(site.site_quality for site in selected),
+                distance,
+                *tuple(solution.router_ids),
+            )
+
+        return min(
+            range(len(alternatives)),
+            key=fewest_new_score,
+        )
     if priority != OptimizationPriority.MAXIMUM_RELIABILITY:
         return min(range(len(alternatives)), key=lambda index: alternatives[index].router_count)
 

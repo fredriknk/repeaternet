@@ -77,3 +77,4 @@ def test_version_one_project_still_loads(tmp_path) -> None:
     assert loaded.endpoint_a is not None
     assert loaded.endpoint_a.id == "A"
     assert loaded.additional_clients == []
+    assert loaded.candidate_settings.infrastructure_policy.value == "existing_and_proposed"

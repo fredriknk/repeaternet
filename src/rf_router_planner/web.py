@@ -24,7 +24,7 @@ from pyproj import CRS, Transformer
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
-from .models.settings import CandidateSettings, RFSettings
+from .models.settings import CandidateSettings, InfrastructurePolicy, RFSettings
 from .models.site import Site, SiteKind, SiteOrigin
 from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
@@ -369,6 +369,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         else None,
                         "relay_active": repeater.relay_active,
                         "relay_count_24h": repeater.relay_count_24h,
+                        "provenance": "CoreScope",
                     }
                 )
             nearby.sort(key=lambda item: (item["corridor_distance_m"], item["name"].casefold()))
@@ -412,9 +413,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             known_data = body.get("known_routers", [])
             if not isinstance(known_data, list):
                 raise ValueError("known_routers must be a list")
-            if len(known_data) > candidates.maximum_candidates:
-                raise ValueError("Select no more MeshCore routers than the Max candidates setting")
             known_ids: set[str] = set()
+            included_known_count = 0
+            required_known_count = 0
             for item in known_data:
                 if not isinstance(item, dict):
                     raise ValueError("Each MeshCore router must be an object")
@@ -430,10 +431,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     raise ValueError("MeshCore router ids must be unique")
                 known_ids.add(site_id)
                 coordinate_pair({"router": [item.get("latitude"), item.get("longitude")]}, "router")
+                router_policy = item.get("policy", "optional")
+                if router_policy not in {"optional", "required", "excluded"}:
+                    raise ValueError("MeshCore router policy must be optional, required, or excluded")
+                if (
+                    candidates.infrastructure_policy != InfrastructurePolicy.PROPOSED_ONLY
+                    and router_policy != "excluded"
+                ):
+                    included_known_count += 1
+                    required_known_count += router_policy == "required"
+            if included_known_count > candidates.maximum_candidates:
+                raise ValueError("Selected existing routers exceed the Max candidates setting")
+            if required_known_count > candidates.maximum_solution_routers:
+                raise ValueError("Required existing routers exceed the Max total routers setting")
             body["resolved_search"].update(
                 {
-                    "generated_candidate_limit": candidates.maximum_candidates - len(known_data),
-                    "known_router_count": len(known_data),
+                    "generated_candidate_limit": (
+                        0
+                        if candidates.infrastructure_policy == InfrastructurePolicy.EXISTING_ONLY
+                        else candidates.maximum_candidates - included_known_count
+                    ),
+                    "known_router_count": included_known_count,
+                    "excluded_router_count": len(known_data) - included_known_count,
+                    "infrastructure_policy": candidates.infrastructure_policy.value,
                 }
             )
             for name in ("a", "b"):
@@ -519,8 +539,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 antenna_height_m=antenna.height_agl_m,
                             )
                         )
+                    active_known_data = (
+                        []
+                        if candidates.infrastructure_policy == InfrastructurePolicy.PROPOSED_ONLY
+                        else [
+                            item
+                            for item in known_data
+                            if item.get("policy", "optional") != "excluded"
+                        ]
+                    )
                     known_sites = []
-                    for item in known_data:
+                    for item in active_known_data:
                         latitude = float(item["latitude"])
                         longitude = float(item["longitude"])
                         x, y = forward.transform(longitude, latitude)
@@ -548,8 +577,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 antenna_height_m=rf.router.height_agl_m,
                                 origin=SiteOrigin.KNOWN,
                                 locked=True,
+                                required=item.get("policy", "optional") == "required",
                             )
                         )
+                    required_sites = [site for site in known_sites if site.required]
+                    optional_sites = [site for site in known_sites if not site.required]
 
                     def progress(stage: str, done: int, total: int) -> None:
                         with ws.lock:
@@ -593,7 +625,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                     search_candidates = replace(
                         candidates,
-                        maximum_candidates=candidates.maximum_candidates - len(known_sites),
+                        maximum_candidates=(
+                            0
+                            if candidates.infrastructure_policy == InfrastructurePolicy.EXISTING_ONLY
+                            else candidates.maximum_candidates - len(known_sites)
+                        ),
                     )
                     optimizer = RouteOptimizer(
                         terrain,
@@ -605,7 +641,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     result = optimizer.optimize(
                         endpoints[0],
                         endpoints[1],
-                        optional_routers=known_sites,
+                        candidates=(
+                            [endpoints[0], *required_sites, endpoints[1]]
+                            if candidates.infrastructure_policy
+                            == InfrastructurePolicy.EXISTING_ONLY
+                            else None
+                        ),
+                        required_routers=required_sites,
+                        optional_routers=optional_sites,
                         progress=progress,
                         cancelled=ws.cancel.is_set,
                         solution_progress=publish_snapshot,
@@ -689,9 +732,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             input_revision = ws.input_revision
             snapshot_version = ws.snapshot_version
         sites = result.active_solution.sites if result.active_solution else result.route
+        existing_router_count = (
+            result.active_solution.existing_router_count
+            if result.active_solution
+            else sum(site.origin == SiteOrigin.KNOWN for site in result.route[1:-1])
+        )
         return {
             "found": result.found,
             "router_count": result.router_count,
+            "existing_router_count": existing_router_count,
+            "proposed_router_count": max(0, result.router_count - existing_router_count),
             "route": encode(sites),
             "links": [
                 {**encode(link), "worst_margin_db": link.worst_margin_db} for link in result.links

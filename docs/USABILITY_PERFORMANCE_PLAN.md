@@ -238,16 +238,21 @@ Primary areas: new optimization/cache module, propagation/sampling boundaries,
 terrain metadata, web workspace state and targeted cache tests.
 Commit: `perf: reuse bounded RF evaluations across planning edits`.
 
-### P3 — Existing infrastructure as a planning policy [planned]
+### P3 — Existing infrastructure as a planning policy [implemented]
 
 Implementation:
 
 - Add three candidate policies: proposed sites only; selected existing routers
-  only; and selected existing routers plus proposed sites. Existing-only bypasses
-  terrain candidate generation and clearly reports disconnected existing networks.
-- Add per-router Optional / Required / Excluded controls and filters for feed
-  freshness/activity. Treat feed activity as context, not proof of a usable RF
-  link. Show the antenna/RF assumptions used when feed metadata is incomplete.
+  only; and selected existing routers plus proposed sites. Existing-only passes
+  only endpoints and selected existing routers to the optimizer; it never calls
+  terrain candidate generation. Disconnected networks return the ordinary
+  no-route diagnostic.
+- Add per-router Optional / Required / Excluded controls and list filters for
+  active relays and routers heard within seven days. Refresh preserves previously
+  saved sites missing from the current corridor response and marks them stale;
+  filtering does not silently discard a saved choice. Feed activity is context,
+  not proof of a usable RF link. The UI explains that missing antenna metadata
+  uses the configured repeater antenna assumptions.
 - Add a distinct "Fewest new installations" objective. Initial deterministic
   ordering: new installation count, total intermediate router count, then the
   established minimum-router RF tie-breakers. Retain current objectives unchanged.
@@ -255,26 +260,28 @@ Implementation:
 - Update graph ranking and optimizer dispatch as well as topology scoring.
   A longer existing-only path may beat a short path needing a new installation;
   the minimum-total-router low-hop shortcut must not decide this new objective.
-- Count existing and proposed routers separately in results. The total-router
-  hard limit still applies to both; optionally allow a separate cap on new sites.
-  Explain this limit before starting a search.
+- Count existing and proposed routers separately in results. The existing
+  `maximum_solution_routers` hard limit applies to the combined topology and is
+  shown before search. No separate new-site cap was added in this milestone.
 - Save router selection, policy, required/excluded state and provenance in plans;
   handle stale/removed feed entries without silently deleting saved sites.
 
 Acceptance:
 
-- Fixtures prove existing-only never invents a site, required routers always
-  appear, excluded routers never appear, and a route with fewer new installations
-  wins according to the documented objective even when it has more total hops.
-- Mixed-mode candidate limits, no feasible route, missing metadata and imported
-  older plans behave predictably. Compare existing-only and mixed-mode RF counts.
-- First-release end-to-end flow works: select endpoints and terrain, choose
-  infrastructure, receive an early certified route, edit the objective, reuse
-  calculations, stop-and-keep, and export the displayed result.
+- API fixture patches candidate generation to fail if existing-only invokes it;
+  the search completes with only its required existing router. Another fixture
+  confirms excluded routers do not enter the graph. A graph/topology fixture
+  confirms a longer, all-existing path beats a shorter path needing installation.
+- A paired cold-cache fixture confirms existing-only makes fewer RF metric
+  misses than mixed mode. The full suite covers legacy optional-router payloads,
+  version-one projects defaulting to mixed mode, and configured router limits.
+- Full suite: 95 passed; Ruff, mypy and JavaScript syntax checks pass. P1 already
+  covers early snapshots, stop-and-keep and result export; existing-router plans
+  use the same versioned job/result/cache flow. Browser visual walkthrough and
+  real CoreScope freshness behavior remain release checks, not claimed here.
 
 Primary areas: `models/site.py`, `models/settings.py`, optimization graph/topology/
-dispatch,
-web request/schema/UI and CoreScope integration tests.
+dispatch, web request/schema/UI and CoreScope integration tests.
 Commit: `feat: plan routes around existing MeshCore infrastructure`.
 
 ### P4 — Terrain preparation and actionable coverage checks [planned]
@@ -404,7 +411,10 @@ packaging change. Update README feature coverage and user instructions with each
 release. Keep every milestone independently reviewable and the working
 tree clean after its commit.
 
-- Planning baseline: all P0–P7 milestones are planned. No feature code changed.
+- Planning baseline: P0–P2 are committed; P3 is implemented and verified.
+  P4–P7 remain planned. P3 adds the `infrastructure_policy` setting and router
+  `policy`/`provenance` plan fields; missing fields in older plans retain their
+  previous behavior (mixed mode, selected known routers optional).
 - First-release gate: P0–P3 accepted; profiles/exports, legacy plans and cancellation
   work throughout the early-result/cache/existing-router flow.
 - Second-release gate: P4–P7 accepted; terrain preparation, editing, recovery and

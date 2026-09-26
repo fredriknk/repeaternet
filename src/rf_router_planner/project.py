@@ -9,6 +9,7 @@ from rf_router_planner.models.settings import (
     AntennaSettings,
     CandidateSettings,
     DiffractionModel,
+    InfrastructurePolicy,
     LoRaSettings,
     OptimizationPriority,
     RFSettings,
@@ -99,6 +100,11 @@ def load_project(path: str | Path) -> Project:
     candidate_data = data.get("candidate_settings", {})
     candidate_data["priority"] = OptimizationPriority(
         candidate_data.get("priority", OptimizationPriority.MINIMUM_ROUTERS.value)
+    )
+    candidate_data["infrastructure_policy"] = InfrastructurePolicy(
+        candidate_data.get(
+            "infrastructure_policy", InfrastructurePolicy.EXISTING_AND_PROPOSED.value
+        )
     )
     return Project(
         _site_from_dict(data.get("endpoint_a")),

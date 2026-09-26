@@ -1,6 +1,12 @@
 from rf_router_planner.models.link import DirectionResult, LinkResult
-from rf_router_planner.models.site import Site
-from rf_router_planner.optimization.graph import build_graph, lexicographic_minimum_hop_path
+from rf_router_planner.models.settings import OptimizationPriority
+from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
+from rf_router_planner.optimization.graph import (
+    build_graph,
+    fewest_new_installations_path,
+    lexicographic_minimum_hop_path,
+    select_path,
+)
 
 
 def link(a: str, b: str, margin: float, distance: float = 1000) -> LinkResult:
@@ -36,6 +42,29 @@ def test_equal_hops_choose_greater_bottleneck_margin() -> None:
     ]
     graph = build_graph(sites, links)
     assert lexicographic_minimum_hop_path(graph, "A", "B") == ["A", "strong", "B"]
+
+
+def test_fewest_new_installations_prefers_longer_existing_only_route():
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
+    b = Site("B", 10, 0, kind=SiteKind.ENDPOINT_B)
+    new = Site("new", 5, 0, kind=SiteKind.CANDIDATE, origin=SiteOrigin.OPTIMIZED)
+    existing = [
+        Site(name, index, 2, kind=SiteKind.ROUTER, origin=SiteOrigin.KNOWN)
+        for index, name in enumerate(("old-1", "old-2"), 1)
+    ]
+    graph = build_graph(
+        [a, b, new, *existing],
+        [
+            link("A", "new", 100),
+            link("new", "B", 100),
+            link("A", "old-1", 1),
+            link("old-1", "old-2", 1),
+            link("old-2", "B", 1),
+        ],
+    )
+    expected = ["A", "old-1", "old-2", "B"]
+    assert fewest_new_installations_path(graph, "A", "B") == expected
+    assert select_path(graph, "A", "B", OptimizationPriority.FEWEST_NEW_INSTALLATIONS) == expected
 
 
 def test_later_bottleneck_must_not_discard_better_fresnel_prefix():

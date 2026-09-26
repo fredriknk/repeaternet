@@ -5,7 +5,9 @@
 .known-list{max-height:290px;overflow:auto;border:1px solid var(--border);border-radius:7px;background:#fafcfa}
 .known-router{display:flex;align-items:flex-start;gap:9px;padding:9px;border-bottom:1px solid var(--border);cursor:pointer}
 .known-router:last-child{border-bottom:0}
-.known-router input[type=checkbox]{margin:2px 0 0;accent-color:#176750}
+.known-router select{flex:0 0 96px;width:96px;padding:5px 4px;font-size:10px}
+.known-router.stale{background:#f1f0ed}
+.known-router.stale strong{color:#887354}
 .known-router span{min-width:0;flex:1}
 .known-router strong,.known-router small{display:block;overflow-wrap:anywhere}
 .known-router strong{font-size:11px;color:#294b42;font-weight:650}

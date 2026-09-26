@@ -24,8 +24,15 @@ class DiffractionModel(str, Enum):
 
 class OptimizationPriority(str, Enum):
     MINIMUM_ROUTERS = "minimum_routers"
+    FEWEST_NEW_INSTALLATIONS = "fewest_new_installations"
     MINIMUM_INFRASTRUCTURE = "minimum_infrastructure"
     MAXIMUM_RELIABILITY = "maximum_reliability"
+
+
+class InfrastructurePolicy(str, Enum):
+    PROPOSED_ONLY = "proposed_only"
+    EXISTING_ONLY = "existing_only"
+    EXISTING_AND_PROPOSED = "existing_and_proposed"
 
 
 @dataclass(slots=True)
@@ -104,6 +111,7 @@ class TerrainSettings:
 
 @dataclass(slots=True)
 class CandidateSettings:
+    infrastructure_policy: InfrastructurePolicy = InfrastructurePolicy.EXISTING_AND_PROPOSED
     corridor_width_m: float = 10_000.0
     unrestricted_bounding_area: bool = False
     grid_spacing_m: float = 1_000.0

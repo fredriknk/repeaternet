@@ -582,7 +582,11 @@ class RouteOptimizer:
             return completed_result
         if (
             not network_mode
-            and self.candidate_settings.priority != OptimizationPriority.MAXIMUM_RELIABILITY
+            and self.candidate_settings.priority
+            not in {
+                OptimizationPriority.MAXIMUM_RELIABILITY,
+                OptimizationPriority.FEWEST_NEW_INSTALLATIONS,
+            }
         ):
             notify("Checking long summit alternatives", 0, 1)
             if not low_hop_checked:

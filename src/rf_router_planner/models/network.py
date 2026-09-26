@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .link import LinkResult
-from .site import Site
+from .site import Site, SiteOrigin
 
 
 @dataclass(slots=True)
@@ -28,6 +28,15 @@ class NetworkSolution:
     @property
     def router_count(self) -> int:
         return len(self.router_ids)
+
+    @property
+    def existing_router_count(self) -> int:
+        router_ids = set(self.router_ids)
+        return sum(site.id in router_ids and site.origin == SiteOrigin.KNOWN for site in self.sites)
+
+    @property
+    def proposed_router_count(self) -> int:
+        return self.router_count - self.existing_router_count
 
     @property
     def resilient(self) -> bool:

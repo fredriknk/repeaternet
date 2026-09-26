@@ -219,6 +219,32 @@ def test_infrastructure_can_prefer_two_short_masts_over_one_tall_mast():
     ].router_ids == ["tall"]
 
 
+def test_fewest_new_installations_selects_existing_routers_over_shorter_new_route():
+    a, b = client("A", 0), client("B", 10)
+    proposed = router("new", 5)
+    existing = [
+        router("known-left", 3, origin=SiteOrigin.KNOWN),
+        router("known-right", 7, origin=SiteOrigin.KNOWN),
+    ]
+    links = [
+        link("A", "new", 100),
+        link("new", "B", 100),
+        link("A", "known-left", 1),
+        link("known-left", "known-right", 1),
+        link("known-right", "B", 1),
+    ]
+    settings = CandidateSettings(
+        maximum_solution_routers=2,
+        reliability_paths=1,
+        priority=OptimizationPriority.FEWEST_NEW_INSTALLATIONS,
+    )
+    alternatives = solve_topologies([a, b, proposed, *existing], links, settings)
+    selected = alternatives[select_active_solution_index(alternatives, settings.priority)]
+    assert selected.router_ids == ["known-left", "known-right"]
+    assert selected.proposed_router_count == 0
+    assert selected.primary_path_ids == ["A", "known-left", "known-right", "B"]
+
+
 def test_topology_selection_is_stable_under_input_reversal():
     a, b = client("A", 0), client("B", 10)
     x, y = router("X", 4), router("Y", 6)

@@ -127,6 +127,8 @@ def test_quick_effort_reports_resolved_search_scope(client):
         "neighbor_limit": 8,
         "generated_candidate_limit": 200,
         "known_router_count": 0,
+        "excluded_router_count": 0,
+        "infrastructure_policy": "existing_and_proposed",
     }
     assert job["started_at"] > 0
 
@@ -282,6 +284,142 @@ def test_meshcore_routers_can_be_selected_as_optional_candidates(client, monkeyp
     assert not known_site["required"]
     assert result["router_count"] == 0
     assert client.get("/api/export/project").json()["known_routers"][0]["id"] == repeater.id
+
+
+def test_existing_only_uses_required_router_without_generating_sites(client, monkeypatch):
+    import rf_router_planner.optimization.optimizer as optimizer_module
+
+    def unexpected_generation(*args, **kwargs):
+        raise AssertionError("existing-only policy must not generate candidate sites")
+
+    monkeypatch.setattr(optimizer_module, "generate_candidates", unexpected_generation)
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    repeater_lat, repeater_lon = reversed(reverse.transform(500450, 6650500))
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    response = client.post(
+        "/api/optimize",
+        json={
+            "a": a,
+            "b": b,
+            "rf": {},
+            "candidates": {
+                "infrastructure_policy": "existing_only",
+                "maximum_candidates": 20,
+                "maximum_solution_routers": 1,
+                "refine_radius_m": 0,
+            },
+            "known_routers": [
+                {
+                    "id": "K-required",
+                    "name": "Required relay",
+                    "latitude": repeater_lat,
+                    "longitude": repeater_lon,
+                    "policy": "required",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] not in {"running", "queued"}:
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete", job
+    result = client.get("/api/result").json()
+    assert {site["id"] for site in result["candidates"]} == {"A", "B", "K-required"}
+    assert "K-required" in {site["id"] for site in result["route"]}
+    assert result["router_count"] == 1
+    assert result["existing_router_count"] == 1
+    assert result["proposed_router_count"] == 0
+
+
+def test_excluded_existing_router_does_not_enter_existing_only_graph(client):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    repeater_lat, repeater_lon = reversed(reverse.transform(500450, 6650500))
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    response = client.post(
+        "/api/optimize",
+        json={
+            "a": a,
+            "b": b,
+            "rf": {},
+            "candidates": {"infrastructure_policy": "existing_only", "maximum_candidates": 20},
+            "known_routers": [
+                {
+                    "id": "K-excluded",
+                    "latitude": repeater_lat,
+                    "longitude": repeater_lon,
+                    "policy": "excluded",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] not in {"running", "queued"}:
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete", job
+    result = client.get("/api/result").json()
+    assert "K-excluded" not in {site["id"] for site in result["candidates"]}
+    assert result["router_count"] == 0
+
+
+def test_existing_only_avoids_generated_candidate_rf_evaluations(tmp_path, monkeypatch):
+    monkeypatch.setenv("RF_PLANNER_TOKEN", "")
+    app = create_app(tmp_path)
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    repeater_lat, repeater_lon = reversed(reverse.transform(500450, 6650500))
+
+    def run_search(client, policy):
+        assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+        response = client.post(
+            "/api/optimize",
+            json={
+                "a": a,
+                "b": b,
+                "rf": {},
+                "candidates": {
+                    "infrastructure_policy": policy,
+                    "maximum_candidates": 5,
+                    "maximum_solution_routers": 1,
+                    "grid_spacing_m": 500,
+                    "cell_size_m": 500,
+                    "refine_radius_m": 0,
+                },
+                "known_routers": [
+                    {
+                        "id": "K-existing",
+                        "latitude": repeater_lat,
+                        "longitude": repeater_lon,
+                        "policy": "optional",
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200, response.text
+        for _ in range(200):
+            job = client.get("/api/state").json()["job"]
+            if job["state"] not in {"running", "queued"}:
+                break
+            time.sleep(0.02)
+        assert job["state"] == "complete", job
+        return client.get("/api/state").json()["rf_cache"]["misses"]
+
+    with TestClient(app) as existing_client, TestClient(app) as mixed_client:
+        assert existing_client.get("/").status_code == 200
+        assert mixed_client.get("/").status_code == 200
+        existing_count = run_search(existing_client, "existing_only")
+        mixed_count = run_search(mixed_client, "existing_and_proposed")
+    assert mixed_count > existing_count
 
 
 def test_invalid_upload_and_settings(client):
