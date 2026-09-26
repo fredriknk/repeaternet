@@ -4,6 +4,7 @@ import itertools
 import logging
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -33,6 +34,7 @@ class OptimizationResult:
     elapsed_seconds: float = 0.0
     alternatives: list[NetworkSolution] = field(default_factory=list)
     active_solution_index: int = 0
+    search_complete: bool = True
 
     @property
     def found(self) -> bool:
@@ -65,6 +67,24 @@ class OptimizationResult:
 
 ProgressCallback = Callable[[str, int, int], None]
 CancelCallback = Callable[[], bool]
+
+
+def _detached_progress_snapshot(result: OptimizationResult) -> OptimizationResult:
+    """Copy the UI-facing result fields without duplicating the full RF link graph."""
+    route, links, candidates, alternatives = deepcopy(
+        (result.route, result.links, result.candidates, result.alternatives)
+    )
+    return OptimizationResult(
+        route,
+        links,
+        candidates,
+        [],
+        list(result.diagnostics),
+        result.elapsed_seconds,
+        alternatives,
+        result.active_solution_index,
+        result.search_complete,
+    )
 
 
 def screening_pair_indices(
@@ -256,6 +276,7 @@ class RouteOptimizer:
         clients: list[Site] | None = None,
         required_routers: list[Site] | None = None,
         optional_routers: list[Site] | None = None,
+        solution_progress: Callable[[OptimizationResult, bool], None] | None = None,
     ) -> OptimizationResult:
         started = time.perf_counter()
         notify = progress or (lambda _stage, _done, _total: None)
@@ -406,6 +427,37 @@ class RouteOptimizer:
                     key = frozenset((link.source_id, link.target_id))
                     link_by_key[key] = link
                     validated_keys.add(key)
+                if solution_progress is not None:
+                    router_ids = [site.id for site in low_hop[0][1:-1]]
+                    preview = NetworkSolution(
+                        name=f"{len(router_ids)} router" + ("s" if len(router_ids) != 1 else ""),
+                        sites=list(low_hop[0]),
+                        links=list(low_hop[1]),
+                        client_ids=[endpoint_a.id, endpoint_b.id],
+                        router_ids=router_ids,
+                        client_paths={
+                            (endpoint_a.id, endpoint_b.id): [[site.id for site in low_hop[0]]]
+                        },
+                        requested_path_count=max(1, self.candidate_settings.reliability_paths),
+                        achieved_path_count=1,
+                        diagnostics=["Certified route snapshot; broader search is still running."],
+                    )
+                    snapshot_links = list(low_hop[1])
+                    if not self._restore_profiles(snapshot_links, sites, notify, is_cancelled):
+                        return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
+                    preview.links = snapshot_links
+                    partial = OptimizationResult(
+                        list(low_hop[0]),
+                        list(snapshot_links),
+                        sites,
+                        list(link_by_key.values()),
+                        list(preview.diagnostics),
+                        time.perf_counter() - started,
+                        [preview],
+                        0,
+                        False,
+                    )
+                    solution_progress(_detached_progress_snapshot(partial), False)
         alternatives: list[NetworkSolution] = []
         # Every nonterminal round certifies at least one previously unseen pair.
         # This terminates on a finite pool without returning coarse-only edges.
@@ -493,7 +545,7 @@ class RouteOptimizer:
                 active.achieved_path_count,
                 time.perf_counter() - started,
             )
-            return OptimizationResult(
+            completed_result = OptimizationResult(
                 active.primary_route,
                 list(active.links),
                 sites,
@@ -502,7 +554,11 @@ class RouteOptimizer:
                 time.perf_counter() - started,
                 alternatives,
                 active_index,
+                True,
             )
+            if solution_progress is not None:
+                solution_progress(_detached_progress_snapshot(completed_result), True)
+            return completed_result
         if (
             not network_mode
             and self.candidate_settings.priority != OptimizationPriority.MAXIMUM_RELIABILITY
@@ -533,7 +589,7 @@ class RouteOptimizer:
                             "A certified low-hop route was retained after topology search found no alternative."
                         ],
                     )
-                    return OptimizationResult(
+                    completed_result = OptimizationResult(
                         fallback_route,
                         list(fallback_links),
                         sites,
@@ -543,6 +599,9 @@ class RouteOptimizer:
                         [solution],
                         0,
                     )
+                    if solution_progress is not None:
+                        solution_progress(_detached_progress_snapshot(completed_result), True)
+                    return completed_result
         required_names = ", ".join(site.id for site in mandatory)
         diagnostics = ["No connected mesh was found within the configured router-count limit."]
         if required_names:

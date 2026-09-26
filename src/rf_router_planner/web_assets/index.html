@@ -65,8 +65,16 @@
           <div id="settings"></div>
         </section>
         <div class="run-panel">
+          <label for="search-effort">Search effort</label>
+          <select id="search-effort">
+            <option value="quick">Quick · up to 200 candidate sites</option>
+            <option value="balanced" selected>Balanced · up to 800 candidate sites</option>
+            <option value="thorough">Thorough · configured candidate limit</option>
+          </select>
+          <p class="hint">Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p>
           <button id="optimize" class="primary">Find repeater route <span>↗</span></button>
           <button id="cancel" hidden>Cancel optimization</button>
+          <button id="stop-keep" hidden disabled>Stop and keep this route</button>
           <p class="hint">RF estimates require field validation.</p>
         </div>
       </aside>

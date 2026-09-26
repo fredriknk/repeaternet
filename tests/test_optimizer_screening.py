@@ -459,6 +459,36 @@ def test_fallback_reuses_low_hop_result_and_restores_profiles(monkeypatch, found
         assert not result.active_solution.resilient  # Default requests two independent paths.
 
 
+def test_solution_progress_publishes_certified_then_complete_route(monkeypatch):
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
+    b = Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((2, 101)), resolution_m=1), RFSettings(), CandidateSettings()
+    )
+    edge = ChainOnlyEvaluator._edge(a, b)
+    optimizer.evaluator = ChainOnlyEvaluator({edge})  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "rf_router_planner.optimization.optimizer.solve_topologies", lambda *a, **kw: []
+    )
+    updates = []
+
+    def on_progress(snapshot, complete):
+        updates.append((complete, snapshot.search_complete, [site.id for site in snapshot.route]))
+        if not complete:
+            snapshot.route[0].id = "mutated-detached-preview"
+
+    result = optimizer.optimize(
+        a,
+        b,
+        candidates=[a, b],
+        solution_progress=on_progress,
+    )
+
+    assert updates == [(False, False, ["A", "B"]), (True, True, ["A", "B"])]
+    assert result.search_complete
+    assert [site.id for site in result.route] == ["A", "B"]
+
+
 def test_all_alternative_profiles_restored_and_preparation_cancellable():
     a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
     b = Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)

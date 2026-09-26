@@ -8,6 +8,8 @@ import math
 import os
 import secrets
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -24,7 +26,7 @@ from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
 from .models.settings import CandidateSettings, RFSettings
 from .models.site import Site, SiteKind, SiteOrigin
-from .optimization.optimizer import RouteOptimizer
+from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .terrain.raster import RasterTerrain
 
 ASSETS = Path(__file__).parent / "web_assets"
@@ -144,9 +146,7 @@ def distance_to_segment_m(
     end: tuple[float, float],
 ) -> float:
     latitude_scale = 111_320.0
-    longitude_scale = latitude_scale * max(
-        0.1, math.cos(math.radians((start[0] + end[0]) / 2))
-    )
+    longitude_scale = latitude_scale * max(0.1, math.cos(math.radians((start[0] + end[0]) / 2)))
     px, py = point[1] * longitude_scale, point[0] * latitude_scale
     ax, ay = start[1] * longitude_scale, start[0] * latitude_scale
     bx, by = end[1] * longitude_scale, end[0] * latitude_scale
@@ -172,6 +172,10 @@ class Workspace:
         }
         self.result: Any = None
         self.inputs: dict[str, Any] = {}
+        self.job_id: str | None = None
+        self.input_revision = 0
+        self.snapshot_version = 0
+        self.keep_result_on_cancel = False
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
@@ -180,6 +184,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="RF Router Planner")
     workspaces: dict[str, Workspace] = {}
     registry_lock = threading.Lock()
+    max_workers = max(1, int(os.environ.get("RF_PLANNER_MAX_ACTIVE_JOBS", "1")))
+    scheduler = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rf-plan")
+    scheduler_lock = threading.Lock()
+    job_slots = {"outstanding": 0}
+    max_outstanding_jobs = max_workers * 2
 
     @app.middleware("http")
     async def security(request: Request, call_next: Any) -> Any:
@@ -252,7 +261,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ws = workspace(request)
         saved = ws.directory / "plan.json"
         return {
-            "job": ws.status,
+            "job": {
+                **ws.status,
+                "job_id": ws.job_id,
+                "input_revision": ws.input_revision,
+                "snapshot_version": ws.snapshot_version,
+            },
             "rf": encode(RFSettings()),
             "candidates": encode(CandidateSettings()),
             "terrain": {
@@ -268,7 +282,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] == "running":
+            if ws.status["state"] in {"queued", "running"}:
                 raise HTTPException(409, "Wait for the current job")
             directory = ws.directory / kind
             directory.mkdir(exist_ok=True)
@@ -293,6 +307,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         list(reversed(reverse.transform(left, bottom))),
                         list(reversed(reverse.transform(right, top))),
                     ]
+                ws.input_revision += 1
+                ws.result = None
+                ws.snapshot_version = 0
                 return {"name": path.name, "bounds": bounds}
             except Exception as exc:
                 path.unlink(missing_ok=True)
@@ -304,10 +321,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] == "running":
+            if ws.status["state"] in {"queued", "running"}:
                 raise HTTPException(409, "Wait for the current job")
             for path in (ws.directory / kind).glob("*.tif"):
                 path.unlink()
+            ws.input_revision += 1
+            ws.result = None
+            ws.snapshot_version = 0
         return {"ok": True}
 
     @app.post("/api/meshcore")
@@ -351,7 +371,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(502, f"Could not load MeshCore routers from CoreScope: {exc}") from exc
+            raise HTTPException(
+                502, f"Could not load MeshCore routers from CoreScope: {exc}"
+            ) from exc
 
     @app.post("/api/optimize")
     def optimize(body: dict[str, Any], request: Request) -> Any:
@@ -360,13 +382,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             rf = settings(RFSettings, body.get("rf", {}))
             candidates = settings(CandidateSettings, body.get("candidates", {}))
             validate(rf, candidates)
+            search_effort = body.get("search_effort", "balanced")
+            if search_effort not in {"quick", "balanced", "thorough"}:
+                raise ValueError("search_effort must be quick, balanced, or thorough")
+            candidate_cap, neighbor_cap = {
+                "quick": (200, 8),
+                "balanced": (800, 12),
+                "thorough": (candidates.maximum_candidates, candidates.maximum_neighbors_per_site),
+            }[search_effort]
+            requested_candidate_count = candidates.maximum_candidates
+            candidates.maximum_candidates = min(candidates.maximum_candidates, candidate_cap)
+            candidates.maximum_neighbors_per_site = min(
+                candidates.maximum_neighbors_per_site, neighbor_cap
+            )
+            body = {
+                **body,
+                "search_effort": search_effort,
+                "resolved_search": {
+                    "candidate_limit": candidates.maximum_candidates,
+                    "requested_candidate_limit": requested_candidate_count,
+                    "neighbor_limit": candidates.maximum_neighbors_per_site,
+                },
+            }
             known_data = body.get("known_routers", [])
             if not isinstance(known_data, list):
                 raise ValueError("known_routers must be a list")
             if len(known_data) > candidates.maximum_candidates:
-                raise ValueError(
-                    "Select no more MeshCore routers than the Max candidates setting"
-                )
+                raise ValueError("Select no more MeshCore routers than the Max candidates setting")
             known_ids: set[str] = set()
             for item in known_data:
                 if not isinstance(item, dict):
@@ -382,9 +424,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if site_id in known_ids:
                     raise ValueError("MeshCore router ids must be unique")
                 known_ids.add(site_id)
-                coordinate_pair(
-                    {"router": [item.get("latitude"), item.get("longitude")]}, "router"
-                )
+                coordinate_pair({"router": [item.get("latitude"), item.get("longitude")]}, "router")
+            body["resolved_search"].update(
+                {
+                    "generated_candidate_limit": candidates.maximum_candidates - len(known_data),
+                    "known_router_count": len(known_data),
+                }
+            )
             for name in ("a", "b"):
                 coordinate_pair(body, name)
             if body["a"] == body["b"]:
@@ -392,20 +438,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] == "running":
-                raise HTTPException(409, "A job is already running")
+            if ws.status["state"] in {"queued", "running"}:
+                raise HTTPException(409, "A job is already queued or running")
             dtm = list((ws.directory / "dtm").glob("*.tif"))
             dom = list((ws.directory / "dom").glob("*.tif"))
             if not dtm:
                 raise HTTPException(422, "Upload DTM terrain first")
+            with scheduler_lock:
+                if job_slots["outstanding"] >= max_outstanding_jobs:
+                    raise HTTPException(429, "The planner queue is full; retry shortly")
+                queued = job_slots["outstanding"] >= max_workers
+                job_slots["outstanding"] += 1
             ws.cancel.clear()
             ws.result = None
             ws.inputs = body
+            ws.job_id = secrets.token_hex(12)
+            ws.input_revision += 1
+            ws.snapshot_version = 0
+            ws.keep_result_on_cancel = False
+            job_id = ws.job_id
+            input_revision = ws.input_revision
             (ws.directory / "plan.json").write_text(json.dumps(body), encoding="utf-8")
-            ws.status = {"state": "running", "stage": "Opening terrain", "done": 0, "total": 1}
+            ws.status = {
+                "state": "queued" if queued else "running",
+                "stage": "Waiting for a planner worker" if queued else "Opening terrain",
+                "job_id": job_id,
+                "input_revision": input_revision,
+                "snapshot_version": 0,
+                "search_effort": search_effort,
+                "resolved_search": body["resolved_search"],
+                "started_at": time.time(),
+            }
 
         def run() -> None:
             try:
+                with ws.lock:
+                    if ws.job_id != job_id:
+                        return
+                    if ws.cancel.is_set():
+                        ws.status = {
+                            **ws.status,
+                            "state": "cancelled",
+                            "stage": "Cancelled before starting",
+                        }
+                        return
+                    ws.status = {
+                        **ws.status,
+                        "state": "running",
+                        "stage": "Opening terrain",
+                        "done": 0,
+                        "total": 1,
+                    }
                 with RasterTerrain(dtm, dom) as terrain:
                     forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
                     reverse = Transformer.from_crs(terrain.crs, 4326, always_xy=True)
@@ -464,12 +547,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         )
 
                     def progress(stage: str, done: int, total: int) -> None:
-                        ws.status = {
-                            "state": "running",
-                            "stage": stage,
-                            "done": done,
-                            "total": total,
-                        }
+                        with ws.lock:
+                            if ws.job_id == job_id and ws.input_revision == input_revision:
+                                ws.status = {
+                                    **ws.status,
+                                    "state": "running",
+                                    "stage": stage,
+                                    "done": done,
+                                    "total": total,
+                                }
+
+                    def publish_snapshot(
+                        snapshot: OptimizationResult, search_complete: bool
+                    ) -> None:
+                        published = snapshot
+                        snapshot_sites = (
+                            published.active_solution.sites
+                            if published.active_solution
+                            else published.route
+                        )
+                        for site in [*snapshot_sites, *published.candidates]:
+                            site.longitude, site.latitude = reverse.transform(site.x, site.y)
+                        with ws.lock:
+                            if ws.job_id != job_id or ws.input_revision != input_revision:
+                                return
+                            ws.snapshot_version += 1
+                            published.search_complete = search_complete
+                            ws.result = published
+                            ws.status = {
+                                **ws.status,
+                                "state": "running",
+                                "stage": (
+                                    "Route found; broader search continues"
+                                    if not search_complete
+                                    else "Search complete"
+                                ),
+                                "snapshot_version": ws.snapshot_version,
+                                "search_complete": search_complete,
+                            }
 
                     search_candidates = replace(
                         candidates,
@@ -481,6 +596,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         optional_routers=known_sites,
                         progress=progress,
                         cancelled=ws.cancel.is_set,
+                        solution_progress=publish_snapshot,
                     )
                     solution_sites = (
                         result.active_solution.sites if result.active_solution else result.route
@@ -488,30 +604,78 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     for site in [*solution_sites, *result.candidates]:
                         site.longitude, site.latitude = reverse.transform(site.x, site.y)
                     if ws.cancel.is_set():
-                        ws.status = {"state": "cancelled", "stage": "Optimization cancelled"}
+                        with ws.lock:
+                            stopped = ws.keep_result_on_cancel and ws.result is not None
+                            if not stopped:
+                                ws.result = None
+                                ws.snapshot_version = 0
+                            ws.status = {
+                                **ws.status,
+                                "state": "stopped" if stopped else "cancelled",
+                                "stage": (
+                                    "Stopped with the latest certified route"
+                                    if stopped
+                                    else "Optimization cancelled"
+                                ),
+                            }
                     else:
-                        ws.result = result
-                        ws.status = {
-                            "state": "complete",
-                            "stage": "Route found" if result.found else "No route found",
-                        }
+                        result.search_complete = True
+                        with ws.lock:
+                            if ws.job_id == job_id and ws.input_revision == input_revision:
+                                ws.result = result
+                                ws.snapshot_version += 1
+                                ws.status = {
+                                    **ws.status,
+                                    "state": "complete",
+                                    "stage": "Route found" if result.found else "No route found",
+                                    "snapshot_version": ws.snapshot_version,
+                                    "search_complete": True,
+                                }
             except Exception as exc:
-                ws.status = {"state": "error", "stage": str(exc)}
+                with ws.lock:
+                    if ws.job_id == job_id:
+                        ws.status = {**ws.status, "state": "failed", "stage": str(exc)}
+            finally:
+                with scheduler_lock:
+                    job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
 
-        threading.Thread(target=run, daemon=True).start()
+        scheduler.submit(run)
         return ws.status
 
     @app.post("/api/cancel")
-    def cancel(request: Request) -> Any:
-        workspace(request).cancel.set()
+    def cancel(request: Request, body: dict[str, Any] | None = None) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            if body and body.get("job_id") not in {None, ws.job_id}:
+                raise HTTPException(409, "This cancellation request refers to an older job")
+            if ws.status["state"] not in {"queued", "running"}:
+                raise HTTPException(409, "There is no active job to cancel")
+            ws.keep_result_on_cancel = False
+            ws.cancel.set()
+        return {"ok": True}
+
+    @app.post("/api/stop-and-keep")
+    def stop_and_keep(request: Request, body: dict[str, Any] | None = None) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            if body and body.get("job_id") not in {None, ws.job_id}:
+                raise HTTPException(409, "This request refers to an older job")
+            if ws.status["state"] != "running" or ws.result is None:
+                raise HTTPException(409, "A certified route is not available to keep")
+            ws.keep_result_on_cancel = True
+            ws.cancel.set()
         return {"ok": True}
 
     @app.get("/api/result")
     def result(request: Request) -> Any:
         ws = workspace(request)
-        if ws.result is None:
-            raise HTTPException(404, "No completed result")
-        result = ws.result
+        with ws.lock:
+            if ws.result is None:
+                raise HTTPException(404, "No certified route is available yet")
+            result = ws.result
+            job_id = ws.job_id
+            input_revision = ws.input_revision
+            snapshot_version = ws.snapshot_version
         sites = result.active_solution.sites if result.active_solution else result.route
         return {
             "found": result.found,
@@ -522,6 +686,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ],
             "diagnostics": result.diagnostics,
             "elapsed_seconds": result.elapsed_seconds,
+            "search_complete": result.search_complete,
+            "requested_path_count": (
+                result.active_solution.requested_path_count if result.active_solution else 1
+            ),
+            "achieved_path_count": (
+                result.active_solution.achieved_path_count if result.active_solution else 1
+            ),
+            "job_id": job_id,
+            "input_revision": input_revision,
+            "snapshot_version": snapshot_version,
             "candidates": encode(result.candidates),
         }
 

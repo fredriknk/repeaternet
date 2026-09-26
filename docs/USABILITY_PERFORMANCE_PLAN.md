@@ -1,6 +1,6 @@
 # Web usability and search performance implementation plan
 
-Created: 2026-09-26. Status: planned; implementation has not started.
+Created: 2026-09-26. Status: P0 and P1 implemented; P2–P7 remain planned.
 
 This is the next development phase after the completed
 [RF engine plan](RF_ENGINE_PLAN.md). Its milestones are independent of the
@@ -22,8 +22,8 @@ interactive comparison/editing, durable projects, and further measured speedups.
 - Starting implementation: `e5b39b7`; 78 tests pass, Ruff and mypy pass.
 - Web planning supports two endpoints, terrain uploads, optional CoreScope
   repeaters, objective/settings editing, cancellation, and plan/CSV/GeoJSON export.
-- Results are delivered at completion; the web API exposes the active alternative.
-  The engine already produces alternatives and supports required router sites.
+- The web API exposes the active alternative. P1 adds certified route snapshots
+  while a minimum-router search continues, plus final selected alternatives.
 - Browser workspaces persist uploaded terrain and submitted inputs. Results and
   active jobs are in memory; the web service currently runs in one process.
 - Desktop terrain retrieval/cache facilities exist in `terrain/kartverket.py`.
@@ -120,40 +120,54 @@ Acceptance:
 Primary areas: `tools/benchmark_rf_search.py`, `tools/profile_rf_search.py`, engine
 diagnostics and benchmark fixtures. Commit: `test: establish usability and search performance baselines`.
 
-### P1 — Early results, search presets and job snapshots [planned]
+### P1 — Early results, search presets and job snapshots [complete]
 
 Implementation:
 
-- Add a structured search callback that publishes immutable certified solution
-  snapshots. First try the sparse graph and a small, geographically distributed
-  candidate pool, then continue the configured broader search. Preserve the best
-  feasible solution under the selected objective as search progresses.
+- Add a structured callback that publishes detached, certified solution
+  snapshots. For the normal two-endpoint minimum-router objective, check a direct
+  or low-hop route before broader topology search; then continue the configured
+  search and replace the preview with the completed selected solution. Final RF
+  validation and profile availability are unchanged.
 - Keep the current thorough search available with its existing bounded-search
   guarantees. Add Quick/Balanced/Thorough effort presets separately from the
   objective. Persist resolved settings and display the actual search scope.
 - Introduce job IDs, input revisions and explicit queued/running/complete/
   stopped/cancelled/failed states. Retain the existing cancellation action; add
   "Stop and keep result" when a certified snapshot exists.
-- Extend the polling API first, with snapshot versions so unchanged profiles
-  are not repeatedly serialized. Show the current route during improvement,
-  elapsed time, phase counts and search-completeness status. Add ETA only when
-  measurable remaining work supports it; otherwise show counts and elapsed time.
+- Extend polling with job/input revisions and snapshot versions so unchanged
+  profiles are not repeatedly serialized. Show the current route, elapsed time,
+  phase counts, resolved search limits and completeness/redundancy. Do not show
+  an ETA until remaining work can be measured reliably.
 - Establish a configurable server job limit and queue; begin with one active
   optimization per server by default to bound concurrent resource use.
 
 Acceptance:
 
-- Initial synthetic targets: first certified route within 5 s at 800 candidates
-  and 10 s at 2,000 on the baseline machine when the fixture is reachable.
-  Investigate misses; do not meet targets by weakening final RF checks.
-- Thorough final results remain equivalent to existing reference cases. Quick
-  and Balanced reports explicitly identify omitted search and quality changes.
-- Stop-and-keep retains a certified route and working profiles/exports. Cancel,
-  no-result stop, worker failure, browser reconnect and obsolete-job updates have
-  defined, tested behavior. Cancellation target: under 1 s between bounded tasks;
-  measure and document any longer uninterruptible operation.
-- Snapshots cannot mutate after publication or regress the chosen objective for
-  an unchanged input revision. Required sites and redundancy remain visible.
+- At 800 sites on the baseline machine, certified-route smoke timings were
+  1.25 s (4.21 s total) for a direct scenario and 2.49 s (2.49 s total) for the
+  100 km required-chain scenario. The latter reaches its callback at completion;
+  it confirms the target but not an early-preview gain for required-chain mode.
+  RF checks were not weakened. These are one-run instrumented checks, not P0
+  repeated-run statistics.
+- Quick/Balanced resolve to at most 200/8 and 800/12 candidate/neighbor limits;
+  Thorough uses configured limits. The UI warns that narrower searches can miss
+  better routes, and the submitted plan records actual caps and selected
+  existing-router count.
+- Tests cover final-resolution snapshots, detached-snapshot mutation, API scope,
+  queued jobs, stop-and-keep with profile/export, normal cancellation clearing
+  the preview, and full-search route/export behavior. Full suite: 83 passed;
+  Ruff, mypy and JavaScript syntax checks pass.
+- Default queue is one active plus one queued job, configurable through
+  `RF_PLANNER_MAX_ACTIVE_JOBS`. Job IDs/revisions reject stale controls/results;
+  terrain updates invalidate snapshots. Browser reconnect re-fetches a retained
+  snapshot by version.
+
+Scope note: early snapshots currently cover the two-endpoint minimum-router
+low-hop path; other priorities and required-router/network cases publish once an
+exact alternative is available. Those cases do not yet stream every topology
+improvement. The 100 km required-chain smoke measured first result at completion,
+so incremental-result speed there remains a follow-up rather than a claimed win.
 
 Primary areas: `optimization/optimizer.py`, `models/network.py`, `web.py`,
 `web_assets/app.js`, `index.html`, styles and web/engine tests.

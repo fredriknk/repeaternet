@@ -238,12 +238,20 @@ def _run_optimization_case(
         last_progress = now
 
     started = time.perf_counter()
+    first_certified_seconds: float | None = None
+
+    def solution_progress(_result, search_complete: bool) -> None:
+        nonlocal first_certified_seconds
+        if first_certified_seconds is None and _result.found:
+            first_certified_seconds = time.perf_counter() - started
+
     result = optimizer.optimize(
         endpoint_a,
         endpoint_b,
         candidates=[endpoint_a, *candidates, endpoint_b],
         required_routers=required_routers,
         progress=progress,
+        solution_progress=solution_progress,
     )
     elapsed = time.perf_counter() - started
     if active_phase is not None:
@@ -274,8 +282,10 @@ def _run_optimization_case(
         "terrain_io_bytes": 0,
         "terrain_kind": "in-memory ArrayTerrain; no file I/O",
         "worker_count": settings.parallel_workers,
-        "time_to_first_certified_route_seconds": None,
-        "first_route_metric_status": "not emitted by optimizer; added with P1 snapshots",
+        "time_to_first_certified_route_seconds": (
+            round(first_certified_seconds, 3) if first_certified_seconds is not None else None
+        ),
+        "first_route_metric_status": "certified solution-progress callback",
         "diagnostics": result.diagnostics,
         "route_ids": [site.id for site in result.route],
         "route_margins_db": [link.worst_margin_db for link in result.links],
@@ -433,6 +443,7 @@ def main() -> None:
                             "rf_cache_misses",
                             "optimistic_checks",
                             "terrain_sampled_points",
+                            "time_to_first_certified_route_seconds",
                         )
                     },
                     sort_keys=True,

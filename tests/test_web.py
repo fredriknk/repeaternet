@@ -1,5 +1,6 @@
 import time
 from datetime import UTC, datetime
+from threading import Event
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
 from rf_router_planner.integrations.corescope import CoreScopeClient, CoreScopeRepeater
+from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
 from rf_router_planner.web import create_app
 
 
@@ -63,6 +65,141 @@ def test_real_route_upload_optimize_profile_export(client):
     assert client.get("/api/export/csv").text.startswith("hop,from,to")
     assert client.get("/api/export/geojson").json()["type"] == "FeatureCollection"
     assert client.get("/api/export/project").json()["a"] == a
+    revision = client.get("/api/state").json()["job"]["input_revision"]
+    assert (
+        client.post("/api/terrain/dtm", files={"file": ("replacement.tif", tile())}).status_code
+        == 200
+    )
+    assert client.get("/api/state").json()["job"]["input_revision"] == revision + 1
+    assert client.get("/api/result").status_code == 404
+
+
+def test_quick_effort_reports_resolved_search_scope(client):
+    assert (
+        client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    )
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    response = client.post(
+        "/api/optimize",
+        json={
+            "a": a,
+            "b": b,
+            "rf": {},
+            "candidates": {"maximum_candidates": 1200, "maximum_neighbors_per_site": 20},
+            "search_effort": "quick",
+        },
+    )
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert job["search_effort"] == "quick"
+    assert job["resolved_search"] == {
+        "candidate_limit": 200,
+        "requested_candidate_limit": 1200,
+        "neighbor_limit": 8,
+        "generated_candidate_limit": 200,
+        "known_router_count": 0,
+    }
+    assert job["started_at"] > 0
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_stop_or_cancel_handles_certified_snapshot(client, monkeypatch, keep):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    assert (
+        client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    )
+
+    def slow_optimize(self, endpoint_a, endpoint_b, *, solution_progress, cancelled, **_kwargs):
+        link = self.evaluator.evaluate(endpoint_a, endpoint_b, 10)
+        assert link.valid
+        snapshot = OptimizationResult(
+            [endpoint_a, endpoint_b],
+            [link],
+            [endpoint_a, endpoint_b],
+            [link],
+            search_complete=False,
+        )
+        solution_progress(snapshot, False)
+        deadline = time.monotonic() + 5
+        while not cancelled() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return snapshot
+
+    monkeypatch.setattr(RouteOptimizer, "optimize", slow_optimize)
+    submitted = client.post("/api/optimize", json={"a": a, "b": b, "rf": {}, "candidates": {}})
+    assert submitted.status_code == 200, submitted.text
+    job_id = submitted.json()["job_id"]
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["snapshot_version"]:
+            break
+        time.sleep(0.01)
+    assert job["snapshot_version"] == 1
+    action = "/api/stop-and-keep" if keep else "/api/cancel"
+    assert client.post(action, json={"job_id": job_id}).status_code == 200
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] in {"stopped", "cancelled"}:
+            break
+        time.sleep(0.01)
+    assert job["state"] == ("stopped" if keep else "cancelled")
+    result = client.get("/api/result")
+    assert result.status_code == (200 if keep else 404)
+    if keep:
+        assert result.json()["found"]
+        assert not result.json()["search_complete"]
+        assert client.get("/api/export/csv").status_code == 200
+    else:
+        assert client.get("/api/export/csv").status_code == 404
+
+
+def test_planner_queue_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    monkeypatch.setenv("RF_PLANNER_MAX_ACTIVE_JOBS", "1")
+    app = create_app(tmp_path)
+    entered = Event()
+
+    def slow_optimize(self, *_args, cancelled, **_kwargs):
+        entered.set()
+        while not cancelled():
+            time.sleep(0.005)
+        return OptimizationResult([], [], [], [])
+
+    monkeypatch.setattr(RouteOptimizer, "optimize", slow_optimize)
+    with TestClient(app) as first, TestClient(app) as second:
+        first.get("/")
+        second.get("/")
+        for client in (first, second):
+            assert (
+                client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code
+                == 200
+            )
+        reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+        a = list(reversed(reverse.transform(500100, 6650500)))
+        b = list(reversed(reverse.transform(500800, 6650500)))
+        payload = {"a": a, "b": b, "rf": {}, "candidates": {}}
+        active = first.post("/api/optimize", json=payload)
+        assert active.status_code == 200
+        assert entered.wait(2)
+        queued = second.post("/api/optimize", json=payload)
+        assert queued.status_code == 200
+        assert queued.json()["state"] == "queued"
+        assert first.get("/api/state").json()["job"]["state"] == "running"
+        first.post("/api/cancel", json={"job_id": active.json()["job_id"]})
+        second.post("/api/cancel", json={"job_id": queued.json()["job_id"]})
+        for _ in range(200):
+            states = [
+                first.get("/api/state").json()["job"]["state"],
+                second.get("/api/state").json()["job"]["state"],
+            ]
+            if states == ["cancelled", "cancelled"]:
+                break
+            time.sleep(0.01)
+        assert states == ["cancelled", "cancelled"]
 
 
 def test_meshcore_routers_can_be_selected_as_optional_candidates(client, monkeypatch):
@@ -87,8 +224,7 @@ def test_meshcore_routers_can_be_selected_as_optional_candidates(client, monkeyp
     )
     monkeypatch.setattr(CoreScopeClient, "fetch_repeaters", lambda self: [repeater, outside])
     assert (
-        client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code
-        == 200
+        client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
     )
     imported = client.post(
         "/api/meshcore",
