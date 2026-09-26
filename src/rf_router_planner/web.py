@@ -8,7 +8,7 @@ import math
 import os
 import secrets
 import threading
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -21,8 +21,9 @@ from pyproj import CRS, Transformer
 
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
+from .integrations.corescope import CoreScopeClient
 from .models.settings import CandidateSettings, RFSettings
-from .models.site import Site, SiteKind
+from .models.site import Site, SiteKind, SiteOrigin
 from .optimization.optimizer import RouteOptimizer
 from .terrain.raster import RasterTerrain
 
@@ -116,6 +117,45 @@ def validate(rf: RFSettings, candidates: CandidateSettings) -> None:
     rf.lora.snr_thresholds_db = {int(k): v for k, v in rf.lora.snr_thresholds_db.items()}
     _ = rf.effective_sensitivity_dbm
     candidates.parallel_workers = 1
+
+
+def coordinate_pair(body: dict[str, Any], key: str) -> tuple[float, float]:
+    values = body.get(key)
+    if not isinstance(values, list) or len(values) != 2:
+        raise ValueError(f"{key} must contain latitude and longitude")
+    latitude, longitude = values
+    if (
+        not isinstance(latitude, (int, float))
+        or isinstance(latitude, bool)
+        or not math.isfinite(latitude)
+        or not -90 <= latitude <= 90
+        or not isinstance(longitude, (int, float))
+        or isinstance(longitude, bool)
+        or not math.isfinite(longitude)
+        or not -180 <= longitude <= 180
+    ):
+        raise ValueError(f"Invalid {key} coordinates")
+    return float(latitude), float(longitude)
+
+
+def distance_to_segment_m(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    latitude_scale = 111_320.0
+    longitude_scale = latitude_scale * max(
+        0.1, math.cos(math.radians((start[0] + end[0]) / 2))
+    )
+    px, py = point[1] * longitude_scale, point[0] * latitude_scale
+    ax, ay = start[1] * longitude_scale, start[0] * latitude_scale
+    bx, by = end[1] * longitude_scale, end[0] * latitude_scale
+    dx, dy = bx - ax, by - ay
+    length_squared = dx * dx + dy * dy
+    if length_squared == 0:
+        return math.hypot(px - ax, py - ay)
+    fraction = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length_squared))
+    return math.hypot(px - (ax + fraction * dx), py - (ay + fraction * dy))
 
 
 class Workspace:
@@ -270,6 +310,49 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 path.unlink()
         return {"ok": True}
 
+    @app.post("/api/meshcore")
+    def meshcore(body: dict[str, Any], request: Request) -> Any:
+        workspace(request)
+        try:
+            start, end = coordinate_pair(body, "a"), coordinate_pair(body, "b")
+            corridor_width = body.get("corridor_width_m", 10_000)
+            if (
+                not isinstance(corridor_width, (int, float))
+                or isinstance(corridor_width, bool)
+                or not math.isfinite(corridor_width)
+                or not 1 <= corridor_width <= 500_000
+            ):
+                raise ValueError("Corridor width must be between 1 and 500,000 m")
+            repeaters = CoreScopeClient().fetch_repeaters()
+            nearby: list[dict[str, Any]] = []
+            for repeater in repeaters:
+                distance = distance_to_segment_m(
+                    (repeater.latitude, repeater.longitude), start, end
+                )
+                if distance > corridor_width:
+                    continue
+                nearby.append(
+                    {
+                        "id": repeater.id,
+                        "name": repeater.name,
+                        "latitude": repeater.latitude,
+                        "longitude": repeater.longitude,
+                        "corridor_distance_m": round(distance),
+                        "freshness": repeater.freshness,
+                        "last_heard": repeater.last_heard.isoformat()
+                        if repeater.last_heard
+                        else None,
+                        "relay_active": repeater.relay_active,
+                        "relay_count_24h": repeater.relay_count_24h,
+                    }
+                )
+            nearby.sort(key=lambda item: (item["corridor_distance_m"], item["name"].casefold()))
+            return {"routers": nearby, "count": len(nearby)}
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502, f"Could not load MeshCore routers from CoreScope: {exc}") from exc
+
     @app.post("/api/optimize")
     def optimize(body: dict[str, Any], request: Request) -> Any:
         ws = workspace(request)
@@ -277,15 +360,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             rf = settings(RFSettings, body.get("rf", {}))
             candidates = settings(CandidateSettings, body.get("candidates", {}))
             validate(rf, candidates)
-            for name in ("a", "b"):
-                lat, lon = body[name]
+            known_data = body.get("known_routers", [])
+            if not isinstance(known_data, list):
+                raise ValueError("known_routers must be a list")
+            if len(known_data) > candidates.maximum_candidates:
+                raise ValueError(
+                    "Select no more MeshCore routers than the Max candidates setting"
+                )
+            known_ids: set[str] = set()
+            for item in known_data:
+                if not isinstance(item, dict):
+                    raise ValueError("Each MeshCore router must be an object")
+                site_id = item.get("id")
                 if (
-                    not math.isfinite(lat)
-                    or not math.isfinite(lon)
-                    or not -90 <= lat <= 90
-                    or not -180 <= lon <= 180
+                    not isinstance(site_id, str)
+                    or not site_id.startswith("K-")
+                    or len(site_id) > 64
+                    or any(not (character.isalnum() or character in "-_") for character in site_id)
                 ):
-                    raise ValueError("Invalid endpoint coordinates")
+                    raise ValueError("Each MeshCore router needs a valid id")
+                if site_id in known_ids:
+                    raise ValueError("MeshCore router ids must be unique")
+                known_ids.add(site_id)
+                coordinate_pair(
+                    {"router": [item.get("latitude"), item.get("longitude")]}, "router"
+                )
+            for name in ("a", "b"):
+                coordinate_pair(body, name)
             if body["a"] == body["b"]:
                 raise ValueError("Place endpoints at different locations")
         except (ValueError, TypeError, KeyError) as exc:
@@ -330,6 +431,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 antenna_height_m=antenna.height_agl_m,
                             )
                         )
+                    known_sites = []
+                    for item in known_data:
+                        latitude = float(item["latitude"])
+                        longitude = float(item["longitude"])
+                        x, y = forward.transform(longitude, latitude)
+                        ground = float(terrain.sample(np.array([x]), np.array([y]))[0])
+                        if not math.isfinite(ground):
+                            raise ValueError(
+                                f"MeshCore router {item['id']} is outside terrain coverage"
+                            )
+                        surface = None
+                        if terrain.has_surface:
+                            value = float(
+                                terrain.sample(np.array([x]), np.array([y]), surface=True)[0]
+                            )
+                            surface = value if math.isfinite(value) else None
+                        known_sites.append(
+                            Site(
+                                item["id"],
+                                x,
+                                y,
+                                latitude,
+                                longitude,
+                                SiteKind.ROUTER,
+                                ground_elevation_m=ground,
+                                surface_elevation_m=surface,
+                                antenna_height_m=rf.router.height_agl_m,
+                                origin=SiteOrigin.KNOWN,
+                                locked=True,
+                            )
+                        )
 
                     def progress(stage: str, done: int, total: int) -> None:
                         ws.status = {
@@ -339,8 +471,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             "total": total,
                         }
 
-                    result = RouteOptimizer(terrain, rf, candidates).optimize(
-                        endpoints[0], endpoints[1], progress=progress, cancelled=ws.cancel.is_set
+                    search_candidates = replace(
+                        candidates,
+                        maximum_candidates=candidates.maximum_candidates - len(known_sites),
+                    )
+                    result = RouteOptimizer(terrain, rf, search_candidates).optimize(
+                        endpoints[0],
+                        endpoints[1],
+                        optional_routers=known_sites,
+                        progress=progress,
+                        cancelled=ws.cancel.is_set,
                     )
                     solution_sites = (
                         result.active_solution.sites if result.active_solution else result.route

@@ -306,6 +306,24 @@ open-ended multi-hop subset optimization. The next useful performance dataset
 should use a representative DEM and report successful route quality, peak memory
 and explored search states across increasing candidate counts.
 
+### Optional existing MeshCore routers — 2026-09-26
+
+The self-hosted web workflow can now load nearby repeaters from CoreScope,
+filtered to a configurable-width corridor around the endpoint segment. The user
+can select all or individual routers from the list or map. Selections are sent
+as optional, locked `KNOWN` router sites: they are available to the optimizer,
+but are not required and only appear in a route when they improve the selected
+objective. Generated candidates are reduced by the number selected so the
+combined candidate budget stays within `Max candidates`; selected IDs are saved
+in exported plans and restored when reopened. Router elevation is sampled from
+the loaded terrain, and out-of-coverage sites fail with a clear validation
+error.
+
+Regression coverage verifies corridor filtering, optional (not forced) solver
+behavior and plan export. CoreScope calls are mocked in tests; a live feed fetch
+was not part of this verification. This is a web-app feature and does not yet
+add the selection workflow to the desktop UI.
+
 ## Reference
 
 [ITU-R P.526-16](https://www.itu.int/rec/R-REC-P.526-16-202511-I/en),

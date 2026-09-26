@@ -1,4 +1,5 @@
 import time
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
@@ -7,6 +8,7 @@ from pyproj import Transformer
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
+from rf_router_planner.integrations.corescope import CoreScopeClient, CoreScopeRepeater
 from rf_router_planner.web import create_app
 
 
@@ -61,6 +63,62 @@ def test_real_route_upload_optimize_profile_export(client):
     assert client.get("/api/export/csv").text.startswith("hop,from,to")
     assert client.get("/api/export/geojson").json()["type"] == "FeatureCollection"
     assert client.get("/api/export/project").json()["a"] == a
+
+
+def test_meshcore_routers_can_be_selected_as_optional_candidates(client, monkeypatch):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    repeater_lat, repeater_lon = reversed(reverse.transform(500450, 6650500))
+    repeater = CoreScopeRepeater(
+        public_key="abcdef1234567890",
+        name="Midpoint MeshCore",
+        latitude=repeater_lat,
+        longitude=repeater_lon,
+        last_heard=datetime(2026, 9, 26, tzinfo=UTC),
+        relay_active=True,
+        relay_count_24h=8,
+    )
+    outside = CoreScopeRepeater(
+        public_key="outside1234567890",
+        name="Outside corridor",
+        latitude=59.93,
+        longitude=10.75,
+    )
+    monkeypatch.setattr(CoreScopeClient, "fetch_repeaters", lambda self: [repeater, outside])
+    assert (
+        client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code
+        == 200
+    )
+    imported = client.post(
+        "/api/meshcore",
+        json={"a": a, "b": b, "corridor_width_m": 500},
+    )
+    assert imported.status_code == 200, imported.text
+    assert [item["id"] for item in imported.json()["routers"]] == [repeater.id]
+
+    payload = {
+        "a": a,
+        "b": b,
+        "rf": {},
+        "candidates": {"maximum_candidates": 20, "refine_radius_m": 0},
+        "known_routers": imported.json()["routers"],
+    }
+    assert client.post("/api/optimize", json=payload).status_code == 200
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] != "running":
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete", job
+    result = client.get("/api/result").json()
+    known_site = next(site for site in result["candidates"] if site["id"] == repeater.id)
+    assert known_site["origin"] == "known"
+    assert known_site["kind"] == "router"
+    assert known_site["locked"]
+    assert not known_site["required"]
+    assert result["router_count"] == 0
+    assert client.get("/api/export/project").json()["known_routers"][0]["id"] == repeater.id
 
 
 def test_invalid_upload_and_settings(client):

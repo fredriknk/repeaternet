@@ -236,6 +236,7 @@ class RouteOptimizer:
         candidates: list[Site] | None = None,
         clients: list[Site] | None = None,
         required_routers: list[Site] | None = None,
+        optional_routers: list[Site] | None = None,
     ) -> OptimizationResult:
         started = time.perf_counter()
         notify = progress or (lambda _stage, _done, _total: None)
@@ -247,9 +248,24 @@ class RouteOptimizer:
         notify("Generating candidates", 0, 1)
         network_clients = clients or [endpoint_a, endpoint_b]
         mandatory = [site for site in (required_routers or []) if site.enabled]
+        optional = [
+            replace(site, required=False)
+            for site in (optional_routers or [])
+            if site.enabled
+            and site.kind not in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
+        ]
         network_mode = len(network_clients) > 2 or bool(mandatory)
         if candidates is not None:
-            sites = candidates
+            sites = list(candidates)
+            if optional:
+                if (
+                    len(sites) >= 2
+                    and sites[0].kind == SiteKind.ENDPOINT_A
+                    and sites[-1].kind == SiteKind.ENDPOINT_B
+                ):
+                    sites = [*sites[:-1], *optional, sites[-1]]
+                else:
+                    sites.extend(optional)
         elif network_mode:
             min_x = min(site.x for site in [*network_clients, *mandatory])
             min_y = min(site.y for site in [*network_clients, *mandatory])
@@ -267,11 +283,16 @@ class RouteOptimizer:
                 while site.id in occupied:
                     site.id = "N" + site.id
                 occupied.add(site.id)
-            sites = [*network_clients, *mandatory, *generated]
+            sites = [*network_clients, *mandatory, *generated, *optional]
         else:
             sites = generate_candidates(
                 self.terrain, endpoint_a, endpoint_b, self.candidate_settings, exclusions or []
             )
+            if optional:
+                sites = [*sites[:-1], *optional, sites[-1]]
+        site_ids = [site.id for site in sites]
+        if len(site_ids) != len(set(site_ids)):
+            raise ValueError("Site IDs must be unique, including optional routers")
         for site in sites:
             if site.kind not in {
                 SiteKind.ENDPOINT_A,

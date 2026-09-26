@@ -56,6 +56,33 @@ def test_one_mountain_uses_summit_router() -> None:
     assert result.router_count == 1
 
 
+def test_optional_known_router_is_considered_but_not_forced() -> None:
+    terrain = ArrayTerrain(np.zeros((3, 101)), resolution_m=10)
+    a, b = endpoint("A", 0), endpoint("B", 1_000)
+    known = Site(
+        "K-abcdef1234",
+        500,
+        10,
+        kind=SiteKind.ROUTER,
+        antenna_height_m=10,
+        origin=SiteOrigin.KNOWN,
+        required=True,
+        locked=True,
+    )
+
+    result = RouteOptimizer(terrain, strict_settings(), candidate_settings()).optimize(
+        a, b, optional_routers=[known]
+    )
+
+    assert result.found
+    assert result.router_count == 0
+    included = next(site for site in result.candidates if site.id == known.id)
+    assert included.origin == SiteOrigin.KNOWN
+    assert included.locked
+    assert not included.required
+    assert any(known.id in solution.router_ids for solution in result.alternatives)
+
+
 def test_two_separated_ridges_require_two_routers() -> None:
     data = np.zeros((3, 1201))
     data[:, 400] = data[:, 800] = 500
