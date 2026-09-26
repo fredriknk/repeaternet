@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from .logging_config import configure_logging
 
 
 def main(argv: list[str] | None = None) -> int:
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(description="Terrain-aware RF router placement planner")
     parser.add_argument("--debug", action="store_true", help="Enable detailed logging")
     parser.add_argument("--log-file", type=Path, help="Write logs to a file")

@@ -138,6 +138,14 @@ class RasterTerrain(TerrainSource):
                     remaining[index] = False
         return output
 
+    @property
+    def dtm_paths(self) -> list[str]:
+        return [dataset.name for dataset in self._dtm]
+
+    @property
+    def dom_paths(self) -> list[str]:
+        return [dataset.name for dataset in self._dom]
+
     def close(self) -> None:
         for dataset in getattr(self, "_dtm", []):
             dataset.close()

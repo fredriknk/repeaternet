@@ -1,7 +1,7 @@
 import numpy as np
 
 from rf_router_planner.models.settings import CandidateSettings, RFSettings, ValidationMode
-from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.optimizer import RouteOptimizer
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.candidate_sites import generate_candidates
@@ -111,3 +111,69 @@ def test_diffraction_mode_accepts_link_strict_mode_rejects() -> None:
     assert propagation_link.diffraction_loss_db > 0
     assert propagation_link.valid
     assert not strict_link.valid
+
+
+def test_multi_client_mesh_keeps_manual_router_and_exact_count_alternatives() -> None:
+    terrain = ArrayTerrain(np.zeros((101, 101)), resolution_m=100)
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A, antenna_height_m=20)
+    b = Site("B", 10_000, 0, kind=SiteKind.ENDPOINT_B, antenna_height_m=20)
+    c = Site("C3", 5_000, 8_000, kind=SiteKind.CLIENT, antenna_height_m=20)
+    manual = Site(
+        "M1",
+        5_000,
+        3_000,
+        kind=SiteKind.ROUTER,
+        antenna_height_m=20,
+        origin=SiteOrigin.MANUAL,
+        required=True,
+        locked=True,
+    )
+    optional = Site(
+        "N1", 5_000, 5_000, kind=SiteKind.CANDIDATE, antenna_height_m=20
+    )
+    candidates = [a, b, c, manual, optional]
+    settings = candidate_settings()
+    settings.maximum_solution_routers = 2
+
+    result = RouteOptimizer(terrain, strict_settings(), settings).optimize(
+        a,
+        b,
+        candidates=candidates,
+        clients=[a, b, c],
+        required_routers=[manual],
+    )
+
+    assert result.found
+    assert [solution.router_count for solution in result.alternatives] == [1, 2]
+    assert all("M1" in solution.router_ids for solution in result.alternatives)
+    assert set(result.active_solution.client_ids) == {"A", "B", "C3"}  # type: ignore[union-attr]
+    assert len(result.active_solution.links) == 6  # type: ignore[union-attr]
+
+
+def test_selected_mesh_finally_checks_all_node_pairs() -> None:
+    terrain = ArrayTerrain(np.zeros((3, 101)), resolution_m=100)
+    a = Site("A", 0, 100, kind=SiteKind.ENDPOINT_A, antenna_height_m=20)
+    b = Site("B", 10_000, 100, kind=SiteKind.ENDPOINT_B, antenna_height_m=20)
+    routers = [
+        Site(
+            f"N{index}",
+            index * 2_500,
+            100,
+            kind=SiteKind.CANDIDATE,
+            antenna_height_m=20,
+        )
+        for index in range(1, 4)
+    ]
+    settings = candidate_settings()
+    settings.maximum_solution_routers = 3
+    settings.maximum_neighbors_per_site = 1
+
+    result = RouteOptimizer(terrain, strict_settings(), settings).optimize(
+        a, b, candidates=[a, *routers, b]
+    )
+
+    three_router_solution = next(
+        solution for solution in result.alternatives if solution.router_count == 3
+    )
+    assert len(three_router_solution.sites) == 5
+    assert len(three_router_solution.links) == 10

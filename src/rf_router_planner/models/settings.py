@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+def default_cache_directory() -> str:
+    root = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache"))
+    return str(root / "RF Router Planner" / "terrain-cache")
 
 
 class ValidationMode(str, Enum):
@@ -78,7 +84,7 @@ class RFSettings:
 class TerrainSettings:
     dtm_paths: list[str] = field(default_factory=list)
     dom_paths: list[str] = field(default_factory=list)
-    cache_directory: str = str(Path.home() / ".cache" / "rf-router-planner")
+    cache_directory: str = field(default_factory=default_cache_directory)
     requested_resolution_m: float = 10.0
     auto_resolution: bool = True
     maximum_total_pixels: int = 50_000_000
@@ -99,6 +105,9 @@ class CandidateSettings:
     candidates_per_cell: int = 3
     maximum_candidates: int = 800
     maximum_neighbors_per_site: int = 16
+    maximum_solution_routers: int = 6
+    reliability_paths: int = 2
+    parallel_workers: int = 0
     coarse_sample_step_m: float = 200.0
     medium_sample_step_m: float = 50.0
     final_sample_step_m: float = 10.0

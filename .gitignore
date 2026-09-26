@@ -12,5 +12,6 @@ htmlcov/
 *.tif
 *.tiff
 cache/
+web-data/
+.env
 *.rfplan.json
-

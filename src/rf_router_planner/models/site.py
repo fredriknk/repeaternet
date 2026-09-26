@@ -7,8 +7,22 @@ from enum import Enum
 class SiteKind(str, Enum):
     ENDPOINT_A = "endpoint_a"
     ENDPOINT_B = "endpoint_b"
+    CLIENT = "client"
     ROUTER = "router"
     CANDIDATE = "candidate"
+
+
+class SiteOrigin(str, Enum):
+    """How a site entered the project.
+
+    ``OPTIMIZED`` is the backward-compatible default for generated candidate
+    sites.  Manual and known-network sites are kept distinct so the UI can
+    render them differently without overloading ``SiteKind``.
+    """
+
+    MANUAL = "manual"
+    KNOWN = "known"
+    OPTIMIZED = "optimized"
 
 
 class HeightReference(str, Enum):
@@ -31,6 +45,9 @@ class Site:
     terrain_slope: float = 0.0
     site_quality: float = 0.0
     locked: bool = False
+    origin: SiteOrigin = SiteOrigin.OPTIMIZED
+    required: bool = False
+    enabled: bool = True
 
     @property
     def obstruction_height_m(self) -> float | None:

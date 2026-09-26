@@ -1,4 +1,5 @@
 from .link import DirectionResult, LinkResult
+from .network import NetworkSolution
 from .settings import (
     AntennaSettings,
     CandidateSettings,
@@ -8,7 +9,7 @@ from .settings import (
     TerrainSettings,
     ValidationMode,
 )
-from .site import HeightReference, Site, SiteKind
+from .site import HeightReference, Site, SiteKind, SiteOrigin
 
 __all__ = [
     "AntennaSettings",
@@ -17,10 +18,12 @@ __all__ = [
     "HeightReference",
     "LinkResult",
     "LoRaSettings",
+    "NetworkSolution",
     "OptimizationPriority",
     "RFSettings",
     "Site",
     "SiteKind",
+    "SiteOrigin",
     "TerrainSettings",
     "ValidationMode",
 ]

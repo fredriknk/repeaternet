@@ -1,22 +1,75 @@
 # RF Router Planner
 
-RF Router Planner is a Python desktop engineering tool that searches for the smallest practical set of RF repeaters between two points. It combines terrain and surface elevation, bidirectional RF budgets, Fresnel clearance, Earth curvature, diffraction, antenna patterns, and graph optimization. The default preset targets EU868 LoRa / MeshCore, but all RF inputs are editable.
+## Self-hosted web app
+
+The RepeaterNet browser interface runs the existing Python RF engine on your own
+server. Start it with Docker:
+
+```sh
+docker compose up -d --build
+```
+
+Open **http://localhost:8000**. Terrain and the most recently submitted plan are
+stored in the persistent `planner-data` volume, separately for each browser.
+Results are held in memory; rerun the plan after restarting the server.
+
+For a native installation:
+
+```sh
+python -m pip install -e ".[dev]"
+python -m rf_router_planner.web
+```
+
+Use `--host 0.0.0.0 --port 8000` for LAN access. For Docker LAN access, set
+`RF_PLANNER_BIND=0.0.0.0`. Set `RF_PLANNER_TOKEN` to require a shared access token;
+use an HTTPS reverse proxy when exposing it beyond a trusted network. Run one
+server process: optimization state is managed in that process. Set
+`RF_PLANNER_DATA` to change the native data directory (default: `web-data`).
+
+1. Upload DTM GeoTIFF tiles and optional DOM tiles in the same projected CRS,
+   using metre coordinates (512 MiB maximum per tile).
+2. Click A/B and then the map, drag markers, or enter latitude/longitude.
+3. Adjust RF and antenna settings, then choose **Find repeater route**.
+4. Select a hop for its terrain/Fresnel profile and RF budget. Export CSV or
+   GeoJSON, or save a `.webplan.json` file to reopen settings and endpoints.
+
+Ground and surface tiles can be cleared separately. Clearing tiles permanently
+removes those uploaded copies from that browser's server workspace. Plan files
+do not embed terrain. Basemap tiles need internet access; uploaded terrain and
+RF calculations run locally. Browser assets, including Leaflet, are bundled.
+
+The web workflow currently covers two-endpoint planning. Desktop network editing,
+CoreScope integration, Kartverket downloads, contour generation, manual router
+editing, and desktop `.rfplan.json` projects remain available in the desktop app:
+
+```sh
+python -m pip install -e ".[desktop]"
+rf-router-planner
+```
+
+The two interfaces share the same RF and optimization engine. Qt and Matplotlib
+are optional dependencies and are not installed in the web container.
+
+RF Router Planner is a Python desktop engineering tool for designing terrain-aware RF meshes between two or more client sites. It produces the best feasible solution for each exact router count, can require planned or existing routers, and treats reliability as independent-path redundancy rather than router density. It combines terrain and surface elevation, bidirectional RF budgets, Fresnel clearance, Earth curvature, diffraction, antenna patterns, and graph optimization. The default preset targets EU868 LoRa / MeshCore, but all RF inputs are editable.
 
 > RF predictions are planning estimates. They do not replace site surveys, spectrum coordination, antenna measurements, or field link tests.
 
 ## Capabilities
 
-- Leaflet map embedded in QtWebEngine: switch between OpenStreetMap and Kartverket topo/hiking backgrounds, generate local DTM contour overlays, click or type endpoints, drag sites, inspect links, and optionally show candidate sites.
+- Leaflet map embedded in QtWebEngine: switch between OpenStreetMap and Kartverket topo/hiking backgrounds, generate local DTM contour overlays, add any number of clients and manual routers, drag sites, inspect links, and optionally show candidate sites.
 - Local tiled DTM and optional DOM GeoTIFF loading. Raster CRS, transform, resolution, nodata, and bounds are read from the files; samples are taken from raster windows rather than a nationwide in-memory mosaic.
 - Configurable Kartverket WCS retrieval for EPSG:25832, 25833, and 25835 with corridor-aware tiling, automatic resolution, estimates, pixel budgets, and disk caching.
 - DTM as ground/base elevation; DOM as the RF obstruction surface. Without DOM the UI explicitly reports `Surface obstruction data unavailable — terrain only`.
 - FSPL, effective-Earth curvature, first Fresnel zone, dominant/multiple knife-edge diffraction, bidirectional budgets, and optional elevation-pattern antenna gains.
 - RF propagation and strict LOS/Fresnel validation modes.
 - Candidate generation from a spatially thinned terrain grid using elevation, local slope, and DOM−DTM obstruction quality. The sampling grid is no coarser than the configured local-refinement radius, so useful summits are not stranded outside the later search. Search normally stays inside a configurable A–B corridor.
-- Progressive coarse/medium/final validation, an exact endpoint-frontier search for zero-, one-, and two-repeater solutions, bounded nearest-neighbor fallback for longer routes, local coordinate refinement, and optional mast-height reduction.
-- Lexicographic minimum-router routing by default. Equal-hop routes maximize bottleneck margin, then Fresnel clearance, lower mast requirement, site quality, and shorter RF distance. Alternative infrastructure and reliability priorities are isolated in `optimization/graph.py`.
-- Background optimization and Kartverket download workers with progress reporting; optimization can be cancelled.
-- Manual router add, drag, delete, lock, local re-optimization, and coordinate copying.
+- One selectable mesh alternative for every feasible exact router count: `1 router`, `2 routers`, `3 routers`, and so on up to the chosen limit.
+- Resilient-mesh mode asks for node-independent paths between every client pair and selects the smallest topology that achieves that target. It does not reward routers merely for being close together.
+- Every valid RF link between nodes in the selected topology is displayed, with thicker lines marking representative backbone paths.
+- Process-based coarse RF evaluation uses all available CPU cores by default for raster-backed searches. The process count remains adjustable under Advanced settings, and optimization can be cancelled.
+- Manual routers can be added before optimization and are required in every alternative. Known CoreScope repeaters are shown in gray and can be enabled individually.
+- Predicted coverage is calculated in the background from every selected client/router to the terrain candidate grid. Each transmitter has a distinct color and multi-transmitter overlap samples are highlighted in magenta.
+- Automatic terrain preparation reuses matching cached tiles without making the user locate cache files. Missing areas are tiled and downloaded after one clear confirmation.
 - Terrain/Fresnel plot with hover readout and transparent calculation details.
 - JSON project save/load and CSV/GeoJSON route export.
 
@@ -35,14 +88,16 @@ Or run `python -m rf_router_planner`. Use `--debug` for detailed logs and `--log
 
 ## Typical workflow
 
-1. Start the application and load one or more DTM GeoTIFF tiles. Optionally select matching DOM tiles. Alternatively, set A and B and use **Download terrain**.
-2. Use the map layer control to choose OpenStreetMap, Kartverket topo, or Kartverket hiking. **DTM contours** generates a selectable contour overlay from the loaded terrain at an interval you choose.
-3. Click **Set A** and **Set B**, then click the map. Markers remain draggable. Coordinates can also be entered on the left.
-4. Choose RF, antenna, propagation, and optimizer settings. Manual sensitivity is the default. Checking **Calculate LoRa sensitivity** uses bandwidth, spreading factor, noise figure, and the configurable threshold table.
-5. Click **Optimize**. Candidate markers are hidden unless **Show candidate sites** is enabled.
-6. For a large-area coarse search, click **Validate route detail** to download a narrow high-resolution DTM/DOM strip following the selected multi-hop route and recalculate every hop.
-7. Select a link in the table or map to inspect terrain, curvature, Fresnel boundaries, obstruction, diffraction, and budget terms.
-8. Adjust routers manually if useful, save the project, or export CSV/GeoJSON.
+1. Click **+ Client** and place at least two client sites. Repeat for C3, C4, and further clients. A and B remain the first two clients for compatibility with older projects.
+2. Optionally click **+ Router** to place planned infrastructure that every solution must use. Import CoreScope repeaters from **Tools**, then click a gray repeater and enable it if it should participate in the plan.
+3. Pick an everyday goal: **Fewest routers**, **Balanced**, or **Resilient mesh**. Choose how many exact-count alternatives to produce and, for resilient mode, how many independent paths are required.
+4. Click **Optimize**. With **Prepare terrain automatically** enabled, matching cached tiles are loaded immediately; otherwise the app proposes a tiled Kartverket download covering all planning sites.
+5. Use the solution dropdown above the result table to compare exact router counts. All viable selected-node links are visible, while the stronger lines show representative client-to-client paths.
+6. Turn on **View → Predicted coverage** to calculate colored client/router reach and highlight overlap candidates in magenta. Map layers and their colors are explained by the on-map legend.
+7. For a large-area coarse search, choose **Terrain → Validate selected network in detail** to download a narrow high-resolution DTM/DOM strip and recalculate every selected link.
+8. Select a link to inspect its terrain/Fresnel profile, then save the project or export CSV/GeoJSON.
+
+Frequently used controls stay on the toolbar and the three-step planning panel. Radio, antenna, search, terrain-download, cache, and Earth-model settings live in the expandable Advanced section. The default cache is stored under the operating system's local application-data directory and is read-only in the normal workflow.
 
 The map control, local Leaflet library, DTM contours, and planning overlays work offline. OpenStreetMap and Kartverket backgrounds are network tile layers, so an offline session displays the map canvas and local overlays without background tiles. All RF planning with local GeoTIFFs remains offline.
 
@@ -60,6 +115,12 @@ Local tiles must share one CRS. The application samples across all supplied tile
 Online service definitions are in [`config/kartverket_wcs.json`](config/kartverket_wcs.json) and in the installed package data. They were verified against the official GetCapabilities documents on 2026-08-29 and are deliberately not hardcoded in the provider. Kartverket currently publishes separate NHM DTM and DOM services for ETRS89 / UTM zones 32, 33, and 35. The provider uses WCS 1.0 GetCoverage because the current ArcGIS-backed capabilities advertise it consistently. Update the JSON if Kartverket changes endpoints or coverage identifiers. Official references: [Kartverket terrain data](https://kartverket.no/api-og-data/terrengdata), [Geonorge elevation catalog](https://kartkatalog.geonorge.no/metadata/?organizations=Kartverket&theme=H%C3%B8ydedata&type=service), and [data.norge.no service record](https://data.norge.no/en/datasets/8c62e33e-76ba-3c00-9db6-3a10e44135bc/hoydedata-laser).
 
 Downloaded rasters use content-addressed filenames and are reused on an exact request cache hit. The square-kilometre setting is a per-request tile limit, not a total-area limit. Large corridors are split into aligned tiles and tiles outside the buffered A-B corridor are skipped. Automatic mode raises the requested resolution only when necessary to fit the total pixel budget; the confirmation dialog shows tile count, effective resolution, pixel count, raw-memory estimate, and cache hits before network work begins. A practical national-scale workflow is a 25-50 m broad search followed by a 1-10 m final-route strip.
+
+## CoreScope integration
+
+**Tools → Import known CoreScope routers** reads the public CoreScope node endpoint in a background worker, filters valid Scandinavian repeater coordinates near the current project, and draws them in gray. Import is opt-in. Clicking one and choosing **Enable/disable selected known router** adds or removes it from optimization without silently modifying the plan.
+
+The integration uses CoreScope's public [`GET /api/nodes`](https://corescope.eth0.no/api/nodes) interface; its live [OpenAPI specification](https://corescope.eth0.no/api/spec) and [API documentation](https://corescope.eth0.no/api/docs) are the authoritative schema references. The CoreScope application source is GPL-3.0, but no separate dataset license was found in its published API material when this integration was written. Consequently, fetched catalog data remains session-local and only repeaters explicitly enabled by the user are stored in a project. Confirm data-use terms with the CoreScope operator before redistributing a bulk export.
 
 ## Coordinates
 
@@ -107,21 +168,23 @@ Approximate LoRa sensitivity is thermal noise (`-174 dBm/Hz`), noise bandwidth, 
 
 ## Optimizer
 
-The core problem is a graph search, not a highest-point search:
+The core problem is a constrained mesh-topology search, not a highest-point search:
 
 ```text
-terrain corridor → candidate sites → cheap geographic/RF screening
-→ endpoint-visible frontiers → exact 0/1/2-repeater search
-→ bounded candidate graph fallback for longer routes
-→ medium/final edge validation with alternate-path retry
-→ local site refinement/mast reduction
+multi-client area → candidate sites → cheap geographic/RF screening
+→ parallel coarse link evaluation → valid-link graph
+→ best connected topology for each exact router count
+→ node-independent client-path measurement
+→ medium/final validation of every selected topology edge
 ```
 
-Candidate cells retain only their best few sites, preventing one summit from dominating the graph. Endpoint pairs and endpoint-to-candidate links are always considered. Candidates visible from opposite endpoints are cross-checked explicitly, so a long summit-to-summit hop cannot be lost to the configurable nearest-neighbor cap used for longer-route fallback. Failed medium- or final-resolution edges are removed and the graph is searched again. The default objective first minimizes graph edges and therefore intermediate routers. It then compares the minimum link margin, Fresnel quality, mast metres, site quality, and total RF distance as separate tuple fields rather than collapsing them into an opaque weighted score.
+Every client and every required manual router is mandatory. Small candidate pools are enumerated exactly; large terrain-derived pools use a deterministic bounded beam search so the exact-count alternatives remain practical. Each selected topology retains all induced valid RF links, not only a shortest-path tree. Failed medium- or final-resolution edges are removed and the alternatives are solved again. The default objective selects the lowest feasible router count. Resilient mode first seeks the requested number of node-independent paths between every pair of clients, then chooses the smallest qualifying router count and breaks ties with RF margin and topology quality.
+
+Coarse terrain-profile evaluations are independent and therefore run in a `ProcessPoolExecutor` for local raster terrain. Each worker reopens the GeoTIFFs read-only, batches link jobs to reduce inter-process overhead, and returns results in deterministic input order. Small jobs and in-memory synthetic terrains stay single-process because process startup would cost more than it saves.
 
 ## Project and export formats
 
-Projects are versioned UTF-8 JSON and include endpoints, settings, terrain references, selected routers, locks, and exclusion-area geometry storage. GeoJSON contains Point features for endpoints/routers and LineString features with RF properties. CSV provides one row per hop with forward, reverse, and worst-case results.
+Projects are versioned UTF-8 JSON and include all clients, manual routers, enabled known routers, settings, terrain references, selected routers, locks, and exclusion-area geometry storage. Version-1 two-endpoint projects are migrated when loaded. GeoJSON contains Point features for all selected mesh nodes and LineString features for every viable selected-node RF link. CSV provides one row per selected link with forward, reverse, and worst-case results.
 
 ## Tests and examples
 
@@ -133,7 +196,7 @@ ruff check src tests
 mypy src/rf_router_planner --ignore-missing-imports
 ```
 
-Tests cover FSPL, Fresnel radius, Earth bulge, link budget, elevation angle and gain interpolation, knife-edge diffraction, terrain interpolation/DOM use, graph objectives, project round trips, and synthetic DEM routing:
+Tests cover FSPL, Fresnel radius, Earth bulge, link budget, elevation angle and gain interpolation, knife-edge diffraction, terrain interpolation/DOM use, graph and mesh objectives, project migration/round trips, process/sequential equivalence, CoreScope parsing/filtering, map setup, and synthetic DEM routing:
 
 - flat clear terrain → zero routers;
 - one blocking summit → one router;
@@ -164,7 +227,8 @@ The RF and optimizer packages have no Qt dependency. `ArrayTerrain` makes the co
 - Candidate generation uses terrain grid maxima/quality rather than road, ownership, power, protected-area, or access datasets. Exclusion geometry is represented in the project and honored by the generator API, but polygon drawing is not yet exposed in the first GUI.
 - Local refinement is a deterministic grid search, not continuous optimization.
 - The minimum-infrastructure objective uses a documented installation/mast proxy; real costs should be supplied by a future cost model.
-- Router edits recalculate adjacent links immediately. “Re-optimize unlocked” locally refines existing unlocked routers; it does not change their count around locked waypoints.
+- Coverage is sampled at the terrain candidate grid within the searched/downloaded region. It is an interactive RF planning overlay, not a continuous calibrated drive-test heatmap.
+- Manual routers are required waypoints. Enabled CoreScope routers are currently treated as fixed planning waypoints as well; automatic optional selection from a large imported catalog is future work.
 - Basemap tiles are not bundled. A future release could add MBTiles for a fully offline Norwegian background map.
 - WCS interoperability varies by server version. The provider targets the currently advertised Kartverket ArcGIS WCS 1.0 interface and keeps all service metadata replaceable.
 

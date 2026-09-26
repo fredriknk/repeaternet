@@ -15,9 +15,9 @@ from rf_router_planner.models.settings import (
     ValidationMode,
     dataclass_to_dict,
 )
-from rf_router_planner.models.site import HeightReference, Site, SiteKind
+from rf_router_planner.models.site import HeightReference, Site, SiteKind, SiteOrigin
 
-PROJECT_FORMAT_VERSION = 1
+PROJECT_FORMAT_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -29,6 +29,9 @@ class Project:
     terrain_settings: TerrainSettings = field(default_factory=TerrainSettings)
     candidate_settings: CandidateSettings = field(default_factory=CandidateSettings)
     exclusion_areas: list[list[tuple[float, float]]] = field(default_factory=list)
+    additional_clients: list[Site] = field(default_factory=list)
+    manual_routers: list[Site] = field(default_factory=list)
+    known_routers: list[Site] = field(default_factory=list)
 
 
 def _site_from_dict(data: dict[str, Any] | None) -> Site | None:
@@ -39,7 +42,17 @@ def _site_from_dict(data: dict[str, Any] | None) -> Site | None:
     copy["height_reference"] = HeightReference(
         copy.get("height_reference", HeightReference.GROUND_DTM.value)
     )
+    copy["origin"] = SiteOrigin(copy.get("origin", SiteOrigin.OPTIMIZED.value))
     return Site(**copy)
+
+
+def _sites_from_list(values: list[dict[str, Any]]) -> list[Site]:
+    sites: list[Site] = []
+    for value in values:
+        site = _site_from_dict(value)
+        if site is not None:
+            sites.append(site)
+    return sites
 
 
 def save_project(project: Project, path: str | Path) -> None:
@@ -53,13 +66,16 @@ def save_project(project: Project, path: str | Path) -> None:
         "terrain_settings": dataclass_to_dict(project.terrain_settings),
         "candidate_settings": dataclass_to_dict(project.candidate_settings),
         "exclusion_areas": project.exclusion_areas,
+        "additional_clients": dataclass_to_dict(project.additional_clients),
+        "manual_routers": dataclass_to_dict(project.manual_routers),
+        "known_routers": dataclass_to_dict(project.known_routers),
     }
     Path(path).write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
 def load_project(path: str | Path) -> Project:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if data.get("format") != "rf-router-planner" or data.get("version") != PROJECT_FORMAT_VERSION:
+    if data.get("format") != "rf-router-planner" or data.get("version") not in {1, 2}:
         raise ValueError("Unsupported project file")
     rf_data = data.get("rf_settings", {})
     endpoint_a_antenna = AntennaSettings(**rf_data.pop("endpoint_a", {}))
@@ -88,4 +104,7 @@ def load_project(path: str | Path) -> Project:
         TerrainSettings(**data.get("terrain_settings", {})),
         CandidateSettings(**candidate_data),
         data.get("exclusion_areas", []),
+        _sites_from_list(data.get("additional_clients", [])),
+        _sites_from_list(data.get("manual_routers", [])),
+        _sites_from_list(data.get("known_routers", [])),
     )

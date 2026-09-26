@@ -21,7 +21,8 @@ def export_route_geojson(
         return [site.x, site.y]
 
     features: list[dict[str, object]] = []
-    for site in result.route:
+    sites = result.active_solution.sites if result.active_solution else result.route
+    for site in sites:
         features.append(
             {
                 "type": "Feature",
@@ -38,7 +39,7 @@ def export_route_geojson(
                 },
             }
         )
-    by_id = {site.id: site for site in result.route}
+    by_id = {site.id: site for site in sites}
     for link in result.links:
         features.append(
             {

@@ -6,10 +6,11 @@ from threading import Event
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QStandardPaths, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QHeaderView,
     QInputDialog,
@@ -29,9 +30,17 @@ from PySide6.QtWidgets import (
 
 from rf_router_planner.coordinates import norway_utm_epsg
 from rf_router_planner.export import export_route_csv, export_route_geojson
-from rf_router_planner.models.settings import TerrainSettings
-from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.integrations import CoreScopeClient, CoreScopeRepeater
+from rf_router_planner.models.link import LinkResult
+from rf_router_planner.models.settings import (
+    CandidateSettings,
+    OptimizationPriority,
+    RFSettings,
+    TerrainSettings,
+)
+from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
+from rf_router_planner.optimization.parallel import evaluate_link_pairs
 from rf_router_planner.project import Project, load_project, save_project
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.contours import contour_geojson
@@ -55,9 +64,18 @@ class OptimizationWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, optimizer: RouteOptimizer, endpoint_a: Site, endpoint_b: Site) -> None:
+    def __init__(
+        self,
+        optimizer: RouteOptimizer,
+        endpoint_a: Site,
+        endpoint_b: Site,
+        clients: list[Site] | None = None,
+        required_routers: list[Site] | None = None,
+    ) -> None:
         super().__init__()
         self.optimizer, self.endpoint_a, self.endpoint_b = optimizer, endpoint_a, endpoint_b
+        self.clients = clients
+        self.required_routers = required_routers
         self.cancel_event = Event()
 
     @Slot()
@@ -68,6 +86,8 @@ class OptimizationWorker(QObject):
                 self.endpoint_b,
                 progress=lambda stage, done, total: self.progress.emit(stage, done, total),
                 cancelled=self.cancel_event.is_set,
+                clients=self.clients,
+                required_routers=self.required_routers,
             )
             self.finished.emit(result)
         except Exception as exc:
@@ -136,6 +156,78 @@ class TerrainDownloadWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class CoreScopeWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.finished.emit(CoreScopeClient().fetch_repeaters())
+        except Exception as exc:
+            logger.exception("CoreScope import failed")
+            self.failed.emit(str(exc))
+
+
+class CoverageWorker(QObject):
+    progress = Signal(str, int, int)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        terrain: RasterTerrain,
+        rf_settings: RFSettings,
+        candidate_settings: CandidateSettings,
+        sources: list[Site],
+        candidates: list[Site],
+    ) -> None:
+        super().__init__()
+        self.terrain = terrain
+        self.rf_settings = rf_settings
+        self.candidate_settings = candidate_settings
+        self.sources = sources
+        self.candidates = candidates
+        self.cancel_event = Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            evaluator = LinkEvaluator(self.terrain, self.rf_settings)
+            selected_ids = {site.id for site in self.sources}
+            pairs: list[tuple[Site, Site]] = []
+            maximum_distance = self.candidate_settings.maximum_link_distance_m
+            for source in self.sources:
+                for target in self.candidates:
+                    if target.id in selected_ids:
+                        continue
+                    if (
+                        maximum_distance is not None
+                        and source.distance_to(target) > maximum_distance
+                    ):
+                        continue
+                    if evaluator.optimistic_margin_db(source, target) >= 0.0:
+                        pairs.append((source, target))
+            links = evaluate_link_pairs(
+                self.terrain,
+                self.rf_settings,
+                pairs,
+                self.candidate_settings.coarse_sample_step_m,
+                workers=self.candidate_settings.parallel_workers,
+                progress=lambda done, total: self.progress.emit(
+                    "Calculating coverage", done, total
+                ),
+                cancelled=self.cancel_event.is_set,
+            )
+            self.finished.emit([link for link in links if link.valid])
+        except Exception as exc:
+            logger.exception("Coverage calculation failed")
+            self.failed.emit(str(exc))
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -146,12 +238,21 @@ class MainWindow(QMainWindow):
         self.detail_validation_note: str | None = None
         self.endpoint_a: Site | None = None
         self.endpoint_b: Site | None = None
+        self.additional_clients: list[Site] = []
+        self.manual_routers: list[Site] = []
+        self.known_repeaters: list[CoreScopeRepeater] = []
+        self.enabled_known_routers: list[Site] = []
         self.result: OptimizationResult | None = None
         self.project_path: Path | None = None
         self.worker: OptimizationWorker | None = None
         self.worker_thread: QThread | None = None
         self.download_worker: TerrainDownloadWorker | None = None
         self.download_thread: QThread | None = None
+        self.corescope_worker: CoreScopeWorker | None = None
+        self.corescope_thread: QThread | None = None
+        self.coverage_worker: CoverageWorker | None = None
+        self.coverage_thread: QThread | None = None
+        self._coverage_restart = False
         self.selected_site_id: str | None = None
         self._forward: Any | None = None
         self._reverse: Any | None = None
@@ -162,6 +263,13 @@ class MainWindow(QMainWindow):
         self.settings_panel.coordinates_applied.connect(self._coordinates_applied)
         self.settings_panel.show_candidates.toggled.connect(self._show_candidates)
         self.map_widget = MapWidget()
+        self.settings_panel.add_client_requested.connect(
+            lambda: self.map_widget.set_mode("client")
+        )
+        self.settings_panel.add_router_requested.connect(
+            lambda: self.map_widget.set_mode("router")
+        )
+        self.settings_panel.remove_site_requested.connect(self.remove_selected_site)
         self.map_widget.bridge.clicked.connect(self._map_clicked)
         self.map_widget.bridge.moved.connect(self._marker_moved)
         self.map_widget.bridge.link_selected.connect(self._link_selected)
@@ -170,9 +278,14 @@ class MainWindow(QMainWindow):
         self.results_table = self._create_results_table()
         self.summary = QLabel("Load DTM terrain, then place endpoints A and B.")
         self.summary.setWordWrap(True)
+        self.solution_selector = QComboBox()
+        self.solution_selector.setToolTip("Choose the best solution for an exact router count")
+        self.solution_selector.currentIndexChanged.connect(self._solution_changed)
+        self.solution_selector.hide()
         results_page = QWidget()
         results_layout = QVBoxLayout(results_page)
         results_layout.addWidget(self.summary)
+        results_layout.addWidget(self.solution_selector)
         results_layout.addWidget(self.results_table)
         tabs = QTabWidget()
         tabs.addTab(results_page, "Route results")
@@ -220,39 +333,57 @@ class MainWindow(QMainWindow):
         return table
 
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Project")
+        toolbar = QToolBar("Plan")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        actions = [
+        for label, callback in [
             ("New", self.new_project),
             ("Open", self.open_project),
             ("Save", self.save_project),
-            ("Save As", self.save_project_as),
-            ("Load terrain", self.load_terrain),
-            ("Download terrain", self.download_terrain),
-            ("Validate route detail", self.download_route_detail),
-            ("Set A", lambda: self.map_widget.set_mode("A")),
-            ("Set B", lambda: self.map_widget.set_mode("B")),
-            ("Add router", lambda: self.map_widget.set_mode("router")),
-            ("Delete router", self.delete_selected_router),
-            ("Lock/unlock", self.toggle_selected_lock),
-            ("Re-optimize unlocked", self.reoptimize_unlocked),
-            ("Copy coordinates", self.copy_coordinates),
-            ("DTM contours", self.toggle_dtm_contours),
-            ("Optimize", self.optimize),
-            ("Cancel", self.cancel_optimization),
-            ("Export CSV", self.export_csv),
-            ("Export GeoJSON", self.export_geojson),
-        ]
-        for label, callback in actions:
+        ]:
             action = QAction(label, self)
-            if label == "DTM contours":
-                action.setCheckable(True)
-                self.contour_action = action
             action.triggered.connect(callback)
             toolbar.addAction(action)
-            if label == "Optimize":
-                self.optimize_action = action
+        toolbar.addSeparator()
+        for label, callback in [
+            ("+ Client", lambda: self.map_widget.set_mode("client")),
+            ("+ Router", lambda: self.map_widget.set_mode("router")),
+            ("Remove", self.remove_selected_site),
+        ]:
+            action = QAction(label, self)
+            action.triggered.connect(callback)
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+        self.optimize_action = QAction("Optimize", self)
+        self.optimize_action.triggered.connect(self.optimize)
+        toolbar.addAction(self.optimize_action)
+        cancel = QAction("Cancel", self)
+        cancel.triggered.connect(self.cancel_optimization)
+        toolbar.addAction(cancel)
+
+        file_menu = self.menuBar().addMenu("File")
+        file_menu.addAction("Save As…", self.save_project_as)
+        file_menu.addSeparator()
+        file_menu.addAction("Export CSV…", self.export_csv)
+        file_menu.addAction("Export GeoJSON…", self.export_geojson)
+        terrain_menu = self.menuBar().addMenu("Terrain")
+        terrain_menu.addAction("Prepare/download automatically", self.download_terrain)
+        terrain_menu.addAction("Load local GeoTIFF…", self.load_terrain)
+        terrain_menu.addAction("Validate selected network in detail", self.download_route_detail)
+        view_menu = self.menuBar().addMenu("View")
+        self.contour_action = view_menu.addAction("DTM contours")
+        self.contour_action.setCheckable(True)
+        self.contour_action.triggered.connect(self.toggle_dtm_contours)
+        self.coverage_action = view_menu.addAction("Predicted coverage")
+        self.coverage_action.setCheckable(True)
+        self.coverage_action.triggered.connect(self.toggle_coverage)
+        tools_menu = self.menuBar().addMenu("Tools")
+        tools_menu.addAction("Import known CoreScope routers", self.import_corescope_routers)
+        tools_menu.addAction("Enable/disable selected known router", self.toggle_known_router)
+        tools_menu.addSeparator()
+        tools_menu.addAction("Lock/unlock selected", self.toggle_selected_lock)
+        tools_menu.addAction("Re-optimize unlocked", self.reoptimize_unlocked)
+        tools_menu.addAction("Copy coordinates", self.copy_coordinates)
 
     def _set_transformers(self) -> None:
         if not self.terrain:
@@ -279,6 +410,7 @@ class MainWindow(QMainWindow):
         heights = {
             SiteKind.ENDPOINT_A: rf.endpoint_a.height_agl_m,
             SiteKind.ENDPOINT_B: rf.endpoint_b.height_agl_m,
+            SiteKind.CLIENT: rf.endpoint_a.height_agl_m,
         }
         return Site(
             site_id,
@@ -291,6 +423,41 @@ class MainWindow(QMainWindow):
             surface,
             heights.get(kind, rf.router.height_agl_m),
         )
+
+    def _all_clients(self) -> list[Site]:
+        return [
+            *([self.endpoint_a] if self.endpoint_a else []),
+            *([self.endpoint_b] if self.endpoint_b else []),
+            *self.additional_clients,
+        ]
+
+    def _required_routers(self) -> list[Site]:
+        return [*self.manual_routers, *self.enabled_known_routers]
+
+    def _refresh_sites_panel(self) -> None:
+        rows: list[tuple[str, str, str]] = []
+        for site in self._all_clients():
+            rows.append((site.id, "Client", "Ready" if self.terrain else "Terrain pending"))
+        for site in self.manual_routers:
+            rows.append((site.id, "Required router", "Included in every solution"))
+        for site in self.enabled_known_routers:
+            rows.append((site.id, "CoreScope router", "Enabled"))
+        self.settings_panel.set_sites(rows)
+
+    def _add_client(self, latitude: float, longitude: float) -> None:
+        if self.endpoint_a is None:
+            self._set_endpoint("A", latitude, longitude)
+            return
+        if self.endpoint_b is None:
+            self._set_endpoint("B", latitude, longitude)
+            return
+        site_id = f"C{len(self.additional_clients) + 3}"
+        site = self._metric_site(site_id, latitude, longitude, SiteKind.CLIENT)
+        site.origin = SiteOrigin.MANUAL
+        self.additional_clients.append(site)
+        self.map_widget.set_point(site_id, latitude, longitude, role="client")
+        self._refresh_sites_panel()
+        self.progress_label.setText(f"Added client {site_id}")
 
     @Slot(float, float, float, float)
     def _coordinates_applied(self, a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> None:
@@ -305,6 +472,8 @@ class MainWindow(QMainWindow):
         try:
             if mode in {"A", "B"}:
                 self._set_endpoint(mode, latitude, longitude)
+            elif mode == "client":
+                self._add_client(latitude, longitude)
             elif mode == "router":
                 self._add_manual_router(latitude, longitude)
         except ValueError as exc:
@@ -322,6 +491,8 @@ class MainWindow(QMainWindow):
             self.settings_panel.b_lat.setValue(latitude)
             self.settings_panel.b_lon.setValue(longitude)
         self.map_widget.set_point(endpoint, latitude, longitude)
+        site.origin = SiteOrigin.MANUAL
+        self._refresh_sites_panel()
         self.progress_label.setText(f"Endpoint {endpoint}: {latitude:.6f}, {longitude:.6f}")
 
     @Slot(str, float, float)
@@ -329,6 +500,19 @@ class MainWindow(QMainWindow):
         try:
             if site_id in {"A", "B"}:
                 self._set_endpoint(site_id, latitude, longitude)
+            elif site_id in {site.id for site in [*self.additional_clients, *self.manual_routers]}:
+                collection = (
+                    self.additional_clients
+                    if any(site.id == site_id for site in self.additional_clients)
+                    else self.manual_routers
+                )
+                old = next(site for site in collection if site.id == site_id)
+                replacement = self._metric_site(site_id, latitude, longitude, old.kind)
+                replacement.origin = old.origin
+                replacement.required = old.required
+                replacement.locked = old.locked
+                collection[collection.index(old)] = replacement
+                self._refresh_sites_panel()
             elif self.result:
                 site = next((item for item in self.result.route if item.id == site_id), None)
                 if site and not site.locked:
@@ -341,11 +525,118 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _site_selected(self, site_id: str) -> None:
         self.selected_site_id = site_id
+        for row in range(self.settings_panel.sites_table.rowCount()):
+            item = self.settings_panel.sites_table.item(row, 0)
+            if item and item.text() == site_id:
+                self.settings_panel.sites_table.selectRow(row)
+                break
         self.progress_label.setText(f"Selected {site_id}")
+
+    def import_corescope_routers(self) -> None:
+        if self.corescope_thread and self.corescope_thread.isRunning():
+            return
+        self.progress_label.setText("Loading known CoreScope repeaters…")
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+        self.corescope_worker = CoreScopeWorker()
+        self.corescope_thread = QThread(self)
+        self.corescope_worker.moveToThread(self.corescope_thread)
+        self.corescope_thread.started.connect(self.corescope_worker.run)
+        self.corescope_worker.finished.connect(self._corescope_finished)
+        self.corescope_worker.failed.connect(self._corescope_failed)
+        self.corescope_worker.finished.connect(self.corescope_thread.quit)
+        self.corescope_worker.failed.connect(self.corescope_thread.quit)
+        self.corescope_thread.finished.connect(self.corescope_worker.deleteLater)
+        self.corescope_thread.finished.connect(self.corescope_thread.deleteLater)
+        self.corescope_thread.finished.connect(self._corescope_cleanup)
+        self.corescope_thread.start()
+
+    @Slot(object)
+    def _corescope_finished(self, repeaters: list[CoreScopeRepeater]) -> None:
+        self.progress_bar.hide()
+        clients = self._all_clients()
+        if clients:
+            latitudes = [site.latitude for site in clients if site.latitude is not None]
+            longitudes = [site.longitude for site in clients if site.longitude is not None]
+            if latitudes and longitudes:
+                repeaters = [
+                    item
+                    for item in repeaters
+                    if min(latitudes) - 3 <= item.latitude <= max(latitudes) + 3
+                    and min(longitudes) - 6 <= item.longitude <= max(longitudes) + 6
+                ]
+        self.known_repeaters = repeaters
+        self._render_known_routers()
+        self.progress_label.setText(
+            f"Loaded {len(repeaters)} nearby CoreScope repeaters — gray sites are disabled"
+        )
+
+    @Slot(str)
+    def _corescope_failed(self, message: str) -> None:
+        self.progress_bar.hide()
+        QMessageBox.warning(
+            self,
+            "CoreScope import",
+            "The optional CoreScope feed could not be loaded. The RF planner remains usable.\n\n"
+            + message,
+        )
+
+    @Slot()
+    def _corescope_cleanup(self) -> None:
+        self.corescope_worker = None
+        self.corescope_thread = None
+
+    def _render_known_routers(self) -> None:
+        enabled = {site.id for site in self.enabled_known_routers}
+        self.map_widget.set_known_routers(
+            [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "lat": item.latitude,
+                    "lon": item.longitude,
+                    "status": item.freshness,
+                    "enabled": item.id in enabled,
+                }
+                for item in self.known_repeaters
+            ]
+        )
+
+    def toggle_known_router(self) -> None:
+        if not self.selected_site_id:
+            return
+        repeater = next(
+            (item for item in self.known_repeaters if item.id == self.selected_site_id), None
+        )
+        if repeater is None:
+            return
+        existing = next(
+            (site for site in self.enabled_known_routers if site.id == repeater.id), None
+        )
+        if existing:
+            self.enabled_known_routers.remove(existing)
+            state = "disabled"
+        else:
+            site = self._metric_site(
+                repeater.id,
+                repeater.latitude,
+                repeater.longitude,
+                SiteKind.ROUTER,
+            )
+            site.origin = SiteOrigin.KNOWN
+            site.locked = True
+            self.enabled_known_routers.append(site)
+            state = "enabled"
+        self._render_known_routers()
+        self._refresh_sites_panel()
+        self.progress_label.setText(f"{repeater.name}: {state}")
 
     def load_terrain(self) -> None:
         dtm_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Load DTM GeoTIFF tile(s)", "", "GeoTIFF (*.tif *.tiff)"
+            self,
+            "Load DTM GeoTIFF tile(s)",
+            str(self._project_directory()),
+            "GeoTIFF (*.tif *.tiff)",
         )
         if not dtm_paths:
             return
@@ -375,6 +666,7 @@ class MainWindow(QMainWindow):
                 self._set_endpoint(
                     "B", self.endpoint_b.latitude or 0, self.endpoint_b.longitude or 0
                 )
+            self._refresh_metric_planning_sites()
             message = f"Loaded {len(dtm_paths)} DTM tile(s) in {self.terrain.crs}"
             if not self.terrain.has_surface:
                 message += " — Surface obstruction data unavailable — terrain only"
@@ -383,32 +675,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Terrain load failed", str(exc))
 
     def download_terrain(self) -> None:
-        if not self.endpoint_a or not self.endpoint_b:
-            QMessageBox.information(self, "Kartverket terrain", "Set endpoints A and B first.")
+        if len(self._all_clients()) < 2:
+            QMessageBox.information(self, "Kartverket terrain", "Add at least two clients first.")
             return
         try:
-            from pyproj import Transformer
-
-            longitude = ((self.endpoint_a.longitude or 0) + (self.endpoint_b.longitude or 0)) / 2
-            crs = f"EPSG:{norway_utm_epsg(longitude)}"
-            transform = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-            ax, ay = transform.transform(self.endpoint_a.longitude, self.endpoint_a.latitude)
-            bx, by = transform.transform(self.endpoint_b.longitude, self.endpoint_b.latitude)
-            padding = self.settings_panel.corridor.value() * 1000
-            bounds = (
-                min(ax, bx) - padding,
-                min(ay, by) - padding,
-                max(ax, bx) + padding,
-                max(ay, by) + padding,
-            )
-            services_path = Path(__file__).parents[1] / "data" / "kartverket_wcs.json"
-            provider = KartverketProvider(
-                load_services(services_path),
-                self.settings_panel.cache_directory.text(),
-                self.settings_panel.maximum_area.value(),
-                int(self.settings_panel.maximum_tile_pixels.value() * 1_000_000),
-                self.settings_panel.maximum_tiles.value(),
-            )
+            provider, crs, plan = self._terrain_download_plan()
             include_dom = (
                 QMessageBox.question(
                     self,
@@ -417,15 +688,6 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 == QMessageBox.StandardButton.Yes
-            )
-            plan = provider.plan_download(
-                bounds,
-                self.settings_panel.download_resolution.value(),
-                corridor=(ax, ay, bx, by, padding),
-                auto_resolution=self.settings_panel.auto_resolution.isChecked(),
-                maximum_total_pixels=int(
-                    self.settings_panel.maximum_total_pixels.value() * 1_000_000
-                ),
             )
             product_count = 2 if include_dom else 1
             cached = provider.cached_tile_count("dtm", crs, plan)
@@ -450,6 +712,58 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Kartverket terrain", str(exc))
 
+    def _terrain_download_plan(
+        self,
+    ) -> tuple[KartverketProvider, str, DownloadPlan]:
+        from pyproj import Transformer
+
+        sites = [*self._all_clients(), *self._required_routers()]
+        if len(self._all_clients()) < 2:
+            raise ValueError("Add at least two clients first")
+        longitude = sum(site.longitude or 0 for site in sites) / len(sites)
+        crs = f"EPSG:{norway_utm_epsg(longitude)}"
+        transform = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        points = tuple(
+            transform.transform(site.longitude, site.latitude)
+            for site in sites
+            if site.longitude is not None and site.latitude is not None
+        )
+        if len(points) < 2:
+            raise ValueError("Every client needs valid latitude and longitude")
+        padding = self.settings_panel.corridor.value() * 1000
+        xs, ys = zip(*points, strict=True)
+        bounds = (
+            min(xs) - padding,
+            min(ys) - padding,
+            max(xs) + padding,
+            max(ys) + padding,
+        )
+        services_path = Path(__file__).parents[1] / "data" / "kartverket_wcs.json"
+        provider = KartverketProvider(
+            load_services(services_path),
+            self.settings_panel.cache_directory.text(),
+            self.settings_panel.maximum_area.value(),
+            int(self.settings_panel.maximum_tile_pixels.value() * 1_000_000),
+            self.settings_panel.maximum_tiles.value(),
+        )
+        corridor_points = points
+        if (
+            self.settings_panel.priority.currentData()
+            == OptimizationPriority.MAXIMUM_RELIABILITY
+            and len(points) > 2
+        ):
+            corridor_points = (*points, points[0])
+        plan = provider.plan_download(
+            bounds,
+            self.settings_panel.download_resolution.value(),
+            corridor=RouteCorridor(corridor_points, padding),
+            auto_resolution=self.settings_panel.auto_resolution.isChecked(),
+            maximum_total_pixels=int(
+                self.settings_panel.maximum_total_pixels.value() * 1_000_000
+            ),
+        )
+        return provider, crs, plan
+
     def download_route_detail(self) -> None:
         if not self.result or not self.result.found or not self.terrain:
             QMessageBox.information(
@@ -462,7 +776,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Detailed route validation", "A download is running.")
             return
         try:
-            route_points = tuple((site.x, site.y) for site in self.result.route)
+            detail_sites = (
+                self.result.active_solution.sites
+                if self.result.active_solution
+                else self.result.route
+            )
+            route_points = tuple((site.x, site.y) for site in detail_sites)
             padding = self.settings_panel.detail_corridor.value() * 1000
             xs, ys = zip(*route_points, strict=True)
             bounds = (
@@ -561,12 +880,34 @@ class MainWindow(QMainWindow):
                 self._set_endpoint(
                     "B", self.endpoint_b.latitude or 0, self.endpoint_b.longitude or 0
                 )
+            self._refresh_metric_planning_sites()
             self.progress_label.setText(
                 f"Kartverket terrain loaded: {len(plan.tiles)} tile(s) at "
                 f"{plan.effective_resolution_m:g} m"
             )
         except Exception as exc:
             QMessageBox.critical(self, "Kartverket terrain", str(exc))
+
+    def _refresh_metric_planning_sites(self) -> None:
+        if not self.terrain:
+            return
+        for collection in (
+            self.additional_clients,
+            self.manual_routers,
+            self.enabled_known_routers,
+        ):
+            for index, old in enumerate(list(collection)):
+                if old.latitude is None or old.longitude is None:
+                    continue
+                replacement = self._metric_site(
+                    old.id, old.latitude, old.longitude, old.kind
+                )
+                replacement.origin = old.origin
+                replacement.required = old.required
+                replacement.enabled = old.enabled
+                replacement.locked = old.locked
+                collection[index] = replacement
+        self._refresh_sites_panel()
 
     @Slot(object)
     def _detail_download_finished(
@@ -579,7 +920,8 @@ class MainWindow(QMainWindow):
             dtm_paths, dom_paths, plan = payload
             self._clear_detail_terrain()
             self.detail_terrain = RasterTerrain(dtm_paths, dom_paths)
-            route = self.result.route
+            solution = self.result.active_solution
+            route = solution.sites if solution else self.result.route
             x = np.array([site.x for site in route])
             y = np.array([site.y for site in route])
             ground = self.detail_terrain.sample(x, y)
@@ -600,10 +942,20 @@ class MainWindow(QMainWindow):
                 self.detail_terrain.resolution_m,
                 self.settings_panel.candidate_settings().final_sample_step_m,
             )
-            self.result.links = [
-                evaluator.evaluate(a, b, sample_step)
-                for a, b in zip(route, route[1:], strict=False)
-            ]
+            if solution:
+                by_id = {site.id: site for site in route}
+                self.result.links = [
+                    evaluator.evaluate(
+                        by_id[link.source_id], by_id[link.target_id], sample_step
+                    )
+                    for link in solution.links
+                ]
+                solution.links = list(self.result.links)
+            else:
+                self.result.links = [
+                    evaluator.evaluate(a, b, sample_step)
+                    for a, b in zip(route, route[1:], strict=False)
+                ]
             invalid = [link for link in self.result.links if not link.valid]
             self.detail_validation_note = (
                 f"Detailed validation: {plan.effective_resolution_m:g} m DTM"
@@ -672,6 +1024,138 @@ class MainWindow(QMainWindow):
             self.map_widget.clear_contours()
             QMessageBox.critical(self, "DTM contours", str(exc))
 
+    @Slot(bool)
+    def toggle_coverage(self, checked: bool) -> None:
+        if not checked:
+            self._coverage_restart = False
+            if self.coverage_worker:
+                self.coverage_worker.cancel()
+            self.map_widget.clear_coverage()
+            self.progress_label.setText("Predicted coverage hidden")
+            return
+        if not self.result or not self.result.active_solution or not self.terrain:
+            self.coverage_action.setChecked(False)
+            QMessageBox.information(
+                self,
+                "Predicted coverage",
+                "Optimize a network first. Coverage is calculated over its terrain candidates.",
+            )
+            return
+        if self.coverage_thread and self.coverage_thread.isRunning():
+            self._coverage_restart = True
+            if self.coverage_worker:
+                self.coverage_worker.cancel()
+            return
+        self._coverage_restart = False
+        self.map_widget.clear_coverage()
+        self.progress_label.setText("Preparing coverage samples…")
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+        self.coverage_worker = CoverageWorker(
+            self.terrain,
+            self.settings_panel.rf_settings(),
+            self.settings_panel.candidate_settings(),
+            list(self.result.active_solution.sites),
+            list(self.result.candidates),
+        )
+        self.coverage_thread = QThread(self)
+        self.coverage_worker.moveToThread(self.coverage_thread)
+        self.coverage_thread.started.connect(self.coverage_worker.run)
+        self.coverage_worker.progress.connect(self._optimization_progress)
+        self.coverage_worker.finished.connect(self._coverage_finished)
+        self.coverage_worker.failed.connect(self._coverage_failed)
+        self.coverage_worker.finished.connect(self.coverage_thread.quit)
+        self.coverage_worker.failed.connect(self.coverage_thread.quit)
+        self.coverage_thread.finished.connect(self.coverage_worker.deleteLater)
+        self.coverage_thread.finished.connect(self.coverage_thread.deleteLater)
+        self.coverage_thread.finished.connect(self._coverage_cleanup)
+        self.coverage_thread.start()
+
+    @Slot(object)
+    def _coverage_finished(self, links: list[LinkResult]) -> None:
+        if not self.coverage_action.isChecked() or self._coverage_restart:
+            return
+        self.progress_bar.hide()
+        self._display_coverage_links(links)
+
+    def _display_coverage_links(self, links: list[LinkResult]) -> None:
+        if not self.result or not self.result.active_solution:
+            return
+        solution = self.result.active_solution
+        selected_ids = {site.id for site in solution.sites}
+        by_id = {site.id: site for site in self.result.candidates}
+        samples: dict[str, dict[str, object]] = {}
+        colors = ["#1976d2", "#f28c28", "#2a9d8f", "#e76f51", "#8e44ad", "#6a994e"]
+        source_colors = {
+            site.id: colors[index % len(colors)]
+            for index, site in enumerate(solution.sites)
+        }
+        for link in links:
+            if not link.valid:
+                continue
+            for source_id, target_id in (
+                (link.source_id, link.target_id),
+                (link.target_id, link.source_id),
+            ):
+                if source_id not in selected_ids or target_id in selected_ids:
+                    continue
+                target = by_id.get(target_id)
+                if target is None:
+                    continue
+                sample = samples.setdefault(
+                    target_id,
+                    {
+                        "sources": [],
+                        "margins": [],
+                        "color": source_colors[source_id],
+                        "site": target,
+                    },
+                )
+                sources = sample["sources"]
+                margins = sample["margins"]
+                if isinstance(sources, list) and source_id not in sources:
+                    sources.append(source_id)
+                if isinstance(margins, list):
+                    margins.append(link.worst_margin_db)
+        points: list[dict[str, object]] = []
+        for sample in samples.values():
+            site = sample["site"]
+            if not isinstance(site, Site):
+                continue
+            latitude, longitude = self._lat_lon(site)
+            margins = sample["margins"]
+            points.append(
+                {
+                    "lat": latitude,
+                    "lon": longitude,
+                    "sources": sample["sources"],
+                    "margin": min(margins) if isinstance(margins, list) and margins else 0,
+                    "color": sample["color"],
+                }
+            )
+        self.map_widget.set_coverage(points)
+        overlap_count = sum(len(point["sources"]) > 1 for point in points)  # type: ignore[arg-type]
+        self.progress_label.setText(
+            f"Showing {len(points)} evaluated coverage samples; "
+            f"{overlap_count} overlap candidates highlighted"
+        )
+
+    @Slot(str)
+    def _coverage_failed(self, message: str) -> None:
+        self.progress_bar.hide()
+        self.coverage_action.setChecked(False)
+        self.map_widget.clear_coverage()
+        QMessageBox.critical(self, "Coverage calculation failed", message)
+
+    @Slot()
+    def _coverage_cleanup(self) -> None:
+        restart = self._coverage_restart and self.coverage_action.isChecked()
+        self.coverage_worker = None
+        self.coverage_thread = None
+        self._coverage_restart = False
+        if restart:
+            self.toggle_coverage(True)
+
     @Slot(str)
     def _download_failed(self, message: str) -> None:
         self.progress_bar.hide()
@@ -683,12 +1167,102 @@ class MainWindow(QMainWindow):
         self.download_thread = None
 
     def optimize(self) -> None:
-        if not self.terrain or not self.endpoint_a or not self.endpoint_b:
-            QMessageBox.information(
-                self, "Optimize", "Load terrain and set endpoints A and B first."
-            )
+        clients = self._all_clients()
+        if len(clients) < 2:
+            QMessageBox.information(self, "Optimize", "Add at least two clients first.")
             return
         if self.worker_thread and self.worker_thread.isRunning():
+            return
+        if not self.terrain or not self._terrain_covers_planning_sites():
+            if self.settings_panel.auto_terrain.isChecked():
+                self._ensure_terrain_then_optimize()
+            else:
+                QMessageBox.information(
+                    self,
+                    "Optimize",
+                    "Terrain does not cover every planning site. Use Terrain → Prepare/download.",
+                )
+            return
+        self._start_optimization()
+
+    def _terrain_covers_planning_sites(self) -> bool:
+        if not self.terrain:
+            return False
+        try:
+            from pyproj import Transformer
+
+            transform = Transformer.from_crs("EPSG:4326", self.terrain.crs, always_xy=True)
+            points = [
+                transform.transform(site.longitude, site.latitude)
+                for site in [*self._all_clients(), *self._required_routers()]
+                if site.longitude is not None and site.latitude is not None
+            ]
+            if not points:
+                return False
+            x, y = zip(*points, strict=True)
+            return bool(np.all(np.isfinite(self.terrain.sample(np.asarray(x), np.asarray(y)))))
+        except Exception:
+            return False
+
+    def _ensure_terrain_then_optimize(self) -> None:
+        try:
+            provider, crs, plan = self._terrain_download_plan()
+            dtm_cached = provider.cached_tile_count("dtm", crs, plan)
+            dom_cached = provider.cached_tile_count("dom", crs, plan)
+            tile_count = len(plan.tiles)
+            if dtm_cached == tile_count and dom_cached == tile_count:
+                payload = (
+                    [
+                        str(provider.cache_path("dtm", crs, tile.bounds, plan.effective_resolution_m))
+                        for tile in plan.tiles
+                    ],
+                    [
+                        str(provider.cache_path("dom", crs, tile.bounds, plan.effective_resolution_m))
+                        for tile in plan.tiles
+                    ],
+                    plan,
+                )
+                self._download_finished(payload)
+                self.progress_label.setText(
+                    f"Loaded {tile_count} cached terrain tile(s); starting optimization…"
+                )
+                self._start_optimization()
+                return
+            missing = tile_count * 2 - dtm_cached - dom_cached
+            message = (
+                f"Terrain is missing for part of this plan. Download {missing} tile product(s) "
+                f"and then optimize?\n\n{plan.summary(2)}"
+            )
+            if (
+                QMessageBox.question(
+                    self,
+                    "Prepare terrain",
+                    message,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+            self._start_terrain_download(
+                TerrainDownloadWorker(provider, crs, plan, True),
+                self._download_finished_then_optimize,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Prepare terrain", str(exc))
+
+    @Slot(object)
+    def _download_finished_then_optimize(
+        self, payload: tuple[list[str], list[str], DownloadPlan]
+    ) -> None:
+        self._download_finished(payload)
+        if self.terrain:
+            self._start_optimization()
+
+    def _start_optimization(self) -> None:
+        if not self.terrain:
+            return
+        clients = self._all_clients()
+        if len(clients) < 2:
             return
         self._clear_detail_terrain()
         self.progress_label.setText("Starting optimization…")
@@ -696,10 +1270,18 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
         self.optimize_action.setEnabled(False)
         rf = self.settings_panel.rf_settings()
-        self.endpoint_a.antenna_height_m = rf.endpoint_a.height_agl_m
-        self.endpoint_b.antenna_height_m = rf.endpoint_b.height_agl_m
+        for index, client in enumerate(clients):
+            client.antenna_height_m = (
+                rf.endpoint_a.height_agl_m if index != 1 else rf.endpoint_b.height_agl_m
+            )
         optimizer = RouteOptimizer(self.terrain, rf, self.settings_panel.candidate_settings())
-        self.worker = OptimizationWorker(optimizer, self.endpoint_a, self.endpoint_b)
+        self.worker = OptimizationWorker(
+            optimizer,
+            clients[0],
+            clients[1],
+            clients,
+            self._required_routers(),
+        )
         self.worker_thread = QThread(self)
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
@@ -723,7 +1305,33 @@ class MainWindow(QMainWindow):
     def _optimization_finished(self, result: OptimizationResult) -> None:
         self.progress_bar.hide()
         self.result = result
+        self.solution_selector.blockSignals(True)
+        self.solution_selector.clear()
+        for solution in result.alternatives:
+            resilience = (
+                f", {solution.achieved_path_count} independent path(s)"
+                if solution.requested_path_count > 1
+                else ""
+            )
+            self.solution_selector.addItem(solution.name + resilience)
+        if result.alternatives:
+            self.solution_selector.setCurrentIndex(result.active_solution_index)
+            self.solution_selector.show()
+        else:
+            self.solution_selector.hide()
+        self.solution_selector.blockSignals(False)
         self._display_result()
+        if self.coverage_action.isChecked():
+            self.toggle_coverage(True)
+
+    @Slot(int)
+    def _solution_changed(self, index: int) -> None:
+        if not self.result or not 0 <= index < len(self.result.alternatives):
+            return
+        self.result.select_solution(index)
+        self._display_result()
+        if self.coverage_action.isChecked():
+            self.toggle_coverage(True)
 
     @Slot(str)
     def _optimization_failed(self, message: str) -> None:
@@ -749,17 +1357,29 @@ class MainWindow(QMainWindow):
             self.summary.setText("\n".join(self.result.diagnostics))
             self.progress_label.setText("No route found")
             return
+        solution = self.result.active_solution
         margins = [link.worst_margin_db for link in self.result.links]
         lengths = [link.distance_m for link in self.result.links]
         fresnel = [link.minimum_fresnel_clearance_ratio for link in self.result.links]
-        self.summary.setText(
-            "ROUTE FOUND\n"
-            f"Routers required: {self.result.router_count}  |  "
-            f"{' → '.join(site.id for site in self.result.route)}\n"
-            f"Worst margin: {min(margins):.1f} dB  |  Longest hop: {max(lengths) / 1000:.2f} km  |  "
-            f"Minimum Fresnel: {100 * min(fresnel):.0f}%  |  Total route: {sum(lengths) / 1000:.2f} km"
-            + (f"\n{self.detail_validation_note}" if self.detail_validation_note else "")
-        )
+        if solution:
+            self.summary.setText(
+                "MESH SOLUTION\n"
+                f"Clients: {len(solution.client_ids)}  |  Routers: {solution.router_count}  |  "
+                f"Independent paths: {solution.achieved_path_count}/{solution.requested_path_count}  |  "
+                f"Viable selected-node links: {len(solution.links)}\n"
+                f"Worst margin: {min(margins):.1f} dB  |  Longest link: {max(lengths) / 1000:.2f} km  |  "
+                f"Minimum Fresnel: {100 * min(fresnel):.0f}%"
+                + (f"\n{self.detail_validation_note}" if self.detail_validation_note else "")
+                + (f"\n{' '.join(solution.diagnostics)}" if solution.diagnostics else "")
+            )
+        else:
+            self.summary.setText(
+                "ROUTE FOUND\n"
+                f"Routers required: {self.result.router_count}  |  "
+                f"{' → '.join(site.id for site in self.result.route)}\n"
+                f"Worst margin: {min(margins):.1f} dB  |  Longest hop: {max(lengths) / 1000:.2f} km  |  "
+                f"Minimum Fresnel: {100 * min(fresnel):.0f}%  |  Total route: {sum(lengths) / 1000:.2f} km"
+            )
         self.results_table.setRowCount(len(self.result.links))
         for row, link in enumerate(self.result.links):
             values = [
@@ -797,13 +1417,35 @@ class MainWindow(QMainWindow):
     def _update_map_result(self) -> None:
         if not self.result or not self.result.found:
             return
+        solution = self.result.active_solution
+        displayed_sites = solution.sites if solution else self.result.route
         point_data, by_id = [], {}
-        for site in self.result.route:
+        for site in displayed_sites:
             lat, lon = self._lat_lon(site)
             by_id[site.id] = (lat, lon)
-            if site.kind == SiteKind.ROUTER:
-                point_data.append({"id": site.id, "lat": lat, "lon": lon})
-        link_data = []
+            role = (
+                "client"
+                if solution and site.id in solution.client_ids
+                else "manual"
+                if site.origin == SiteOrigin.MANUAL
+                else "known"
+                if site.origin == SiteOrigin.KNOWN
+                else "router"
+            )
+            label = site.id
+            if solution and site.id in solution.router_ids:
+                label = f"R{solution.router_ids.index(site.id) + 1}"
+            point_data.append(
+                {
+                    "id": site.id,
+                    "label": label,
+                    "lat": lat,
+                    "lon": lon,
+                    "role": role,
+                    "draggable": site.origin != SiteOrigin.KNOWN,
+                }
+            )
+        link_data: list[dict[str, object]] = []
         for index, link in enumerate(self.result.links):
             a_lat, a_lon = by_id[link.source_id]
             b_lat, b_lon = by_id[link.target_id]
@@ -828,17 +1470,33 @@ class MainWindow(QMainWindow):
                     "status": status,
                 }
             )
-        self.map_widget.set_route(point_data, link_data)
-        if self.endpoint_a:
-            self.map_widget.set_point("A", *self._lat_lon(self.endpoint_a))
-        if self.endpoint_b:
-            self.map_widget.set_point("B", *self._lat_lon(self.endpoint_b))
+        backbone_keys: set[frozenset[str]] = set()
+        if solution:
+            for paths in solution.client_paths.values():
+                for path in paths:
+                    backbone_keys.update(
+                        frozenset((left, right))
+                        for left, right in zip(path, path[1:], strict=False)
+                    )
+        backbone = [
+            item
+            for item, link in zip(link_data, self.result.links, strict=True)
+            if not solution
+            or frozenset((link.source_id, link.target_id)) in backbone_keys
+        ]
+        mesh = [item for item in link_data if item not in backbone]
+        self.map_widget.set_network(point_data, backbone, mesh)
 
     @Slot(bool)
     def _show_candidates(self, visible: bool) -> None:
         if not self.result:
             return
-        selected = {id(site) for site in self.result.route}
+        selected_sites = (
+            self.result.active_solution.sites
+            if self.result.active_solution
+            else self.result.route
+        )
+        selected = {id(site) for site in selected_sites}
         points = [
             {"id": site.id, "lat": self._lat_lon(site)[0], "lon": self._lat_lon(site)[1]}
             for site in self.result.candidates
@@ -855,31 +1513,63 @@ class MainWindow(QMainWindow):
             )
 
     def _add_manual_router(self, latitude: float, longitude: float) -> None:
-        if not self.result or not self.result.found or not self.terrain:
-            QMessageBox.information(
-                self, "Manual router", "Run an optimization before adding a router."
-            )
+        site_id = f"M{len(self.manual_routers) + 1}"
+        site = self._metric_site(site_id, latitude, longitude, SiteKind.ROUTER)
+        site.origin = SiteOrigin.MANUAL
+        site.required = True
+        site.locked = True
+        self.manual_routers.append(site)
+        self.map_widget.set_point(site_id, latitude, longitude, role="manual")
+        self._refresh_sites_panel()
+        self.progress_label.setText(f"Added required router {site_id}; optimize to include it")
+
+    def remove_selected_site(self) -> None:
+        site_id = self.selected_site_id or self.settings_panel.selected_site_id()
+        if not site_id:
             return
-        result = self.result
-        site = self._metric_site("manual", latitude, longitude, SiteKind.ROUTER)
+        if site_id == "A":
+            self.endpoint_a = None
+        elif site_id == "B":
+            self.endpoint_b = None
+        else:
+            for collection in (
+                self.additional_clients,
+                self.manual_routers,
+                self.enabled_known_routers,
+            ):
+                collection[:] = [site for site in collection if site.id != site_id]
+        self.selected_site_id = None
+        self.result = None
+        self._redraw_planning_sites()
+        self._refresh_sites_panel()
 
-        def segment_distance(index: int) -> float:
-            a, b = result.route[index], result.route[index + 1]
-            dx, dy = b.x - a.x, b.y - a.y
-            t = max(
-                0.0,
-                min(
-                    1.0, ((site.x - a.x) * dx + (site.y - a.y) * dy) / max(dx * dx + dy * dy, 1e-9)
-                ),
-            )
-            return ((site.x - (a.x + t * dx)) ** 2 + (site.y - (a.y + t * dy)) ** 2) ** 0.5
-
-        position = min(range(len(result.route) - 1), key=segment_distance) + 1
-        result.route.insert(position, site)
-        self._rename_routers()
-        self._recalculate_manual_route()
+    def _redraw_planning_sites(self) -> None:
+        self.map_widget.clear()
+        for site in self._all_clients():
+            if site.latitude is not None and site.longitude is not None:
+                self.map_widget.set_point(
+                    site.id, site.latitude, site.longitude, role="client"
+                )
+        for site in self.manual_routers:
+            if site.latitude is not None and site.longitude is not None:
+                self.map_widget.set_point(
+                    site.id, site.latitude, site.longitude, role="manual"
+                )
+        for site in self.enabled_known_routers:
+            if site.latitude is not None and site.longitude is not None:
+                self.map_widget.set_point(
+                    site.id,
+                    site.latitude,
+                    site.longitude,
+                    False,
+                    "known",
+                )
+        self._render_known_routers()
 
     def delete_selected_router(self) -> None:
+        if any(site.id == self.selected_site_id for site in self.manual_routers):
+            self.remove_selected_site()
+            return
         if not self.result or not self.selected_site_id:
             return
         site = next((item for item in self.result.route if item.id == self.selected_site_id), None)
@@ -955,10 +1645,16 @@ class MainWindow(QMainWindow):
         self._clear_detail_terrain()
         self._clear_dtm_contours()
         self.endpoint_a = self.endpoint_b = None
+        self.additional_clients.clear()
+        self.manual_routers.clear()
+        self.enabled_known_routers.clear()
+        self.known_repeaters.clear()
         self.result, self.project_path = None, None
         self.map_widget.clear()
         self.results_table.setRowCount(0)
-        self.summary.setText("Load DTM terrain, then place endpoints A and B.")
+        self.solution_selector.hide()
+        self._refresh_sites_panel()
+        self.summary.setText("Add two or more clients, then click Optimize.")
 
     def _current_project(self) -> Project:
         terrain_settings = TerrainSettings(
@@ -977,13 +1673,27 @@ class MainWindow(QMainWindow):
         if self.terrain:
             terrain_settings.dtm_paths = [dataset.name for dataset in self.terrain._dtm]
             terrain_settings.dom_paths = [dataset.name for dataset in self.terrain._dom]
+        selected_optimized: list[Site] = []
+        if self.result and self.result.active_solution:
+            selected_optimized = [
+                site
+                for site in self.result.active_solution.sites
+                if site.id in self.result.active_solution.router_ids
+                and site.origin == SiteOrigin.OPTIMIZED
+            ]
+        elif self.result and self.result.found:
+            selected_optimized = self.result.route[1:-1]
         return Project(
             self.endpoint_a,
             self.endpoint_b,
-            self.result.route[1:-1] if self.result and self.result.found else [],
+            selected_optimized,
             self.settings_panel.rf_settings(),
             terrain_settings,
             self.settings_panel.candidate_settings(),
+            [],
+            list(self.additional_clients),
+            list(self.manual_routers),
+            list(self.enabled_known_routers),
         )
 
     def save_project(self) -> None:
@@ -994,14 +1704,22 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Saved {self.project_path.name}")
 
     def save_project_as(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save project", "", "RF plan (*.rfplan.json)")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save project",
+            str(self._project_directory() / "Untitled.rfplan.json"),
+            "RF plan (*.rfplan.json)",
+        )
         if path:
             self.project_path = Path(path)
             self.save_project()
 
     def open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open project", "", "RF plan (*.rfplan.json *.json)"
+            self,
+            "Open project",
+            str(self._project_directory()),
+            "RF plan (*.rfplan.json *.json)",
         )
         if not path:
             return
@@ -1035,25 +1753,59 @@ class MainWindow(QMainWindow):
             )
             self._clear_detail_terrain()
             self._clear_dtm_contours()
+            self.map_widget.clear()
+            self.result = None
+            self.results_table.setRowCount(0)
+            self.solution_selector.hide()
+            self.additional_clients = list(project.additional_clients)
+            self.manual_routers = list(project.manual_routers)
+            self.enabled_known_routers = list(project.known_routers)
+            if self.terrain:
+                self.terrain.close()
+                self.terrain = None
             if project.terrain_settings.dtm_paths:
-                if self.terrain:
-                    self.terrain.close()
                 self.terrain = RasterTerrain(
                     project.terrain_settings.dtm_paths, project.terrain_settings.dom_paths
                 )
                 self._set_transformers()
             self.endpoint_a, self.endpoint_b = project.endpoint_a, project.endpoint_b
-            for site in [self.endpoint_a, self.endpoint_b]:
+            for site in self._all_clients():
                 if site and site.latitude is not None and site.longitude is not None:
-                    self.map_widget.set_point(site.id, site.latitude, site.longitude)
+                    self.map_widget.set_point(
+                        site.id, site.latitude, site.longitude, role="client"
+                    )
+            for site in self.manual_routers:
+                if site.latitude is not None and site.longitude is not None:
+                    self.map_widget.set_point(
+                        site.id, site.latitude, site.longitude, role="manual"
+                    )
+            for site in self.enabled_known_routers:
+                if site.latitude is not None and site.longitude is not None:
+                    self.map_widget.set_point(
+                        site.id,
+                        site.latitude,
+                        site.longitude,
+                        False,
+                        "known",
+                    )
             if self.terrain and self.endpoint_a and self.endpoint_b and project.selected_routers:
                 route = [self.endpoint_a, *project.selected_routers, self.endpoint_b]
                 self.result = OptimizationResult(route, [], route, [], elapsed_seconds=0)
                 self._rename_routers()
                 self._recalculate_manual_route()
+            self._refresh_sites_panel()
             self.progress_label.setText(f"Opened {self.project_path.name}")
         except Exception as exc:
             QMessageBox.critical(self, "Open project", str(exc))
+
+    @staticmethod
+    def _project_directory() -> Path:
+        documents = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DocumentsLocation
+        )
+        directory = Path(documents or Path.home()) / "RF Router Planner"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
 
     def export_csv(self) -> None:
         if self.result and self.result.found:
@@ -1073,9 +1825,20 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self.cancel_optimization()
+        if self.coverage_worker:
+            self.coverage_worker.cancel()
         if self.worker_thread and self.worker_thread.isRunning():
             self.worker_thread.quit()
             self.worker_thread.wait(2000)
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.quit()
+            self.download_thread.wait(2000)
+        if self.corescope_thread and self.corescope_thread.isRunning():
+            self.corescope_thread.quit()
+            self.corescope_thread.wait(2000)
+        if self.coverage_thread and self.coverage_thread.isRunning():
+            self.coverage_thread.quit()
+            self.coverage_thread.wait(2000)
         if self.terrain:
             self.terrain.close()
         self._clear_detail_terrain()

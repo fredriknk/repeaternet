@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import logging
 import time
 from collections.abc import Callable
@@ -8,6 +9,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from rf_router_planner.models.link import LinkResult
+from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.settings import CandidateSettings, OptimizationPriority, RFSettings
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.rf.propagation import LinkEvaluator
@@ -15,6 +17,8 @@ from rf_router_planner.terrain.candidate_sites import generate_candidates
 from rf_router_planner.terrain.raster import TerrainSource
 
 from .graph import build_graph, select_path
+from .parallel import evaluate_link_pairs
+from .topology import select_active_solution_index, solve_topologies
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +31,47 @@ class OptimizationResult:
     all_valid_links: list[LinkResult]
     diagnostics: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
+    alternatives: list[NetworkSolution] = field(default_factory=list)
+    active_solution_index: int = 0
 
     @property
     def found(self) -> bool:
-        return bool(self.route)
+        return bool(self.route or self.alternatives)
 
     @property
     def router_count(self) -> int:
+        if self.active_solution is not None:
+            return self.active_solution.router_count
         return max(0, len(self.route) - 2)
+
+    @property
+    def active_solution(self) -> NetworkSolution | None:
+        if not self.alternatives:
+            return None
+        if not 0 <= self.active_solution_index < len(self.alternatives):
+            return None
+        return self.alternatives[self.active_solution_index]
+
+    def select_solution(self, index: int) -> NetworkSolution:
+        """Activate an alternative while keeping legacy route fields useful."""
+        if not 0 <= index < len(self.alternatives):
+            raise IndexError("Solution index out of range")
+        self.active_solution_index = index
+        solution = self.alternatives[index]
+        self.route = solution.primary_route
+        self.links = list(solution.links)
+        return solution
 
 
 ProgressCallback = Callable[[str, int, int], None]
 CancelCallback = Callable[[], bool]
 
 
-def screening_pair_indices(sites: list[Site], neighbor_limit: int) -> list[tuple[int, int]]:
+def screening_pair_indices(
+    sites: list[Site],
+    neighbor_limit: int,
+    terminal_indices: set[int] | None = None,
+) -> list[tuple[int, int]]:
     """Return a bounded, spatially connected set of candidate link indices.
 
     A direct endpoint pair and every endpoint-to-candidate pair are retained.
@@ -52,11 +82,15 @@ def screening_pair_indices(sites: list[Site], neighbor_limit: int) -> list[tuple
     if len(sites) < 2:
         return []
     limit = max(1, neighbor_limit)
-    last = len(sites) - 1
-    allowed: set[tuple[int, int]] = {(0, last)}
-    for candidate in range(1, last):
-        allowed.add((0, candidate))
-        allowed.add((candidate, last))
+    terminals = terminal_indices or {0, len(sites) - 1}
+    allowed: set[tuple[int, int]] = {
+        (min(left, right), max(left, right))
+        for left, right in itertools.combinations(sorted(terminals), 2)
+    }
+    for terminal in terminals:
+        for candidate in range(len(sites)):
+            if candidate != terminal:
+                allowed.add((min(terminal, candidate), max(terminal, candidate)))
     for i, source in enumerate(sites):
         nearest = sorted(
             ((source.distance_to(target), j) for j, target in enumerate(sites) if j != i),
@@ -203,60 +237,64 @@ class RouteOptimizer:
         progress: ProgressCallback | None = None,
         cancelled: CancelCallback | None = None,
         candidates: list[Site] | None = None,
+        clients: list[Site] | None = None,
+        required_routers: list[Site] | None = None,
     ) -> OptimizationResult:
         started = time.perf_counter()
         notify = progress or (lambda _stage, _done, _total: None)
         is_cancelled = cancelled or (lambda: False)
         notify("Generating candidates", 0, 1)
-        sites = candidates or generate_candidates(
-            self.terrain, endpoint_a, endpoint_b, self.candidate_settings, exclusions or []
+        network_clients = clients or [endpoint_a, endpoint_b]
+        mandatory = [site for site in (required_routers or []) if site.enabled]
+        network_mode = len(network_clients) > 2 or bool(mandatory)
+        if candidates is not None:
+            sites = candidates
+        elif network_mode:
+            min_x = min(site.x for site in [*network_clients, *mandatory])
+            min_y = min(site.y for site in [*network_clients, *mandatory])
+            max_x = max(site.x for site in [*network_clients, *mandatory])
+            max_y = max(site.y for site in [*network_clients, *mandatory])
+            anchor_a = replace(network_clients[0], x=min_x, y=min_y)
+            anchor_b = replace(network_clients[-1], x=max_x, y=max_y)
+            candidate_settings = replace(
+                self.candidate_settings, unrestricted_bounding_area=True
+            )
+            generated = generate_candidates(
+                self.terrain, anchor_a, anchor_b, candidate_settings, exclusions or []
+            )[1:-1]
+            occupied = {site.id for site in [*network_clients, *mandatory]}
+            for index, site in enumerate(generated, 1):
+                site.id = f"N{index}"
+                while site.id in occupied:
+                    site.id = "N" + site.id
+                occupied.add(site.id)
+            sites = [*network_clients, *mandatory, *generated]
+        else:
+            sites = generate_candidates(
+                self.terrain, endpoint_a, endpoint_b, self.candidate_settings, exclusions or []
         )
         for site in sites:
-            if site.kind not in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B}:
+            if site.kind not in {
+                SiteKind.ENDPOINT_A,
+                SiteKind.ENDPOINT_B,
+                SiteKind.CLIENT,
+            }:
                 site.antenna_height_m = (
                     self.candidate_settings.maximum_router_height_m
                     if self.candidate_settings.optimize_heights
                     else self.rf_settings.router.height_agl_m
                 )
-        notify(f"{len(sites) - 2} candidate sites", 1, 1)
-        if self.candidate_settings.priority != OptimizationPriority.MAXIMUM_RELIABILITY:
-            low_hop = self._find_low_hop_route(sites, notify, is_cancelled)
-            if is_cancelled():
-                return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
-            if low_hop is not None:
-                low_hop_route, validated_links = low_hop
-                if self.candidate_settings.optimize_heights:
-                    self._reduce_mast_heights(low_hop_route)
-                for index, site in enumerate(low_hop_route[1:-1], 1):
-                    site.kind = SiteKind.ROUTER
-                    site.id = f"R{index}"
-                low_hop_links = [
-                    self.evaluator.evaluate(
-                        source,
-                        target,
-                        self.candidate_settings.final_sample_step_m,
-                    )
-                    for source, target in zip(
-                        low_hop_route, low_hop_route[1:], strict=False
-                    )
-                ]
-                if all(link.valid for link in low_hop_links):
-                    logger.info(
-                        "Selected exact low-hop route %s in %.2fs",
-                        " -> ".join(site.id for site in low_hop_route),
-                        time.perf_counter() - started,
-                    )
-                    return OptimizationResult(
-                        low_hop_route,
-                        low_hop_links,
-                        sites,
-                        validated_links,
-                        [],
-                        time.perf_counter() - started,
-                    )
+        candidate_count = sum(site.kind == SiteKind.CANDIDATE for site in sites)
+        notify(f"{candidate_count} candidate sites", 1, 1)
         plausible: list[tuple[Site, Site]] = []
         neighbor_limit = max(1, self.candidate_settings.maximum_neighbors_per_site)
-        allowed_pairs = screening_pair_indices(sites, neighbor_limit)
+        terminal_indices = {
+            index
+            for index, site in enumerate(sites)
+            if site.kind in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
+            or site.required
+        }
+        allowed_pairs = screening_pair_indices(sites, neighbor_limit, terminal_indices)
         total_pairs = len(allowed_pairs)
         notify("Screening possible links", 0, total_pairs)
         maximum_distance = self.candidate_settings.maximum_link_distance_m
@@ -275,18 +313,167 @@ class RouteOptimizer:
         links: list[LinkResult] = []
         failures: list[LinkResult] = []
         notify("Evaluating RF links", 0, len(plausible))
-        for index, (source, target) in enumerate(plausible, 1):
-            if is_cancelled():
-                return OptimizationResult([], [], sites, links, ["Optimization cancelled"])
-            try:
-                link = self.evaluator.evaluate(
-                    source, target, self.candidate_settings.coarse_sample_step_m
-                )
-            except ValueError:
-                continue
-            (links if link.valid else failures).append(link)
-            if index % 20 == 0 or index == len(plausible):
-                notify("Evaluating RF links", index, len(plausible))
+        evaluated = evaluate_link_pairs(
+            self.terrain,
+            self.rf_settings,
+            plausible,
+            self.candidate_settings.coarse_sample_step_m,
+            workers=self.candidate_settings.parallel_workers,
+            progress=lambda done, total: notify("Evaluating RF links", done, total),
+            cancelled=is_cancelled,
+        )
+        if is_cancelled():
+            return OptimizationResult([], [], sites, links, ["Optimization cancelled"])
+        links.extend(link for link in evaluated if link.valid)
+        failures.extend(link for link in evaluated if not link.valid)
+        link_by_key = {
+            frozenset((link.source_id, link.target_id)): link for link in links
+        }
+        validated_keys: set[frozenset[str]] = set()
+        alternatives: list[NetworkSolution] = []
+        validation_rounds = max(
+            8, self.candidate_settings.maximum_solution_routers * 4 + 4
+        )
+        for _round in range(validation_rounds):
+            alternatives = solve_topologies(
+                sites,
+                list(link_by_key.values()),
+                self.candidate_settings,
+            )
+            if not alternatives:
+                break
+            # The coarse graph is deliberately sparse.  Once a subset has been
+            # selected, test every node pair so the displayed mesh contains all
+            # RF links that can actually communicate, not only search edges.
+            selected_edges = {
+                frozenset((left.id, right.id))
+                for solution in alternatives
+                for left, right in itertools.combinations(solution.sites, 2)
+            }
+            pending = sorted(
+                selected_edges - validated_keys,
+                key=lambda key: tuple(sorted(key)),
+            )
+            if not pending:
+                break
+            notify("Validating solution alternatives", 0, len(pending))
+            by_id = {site.id: site for site in sites}
+            for number, key in enumerate(pending, 1):
+                left_id, right_id = sorted(key)
+                final: LinkResult | None = None
+                try:
+                    left, right = by_id[left_id], by_id[right_id]
+                    too_far = (
+                        maximum_distance is not None
+                        and left.distance_to(right) > maximum_distance
+                    )
+                    if not too_far and self.evaluator.optimistic_margin_db(left, right) >= 0:
+                        medium = self.evaluator.evaluate(
+                            left,
+                            right,
+                            self.candidate_settings.medium_sample_step_m,
+                        )
+                    else:
+                        medium = None
+                    if medium is not None and medium.valid:
+                        candidate = self.evaluator.evaluate(
+                            left,
+                            right,
+                            self.candidate_settings.final_sample_step_m,
+                        )
+                        final = candidate if candidate.valid else None
+                except ValueError:
+                    final = None
+                validated_keys.add(key)
+                if final is None:
+                    link_by_key.pop(key, None)
+                else:
+                    link_by_key[key] = final
+                notify("Validating solution alternatives", number, len(pending))
+        alternatives = solve_topologies(
+            sites,
+            list(link_by_key.values()),
+            self.candidate_settings,
+        )
+        if alternatives:
+            active_index = select_active_solution_index(
+                alternatives, self.candidate_settings.priority
+            )
+            active = alternatives[active_index]
+            logger.info(
+                "Selected %s with %d independent path(s) in %.2fs",
+                active.name,
+                active.achieved_path_count,
+                time.perf_counter() - started,
+            )
+            return OptimizationResult(
+                active.primary_route,
+                list(active.links),
+                sites,
+                list(link_by_key.values()),
+                list(active.diagnostics),
+                time.perf_counter() - started,
+                alternatives,
+                active_index,
+            )
+        if (
+            not network_mode
+            and self.candidate_settings.priority != OptimizationPriority.MAXIMUM_RELIABILITY
+        ):
+            notify("Checking long summit alternatives", 0, 1)
+            low_hop = self._find_low_hop_route(sites, notify, is_cancelled)
+            if low_hop is not None:
+                fallback_route, fallback_links = low_hop
+                router_ids = [site.id for site in fallback_route[1:-1]]
+                if len(router_ids) <= self.candidate_settings.maximum_solution_routers:
+                    solution = NetworkSolution(
+                        name=f"{len(router_ids)} router"
+                        + ("s" if len(router_ids) != 1 else ""),
+                        sites=list(fallback_route),
+                        links=list(fallback_links),
+                        client_ids=[endpoint_a.id, endpoint_b.id],
+                        router_ids=router_ids,
+                        client_paths={
+                            (endpoint_a.id, endpoint_b.id): [
+                                [site.id for site in fallback_route]
+                            ]
+                        },
+                        requested_path_count=1,
+                        achieved_path_count=1,
+                        diagnostics=[
+                            "Long summit links were used after the local mesh graph was disconnected."
+                        ],
+                    )
+                    return OptimizationResult(
+                        fallback_route,
+                        list(fallback_links),
+                        sites,
+                        [*link_by_key.values(), *fallback_links],
+                        list(solution.diagnostics),
+                        time.perf_counter() - started,
+                        [solution],
+                        0,
+                    )
+        required_names = ", ".join(site.id for site in mandatory)
+        diagnostics = [
+            "No connected mesh was found within the configured router-count limit."
+        ]
+        if required_names:
+            diagnostics.append(f"Required routers checked: {required_names}")
+        diagnostics.append(
+            "Try showing more router-count solutions, widening the corridor, or increasing candidate density."
+        )
+        return OptimizationResult(
+            [],
+            [],
+            sites,
+            list(link_by_key.values()),
+            diagnostics,
+            time.perf_counter() - started,
+        )
+
+        # Legacy single-route code is intentionally retained below for project
+        # compatibility while network solutions replace it in the GUI.
         notify("Building graph", len(links), len(plausible))
         graph = build_graph(sites, links)
         notify("Finding minimum router path", 0, 1)

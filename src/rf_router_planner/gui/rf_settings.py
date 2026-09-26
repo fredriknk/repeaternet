@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -14,6 +15,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolBox,
     QVBoxLayout,
     QWidget,
 )
@@ -23,6 +27,7 @@ from rf_router_planner.models.settings import (
     OptimizationPriority,
     RFSettings,
     ValidationMode,
+    default_cache_directory,
 )
 
 
@@ -40,20 +45,97 @@ def _spin(
 
 class SettingsPanel(QScrollArea):
     coordinates_applied = Signal(float, float, float, float)
+    add_client_requested = Signal()
+    add_router_requested = Signal()
+    remove_site_requested = Signal()
 
     def __init__(self, parent=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(parent)
         self.setWidgetResizable(True)
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.addWidget(self._coordinates_group())
-        layout.addWidget(self._terrain_group())
-        layout.addWidget(self._radio_group())
-        layout.addWidget(self._antenna_group())
-        layout.addWidget(self._propagation_group())
-        layout.addWidget(self._optimization_group())
+        layout.addWidget(self._workflow_group())
+        layout.addWidget(self._planning_group())
+        details = QToolBox()
+        details.addItem(self._radio_group(), "Radio and antennas")
+        details.addItem(self._antenna_group(), "Antenna details")
+        details.addItem(self._optimization_group(), "Search details")
+        details.addItem(self._propagation_group(), "Advanced physics")
+        details.addItem(self._terrain_group(), "Terrain and cache (advanced)")
+        details.addItem(self._coordinates_group(), "Legacy A-B coordinate entry")
+        layout.addWidget(details)
         layout.addStretch()
         self.setWidget(body)
+
+    def _workflow_group(self) -> QGroupBox:
+        group = QGroupBox("Plan")
+        layout = QVBoxLayout(group)
+        help_text = QLabel(
+            "1. Add two or more clients\n"
+            "2. Add any required router locations\n"
+            "3. Click Optimize — cached terrain is reused automatically"
+        )
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+        buttons = QHBoxLayout()
+        add_client = QPushButton("+ Client")
+        add_client.setToolTip("Click, then place a client on the map")
+        add_client.clicked.connect(self.add_client_requested.emit)
+        add_router = QPushButton("+ Required router")
+        add_router.setToolTip("Click, then place a router every solution must include")
+        add_router.clicked.connect(self.add_router_requested.emit)
+        remove = QPushButton("Remove")
+        remove.clicked.connect(self.remove_site_requested.emit)
+        buttons.addWidget(add_client)
+        buttons.addWidget(add_router)
+        buttons.addWidget(remove)
+        layout.addLayout(buttons)
+        self.sites_table = QTableWidget(0, 3)
+        self.sites_table.setHorizontalHeaderLabels(["Site", "Role", "Status"])
+        self.sites_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.sites_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.sites_table.setMaximumHeight(150)
+        layout.addWidget(self.sites_table)
+        return group
+
+    def set_sites(self, sites: list[tuple[str, str, str]]) -> None:
+        self.sites_table.setRowCount(len(sites))
+        for row, values in enumerate(sites):
+            for column, value in enumerate(values):
+                self.sites_table.setItem(row, column, QTableWidgetItem(value))
+
+    def selected_site_id(self) -> str | None:
+        rows = self.sites_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.sites_table.item(rows[0].row(), 0)
+        return item.text() if item else None
+
+    def _planning_group(self) -> QGroupBox:
+        group = QGroupBox("Everyday planning")
+        form = QFormLayout(group)
+        self.priority = QComboBox()
+        for label, value in [
+            ("Fewest routers", OptimizationPriority.MINIMUM_ROUTERS),
+            ("Balanced infrastructure", OptimizationPriority.MINIMUM_INFRASTRUCTURE),
+            ("Resilient mesh (independent paths)", OptimizationPriority.MAXIMUM_RELIABILITY),
+        ]:
+            self.priority.addItem(label, value)
+        self.corridor = _spin(0.1, 100, 10, " km")
+        self.max_solution_routers = QSpinBox()
+        self.max_solution_routers.setRange(0, 20)
+        self.max_solution_routers.setValue(4)
+        self.reliability_paths = QSpinBox()
+        self.reliability_paths.setRange(1, 4)
+        self.reliability_paths.setValue(2)
+        self.auto_terrain = QCheckBox("Prepare terrain automatically when optimizing")
+        self.auto_terrain.setChecked(True)
+        form.addRow("Goal", self.priority)
+        form.addRow("Search corridor each side", self.corridor)
+        form.addRow("Show solutions through", self.max_solution_routers)
+        form.addRow("Independent paths", self.reliability_paths)
+        form.addRow(self.auto_terrain)
+        return group
 
     def _coordinates_group(self) -> QGroupBox:
         group = QGroupBox("Coordinates")
@@ -78,10 +160,10 @@ class SettingsPanel(QScrollArea):
     def _terrain_group(self) -> QGroupBox:
         group = QGroupBox("Terrain data")
         form = QFormLayout(group)
-        self.cache_directory = QLineEdit(
-            str(__import__("pathlib").Path.home() / ".cache" / "rf-router-planner")
-        )
-        browse = QPushButton("…")
+        self.cache_directory = QLineEdit(default_cache_directory())
+        self.cache_directory.setReadOnly(True)
+        self.cache_directory.setToolTip("Managed terrain cache; change only when moving storage")
+        browse = QPushButton("Change…")
         browse.clicked.connect(self._browse_cache)
         cache_row = QWidget()
         row = QHBoxLayout(cache_row)
@@ -174,7 +256,7 @@ class SettingsPanel(QScrollArea):
         return group
 
     def _propagation_group(self) -> QGroupBox:
-        group = QGroupBox("Propagation")
+        group = QGroupBox("Propagation model — advanced")
         form = QFormLayout(group)
         self.validation = QComboBox()
         self.validation.addItem("RF propagation (diffraction)", ValidationMode.PROPAGATION)
@@ -189,7 +271,6 @@ class SettingsPanel(QScrollArea):
     def _optimization_group(self) -> QGroupBox:
         group = QGroupBox("Optimization")
         form = QFormLayout(group)
-        self.corridor = _spin(0.1, 100, 10, " km")
         self.grid_spacing = _spin(0.01, 20, 1, " km")
         self.max_candidates = QSpinBox()
         self.max_candidates.setRange(10, 10_000)
@@ -197,6 +278,9 @@ class SettingsPanel(QScrollArea):
         self.max_neighbors = QSpinBox()
         self.max_neighbors.setRange(2, 200)
         self.max_neighbors.setValue(16)
+        self.parallel_workers = QSpinBox()
+        self.parallel_workers.setRange(0, 128)
+        self.parallel_workers.setSpecialValueText("Auto (all cores)")
         self.max_link_distance = _spin(0, 1_000, 0, " km")
         self.max_link_distance.setSpecialValueText("Automatic")
         self.refine_radius = _spin(0, 2_000, 250, " m", 0)
@@ -206,17 +290,10 @@ class SettingsPanel(QScrollArea):
         self.min_height = _spin(0.1, 100, 2, " m")
         self.max_height = _spin(0.1, 200, 10, " m")
         self.height_step = _spin(0.1, 20, 1, " m")
-        self.priority = QComboBox()
-        for label, value in [
-            ("Minimum routers", OptimizationPriority.MINIMUM_ROUTERS),
-            ("Minimum infrastructure", OptimizationPriority.MINIMUM_INFRASTRUCTURE),
-            ("Maximum reliability", OptimizationPriority.MAXIMUM_RELIABILITY),
-        ]:
-            self.priority.addItem(label, value)
-        form.addRow("Search corridor each side", self.corridor)
         form.addRow("Candidate grid spacing", self.grid_spacing)
         form.addRow("Maximum candidates", self.max_candidates)
         form.addRow("Neighbors per candidate", self.max_neighbors)
+        form.addRow("RF worker processes", self.parallel_workers)
         form.addRow("Maximum link distance", self.max_link_distance)
         form.addRow("Local refinement radius", self.refine_radius)
         form.addRow("Local refinement step", self.refine_step)
@@ -225,7 +302,6 @@ class SettingsPanel(QScrollArea):
         form.addRow("Minimum router height", self.min_height)
         form.addRow("Maximum router height", self.max_height)
         form.addRow("Height step", self.height_step)
-        form.addRow("Priority", self.priority)
         return group
 
     def _browse_pattern(self) -> None:
@@ -265,6 +341,9 @@ class SettingsPanel(QScrollArea):
             grid_spacing_m=self.grid_spacing.value() * 1000,
             maximum_candidates=self.max_candidates.value(),
             maximum_neighbors_per_site=self.max_neighbors.value(),
+            maximum_solution_routers=self.max_solution_routers.value(),
+            reliability_paths=self.reliability_paths.value(),
+            parallel_workers=self.parallel_workers.value(),
             maximum_link_distance_m=(self.max_link_distance.value() * 1000 or None),
             refine_radius_m=self.refine_radius.value(),
             refine_step_m=self.refine_step.value(),
@@ -304,6 +383,9 @@ class SettingsPanel(QScrollArea):
         self.grid_spacing.setValue(settings.grid_spacing_m / 1000)
         self.max_candidates.setValue(settings.maximum_candidates)
         self.max_neighbors.setValue(settings.maximum_neighbors_per_site)
+        self.max_solution_routers.setValue(settings.maximum_solution_routers)
+        self.reliability_paths.setValue(settings.reliability_paths)
+        self.parallel_workers.setValue(settings.parallel_workers)
         self.max_link_distance.setValue((settings.maximum_link_distance_m or 0) / 1000)
         self.refine_radius.setValue(settings.refine_radius_m)
         self.refine_step.setValue(settings.refine_step_m)

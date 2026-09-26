@@ -20,7 +20,7 @@ class LinkEvaluator:
         self._patterns: dict[str, ConstantGain | ElevationPattern] = {}
 
     def antenna_settings(self, site: Site) -> AntennaSettings:
-        if site.kind == SiteKind.ENDPOINT_A:
+        if site.kind in {SiteKind.ENDPOINT_A, SiteKind.CLIENT}:
             return self.settings.endpoint_a
         if site.kind == SiteKind.ENDPOINT_B:
             return self.settings.endpoint_b

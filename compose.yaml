@@ -1,0 +1,12 @@
+services:
+  planner:
+    build: .
+    ports:
+      - "${RF_PLANNER_BIND:-127.0.0.1}:8000:8000"
+    environment:
+      RF_PLANNER_TOKEN: "${RF_PLANNER_TOKEN:-}"
+    volumes:
+      - planner-data:/data
+    restart: unless-stopped
+volumes:
+  planner-data:

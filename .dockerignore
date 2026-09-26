@@ -1,0 +1,10 @@
+.git
+.venv
+cache
+web-data
+dist
+tests
+**/__pycache__
+*.tif
+*.tiff
+.env
