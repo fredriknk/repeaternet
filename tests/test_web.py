@@ -65,6 +65,33 @@ def test_real_route_upload_optimize_profile_export(client):
     assert client.get("/api/export/csv").text.startswith("hop,from,to")
     assert client.get("/api/export/geojson").json()["type"] == "FeatureCollection"
     assert client.get("/api/export/project").json()["a"] == a
+    cold_cache = client.get("/api/state").json()["rf_cache"]
+    assert cold_cache["misses"] > 0
+    warm = client.post("/api/optimize", json=payload)
+    assert warm.status_code == 200
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] == "complete":
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete"
+    warm_cache = client.get("/api/state").json()["rf_cache"]
+    assert warm_cache["hits"] > cold_cache["hits"]
+    objective_only = {
+        **payload,
+        "candidates": {**payload["candidates"], "priority": "minimum_infrastructure"},
+    }
+    objective_change = client.post("/api/optimize", json=objective_only)
+    assert objective_change.status_code == 200
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] == "complete":
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete"
+    assert client.get("/api/state").json()["rf_cache"]["hits"] > warm_cache["hits"]
+    assert client.delete("/api/cache").status_code == 200
+    assert client.get("/api/state").json()["rf_cache"]["entries"] == 0
     revision = client.get("/api/state").json()["job"]["input_revision"]
     assert (
         client.post("/api/terrain/dtm", files={"file": ("replacement.tif", tile())}).status_code

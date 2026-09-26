@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Hashable
+from dataclasses import asdict
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from rf_router_planner.models.link import DirectionResult, LinkResult
@@ -11,18 +18,110 @@ from rf_router_planner.models.settings import (
 )
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.terrain.raster import TerrainSource
+
+if TYPE_CHECKING:
+    from rf_router_planner.optimization.cache import LinkMetricsCache
 from rf_router_planner.terrain.sampling import TerrainProfile, sample_profile
 
 from .antennas import ConstantGain, ElevationPattern, elevation_angle_deg
 from .diffraction import bullington_loss_db, deygout_loss_db
 from .link import free_space_path_loss_db, received_power_dbm
 
+_CACHE_SCHEMA = "rf-metrics-v1"
+
+
+def _terrain_fingerprint(terrain: TerrainSource) -> tuple[Hashable, ...]:
+    common = (terrain.crs, terrain.resolution_m, terrain.bounds, terrain.has_surface)
+    rasters = [*getattr(terrain, "_dtm", ()), *getattr(terrain, "_dom", ())]
+    if rasters:
+        metadata = []
+        for dataset in rasters:
+            path = Path(dataset.name).resolve()
+            stat = path.stat()
+            metadata.append(
+                (
+                    str(path),
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                    str(dataset.crs),
+                    tuple(dataset.transform),
+                    dataset.width,
+                    dataset.height,
+                    tuple(dataset.dtypes),
+                    dataset.nodata,
+                )
+            )
+        return (*common, tuple(metadata))
+
+    arrays = [getattr(terrain, "dtm", None), getattr(terrain, "dom", None)]
+    if any(array is not None for array in arrays):
+        digests: list[tuple[Hashable, ...] | None] = []
+        for array in arrays:
+            if array is None:
+                digests.append(None)
+                continue
+            contiguous = np.ascontiguousarray(array)
+            digests.append(
+                (contiguous.shape, contiguous.dtype.str, hashlib.sha256(contiguous).hexdigest())
+            )
+        return (*common, tuple(digests))
+    return (*common, id(terrain))
+
+
+def _settings_fingerprint(settings: RFSettings) -> str:
+    values = asdict(settings)
+    pattern_hashes = []
+    for antenna in (settings.endpoint_a, settings.endpoint_b, settings.router):
+        path = antenna.pattern_csv
+        if path:
+            try:
+                digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            except OSError:
+                digest = "missing"
+            pattern_hashes.append((path, digest))
+    payload = json.dumps(values, sort_keys=True, default=str)
+    return hashlib.sha256((payload + repr(pattern_hashes)).encode()).hexdigest()
+
+
+def _site_fingerprint(site: Site) -> tuple[Hashable, ...]:
+    return (
+        site.id,
+        site.x,
+        site.y,
+        site.kind.value,
+        site.ground_elevation_m,
+        site.surface_elevation_m,
+        site.antenna_height_m,
+        site.height_reference.value,
+        site.terrain_slope,
+        site.site_quality,
+        site.locked,
+        site.origin.value,
+        site.required,
+        site.enabled,
+    )
+
 
 class LinkEvaluator:
-    def __init__(self, terrain: TerrainSource, settings: RFSettings) -> None:
+    def __init__(
+        self,
+        terrain: TerrainSource,
+        settings: RFSettings,
+        cache: LinkMetricsCache | None = None,
+        cache_namespace: str = "default",
+    ) -> None:
         self.terrain = terrain
         self.settings = settings
+        self.cache = cache
+        self.cache_namespace = cache_namespace
+        self._terrain_fingerprint = _terrain_fingerprint(terrain) if cache else ()
+        self._settings_fingerprint = _settings_fingerprint(settings) if cache else ""
         self._patterns: dict[str, ConstantGain | ElevationPattern] = {}
+
+    @property
+    def cache_stats(self) -> dict[str, int] | None:
+        return self.cache.stats(self.cache_namespace) if self.cache is not None else None
 
     def antenna_settings(self, site: Site) -> AntennaSettings:
         if site.kind in {SiteKind.ENDPOINT_A, SiteKind.CLIENT}:
@@ -57,7 +156,56 @@ class LinkEvaluator:
         return power - self.settings.effective_sensitivity_dbm - self.settings.fade_margin_db
 
     def evaluate(
-        self, source: Site, target: Site, sample_step_m: float | None = None
+        self,
+        source: Site,
+        target: Site,
+        sample_step_m: float | None = None,
+        *,
+        include_profile: bool = True,
+    ) -> LinkResult:
+        if self.cache is not None and not include_profile:
+            return self.cache.get_or_compute(
+                self.cache_namespace,
+                self.cache_key(source, target, sample_step_m),
+                lambda: self._evaluate_uncached(source, target, sample_step_m, False),
+            )
+        return self._evaluate_uncached(source, target, sample_step_m, include_profile)
+
+    def cache_key(
+        self, source: Site, target: Site, sample_step_m: float | None
+    ) -> tuple[Hashable, ...]:
+        return (
+            _CACHE_SCHEMA,
+            self._terrain_fingerprint,
+            self._settings_fingerprint,
+            _site_fingerprint(source),
+            _site_fingerprint(target),
+            sample_step_m,
+        )
+
+    def get_cached_metrics(
+        self, source: Site, target: Site, sample_step_m: float
+    ) -> LinkResult | None:
+        if self.cache is None:
+            return None
+        return self.cache.get(self.cache_namespace, self.cache_key(source, target, sample_step_m))
+
+    def remember_metrics(
+        self, source: Site, target: Site, sample_step_m: float, link: LinkResult
+    ) -> None:
+        if self.cache is not None:
+            self.cache.put(
+                self.cache_namespace,
+                self.cache_key(source, target, sample_step_m),
+                link,
+            )
+
+    def _evaluate_uncached(
+        self,
+        source: Site,
+        target: Site,
+        sample_step_m: float | None,
+        include_profile: bool,
     ) -> LinkResult:
         profile = sample_profile(
             self.terrain,
@@ -109,7 +257,7 @@ class LinkEvaluator:
             float(np.max(profile.fresnel_radius_m)),
             diffraction.loss_db,
             diffraction.obstacles,
-            profile,
+            profile if include_profile else None,
         )
 
     def _direction(

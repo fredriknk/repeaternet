@@ -26,6 +26,7 @@ from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
 from .models.settings import CandidateSettings, RFSettings
 from .models.site import Site, SiteKind, SiteOrigin
+from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .terrain.raster import RasterTerrain
 
@@ -184,6 +185,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="RF Router Planner")
     workspaces: dict[str, Workspace] = {}
     registry_lock = threading.Lock()
+    rf_cache = LinkMetricsCache(
+        max_entries=max(1, int(os.environ.get("RF_PLANNER_RF_CACHE_ENTRIES", "50000")))
+    )
     max_workers = max(1, int(os.environ.get("RF_PLANNER_MAX_ACTIVE_JOBS", "1")))
     scheduler = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rf-plan")
     scheduler_lock = threading.Lock()
@@ -267,6 +271,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "input_revision": ws.input_revision,
                 "snapshot_version": ws.snapshot_version,
             },
+            "rf_cache": rf_cache.stats(ws.directory.name),
             "rf": encode(RFSettings()),
             "candidates": encode(CandidateSettings()),
             "terrain": {
@@ -590,7 +595,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         candidates,
                         maximum_candidates=candidates.maximum_candidates - len(known_sites),
                     )
-                    result = RouteOptimizer(terrain, rf, search_candidates).optimize(
+                    optimizer = RouteOptimizer(
+                        terrain,
+                        rf,
+                        search_candidates,
+                        evaluation_cache=rf_cache,
+                        cache_namespace=ws.directory.name,
+                    )
+                    result = optimizer.optimize(
                         endpoints[0],
                         endpoints[1],
                         optional_routers=known_sites,
@@ -698,6 +710,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "snapshot_version": snapshot_version,
             "candidates": encode(result.candidates),
         }
+
+    @app.delete("/api/cache")
+    def clear_cache(request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            if ws.status["state"] in {"queued", "running"}:
+                raise HTTPException(409, "Wait for the current job")
+            deleted = rf_cache.clear(ws.directory.name)
+        return {"ok": True, "deleted_entries": deleted}
 
     @app.get("/api/export/{kind}")
     def export(kind: str, request: Request) -> Any:

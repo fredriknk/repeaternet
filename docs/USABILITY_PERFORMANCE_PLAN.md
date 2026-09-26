@@ -1,6 +1,6 @@
 # Web usability and search performance implementation plan
 
-Created: 2026-09-26. Status: P0 and P1 implemented; P2–P7 remain planned.
+Created: 2026-09-26. Status: P0–P2 implemented; P3–P7 remain planned.
 
 This is the next development phase after the completed
 [RF engine plan](RF_ENGINE_PLAN.md). Its milestones are independent of the
@@ -173,33 +173,62 @@ Primary areas: `optimization/optimizer.py`, `models/network.py`, `web.py`,
 `web_assets/app.js`, `index.html`, styles and web/engine tests.
 Commit: `feat: show certified routes while search continues`.
 
-### P2 — Bounded cache and selective recalculation [planned]
+### P2 — Bounded cache and selective recalculation [complete: in-process phase]
 
 Implementation:
 
-- Add a versioned link-evaluation cache containing compact RF metrics, including
-  valid and invalid evaluated links. Start with a bounded in-process cache;
-  add bounded on-disk reuse with explicit size limits, eviction and clear controls.
+- Add a versioned in-process LRU containing compact metrics for valid and invalid
+  RF evaluations. Capacity defaults to 50,000 entries, is configurable with
+  `RF_PLANNER_RF_CACHE_ENTRIES`, and evicts least-recently-used entries globally
+  within the app process. Namespaces isolate hits and clear operations by browser
+  workspace. Expose hit/miss/eviction counts and a workspace-scoped clear control.
 - Keys must cover both sites' geometry, elevations, height references, antenna
   settings/pattern contents, RF settings/model version, sample spacing and terrain
   fingerprints (DTM/DOM content revisions, CRS, transform and resolution).
   Preserve directional results; do not accidentally reuse reversed antenna data.
-- Fingerprint terrain at ingestion and validate file changes. Cache only finished
-  evaluations. Do not persist cancellation or missing-file errors as RF failures.
-- Reuse candidate generation when its dependencies are unchanged. Objective-only
-  edits reuse eligible RF metrics; position/height edits invalidate affected links
-  and any dependent candidate generation. New candidate pairs still need checking.
-- Keep display profiles in a separate small bounded cache or regenerate them.
-  Isolate private workspace data and coordinate concurrent requests for a cache
-  entry so the same computation is not launched twice.
+- Include terrain file path/stat/geospatial metadata (or array content digest),
+  canonical RF settings, antenna-pattern content digests, both ordered site
+  fingerprints, sample spacing and cache schema in each key. Direction is
+  preserved; setting, site and terrain changes safely miss.
+- Cache only finished metrics. Process-pool evaluations are inserted in the
+  parent cache, allowing warm runs to skip them while preserving parallel cold
+  runs. Failed terrain reads are not cached. Display profiles and obstacle lists
+  are omitted from entries and regenerated for selected routes.
+- Objective-only edits reuse RF metrics; changed or newly generated sites miss by
+  geometry. Cache access coalesces identical in-process computations, and the
+  bounded LRU and explicit per-workspace clear limit RAM lifetime.
+
+Scope decision: P2 ships the bounded in-process cache, not persistent on-disk
+reuse. A disk cache would outlive app versions and terrain changes and needs a
+separate migration, privacy, integrity and deletion policy. Candidate-generation
+reuse is also deferred; it is a different data product and should be measured
+independently rather than hidden in the RF-cache result.
 
 Acceptance:
 
-- Identical warm reruns and objective-only changes perform no repeat terrain/RF
-  evaluations for already cached search links; displayed-profile regeneration
-  and newly discovered links are counted separately.
-- Initial target: identical warm rerun at least 3x faster than cold at 800 and
-  2,000 candidates. Topology-only costs must be reported if they limit the gain.
+- An identical warm rerun and an objective-only web rerun reused cached RF
+  metrics; the warm search regenerated only selected-route profiles (16 RF
+  profile evaluations and 19,216 sampled terrain points in the 2,000-site run).
+- Three-process, 100 km flat in-memory chain benchmark (cold → warm in the same
+  process; medians across repetitions):
+
+  | Candidates | Cold median (range) | Warm median (range) | Speedup median (range) | Peak RSS median (range) |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 800 | 2.394 s (2.346–2.402) | 0.63 s (0.62–0.63) | 3.80× (3.77–3.80×) | 119.6 MiB (119.4–119.7) |
+  | 2,000 | 6.935 s (6.872–7.067) | 2.57 s (2.54–2.57) | 2.71× (2.69–2.75×) | 190.6 MiB (190.1–191.2) |
+
+  The 2,000-site target of 3× was missed. Warm runs still spend about 2.5 s in
+  non-RF search/topology work; only 16 profile evaluations were repeated, so the
+  residual is topology/screening dominated and is carried to P7. These are
+  synthetic, instrumented measurements, not real-terrain release targets.
+  P0's 800/2,000 peak RSS baselines were 96.2/135.2 MiB; the bounded cache adds
+  about 23/55 MiB respectively, remaining far below the earlier 1.25 GiB issue.
+- Differential tests cover terrain, frequency/settings, antenna-pattern content,
+  site height, direction and sample spacing; invalid metrics are reusable, while
+  exceptions are not. Raster process and sequential results remain equivalent.
+  Full suite: 90 passed; Ruff, mypy and JavaScript syntax checks pass.
+- Cache entries are bounded and explicitly clearable; workspace namespaces do
+  not share hits. Restart intentionally clears all entries (no disk cache).
 - Differential tests match cache-disabled routes and metrics. Test changes in
   terrain, antenna patterns, frequency, height, sample spacing and engine version.
 - Cache limits remain enforced during long sessions. Eviction, corruption and

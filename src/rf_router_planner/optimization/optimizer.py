@@ -13,6 +13,7 @@ from rf_router_planner.models.link import LinkResult
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.settings import CandidateSettings, OptimizationPriority, RFSettings
 from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.optimization.cache import LinkMetricsCache
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.candidate_sites import generate_candidates
 from rf_router_planner.terrain.raster import TerrainSource
@@ -123,12 +124,18 @@ def screening_pair_indices(
 
 class RouteOptimizer:
     def __init__(
-        self, terrain: TerrainSource, rf_settings: RFSettings, candidate_settings: CandidateSettings
+        self,
+        terrain: TerrainSource,
+        rf_settings: RFSettings,
+        candidate_settings: CandidateSettings,
+        *,
+        evaluation_cache: LinkMetricsCache | None = None,
+        cache_namespace: str = "default",
     ) -> None:
         self.terrain = terrain
         self.rf_settings = rf_settings
         self.candidate_settings = candidate_settings
-        self.evaluator = LinkEvaluator(terrain, rf_settings)
+        self.evaluator = LinkEvaluator(terrain, rf_settings, evaluation_cache, cache_namespace)
 
     def _progressively_validate_link(self, source: Site, target: Site) -> LinkResult | None:
         """Certify at final resolution after lossless budget/distance screening.
@@ -142,9 +149,17 @@ class RouteOptimizer:
         if self.evaluator.optimistic_margin_db(source, target) < 0.0:
             return None
         try:
-            link = self.evaluator.evaluate(
-                source, target, self.candidate_settings.final_sample_step_m
-            )
+            if isinstance(self.evaluator, LinkEvaluator):
+                link = self.evaluator.evaluate(
+                    source,
+                    target,
+                    self.candidate_settings.final_sample_step_m,
+                    include_profile=False,
+                )
+            else:
+                link = self.evaluator.evaluate(
+                    source, target, self.candidate_settings.final_sample_step_m
+                )
         except ValueError:
             return None
         # Search needs scalar metrics; full terrain arrays are materialized only
@@ -174,6 +189,7 @@ class RouteOptimizer:
                         "Terrain or RF inputs changed while preparing solution profiles"
                     )
                 link.profile = evaluated.profile
+                link.dominant_obstacles = evaluated.dominant_obstacles
             notify("Preparing solution profiles", number, len(unique))
         for link in links:
             link.profile = unique[(link.source_id, link.target_id)].profile
@@ -381,6 +397,11 @@ class RouteOptimizer:
             workers=self.candidate_settings.parallel_workers,
             progress=lambda done, total: notify("Evaluating RF links", done, total),
             cancelled=is_cancelled,
+            evaluator=(
+                self.evaluator
+                if isinstance(self.evaluator, LinkEvaluator) and self.evaluator.cache is not None
+                else None
+            ),
         )
         if is_cancelled():
             return OptimizationResult([], [], sites, links, ["Optimization cancelled"])

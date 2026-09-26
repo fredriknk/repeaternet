@@ -73,13 +73,16 @@ def summarize_metric(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
     }
 
 
-def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[str, Any]:
+def run_case(
+    count: int, seed: int, topology: str, distance_km: float, warm_rerun: bool = False
+) -> dict[str, Any]:
     from rf_router_planner.models.settings import (
         CandidateSettings,
         OptimizationPriority,
         RFSettings,
     )
     from rf_router_planner.models.site import Site, SiteKind
+    from rf_router_planner.optimization.cache import LinkMetricsCache
     from rf_router_planner.optimization.optimizer import RouteOptimizer
     from rf_router_planner.terrain.raster import ArrayTerrain
 
@@ -171,7 +174,8 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
         )
         for index in range(len(candidates), count)
     )
-    optimizer = RouteOptimizer(terrain, rf, settings)
+    cache = LinkMetricsCache() if warm_rerun else None
+    optimizer = RouteOptimizer(terrain, rf, settings, evaluation_cache=cache)
     required_routers = (
         [site for site in candidates if site.required] if topology == "long" else None
     )
@@ -181,8 +185,13 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
     original_sample = terrain.sample
 
     def evaluate(*args, **kwargs):
-        counters["rf_evaluations"] += 1
-        return original_evaluate(*args, **kwargs)
+        before = cache.stats("default")["misses"] if cache is not None else 0
+        link = original_evaluate(*args, **kwargs)
+        if cache is None or kwargs.get("include_profile", True):
+            counters["rf_evaluations"] += 1
+        elif cache.stats("default")["misses"] > before:
+            counters["rf_evaluations"] += 1
+        return link
 
     def optimistic(*args, **kwargs):
         counters["optimistic_checks"] += 1
@@ -208,6 +217,7 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
             count,
             topology,
             distance_km,
+            warm_rerun,
         )
 
 
@@ -224,6 +234,7 @@ def _run_optimization_case(
     count,
     topology,
     distance_km,
+    warm_rerun,
 ) -> dict[str, Any]:
     phase_seconds: dict[str, float] = {}
     active_phase: str | None = None
@@ -245,15 +256,36 @@ def _run_optimization_case(
         if first_certified_seconds is None and _result.found:
             first_certified_seconds = time.perf_counter() - started
 
-    result = optimizer.optimize(
+    optimize_args = (
         endpoint_a,
         endpoint_b,
-        candidates=[endpoint_a, *candidates, endpoint_b],
-        required_routers=required_routers,
-        progress=progress,
-        solution_progress=solution_progress,
     )
+    optimize_kwargs = {
+        "candidates": [endpoint_a, *candidates, endpoint_b],
+        "required_routers": required_routers,
+        "progress": progress,
+        "solution_progress": solution_progress,
+    }
+    result = optimizer.optimize(*optimize_args, **optimize_kwargs)
     elapsed = time.perf_counter() - started
+    cold_first_certified = first_certified_seconds
+    if active_phase is not None:
+        phase_seconds[active_phase] = (
+            phase_seconds.get(active_phase, 0.0) + time.perf_counter() - last_progress
+        )
+        active_phase = None
+    cold_rf_evaluations = counters["rf_evaluations"]
+    cold_terrain_points = counters["terrain_sampled_points"]
+    warm_elapsed: float | None = None
+    warm_first_certified: float | None = None
+    if warm_rerun:
+        started = time.perf_counter()
+        first_certified_seconds = None
+        active_phase = None
+        last_progress = started
+        result = optimizer.optimize(*optimize_args, **optimize_kwargs)
+        warm_elapsed = time.perf_counter() - started
+        warm_first_certified = first_certified_seconds
     if active_phase is not None:
         phase_seconds[active_phase] = (
             phase_seconds.get(active_phase, 0.0) + time.perf_counter() - last_progress
@@ -264,6 +296,12 @@ def _run_optimization_case(
         "topology": topology,
         "distance_km": distance_km,
         "seconds": round(elapsed, 3),
+        "warm_rerun_seconds": round(warm_elapsed, 3) if warm_elapsed is not None else None,
+        "warm_rerun_speedup": (
+            round(elapsed / warm_elapsed, 2) if warm_elapsed and warm_elapsed > 0 else None
+        ),
+        "warm_rf_evaluations": counters["rf_evaluations"] - cold_rf_evaluations,
+        "warm_terrain_sampled_points": counters["terrain_sampled_points"] - cold_terrain_points,
         "peak_rss_mib": round(memory, 1)
         if (memory := peak_working_set_mib()) is not None
         else None,
@@ -275,17 +313,24 @@ def _run_optimization_case(
         "selected_links": len(solution.links) if solution else 0,
         "screened_links": len(result.all_valid_links),
         "rf_evaluations": counters["rf_evaluations"],
-        "rf_cache_hits": 0,
-        "rf_cache_misses": counters["rf_evaluations"],
+        "rf_cache_hits": optimizer.evaluator.cache_stats["hits"]
+        if optimizer.evaluator.cache_stats
+        else 0,
+        "rf_cache_misses": optimizer.evaluator.cache_stats["misses"]
+        if optimizer.evaluator.cache_stats
+        else counters["rf_evaluations"],
         "optimistic_checks": counters["optimistic_checks"],
         "terrain_sampled_points": counters["terrain_sampled_points"],
         "terrain_io_bytes": 0,
         "terrain_kind": "in-memory ArrayTerrain; no file I/O",
         "worker_count": settings.parallel_workers,
         "time_to_first_certified_route_seconds": (
-            round(first_certified_seconds, 3) if first_certified_seconds is not None else None
+            round(cold_first_certified, 3) if cold_first_certified is not None else None
         ),
         "first_route_metric_status": "certified solution-progress callback",
+        "warm_time_to_first_certified_route_seconds": (
+            round(warm_first_certified, 3) if warm_first_certified is not None else None
+        ),
         "diagnostics": result.diagnostics,
         "route_ids": [site.id for site in result.route],
         "route_margins_db": [link.worst_margin_db for link in result.links],
@@ -320,6 +365,11 @@ def main() -> None:
     parser.add_argument("--sizes", nargs="+", type=int, default=[200, 800, 2_000])
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument(
+        "--warm-rerun",
+        action="store_true",
+        help="Run one identical optimization again in the same process/cache.",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--topology", choices=("direct", "mesh", "long"), default="direct")
     parser.add_argument("--distance-km", type=float, default=24.0)
@@ -352,6 +402,7 @@ def main() -> None:
                     args.worker_seed,
                     args.worker_topology,
                     args.worker_distance_km,
+                    args.warm_rerun,
                 )
             )
         )
@@ -363,6 +414,8 @@ def main() -> None:
         f"Flat 25 m ArrayTerrain ({args.distance_km:g} km x 10 km); "
         "times cover RouteOptimizer.optimize, one process per measurement."
     )
+    if args.warm_rerun:
+        print("Each measurement includes one cold run followed by an identical warm-cache rerun.")
     if args.topology == "direct":
         print("Randomized sites; 100 m endpoint antennas; clear direct route.")
     else:
@@ -383,19 +436,22 @@ def main() -> None:
         runs = []
         for repetition in range(args.repetitions):
             try:
+                command = [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--worker-count",
+                    str(size),
+                    "--worker-seed",
+                    str(args.seed + repetition),
+                    "--worker-topology",
+                    args.topology,
+                    "--worker-distance-km",
+                    str(args.distance_km),
+                ]
+                if args.warm_rerun:
+                    command.append("--warm-rerun")
                 completed = subprocess.run(
-                    [
-                        sys.executable,
-                        str(Path(__file__).resolve()),
-                        "--worker-count",
-                        str(size),
-                        "--worker-seed",
-                        str(args.seed + repetition),
-                        "--worker-topology",
-                        args.topology,
-                        "--worker-distance-km",
-                        str(args.distance_km),
-                    ],
+                    command,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -444,6 +500,11 @@ def main() -> None:
                             "optimistic_checks",
                             "terrain_sampled_points",
                             "time_to_first_certified_route_seconds",
+                            "warm_rerun_seconds",
+                            "warm_rerun_speedup",
+                            "warm_rf_evaluations",
+                            "warm_terrain_sampled_points",
+                            "warm_time_to_first_certified_route_seconds",
                         )
                     },
                     sort_keys=True,

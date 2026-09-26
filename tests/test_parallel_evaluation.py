@@ -4,7 +4,9 @@ import numpy as np
 
 from rf_router_planner.models.settings import RFSettings
 from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.optimization.cache import LinkMetricsCache
 from rf_router_planner.optimization.parallel import evaluate_link_pairs
+from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.raster import RasterTerrain
 
 
@@ -40,9 +42,17 @@ def test_process_and_sequential_rf_evaluation_are_equivalent(tmp_path: Path) -> 
     with RasterTerrain([path]) as terrain:
         sequential = evaluate_link_pairs(terrain, settings, pairs, 20, workers=1)
         parallel = evaluate_link_pairs(terrain, settings, pairs, 20, workers=2)
+        cache = LinkMetricsCache(max_entries=512)
+        evaluator = LinkEvaluator(terrain, settings, cache, "parallel-test")
+        cold = evaluate_link_pairs(terrain, settings, pairs, 20, workers=2, evaluator=evaluator)
+        warm = evaluate_link_pairs(terrain, settings, pairs, 20, workers=2, evaluator=evaluator)
     assert len(parallel) == len(sequential) == len(pairs)
     assert [link.source_id for link in parallel] == [link.source_id for link in sequential]
     assert [link.target_id for link in parallel] == [link.target_id for link in sequential]
     assert [link.worst_margin_db for link in parallel] == [
         link.worst_margin_db for link in sequential
     ]
+    assert [link.worst_margin_db for link in cold] == [link.worst_margin_db for link in warm]
+    assert all(link.profile is None for link in warm)
+    assert cache.stats("parallel-test")["misses"] == 205
+    assert cache.stats("parallel-test")["hits"] == 205
