@@ -1,6 +1,6 @@
 # Web usability and search performance implementation plan
 
-Created: 2026-09-26. Status: P0–P2 implemented; P3–P7 remain planned.
+Created: 2026-09-26. Status: P0–P4 implemented; P5–P7 remain planned.
 
 This is the next development phase after the completed
 [RF engine plan](RF_ENGINE_PLAN.md). Its milestones are independent of the
@@ -284,34 +284,49 @@ Primary areas: `models/site.py`, `models/settings.py`, optimization graph/topolo
 dispatch, web request/schema/UI and CoreScope integration tests.
 Commit: `feat: plan routes around existing MeshCore infrastructure`.
 
-### P4 — Terrain preparation and actionable coverage checks [planned]
+### P4 — Terrain preparation and actionable coverage checks [implemented]
 
 Implementation:
 
-- Expose the existing Kartverket planning/download/cache integration to the web.
-  Estimate required tiles, disk space and resolution for the corridor plus all
-  selected/required sites. Offer one clear preparation action and reuse cached tiles.
-- Show ground/surface coverage outlines and nodata gaps. Validate endpoint/site
-  coverage before optimization, including non-contiguous raster coverage.
-- Put preparation in the job workflow with download progress, cancellation,
-  bounded retries and atomic completion. Keep manual GeoTIFF uploads supported.
-- Distinguish missing ground terrain from optional absent surface data. Changing
-  terrain creates a new revision and invalidates affected results/cache entries.
+- Add `/api/terrain/estimate` and a one-click follow-up preparation action. Plans
+  use the proper Norway UTM service, an A–B buffered corridor plus selected-site
+  buffers, automatic resolution/pixel budgets and per-workspace content-addressed
+  cache. The estimate reports resolution, area, tile/pixel counts, cache hits,
+  approximate uncompressed cache-plus-workspace storage and available disk.
+- Add `/api/terrain/coverage`: draw DTM/DOM tile outlines, mark selected endpoints
+  or routers with missing ground data, and sample the direct corridor for nodata
+  gaps. Optimization runs the same selected-site preflight synchronously before
+  it queues work; missing site coverage produces an actionable 422 response.
+- Run downloads as cancellable scheduler jobs with per-tile progress, two bounded
+  retries, partial-file cleanup and CRS/data/bounds validation. A complete DTM
+  plus optional DOM generation is staged and atomically published as one folder;
+  incomplete generations never appear in terrain listings. Manual GeoTIFF upload
+  and separate DTM/DOM clearing remain supported.
+- Terrain changes increment the input revision and clear matching results.
+  Missing DOM remains optional and is labeled as terrain-only RF analysis.
 - Surface concise explanations for no-route cases: coverage gaps, rejected
   candidate links, RF margin deficits or search-budget exhaustion. Do not claim
   these are exhaustive diagnoses unless the search supports that conclusion.
 
 Acceptance:
 
-- Cached preparation works offline. Partial downloads never appear as complete
-  terrain. Provider errors leave projects usable and downloaded valid tiles intact.
-- API tests use fixtures; separately record a live-provider smoke test when the
-  service is available. Real DEM benchmarks include cold and warm I/O costs.
-- The UI identifies uncovered sites before an expensive search begins.
+- A valid cached tile can be reopened without network; malformed responses retry
+  only three times and leave no `.part`/cache tile. A two-product API test pauses
+  between DTM and DOM and confirms neither is visible until the full generation
+  is validated and published.
+- Fixtures cover estimator budgets, tile outlines, interior nodata, outside-coverage
+  sites, early preflight rejection, and generated terrain consumed by the RF path.
+  Full suite: 104 passed; Ruff, mypy, JavaScript syntax and diff checks pass.
+- No live Kartverket request or real DEM benchmark was run here; WCS download
+  behavior is mocked in tests. Production WCS compatibility and real-raster I/O
+  remain deployment smoke checks. Nodata map warnings sample the straight A–B
+  line at no more than 2,001 points (spacing at least 100 m or four raster cells),
+  not a complete pixel-level nodata heatmap.
 
 Primary areas: `terrain/kartverket.py`, raster metadata, web background jobs,
 map coverage layers and mocked provider tests.
-Commit: `feat: prepare and validate terrain from the web planner`.
+Commit: `feat: prepare and validate terrain from the web planner` (record hash
+in the progress log after commit).
 
 ### P5 — Alternative comparison and map editing [planned]
 
@@ -411,8 +426,8 @@ packaging change. Update README feature coverage and user instructions with each
 release. Keep every milestone independently reviewable and the working
 tree clean after its commit.
 
-- Planning baseline: P0–P2 are committed; P3 is implemented and verified.
-  P4–P7 remain planned. P3 adds the `infrastructure_policy` setting and router
+- Planning baseline: P0–P4 are committed; P5–P7 remain planned. P3 adds the
+  `infrastructure_policy` setting and router
   `policy`/`provenance` plan fields; missing fields in older plans retain their
   previous behavior (mixed mode, selected known routers optional).
 - First-release gate: P0–P3 accepted; profiles/exports, legacy plans and cancellation

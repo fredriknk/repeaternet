@@ -48,6 +48,14 @@
           <label class="upload secondary">＋ Add surface terrain<small>Optional DOM · trees and buildings</small><input id="dom" type="file" multiple accept=".tif,.tiff" hidden></label>
           <div class="file-row"><span id="dom-count">No surface tiles</span><button data-clear="dom" class="text-button">Clear</button></div>
           <p id="surface-note" class="hint">Surface obstruction data unavailable — terrain only.</p>
+          <div class="terrain-tools">
+            <label>Requested resolution · m<input id="terrain-resolution" type="number" min="1" max="1000" step="1" value="10"></label>
+            <label class="check-line"><input id="terrain-auto" type="checkbox" checked> Coarsen automatically to stay within the pixel budget</label>
+            <label class="check-line"><input id="terrain-dom" type="checkbox"> Also download surface terrain</label>
+            <button id="estimate-terrain" class="wide-button">Estimate Kartverket terrain</button>
+            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint"></p><button id="prepare-terrain" class="wide-button" hidden>Download planned terrain</button></div>
+          </div>
+          <p id="coverage-note" class="hint">Coverage outlines appear after terrain is loaded.</p>
         </section>
         <section>
           <h2><span>03</span> Existing MeshCore routers</h2>

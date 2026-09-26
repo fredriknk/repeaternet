@@ -13,3 +13,9 @@
 .known-router strong{font-size:11px;color:#294b42;font-weight:650}
 .known-router small{font-size:9px;color:#849087;margin-top:3px}
 .known-dot{color:#79579a}
+.terrain-tools{padding:8px;margin:8px 0;background:#f2f6f2;border:1px solid var(--border);border-radius:7px}
+.terrain-tools>label{display:block;margin:4px 0;font-size:10px}
+.terrain-tools>label input[type=number]{display:block;width:100%;margin-top:4px}
+.terrain-tools .check-line{display:flex;align-items:center;gap:7px}
+.terrain-tools .check-line input{width:auto}
+#coverage-note.error{color:#b44735}

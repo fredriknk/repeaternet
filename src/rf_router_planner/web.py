@@ -7,6 +7,8 @@ import json
 import math
 import os
 import secrets
+import shutil
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -21,13 +23,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
 
+from .coordinates import norway_utm_epsg
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
-from .models.settings import CandidateSettings, InfrastructurePolicy, RFSettings
+from .models.settings import CandidateSettings, InfrastructurePolicy, RFSettings, TerrainSettings
 from .models.site import Site, SiteKind, SiteOrigin
 from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
+from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
 
 ASSETS = Path(__file__).parent / "web_assets"
@@ -179,6 +183,14 @@ class Workspace:
         self.keep_result_on_cancel = False
 
 
+def _terrain_paths(workspace: Workspace, kind: str) -> list[Path]:
+    flat = list((workspace.directory / kind).glob("*.tif"))
+    generated = list(
+        (workspace.directory / "terrain-generations").glob(f"generation-*/{kind}/*.tif")
+    )
+    return sorted([*flat, *generated])
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     root = (data_dir or Path(os.environ.get("RF_PLANNER_DATA", "web-data"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -245,6 +257,165 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 workspaces[key] = Workspace(root / key)
             return workspaces[key]
 
+    def build_download_plan(
+        ws: Workspace, body: dict[str, Any]
+    ) -> tuple[KartverketProvider, str, Any, bool]:
+        candidates = settings(CandidateSettings, body.get("candidates", {}))
+        options = body.get("terrain", {})
+        if not isinstance(options, dict) or set(options) - {
+            "requested_resolution_m",
+            "auto_resolution",
+            "include_dom",
+        }:
+            raise ValueError("Terrain options may contain resolution, auto_resolution, and include_dom")
+        requested_resolution = options.get("requested_resolution_m", 10.0)
+        if (
+            not isinstance(requested_resolution, (int, float))
+            or isinstance(requested_resolution, bool)
+            or not math.isfinite(requested_resolution)
+            or not 1 <= requested_resolution <= 1000
+        ):
+            raise ValueError("Terrain resolution must be between 1 and 1,000 m")
+        auto_resolution = options.get("auto_resolution", True)
+        include_dom = options.get("include_dom", False)
+        if not isinstance(auto_resolution, bool) or not isinstance(include_dom, bool):
+            raise ValueError("Terrain auto-resolution and surface-data options must be boolean")
+
+        endpoints = [coordinate_pair(body, "a"), coordinate_pair(body, "b")]
+        if endpoints[0] == endpoints[1]:
+            raise ValueError("Place endpoints at different locations")
+        router_points: list[tuple[float, float]] = []
+        known_data = body.get("known_routers", [])
+        if not isinstance(known_data, list):
+            raise ValueError("known_routers must be a list")
+        if candidates.infrastructure_policy != InfrastructurePolicy.PROPOSED_ONLY:
+            for item in known_data:
+                if not isinstance(item, dict):
+                    raise ValueError("Each MeshCore router must be an object")
+                if item.get("policy", "optional") != "excluded":
+                    router = coordinate_pair(
+                        {"router": [item.get("latitude"), item.get("longitude")]}, "router"
+                    )
+                    router_points.append(router)
+        all_points = [*endpoints, *router_points]
+        longitude = sum(point[1] for point in all_points) / len(all_points)
+        crs = f"EPSG:{norway_utm_epsg(longitude)}"
+        forward = Transformer.from_crs(4326, crs, always_xy=True)
+        projected = [forward.transform(lon, lat) for lat, lon in endpoints]
+        extra_points = tuple(forward.transform(lon, lat) for lat, lon in router_points)
+        padding = float(candidates.corridor_width_m)
+        all_x = [point[0] for point in [*projected, *extra_points]]
+        all_y = [point[1] for point in [*projected, *extra_points]]
+        bounds = (
+            min(all_x) - padding,
+            min(all_y) - padding,
+            max(all_x) + padding,
+            max(all_y) + padding,
+        )
+        defaults = TerrainSettings()
+        provider = KartverketProvider(
+            load_services(Path(__file__).parent / "data" / "kartverket_wcs.json"),
+            ws.directory / "kartverket-cache",
+            defaults.maximum_download_area_km2,
+            defaults.maximum_pixels_per_tile,
+            defaults.maximum_download_tiles,
+        )
+        route_corridor = RouteCorridor(tuple(projected), padding, extra_points)
+        plan = provider.plan_download(
+            bounds,
+            float(requested_resolution),
+            corridor=route_corridor,
+            auto_resolution=auto_resolution,
+            maximum_total_pixels=defaults.maximum_total_pixels,
+        )
+        return provider, crs, plan, include_dom
+
+    def terrain_coverage_report(ws: Workspace, body: dict[str, Any]) -> dict[str, Any]:
+        dtm_paths = _terrain_paths(ws, "dtm")
+        dom_paths = _terrain_paths(ws, "dom")
+        if not dtm_paths:
+            raise ValueError("Prepare or upload ground terrain first")
+        with RasterTerrain(dtm_paths, dom_paths) as terrain:
+            forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
+            reverse = Transformer.from_crs(terrain.crs, 4326, always_xy=True)
+            named_sites = [("Endpoint A", *coordinate_pair(body, "a")), ("Endpoint B", *coordinate_pair(body, "b"))]
+            candidates = settings(CandidateSettings, body.get("candidates", {}))
+            if candidates.infrastructure_policy != InfrastructurePolicy.PROPOSED_ONLY:
+                known_routers = body.get("known_routers", [])
+                if not isinstance(known_routers, list) or any(
+                    not isinstance(item, dict) for item in known_routers
+                ):
+                    raise ValueError("Known routers must be a list of router objects")
+                for item in known_routers:
+                    if item.get("policy", "optional") != "excluded":
+                        lat, lon = coordinate_pair(
+                            {"router": [item.get("latitude"), item.get("longitude")]}, "router"
+                        )
+                        named_sites.append((str(item.get("name") or item.get("id")), lat, lon))
+            uncovered: list[dict[str, Any]] = []
+            for name, lat, lon in named_sites:
+                x, y = forward.transform(lon, lat)
+                if not math.isfinite(float(terrain.sample(np.array([x]), np.array([y]))[0])):
+                    left, bottom, right, top = terrain.bounds
+                    inside = left <= x <= right and bottom <= y <= top
+                    uncovered.append(
+                        {
+                            "name": name,
+                            "latitude": lat,
+                            "longitude": lon,
+                            "reason": "no_data" if inside else "outside_coverage",
+                        }
+                    )
+
+            start = forward.transform(named_sites[0][2], named_sites[0][1])
+            end = forward.transform(named_sites[1][2], named_sites[1][1])
+            distance = math.hypot(end[0] - start[0], end[1] - start[1])
+            count = min(2001, max(2, math.ceil(distance / max(100.0, 4 * terrain.resolution_m)) + 1))
+            line_gaps: list[list[list[float]]] = []
+            active_gap: list[list[float]] = []
+            for index in range(count):
+                fraction = index / (count - 1)
+                x = start[0] + (end[0] - start[0]) * fraction
+                y = start[1] + (end[1] - start[1]) * fraction
+                valid = math.isfinite(float(terrain.sample(np.array([x]), np.array([y]))[0]))
+                if valid:
+                    if active_gap:
+                        line_gaps.append(active_gap)
+                        active_gap = []
+                else:
+                    lon, lat = reverse.transform(x, y)
+                    active_gap.append([lat, lon])
+            if active_gap:
+                line_gaps.append(active_gap)
+
+        import rasterio
+
+        def outlines(paths: list[Path]) -> list[list[list[float]]]:
+            polygons = []
+            for path in paths:
+                with rasterio.open(path) as dataset:
+                    if dataset.crs is None:
+                        continue
+                    transform = Transformer.from_crs(dataset.crs, 4326, always_xy=True)
+                    bounds = dataset.bounds
+                    corners = [
+                        transform.transform(bounds.left, bounds.bottom),
+                        transform.transform(bounds.left, bounds.top),
+                        transform.transform(bounds.right, bounds.top),
+                        transform.transform(bounds.right, bounds.bottom),
+                    ]
+                    polygons.append([[lat, lon] for lon, lat in corners])
+            return polygons
+
+        return {
+            "covered": not uncovered,
+            "uncovered_sites": uncovered,
+            "line_gaps": line_gaps,
+            "dtm_outlines": outlines(dtm_paths),
+            "dom_outlines": outlines(dom_paths),
+            "surface_available": bool(dom_paths),
+        }
+
     @app.get("/")
     def index(request: Request) -> Any:
         response = FileResponse(ASSETS / "index.html")
@@ -275,11 +446,192 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "rf": encode(RFSettings()),
             "candidates": encode(CandidateSettings()),
             "terrain": {
-                kind: [p.name for p in (ws.directory / kind).glob("*.tif")]
+                kind: [p.name for p in _terrain_paths(ws, kind)]
                 for kind in ("dtm", "dom")
             },
             "plan": json.loads(saved.read_text()) if saved.exists() else None,
         }
+
+    @app.post("/api/terrain/estimate")
+    def estimate_terrain(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            provider, crs, plan, include_dom = build_download_plan(ws, body)
+            products = 2 if include_dom else 1
+            dtm_cached = provider.cached_tile_count("dtm", crs, plan)
+            dom_cached = provider.cached_tile_count("dom", crs, plan) if include_dom else 0
+            estimated_raw_mib = plan.estimated_raw_mib_per_product * products
+            estimated_disk_mib = estimated_raw_mib * 2
+            return {
+                "crs": crs,
+                "summary": plan.summary(products),
+                "tile_count": len(plan.tiles),
+                "pixel_count": plan.pixel_count,
+                "download_area_km2": plan.download_area_km2,
+                "requested_resolution_m": plan.requested_resolution_m,
+                "effective_resolution_m": plan.effective_resolution_m,
+                "estimated_raw_mib": estimated_raw_mib,
+                "estimated_disk_mib": estimated_disk_mib,
+                "available_disk_mib": shutil.disk_usage(ws.directory).free / (1024 * 1024),
+                "cache_hits": dtm_cached + dom_cached,
+                "cache_total": len(plan.tiles) * products,
+                "include_dom": include_dom,
+            }
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/terrain/coverage")
+    def terrain_coverage(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            return terrain_coverage_report(ws, body)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/terrain/prepare")
+    def prepare_terrain(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            provider, crs, plan, include_dom = build_download_plan(ws, body)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with ws.lock:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
+                raise HTTPException(409, "A planner or terrain job is already active")
+            with scheduler_lock:
+                if job_slots["outstanding"] >= max_outstanding_jobs:
+                    raise HTTPException(429, "The planner queue is full; retry shortly")
+                queued = job_slots["outstanding"] >= max_workers
+                job_slots["outstanding"] += 1
+            ws.cancel.clear()
+            ws.result = None
+            ws.snapshot_version = 0
+            ws.job_id = secrets.token_hex(12)
+            ws.input_revision += 1
+            job_id = ws.job_id
+            total = len(plan.tiles) * (2 if include_dom else 1)
+            ws.status = {
+                "state": "queued" if queued else "preparing",
+                "stage": "Waiting for a terrain worker" if queued else "Preparing Kartverket terrain",
+                "job_id": job_id,
+                "input_revision": ws.input_revision,
+                "snapshot_version": 0,
+                "done": 0,
+                "total": total,
+                "started_at": time.time(),
+                "terrain_estimate": {
+                    "crs": crs,
+                    "tile_count": len(plan.tiles),
+                    "include_dom": include_dom,
+                    "effective_resolution_m": plan.effective_resolution_m,
+                },
+            }
+
+        def run() -> None:
+            generation_root = ws.directory / "terrain-generations"
+            staging: Path | None = None
+            try:
+                with ws.lock:
+                    if ws.job_id != job_id:
+                        return
+                    if ws.cancel.is_set():
+                        ws.status = {**ws.status, "state": "cancelled", "stage": "Cancelled before starting"}
+                        return
+                    ws.status = {**ws.status, "state": "preparing", "stage": "Downloading ground terrain"}
+
+                def report(product: str, tile_number: int, tile_total: int, cached: bool) -> None:
+                    base = 0 if product == "dtm" else len(plan.tiles)
+                    with ws.lock:
+                        if ws.job_id == job_id:
+                            ws.status = {
+                                **ws.status,
+                                "state": "preparing",
+                                "stage": f"Kartverket {product.upper()} tile {tile_number}/{tile_total}"
+                                + (" (cache hit)" if cached else ""),
+                                "done": base + tile_number - 1,
+                                "total": total,
+                            }
+
+                dtm_sources = provider.fetch_plan(
+                    "dtm",
+                    crs,
+                    plan,
+                    lambda index, count, cached: report("dtm", index, count, cached),
+                    ws.cancel.is_set,
+                )
+                dom_sources: list[Path] = []
+                if include_dom:
+                    with ws.lock:
+                        ws.status = {**ws.status, "stage": "Downloading surface terrain"}
+                    dom_sources = provider.fetch_plan(
+                        "dom",
+                        crs,
+                        plan,
+                        lambda index, count, cached: report("dom", index, count, cached),
+                        ws.cancel.is_set,
+                    )
+                if ws.cancel.is_set():
+                    raise RuntimeError("Terrain download cancelled")
+
+                generation_root.mkdir(parents=True, exist_ok=True)
+                staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=generation_root))
+                (staging / "dtm").mkdir()
+                if dom_sources:
+                    (staging / "dom").mkdir()
+                for index, source in enumerate(dtm_sources, 1):
+                    shutil.copy2(source, staging / "dtm" / f"tile-{index:04d}.tif")
+                for index, source in enumerate(dom_sources, 1):
+                    shutil.copy2(source, staging / "dom" / f"tile-{index:04d}.tif")
+                with RasterTerrain(
+                    list((staging / "dtm").glob("*.tif")),
+                    list((staging / "dom").glob("*.tif")) if dom_sources else [],
+                ) as terrain:
+                    projected = CRS(terrain.crs)
+                    if not projected.is_projected or not all(
+                        axis.unit_name == "metre" for axis in projected.axis_info
+                    ):
+                        raise ValueError("Kartverket terrain must use projected metre coordinates")
+                if ws.cancel.is_set():
+                    raise RuntimeError("Terrain download cancelled")
+
+                with ws.lock:
+                    if ws.job_id != job_id or ws.cancel.is_set():
+                        raise RuntimeError("Terrain download cancelled")
+                    destination = generation_root / f"generation-{job_id}"
+                    staging.replace(destination)
+                    staging = None
+                    ws.inputs = body
+                    (ws.directory / "plan.json").write_text(json.dumps(body), encoding="utf-8")
+                    ws.input_revision += 1
+                    ws.status = {
+                        **ws.status,
+                        "state": "terrain_ready",
+                        "stage": "Terrain prepared and ready",
+                        "done": total,
+                        "total": total,
+                        "input_revision": ws.input_revision,
+                    }
+            except RuntimeError as exc:
+                with ws.lock:
+                    if ws.job_id == job_id:
+                        cancelled = ws.cancel.is_set() or "cancelled" in str(exc).lower()
+                        ws.status = {
+                            **ws.status,
+                            "state": "cancelled" if cancelled else "failed",
+                            "stage": str(exc),
+                        }
+            except Exception as exc:
+                with ws.lock:
+                    if ws.job_id == job_id:
+                        ws.status = {**ws.status, "state": "failed", "stage": str(exc)}
+            finally:
+                if staging is not None:
+                    shutil.rmtree(staging, ignore_errors=True)
+                with scheduler_lock:
+                    job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+
+        scheduler.submit(run)
+        return ws.status
 
     @app.post("/api/terrain/{kind}")
     def upload(kind: str, request: Request, file: UploadFile) -> Any:
@@ -287,7 +639,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running"}:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
                 raise HTTPException(409, "Wait for the current job")
             directory = ws.directory / kind
             directory.mkdir(exist_ok=True)
@@ -326,9 +678,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running"}:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
                 raise HTTPException(409, "Wait for the current job")
-            for path in (ws.directory / kind).glob("*.tif"):
+            for path in _terrain_paths(ws, kind):
                 path.unlink()
             ws.input_revision += 1
             ws.result = None
@@ -463,12 +815,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] in {"queued", "running"}:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
                 raise HTTPException(409, "A job is already queued or running")
-            dtm = list((ws.directory / "dtm").glob("*.tif"))
-            dom = list((ws.directory / "dom").glob("*.tif"))
+            dtm = _terrain_paths(ws, "dtm")
+            dom = _terrain_paths(ws, "dom")
             if not dtm:
-                raise HTTPException(422, "Upload DTM terrain first")
+                raise HTTPException(422, "Prepare or upload ground terrain first")
+            try:
+                coverage = terrain_coverage_report(ws, body)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if coverage["uncovered_sites"]:
+                names = ", ".join(item["name"] for item in coverage["uncovered_sites"])
+                raise HTTPException(422, f"Ground-terrain coverage is missing at: {names}")
             with scheduler_lock:
                 if job_slots["outstanding"] >= max_outstanding_jobs:
                     raise HTTPException(429, "The planner queue is full; retry shortly")
@@ -703,7 +1062,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if body and body.get("job_id") not in {None, ws.job_id}:
                 raise HTTPException(409, "This cancellation request refers to an older job")
-            if ws.status["state"] not in {"queued", "running"}:
+            if ws.status["state"] not in {"queued", "running", "preparing"}:
                 raise HTTPException(409, "There is no active job to cancel")
             ws.keep_result_on_cancel = False
             ws.cancel.set()
@@ -765,7 +1124,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def clear_cache(request: Request) -> Any:
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running"}:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
                 raise HTTPException(409, "Wait for the current job")
             deleted = rf_cache.clear(ws.directory.name)
         return {"ok": True, "deleted_entries": deleted}

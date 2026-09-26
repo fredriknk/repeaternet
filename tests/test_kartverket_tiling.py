@@ -101,3 +101,90 @@ def test_route_corridor_follows_bends_in_selected_route(tmp_path) -> None:
     )
     assert len(plan.tiles) < len(full.tiles) * 0.6
     assert any(tile.bounds[0] <= 80_000 <= tile.bounds[2] for tile in plan.tiles)
+
+
+def test_route_corridor_includes_selected_sites_away_from_the_route(tmp_path) -> None:
+    planner = provider(tmp_path)
+    plan = planner.plan_download(
+        (0, 0, 100_000, 20_000),
+        100,
+        corridor=RouteCorridor(((0, 10_000), (100_000, 10_000)), 2_000, ((50_000, 19_000),)),
+        auto_resolution=False,
+    )
+    assert any(tile.bounds[0] <= 50_000 <= tile.bounds[2] for tile in plan.tiles)
+    assert any(tile.bounds[1] <= 19_000 <= tile.bounds[3] for tile in plan.tiles)
+
+
+def test_invalid_wcs_payload_retries_are_bounded_and_never_cached(tmp_path, monkeypatch) -> None:
+    import requests
+
+    planner = provider(tmp_path)
+    plan = planner.plan_download((0, 0, 10_000, 10_000), 10, auto_resolution=False)
+    calls = 0
+
+    class Response:
+        headers = {"content-length": "12"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            yield b"not a GeoTIFF"
+
+    def fake_get(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    tile = plan.tiles[0]
+    destination = planner.cache_path("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m)
+    with pytest.raises(OSError):
+        planner.fetch("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m)
+    assert calls == 3
+    assert not destination.exists()
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_valid_workspace_cache_hit_does_not_require_network(tmp_path, monkeypatch) -> None:
+    import numpy as np
+    import requests
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+
+    planner = provider(tmp_path, maximum_pixels_per_tile=10_000)
+    plan = planner.plan_download((0, 0, 1_000, 1_000), 10, auto_resolution=False)
+    tile = plan.tiles[0]
+    path = planner.cache_path("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with MemoryFile() as memory:
+        with memory.open(
+            driver="GTiff",
+            width=100,
+            height=100,
+            count=1,
+            dtype="float32",
+            crs="EPSG:25833",
+            transform=from_origin(tile.bounds[0], tile.bounds[3], 10, 10),
+        ) as dataset:
+            dataset.write(np.zeros((100, 100), dtype=np.float32), 1)
+        path.write_bytes(memory.read())
+
+    def unexpected_network(*args, **kwargs):
+        raise AssertionError("a valid cache hit must work offline")
+
+    monkeypatch.setattr(requests, "get", unexpected_network)
+    assert planner.fetch("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m) == path
+
+
+def test_fetch_plan_honors_cancellation_before_starting_a_tile(tmp_path) -> None:
+    planner = provider(tmp_path)
+    plan = planner.plan_download((0, 0, 10_000, 10_000), 10, auto_resolution=False)
+    with pytest.raises(RuntimeError, match="cancelled"):
+        planner.fetch_plan("dtm", "EPSG:25833", plan, cancelled=lambda: True)

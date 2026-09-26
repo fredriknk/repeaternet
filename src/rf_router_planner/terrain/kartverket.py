@@ -4,11 +4,13 @@ import hashlib
 import json
 import logging
 import math
+import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from shapely.geometry import LineString, box
+from shapely.geometry import LineString, MultiPoint, box
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ Bounds = tuple[float, float, float, float]
 class RouteCorridor:
     points: tuple[tuple[float, float], ...]
     width_m: float
+    extra_points: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.points) < 2:
@@ -222,7 +225,10 @@ class KartverketProvider:
     @staticmethod
     def _corridor_shape(corridor: Corridor):  # type: ignore[no-untyped-def]
         if isinstance(corridor, RouteCorridor):
-            return LineString(corridor.points).buffer(corridor.width_m)
+            shape = LineString(corridor.points).buffer(corridor.width_m)
+            if corridor.extra_points:
+                shape = shape.union(MultiPoint(corridor.extra_points).buffer(corridor.width_m))
+            return shape
         ax, ay, bx, by, width = corridor
         if width <= 0:
             raise ValueError("Corridor width must be positive")
@@ -243,15 +249,28 @@ class KartverketProvider:
         crs: str,
         plan: DownloadPlan,
         progress: Callable[[int, int, bool], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> list[Path]:
         paths: list[Path] = []
         total = len(plan.tiles)
         for index, tile in enumerate(plan.tiles, 1):
+            if cancelled is not None and cancelled():
+                raise RuntimeError("Terrain download cancelled")
             destination = self.cache_path(product, crs, tile.bounds, plan.effective_resolution_m)
             cached = destination.exists()
             if progress:
                 progress(index, total, cached)
-            paths.append(self.fetch(product, crs, tile.bounds, plan.effective_resolution_m))
+            if cancelled is None:
+                fetched = self.fetch(product, crs, tile.bounds, plan.effective_resolution_m)
+            else:
+                fetched = self.fetch(
+                    product,
+                    crs,
+                    tile.bounds,
+                    plan.effective_resolution_m,
+                    cancelled=cancelled,
+                )
+            paths.append(fetched)
         return paths
 
     def cache_path(self, product: str, crs: str, bounds: Bounds, resolution_m: float) -> Path:
@@ -272,6 +291,7 @@ class KartverketProvider:
         bounds: Bounds,
         resolution_m: float,
         progress: Callable[[int, int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Path:
         if product.lower() not in {"dtm", "dom"}:
             raise ValueError("Product must be DTM or DOM")
@@ -287,27 +307,80 @@ class KartverketProvider:
         endpoint, params = self._request(product, crs, bounds, resolution_m)
         self.cache_directory.mkdir(parents=True, exist_ok=True)
         destination = self.cache_path(product, crs, bounds, resolution_m)
-        if destination.exists():
-            logger.info("Kartverket cache hit: %s", destination)
-            return destination
         try:
             import requests
         except ImportError as exc:
             raise RuntimeError("Requests is required for online Kartverket downloads") from exc
+        if destination.exists():
+            try:
+                self._validate_download(destination, crs, bounds, resolution_m)
+            except (OSError, ValueError):
+                destination.unlink(missing_ok=True)
+            else:
+                logger.info("Kartverket cache hit: %s", destination)
+                return destination
         logger.info("Requesting Kartverket %s coverage from %s", product.upper(), endpoint)
-        with requests.get(endpoint, params=params, stream=True, timeout=(15, 300)) as response:
-            response.raise_for_status()
-            total = int(response.headers.get("content-length", 0))
-            downloaded = 0
-            temporary = destination.with_suffix(".part")
-            with temporary.open("wb") as handle:
-                for chunk in response.iter_content(1024 * 1024):
-                    handle.write(chunk)
-                    downloaded += len(chunk)
-                    if progress:
-                        progress(downloaded, total)
-            temporary.replace(destination)
-        return destination
+        for attempt in range(3):
+            if cancelled is not None and cancelled():
+                raise RuntimeError("Terrain download cancelled")
+            temporary = destination.with_name(f"{destination.name}.{secrets.token_hex(6)}.part")
+            try:
+                with requests.get(endpoint, params=params, stream=True, timeout=(15, 300)) as response:
+                    response.raise_for_status()
+                    total = int(response.headers.get("content-length", 0))
+                    downloaded = 0
+                    with temporary.open("wb") as handle:
+                        for chunk in response.iter_content(1024 * 1024):
+                            if cancelled is not None and cancelled():
+                                raise RuntimeError("Terrain download cancelled")
+                            if chunk:
+                                handle.write(chunk)
+                                downloaded += len(chunk)
+                            if progress:
+                                progress(downloaded, total)
+                self._validate_download(temporary, crs, bounds, resolution_m)
+                temporary.replace(destination)
+                return destination
+            except RuntimeError:
+                raise
+            except (requests.RequestException, OSError, ValueError) as exc:
+                temporary.unlink(missing_ok=True)
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                non_retryable_http = (
+                    status is not None and 400 <= status < 500 and status not in {408, 429}
+                )
+                if attempt >= 2 or non_retryable_http:
+                    raise
+                for _ in range((attempt + 1) * 5):
+                    if cancelled is not None and cancelled():
+                        raise RuntimeError("Terrain download cancelled") from exc
+                    time.sleep(0.1)
+            finally:
+                temporary.unlink(missing_ok=True)
+        raise RuntimeError("Terrain download failed after bounded retries")  # pragma: no cover
+
+    @staticmethod
+    def _validate_download(path: Path, crs: str, bounds: Bounds, resolution_m: float) -> None:
+        try:
+            import rasterio
+        except ImportError as exc:  # pragma: no cover - project dependency
+            raise RuntimeError("Rasterio is required to validate downloaded terrain") from exc
+        with rasterio.open(path) as dataset:
+            if dataset.crs is None or dataset.crs.to_string() != crs:
+                raise ValueError("Downloaded terrain has an unexpected CRS")
+            if dataset.count < 1 or dataset.width < 1 or dataset.height < 1:
+                raise ValueError("Downloaded terrain is empty")
+            if not dataset.dataset_mask().any():
+                raise ValueError("Downloaded terrain contains no valid elevation data")
+            tolerance = max(2 * resolution_m, 1.0)
+            actual = dataset.bounds
+            if any(
+                abs(value - expected) > tolerance
+                for value, expected in zip(
+                    (actual.left, actual.bottom, actual.right, actual.top), bounds, strict=True
+                )
+            ):
+                raise ValueError("Downloaded terrain bounds do not match the requested tile")
 
     def _request(
         self, product: str, crs: str, bounds: Bounds, resolution_m: float

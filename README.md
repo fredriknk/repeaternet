@@ -26,21 +26,27 @@ use an HTTPS reverse proxy when exposing it beyond a trusted network. Run one
 server process: optimization state is managed in that process. Set
 `RF_PLANNER_DATA` to change the native data directory (default: `web-data`).
 
-1. Upload DTM GeoTIFF tiles and optional DOM tiles in the same projected CRS,
-   using metre coordinates (512 MiB maximum per tile).
-2. Click A/B and then the map, drag markers, or enter latitude/longitude.
-3. Adjust RF and antenna settings, then choose **Find repeater route**.
+1. Upload DTM GeoTIFF tiles and optional DOM tiles, or estimate and prepare
+   corridor terrain from the configured Kartverket WCS services.
+2. Click A/B and then the map, drag markers, or enter latitude/longitude. The
+   map outlines loaded terrain and highlights sampled nodata gaps.
+3. Optionally load nearby CoreScope routers and mark each Optional, Required, or
+   Excluded. Choose existing-only, proposed-only, or mixed infrastructure and a
+   route objective, then select **Find repeater route**.
 4. Select a hop for its terrain/Fresnel profile and RF budget. Export CSV or
    GeoJSON, or save a `.webplan.json` file to reopen settings and endpoints.
 
 Ground and surface tiles can be cleared separately. Clearing tiles permanently
-removes those uploaded copies from that browser's server workspace. Plan files
-do not embed terrain. Basemap tiles need internet access; uploaded terrain and
-RF calculations run locally. Browser assets, including Leaflet, are bundled.
+removes those terrain copies from that browser's server workspace. Prepared
+Kartverket tiles are cached per workspace and only become available after the
+full DTM/optional-DOM generation validates. Plan files do not embed terrain.
+Kartverket preparation and basemap tiles need internet access; uploaded terrain
+and RF calculations run locally. Browser assets, including Leaflet, are bundled.
 
-The web workflow currently covers two-endpoint planning. Desktop network editing,
-CoreScope integration, Kartverket downloads, contour generation, manual router
-editing, and desktop `.rfplan.json` projects remain available in the desktop app:
+The web workflow currently covers two-endpoint planning and existing CoreScope
+router candidates. Desktop multi-client network editing, contour generation,
+manual router editing, and desktop `.rfplan.json` projects remain available in
+the desktop app:
 
 ```sh
 python -m pip install -e ".[desktop]"

@@ -37,6 +37,24 @@ def tile():
         return memory.read()
 
 
+def tile_with_nodata_gap():
+    with MemoryFile() as memory:
+        with memory.open(
+            driver="GTiff",
+            width=101,
+            height=101,
+            count=1,
+            dtype="float32",
+            crs="EPSG:25833",
+            transform=from_origin(500000, 6651000, 10, 10),
+            nodata=-9999,
+        ) as dataset:
+            values = np.zeros((101, 101), dtype=np.float32)
+            values[49:54, 49:54] = -9999
+            dataset.write(values, 1)
+        return memory.read()
+
+
 def test_real_route_upload_optimize_profile_export(client):
     assert (
         client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
@@ -369,6 +387,144 @@ def test_excluded_existing_router_does_not_enter_existing_only_graph(client):
     result = client.get("/api/result").json()
     assert "K-excluded" not in {site["id"] for site in result["candidates"]}
     assert result["router_count"] == 0
+
+
+def test_terrain_estimate_reports_resolution_cache_and_transfer_budget(client):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    body = {
+        "a": list(reversed(reverse.transform(500100, 6650500))),
+        "b": list(reversed(reverse.transform(500800, 6650500))),
+        "rf": {},
+        "candidates": {"corridor_width_m": 500},
+        "terrain": {"requested_resolution_m": 10, "auto_resolution": True, "include_dom": True},
+    }
+    response = client.post("/api/terrain/estimate", json=body)
+    assert response.status_code == 200, response.text
+    estimate = response.json()
+    assert estimate["crs"] == "EPSG:25833"
+    assert estimate["tile_count"] >= 1
+    assert estimate["cache_hits"] == 0
+    assert estimate["cache_total"] == estimate["tile_count"] * 2
+    assert estimate["estimated_raw_mib"] > 0
+
+
+def test_coverage_reports_tile_outlines_nodata_gaps_and_uncovered_sites(client):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    assert (
+        client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile_with_nodata_gap())}).status_code
+        == 200
+    )
+    report = client.post("/api/terrain/coverage", json={"a": a, "b": b}).json()
+    assert report["covered"]
+    assert len(report["dtm_outlines"]) == 1
+    assert report["dom_outlines"] == []
+    assert report["line_gaps"]
+
+    outside = list(reversed(reverse.transform(502000, 6650500)))
+    missing = client.post("/api/terrain/coverage", json={"a": a, "b": outside}).json()
+    assert not missing["covered"]
+    assert missing["uncovered_sites"][0]["name"] == "Endpoint B"
+    assert missing["uncovered_sites"][0]["reason"] == "outside_coverage"
+
+
+def test_optimize_rejects_uncovered_sites_before_queuing(client):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    outside = list(reversed(reverse.transform(502000, 6650500)))
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    response = client.post("/api/optimize", json={"a": a, "b": outside, "rf": {}, "candidates": {}})
+    assert response.status_code == 422
+    assert "Endpoint B" in response.json()["detail"]
+    assert client.get("/api/state").json()["job"]["state"] == "idle"
+
+
+def test_terrain_preparation_publishes_only_complete_generation(client, tmp_path, monkeypatch):
+    from rf_router_planner.terrain.kartverket import KartverketProvider
+
+    dom_started, finish_dom = Event(), Event()
+
+    def fake_fetch_plan(self, product, crs, plan, progress=None, cancelled=None):
+        source = tmp_path / f"{product}-source.tif"
+        source.write_bytes(tile())
+        if progress is not None:
+            for index, _ in enumerate(plan.tiles, 1):
+                progress(index, len(plan.tiles), False)
+        if product == "dom":
+            dom_started.set()
+            assert finish_dom.wait(3)
+        return [source for _ in plan.tiles]
+
+    monkeypatch.setattr(KartverketProvider, "fetch_plan", fake_fetch_plan)
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    body = {
+        "a": list(reversed(reverse.transform(500100, 6650500))),
+        "b": list(reversed(reverse.transform(500800, 6650500))),
+        "rf": {},
+        "candidates": {"corridor_width_m": 500},
+        "terrain": {"requested_resolution_m": 10, "auto_resolution": True, "include_dom": True},
+    }
+    response = client.post("/api/terrain/prepare", json=body)
+    assert response.status_code == 200, response.text
+    assert dom_started.wait(3)
+    state = client.get("/api/state").json()
+    assert state["job"]["state"] == "preparing"
+    assert state["terrain"]["dtm"] == []
+    assert state["terrain"]["dom"] == []
+    finish_dom.set()
+    for _ in range(200):
+        state = client.get("/api/state").json()
+        if state["job"]["state"] not in {"queued", "preparing"}:
+            break
+        time.sleep(0.02)
+    assert state["job"]["state"] == "terrain_ready", state["job"]
+    assert state["terrain"]["dtm"]
+    assert state["terrain"]["dom"]
+    coverage = client.post("/api/terrain/coverage", json=body).json()
+    assert coverage["covered"]
+    assert coverage["surface_available"]
+
+
+def test_cancelled_terrain_preparation_keeps_previous_uploads(client, tmp_path, monkeypatch):
+    from rf_router_planner.terrain.kartverket import KartverketProvider
+
+    dom_started = Event()
+
+    def fake_fetch_plan(self, product, crs, plan, progress=None, cancelled=None):
+        if product == "dom":
+            dom_started.set()
+            while cancelled is not None and not cancelled():
+                time.sleep(0.01)
+            raise RuntimeError("Terrain download cancelled")
+        source = tmp_path / "downloaded-dtm.tif"
+        source.write_bytes(tile())
+        return [source for _ in plan.tiles]
+
+    monkeypatch.setattr(KartverketProvider, "fetch_plan", fake_fetch_plan)
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    body = {
+        "a": list(reversed(reverse.transform(500100, 6650500))),
+        "b": list(reversed(reverse.transform(500800, 6650500))),
+        "rf": {},
+        "candidates": {"corridor_width_m": 500},
+        "terrain": {"include_dom": True},
+    }
+    uploaded = client.post("/api/terrain/dtm", files={"file": ("manual.tif", tile())})
+    assert uploaded.status_code == 200
+    previous = client.get("/api/state").json()["terrain"]["dtm"]
+    started = client.post("/api/terrain/prepare", json=body)
+    assert started.status_code == 200, started.text
+    assert dom_started.wait(3)
+    assert client.post("/api/cancel", json={"job_id": started.json()["job_id"]}).status_code == 200
+    for _ in range(200):
+        state = client.get("/api/state").json()
+        if state["job"]["state"] not in {"queued", "preparing"}:
+            break
+        time.sleep(0.02)
+    assert state["job"]["state"] == "cancelled"
+    assert state["terrain"]["dtm"] == previous
+    assert state["terrain"]["dom"] == []
 
 
 def test_existing_only_avoids_generated_candidate_rf_evaluations(tmp_path, monkeypatch):
