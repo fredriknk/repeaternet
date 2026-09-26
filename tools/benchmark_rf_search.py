@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 
@@ -61,6 +62,17 @@ def peak_working_set_mib() -> float | None:
         return None
 
 
+def summarize_metric(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
+    values = [float(row[key]) for row in rows if row.get(key) is not None]
+    if not values:
+        return {}
+    return {
+        "median": round(statistics.median(values), 2),
+        "min": round(min(values), 2),
+        "max": round(max(values), 2),
+    }
+
+
 def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[str, Any]:
     from rf_router_planner.models.settings import (
         CandidateSettings,
@@ -74,9 +86,7 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
     rng = random.Random(seed)
     distance_m = distance_km * 1_000.0
     terrain_columns = math.ceil((distance_m + 1_000.0) / 25.0) + 1
-    terrain = ArrayTerrain(
-        np.zeros((401, terrain_columns), dtype=np.float32), resolution_m=25.0
-    )
+    terrain = ArrayTerrain(np.zeros((401, terrain_columns), dtype=np.float32), resolution_m=25.0)
     rf = RFSettings()
     if topology in {"mesh", "long"}:
         from rf_router_planner.models.settings import ValidationMode
@@ -96,11 +106,7 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
         maximum_candidates=count,
         maximum_neighbors_per_site=16,
         maximum_solution_routers=(
-            long_relay_count
-            if topology == "long"
-            else 4
-            if topology == "mesh"
-            else 6
+            long_relay_count if topology == "long" else 4 if topology == "mesh" else 6
         ),
         reliability_paths=1 if topology == "long" else 2,
         priority=(
@@ -166,6 +172,59 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
         for index in range(len(candidates), count)
     )
     optimizer = RouteOptimizer(terrain, rf, settings)
+    required_routers = (
+        [site for site in candidates if site.required] if topology == "long" else None
+    )
+    counters = {"rf_evaluations": 0, "optimistic_checks": 0, "terrain_sampled_points": 0}
+    original_evaluate = optimizer.evaluator.evaluate
+    original_optimistic = optimizer.evaluator.optimistic_margin_db
+    original_sample = terrain.sample
+
+    def evaluate(*args, **kwargs):
+        counters["rf_evaluations"] += 1
+        return original_evaluate(*args, **kwargs)
+
+    def optimistic(*args, **kwargs):
+        counters["optimistic_checks"] += 1
+        return original_optimistic(*args, **kwargs)
+
+    def sample(_terrain, x, y, *args, **kwargs):
+        counters["terrain_sampled_points"] += int(np.size(x))
+        return original_sample(x, y, *args, **kwargs)
+
+    optimizer.evaluator.evaluate = evaluate
+    optimizer.evaluator.optimistic_margin_db = optimistic
+    with patch.object(type(terrain), "sample", sample):
+        return _run_optimization_case(
+            optimizer,
+            terrain,
+            rf,
+            settings,
+            endpoint_a,
+            endpoint_b,
+            candidates,
+            required_routers,
+            counters,
+            count,
+            topology,
+            distance_km,
+        )
+
+
+def _run_optimization_case(
+    optimizer,
+    terrain,
+    rf,
+    settings,
+    endpoint_a,
+    endpoint_b,
+    candidates,
+    required_routers,
+    counters,
+    count,
+    topology,
+    distance_km,
+) -> dict[str, Any]:
     phase_seconds: dict[str, float] = {}
     active_phase: str | None = None
     last_progress = time.perf_counter()
@@ -179,7 +238,6 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
         last_progress = now
 
     started = time.perf_counter()
-    required_routers = [site for site in candidates if site.required] if topology == "long" else None
     result = optimizer.optimize(
         endpoint_a,
         endpoint_b,
@@ -208,7 +266,20 @@ def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[s
         "solution_sites": len(solution.sites) if solution else 0,
         "selected_links": len(solution.links) if solution else 0,
         "screened_links": len(result.all_valid_links),
+        "rf_evaluations": counters["rf_evaluations"],
+        "rf_cache_hits": 0,
+        "rf_cache_misses": counters["rf_evaluations"],
+        "optimistic_checks": counters["optimistic_checks"],
+        "terrain_sampled_points": counters["terrain_sampled_points"],
+        "terrain_io_bytes": 0,
+        "terrain_kind": "in-memory ArrayTerrain; no file I/O",
+        "worker_count": settings.parallel_workers,
+        "time_to_first_certified_route_seconds": None,
+        "first_route_metric_status": "not emitted by optimizer; added with P1 snapshots",
         "diagnostics": result.diagnostics,
+        "route_ids": [site.id for site in result.route],
+        "route_margins_db": [link.worst_margin_db for link in result.links],
+        "alternative_router_ids": [solution.router_ids for solution in result.alternatives],
         "endpoint_a_links": sum(
             link.source_id == endpoint_a.id or link.target_id == endpoint_a.id
             for link in result.all_valid_links
@@ -238,6 +309,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sizes", nargs="+", type=int, default=[200, 800, 2_000])
     parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--topology", choices=("direct", "mesh", "long"), default="direct")
     parser.add_argument("--distance-km", type=float, default=24.0)
@@ -295,9 +367,7 @@ def main() -> None:
                 f"{relay_count} required chain relays; strict LOS, one path. "
                 "Candidate scaling measures screening, not subset search."
             )
-        print(
-            case_description
-        )
+        print(case_description)
     print("RSS is child process peak working set.")
     for size in args.sizes:
         runs = []
@@ -330,10 +400,13 @@ def main() -> None:
         if not runs:
             continue
         seconds = statistics.median(row["seconds"] for row in runs)
-        rss_values = [
-            row["peak_rss_mib"] for row in runs if row["peak_rss_mib"] is not None
-        ]
+        time_range = (min(row["seconds"] for row in runs), max(row["seconds"] for row in runs))
+        rss_values = [row["peak_rss_mib"] for row in runs if row["peak_rss_mib"] is not None]
         median_rss = statistics.median(rss_values) if rss_values else None
+        rss_range = (min(rss_values), max(rss_values)) if rss_values else None
+        rss_range_label = (
+            f"{rss_range[0]:.1f}-{rss_range[1]:.1f}" if rss_range is not None else "n/a"
+        )
         link_counts = [row["screened_links"] for row in runs]
         links = (
             str(link_counts[0])
@@ -341,13 +414,35 @@ def main() -> None:
             else f"{min(link_counts)}-{max(link_counts)}"
         )
         print(
-            f"{size:5d} candidates | median {seconds:8.3f} s | "
-            f"peak RSS {median_rss if median_rss is not None else 'n/a':>8} MiB | "
+            f"{size:5d} candidates | median {seconds:8.3f} s "
+            f"(range {time_range[0]:.3f}-{time_range[1]:.3f}) | "
+            f"peak RSS {median_rss if median_rss is not None else 'n/a':>8} MiB "
+            f"(range {rss_range_label}) | "
             f"valid screened links {links:>11} | "
             f"routers {runs[-1]['routers']} | found {runs[-1]['found']}"
         )
-        for row in runs:
-            print("  " + json.dumps(row, sort_keys=True))
+        if args.summary_only:
+            print(
+                "  measurements "
+                + json.dumps(
+                    {
+                        key: summarize_metric(runs, key)
+                        for key in (
+                            "rf_evaluations",
+                            "rf_cache_hits",
+                            "rf_cache_misses",
+                            "optimistic_checks",
+                            "terrain_sampled_points",
+                        )
+                    },
+                    sort_keys=True,
+                )
+            )
+            if len({tuple(row["route_ids"]) for row in runs}) != 1:
+                print("  warning: selected routes vary across repetitions")
+        else:
+            for row in runs:
+                print("  " + json.dumps(row, sort_keys=True))
 
 
 if __name__ == "__main__":

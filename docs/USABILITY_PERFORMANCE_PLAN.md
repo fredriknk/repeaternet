@@ -68,7 +68,7 @@ interactive comparison/editing, durable projects, and further measured speedups.
 | P6 | Named projects, autosave and restart recovery | P1 revision model, P4–P5 schema | Second |
 | P7 | Faster exhaustive evaluation with bounded resources | P0–P3; P4 real-terrain data | Second |
 
-### P0 — Performance and quality contract [planned]
+### P0 — Performance and quality contract [complete]
 
 Implementation:
 
@@ -83,6 +83,30 @@ Implementation:
   CI independent of live CoreScope/Kartverket availability.
 - Record at least three fresh-process runs per timed comparison on the same
   machine; use medians and ranges. Separate instrumented from ordinary timings.
+- A real-terrain fixture is not checked into the repository. Use the
+  [fixture manifest](REAL_TERRAIN_FIXTURE.md) when a redistribution-approved
+  raster is selected; synthetic baselines must remain labeled synthetic.
+
+Completion evidence (Windows 11, Python 3.13.12, 24 logical CPUs; three fresh
+single-worker processes per size; optional-anchor 100 km flat 25 m terrain):
+
+| Candidates | Median time (range) | Peak working set (range) | RF evals, median | Sampled terrain points, median | Route |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 200 | 0.490 s (0.485–0.490) | 76.4 MiB (76.4–76.5) | 400 | 1,235,438 | Same four-anchor route, 4 routers |
+| 800 | 2.110 s (2.099–2.124) | 96.2 MiB (96.1–96.5) | 1,536 | 4,831,757 | Same four-anchor route, 4 routers |
+
+Cache telemetry is 0 hits and one miss per RF evaluation because caching has not
+been implemented yet. These are successful anchored chain cases, not open-ended
+subset search, and use in-memory terrain with zero raster I/O. Time to first
+certified route is explicitly unavailable until P1 publishes solution snapshots.
+The real-terrain manifest format is ready; a licensed fixture has not yet been
+selected. The summary-only reproduction command is:
+
+```console
+python tools/benchmark_rf_search.py --topology long --distance-km 100 --sizes 200 800 --repetitions 3 --summary-only
+```
+
+Commit: `test: establish usability and search performance baselines`.
 
 Acceptance:
 
