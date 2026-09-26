@@ -40,7 +40,7 @@ optimality over continuous terrain.
   §4.5.2; do not label it as a full P.526 implementation.
 - Commit after RF and integration regression tests pass.
 
-### M2 — Complete low-hop search and final-only results [in progress]
+### M2 — Complete low-hop search and final-only results [complete]
 
 - Run the existing exact 0/1/2-repeater search for eligible two-client minimum
   router plans even when a sparse longer route exists; merge discovered edges
@@ -53,7 +53,7 @@ optimality over continuous terrain.
   during validation. Guarantees apply to the generated candidate set and selected
   edge pool, not all possible sites or arbitrary larger meshes.
 
-### M3 — Correct route and topology objectives [pending]
+### M3 — Correct route and topology objectives [in progress]
 
 - Fix shortest-hop tie-breaking when a later bottleneck erases an earlier lead.
 - Make topology ranking honor minimum repeaters, installation/mast cost and
@@ -97,6 +97,15 @@ changes and are not prerequisites for this release.
   Desktop selector and API settings support both. Full suite: 54 passed before
   adding the explicit legacy/new serialization regression; targeted rerun below.
   The original mesh failure is resolved by the stable RF model.
+- M1 commit: `68103d6`. Legacy/new serialization plus diffraction tests: 10 passed.
+- M2: final-resolution certification replaces unsafe coarse rejection; coarse
+  failures are retried at final resolution. Validation now advances monotonically
+  over previously uncertified pairs with cancellation checks. Low-hop discovery
+  runs even when the sparse graph connects. Antenna screening uses pattern peak
+  gain so a configured directional pattern cannot be underestimated.
+  Full suite before new scenarios: 55 passed. Eight screening tests pass,
+  including hidden two-router vs three-router, 29 rejected alternatives, coarse
+  rejection recovery and cancellation during validation.
 
 ## Reference
 

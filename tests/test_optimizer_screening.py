@@ -232,3 +232,67 @@ def test_optimizer_retries_after_final_resolution_invalidates_selected_path() ->
     assert result.found
     assert result.router_count == 1
     assert [(site.x, site.y) for site in result.route] == [(0, 0), (50, 10), (100, 0)]
+
+
+def mock_batch(monkeypatch, evaluator):
+    def evaluate(_terrain, _rf, pairs, step, **_kwargs):
+        return [evaluator.evaluate(a, b, step) for a, b in pairs]
+    monkeypatch.setattr("rf_router_planner.optimization.optimizer.evaluate_link_pairs", evaluate)
+
+
+def test_low_hop_search_beats_an_existing_sparse_three_router_route(monkeypatch):
+    a, b = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A), Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    x, y, z = Site("X", 10, 0), Site("Y", 20, 0), Site("Z", 30, 0)
+    left, right = Site("L", 0, 30), Site("R", 100, 30)
+    sites = [a, x, y, z, left, Site("LD", 0, 31), right, Site("RD", 100, 31), b]
+    edge = ChainOnlyEvaluator._edge
+    valid = {edge(u, v) for u, v in [(a, x), (x, y), (y, z), (z, b), (a, left), (left, right), (right, b)]}
+    assert (sites.index(left), sites.index(right)) not in screening_pair_indices(sites, 1)
+    evaluator = ChainOnlyEvaluator(valid)
+    mock_batch(monkeypatch, evaluator)
+    optimizer = RouteOptimizer(ArrayTerrain(np.zeros((40, 110)), resolution_m=1), RFSettings(), CandidateSettings(maximum_neighbors_per_site=1, maximum_solution_routers=3))
+    optimizer.evaluator = evaluator
+    result = optimizer.optimize(a, b, candidates=sites)
+    assert result.router_count == 2
+    assert [s.id for s in result.route] == ["A", "L", "R", "B"]
+
+
+def test_validation_continues_beyond_old_round_cap(monkeypatch):
+    a, b = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A), Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    routers = [Site(f"R{i:02}", 50, i + 1) for i in range(30)]
+    edge = ChainOnlyEvaluator._edge
+    margins = {edge(u, v): 100 - i for i, r in enumerate(routers) for u, v in [(a, r), (r, b)]}
+    evaluator = ResolutionAwareEvaluator(margins, {edge(r, b) for r in routers[:-1]}, 1)
+    mock_batch(monkeypatch, evaluator)
+    optimizer = RouteOptimizer(ArrayTerrain(np.zeros((40, 110)), resolution_m=1), RFSettings(), CandidateSettings(maximum_solution_routers=1, final_sample_step_m=1, priority=OptimizationPriority.MAXIMUM_RELIABILITY))
+    optimizer.evaluator = evaluator
+    result = optimizer.optimize(a, b, candidates=[a, *routers, b])
+    assert result.found
+    assert result.route[1].id == "R29"
+    assert all((edge(next(s for s in result.candidates if s.id == link.source_id), next(s for s in result.candidates if s.id == link.target_id)), 1) in evaluator.calls for link in result.links)
+
+
+def test_final_valid_link_is_not_rejected_by_coarse_classification():
+    a, b = Site("A", 0, 0), Site("B", 100, 0)
+    class CoarseRejects(ChainOnlyEvaluator):
+        def evaluate(self, source, target, step):
+            return self._result(source, target, step == 1, 10)
+    optimizer = RouteOptimizer(ArrayTerrain(np.zeros((3, 101)), resolution_m=1), RFSettings(), CandidateSettings(final_sample_step_m=1))
+    optimizer.evaluator = CoarseRejects({ChainOnlyEvaluator._edge(a, b)})
+    assert optimizer._progressively_validate_link(a, b).valid
+
+
+def test_cancellation_during_final_validation_returns_no_route(monkeypatch):
+    a, b = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A), Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    evaluator = ChainOnlyEvaluator({ChainOnlyEvaluator._edge(a, b)})
+    mock_batch(monkeypatch, evaluator)
+    optimizer = RouteOptimizer(ArrayTerrain(np.zeros((3, 101)), resolution_m=1), RFSettings(), CandidateSettings(priority=OptimizationPriority.MAXIMUM_RELIABILITY))
+    optimizer.evaluator = evaluator
+    stopped = False
+    def progress(stage, done, total):
+        nonlocal stopped
+        if stage == "Validating solution alternatives":
+            stopped = True
+    result = optimizer.optimize(a, b, candidates=[a, b], progress=progress, cancelled=lambda: stopped)
+    assert not result.found
+    assert "cancelled" in result.diagnostics[0]

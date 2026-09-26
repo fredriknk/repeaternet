@@ -111,28 +111,21 @@ class RouteOptimizer:
         self.evaluator = LinkEvaluator(terrain, rf_settings)
 
     def _progressively_validate_link(self, source: Site, target: Site) -> LinkResult | None:
-        """Return a final-resolution link after cheap-to-expensive validation."""
+        """Certify at final resolution after lossless budget/distance screening.
+
+        Coarser terrain is not a bound on diffraction: a coarse rejection cannot
+        safely exclude a final-valid link.
+        """
         maximum_distance = self.candidate_settings.maximum_link_distance_m
         if maximum_distance is not None and source.distance_to(target) > maximum_distance:
             return None
         if self.evaluator.optimistic_margin_db(source, target) < 0.0:
             return None
-        link: LinkResult | None = None
-        sample_steps = dict.fromkeys(
-            (
-                self.candidate_settings.coarse_sample_step_m,
-                self.candidate_settings.medium_sample_step_m,
-                self.candidate_settings.final_sample_step_m,
-            )
-        )
         try:
-            for sample_step_m in sample_steps:
-                link = self.evaluator.evaluate(source, target, sample_step_m)
-                if not link.valid:
-                    return None
+            link = self.evaluator.evaluate(source, target, self.candidate_settings.final_sample_step_m)
         except ValueError:
             return None
-        return link
+        return link if link.valid else None
 
     def _find_low_hop_route(
         self,
@@ -148,6 +141,8 @@ class RouteOptimizer:
         exact low-hop search small on obstructed terrain.
         """
         if len(sites) < 2:
+            return None
+        if is_cancelled():
             return None
         endpoint_a, endpoint_b = sites[0], sites[-1]
         direct = self._progressively_validate_link(endpoint_a, endpoint_b)
@@ -330,11 +325,30 @@ class RouteOptimizer:
             frozenset((link.source_id, link.target_id)): link for link in links
         }
         validated_keys: set[frozenset[str]] = set()
+        by_id = {site.id: site for site in sites}
+        # Coarse failures can be aliasing/model-resolution effects, not proofs.
+        for failed in failures:
+            if is_cancelled():
+                return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
+            key = frozenset((failed.source_id, failed.target_id))
+            final = self._progressively_validate_link(by_id[failed.source_id], by_id[failed.target_id])
+            validated_keys.add(key)
+            if final is not None:
+                link_by_key[key] = final
+        if not network_mode and self.candidate_settings.priority == OptimizationPriority.MINIMUM_ROUTERS:
+            ordered = [endpoint_a, *(site for site in sites if site.id not in {endpoint_a.id, endpoint_b.id} and site.enabled), endpoint_b]
+            low_hop = self._find_low_hop_route(ordered, notify, is_cancelled)
+            if low_hop is not None and len(low_hop[0]) - 2 <= self.candidate_settings.maximum_solution_routers:
+                for link in low_hop[1]:
+                    key = frozenset((link.source_id, link.target_id))
+                    link_by_key[key] = link
+                    validated_keys.add(key)
         alternatives: list[NetworkSolution] = []
-        validation_rounds = max(
-            8, self.candidate_settings.maximum_solution_routers * 4 + 4
-        )
-        for _round in range(validation_rounds):
+        # Every nonterminal round certifies at least one previously unseen pair.
+        # This terminates on a finite pool without returning coarse-only edges.
+        while True:
+            if is_cancelled():
+                return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
             alternatives = solve_topologies(
                 sites,
                 list(link_by_key.values()),
@@ -359,6 +373,8 @@ class RouteOptimizer:
             notify("Validating solution alternatives", 0, len(pending))
             by_id = {site.id: site for site in sites}
             for number, key in enumerate(pending, 1):
+                if is_cancelled():
+                    return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
                 left_id, right_id = sorted(key)
                 final: LinkResult | None = None
                 try:
@@ -368,14 +384,6 @@ class RouteOptimizer:
                         and left.distance_to(right) > maximum_distance
                     )
                     if not too_far and self.evaluator.optimistic_margin_db(left, right) >= 0:
-                        medium = self.evaluator.evaluate(
-                            left,
-                            right,
-                            self.candidate_settings.medium_sample_step_m,
-                        )
-                    else:
-                        medium = None
-                    if medium is not None and medium.valid:
                         candidate = self.evaluator.evaluate(
                             left,
                             right,
@@ -390,6 +398,8 @@ class RouteOptimizer:
                 else:
                     link_by_key[key] = final
                 notify("Validating solution alternatives", number, len(pending))
+        if is_cancelled():
+            return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
         alternatives = solve_topologies(
             sites,
             list(link_by_key.values()),

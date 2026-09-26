@@ -47,10 +47,10 @@ class LinkEvaluator:
         rx = self.antenna_settings(target)
         power = received_power_dbm(
             self.settings.tx_power_dbm,
-            tx.gain_dbi,
+            float(np.max(self.pattern(tx).gain_dbi)),
             tx.feed_loss_db,
             free_space_path_loss_db(distance, self.settings.frequency_mhz),
-            rx.gain_dbi,
+            float(np.max(self.pattern(rx).gain_dbi)),
             rx.feed_loss_db,
             self.settings.miscellaneous_loss_db,
         )
