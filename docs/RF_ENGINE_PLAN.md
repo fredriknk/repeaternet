@@ -158,6 +158,64 @@ Cancellation is cooperative between operations, not an interruption of an active
 NumPy, GDAL or graph-flow call. No full delta-Bullington, field-calibration or
 automatic mesh-wide refinement claims are made by this release.
 
+## Post-implementation review — 2026-09-26
+
+### Assessment
+
+The implementation is a sound step up for planning workflows: the previous
+sample-count-driven loss on a smooth profile is gone, path tie-breaks agree with
+an independent exhaustive oracle on seeded small graphs, the selected solution
+edges are rechecked at the configured final spacing, and failure/cancellation
+cases have explicit regression coverage. The full suite was rerun for this review:
+**68 passed**. Ruff and mypy pass. `git status` was clean before this review note.
+
+I would use it for comparing candidate routes and planning field checks. I would
+not use this release alone to assert that a real link will work. The terrain loss
+is the Bullington component, not the complete Bullington/spherical-Earth method;
+there is no independent field-measurement validation, so the lower example loss
+means stable numerical behavior, not proven higher real-world accuracy. See the
+[current ITU-R P.526 recommendation](https://www.itu.int/rec/R-REC-P.526-16-202511-I/en)
+for the complete method definition.
+
+### Remaining engineering risks
+
+1. **Candidate and edge coverage:** two-client, zero/one/two-repeater checks are
+   exhaustive only over generated candidate sites. Their possible links still
+   pass distance and optimistic link-budget screening. Longer routes use the
+   sparse neighbor graph. Add candidate-density sweeps and adversarial bridge
+   sites before making stronger route-completeness claims.
+2. **Larger meshes:** beam search is deterministic and bounded (width 64), but
+   a feasible router subset may be dropped before exact scoring. Compare it to an
+   exact oracle over thousands of seeded small instances, then measure miss rate
+   and explored states on representative Norwegian terrain before tuning the
+   beam or claiming practical completeness.
+3. **Terrain sampling:** certification means every selected edge passed at the
+   configured point spacing. A narrow ridge between samples can still be missed.
+   Next, test sub-cell peak injection at several orientations and implement a
+   conservative raster traversal or adaptive sampling before treating final
+   validation as a terrain-coverage guarantee.
+4. **Diffraction scope:** the Bullington component changes defaults for new plans,
+   while legacy projects keep Deygout. Keep both labeled in results and exports;
+   test representative LOS, single-ridge and multi-ridge profiles against an
+   independent reference implementation, then calibrate only with field data.
+5. **Operational cancellation and scale:** cancellation cannot interrupt an
+   in-flight GDAL/NumPy/NetworkX call; process batches can contain up to 32 links.
+   Benchmark wall time and peak memory for candidate counts 200, 800 and 2,000,
+   then consider smaller batches, bounded worker counts and progress latency.
+6. **Cost model:** the 100-installation-unit plus mast-metre score is a proxy.
+   Keep that assumption visible, and permit project-specific install/mast costs
+   before users interpret the infrastructure objective as monetary cost.
+
+### Review verification
+
+- `pytest`: **68 passed**, 12 dependency deprecation warnings; no failures.
+- `ruff check src tests`: passed.
+- `mypy src/rf_router_planner --ignore-missing-imports`: passed (40 source files).
+- The headless Qt test process emitted GPU-context fallback diagnostics after
+  tests completed; process exit was successful. No numerical perf claim was
+  measured during this review.
+- This review updates the plan only; it makes no source or test changes.
+
 ## Reference
 
 [ITU-R P.526-16](https://www.itu.int/rec/R-REC-P.526-16-202511-I/en),
