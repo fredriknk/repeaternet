@@ -26,10 +26,10 @@ class _EvaluatedTopology:
 
 def _valid_link_graph(sites: Sequence[Site], links: Sequence[LinkResult]) -> nx.Graph:
     graph = nx.Graph()
-    enabled = {site.id: site for site in sites if site.enabled}
+    enabled = {site.id: site for site in sorted(sites, key=lambda s: s.id) if site.enabled}
     for site in enabled.values():
         graph.add_node(site.id, site=site)
-    for link in links:
+    for link in sorted(links, key=lambda edge: tuple(sorted((edge.source_id, edge.target_id)))):
         if not link.valid or link.source_id not in enabled or link.target_id not in enabled:
             continue
         if link.source_id == link.target_id:
@@ -97,6 +97,7 @@ def _evaluate_router_subset(
     clients: Sequence[Site],
     routers: Sequence[Site],
     requested_paths: int,
+    priority: OptimizationPriority = OptimizationPriority.MAXIMUM_RELIABILITY,
 ) -> _EvaluatedTopology | None:
     selected_ids = [*(client.id for client in clients), *(router.id for router in routers)]
     graph = full_graph.subgraph(selected_ids).copy()
@@ -116,14 +117,22 @@ def _evaluate_router_subset(
     minimum_degree = min((graph.degree[node] for node in graph), default=0)
     site_quality = sum(router.site_quality for router in routers)
     total_distance = sum(float(attributes["distance"]) for _, _, attributes in graph.edges(data=True))
-    score = (
-        float(achieved_paths),
+    quality_score = (
         minimum_pair_margin,
         float(minimum_degree),
         mean_margin,
         site_quality,
         -total_distance,
     )
+    if priority == OptimizationPriority.MAXIMUM_RELIABILITY:
+        score = (float(achieved_paths), *quality_score)
+    elif priority == OptimizationPriority.MINIMUM_INFRASTRUCTURE:
+        score = (-sum(100 + router.antenna_height_m for router in routers), *quality_score)
+    else:
+        score = (minimum_pair_margin,
+                 min(attributes["link"].minimum_fresnel_clearance_ratio for _, _, attributes in graph.edges(data=True)),
+                 -sum(router.antenna_height_m for router in routers),
+                 site_quality, -total_distance)
     selected_links: list[LinkResult] = []
     for left, right in sorted((min(a, b), max(a, b)) for a, b in graph.edges):
         selected_links.append(graph.edges[left, right]["link"])
@@ -296,7 +305,7 @@ def solve_topologies(
     solution.  Small candidate sets are solved exactly; large terrain-derived
     sets use a bounded deterministic beam search.
     """
-    enabled_sites = [site for site in sites if site.enabled]
+    enabled_sites = sorted((site for site in sites if site.enabled), key=lambda s: s.id)
     ids = [site.id for site in enabled_sites]
     if len(ids) != len(set(ids)):
         raise ValueError("Site IDs must be unique")
@@ -339,7 +348,7 @@ def solve_topologies(
         for routers in _router_combinations(
             required, optional, router_count, heuristic_layers
         ):
-            evaluated = _evaluate_router_subset(graph, clients, routers, requested_paths)
+            evaluated = _evaluate_router_subset(graph, clients, routers, requested_paths, effective_priority)
             if evaluated is None:
                 continue
             if best is None or evaluated.score > best.score or (
@@ -368,6 +377,13 @@ def select_active_solution_index(
     """Return the preferred alternative without changing dropdown ordering."""
     if not alternatives:
         return -1
+    if priority == OptimizationPriority.MINIMUM_INFRASTRUCTURE:
+        def infrastructure_score(index: int) -> tuple[float, float, tuple[str, ...]]:
+            solution = alternatives[index]
+            routers = set(solution.router_ids)
+            cost = sum(100 + site.antenna_height_m for site in solution.sites if site.id in routers)
+            return cost, -solution.minimum_margin_db, tuple(sorted(routers))
+        return min(range(len(alternatives)), key=infrastructure_score)
     if priority != OptimizationPriority.MAXIMUM_RELIABILITY:
         return min(range(len(alternatives)), key=lambda index: alternatives[index].router_count)
 

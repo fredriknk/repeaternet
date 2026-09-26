@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import heapq
-
 import networkx as nx
 
 from rf_router_planner.models.link import LinkResult
@@ -27,26 +25,44 @@ def lexicographic_minimum_hop_path(graph: nx.Graph, source: str, target: str) ->
     if target not in distances:
         return None
     target_hops = distances[target]
-    # score=(bottleneck margin, worst Fresnel ratio, -mast total, site quality, -distance)
-    best: dict[str, tuple[tuple[float, float, float, float, float], list[str]]] = {
-        source: ((float("inf"), float("inf"), 0.0, 0.0, 0.0), [source])
+    if source == target:
+        return [source]
+    remaining = nx.single_source_shortest_path_length(graph, target)
+    dag = nx.DiGraph()
+    for node in sorted(distances):
+        for neighbor in sorted(graph.neighbors(node)):
+            if distances.get(neighbor) == distances[node] + 1 and distances[node] + 1 + remaining.get(neighbor, target_hops + 1) == target_hops:
+                dag.add_edge(node, neighbor, link=graph.edges[node, neighbor]["link"])
+    # Solve the bottleneck criteria one at a time. A single lexicographic label
+    # at an intermediate node is unsafe: a later weak edge can erase its lead,
+    # making a previously discarded path better on the next criterion.
+    for attribute in ("worst_margin_db", "minimum_fresnel_clearance_ratio"):
+        widest = {source: float("inf")}
+        for node in sorted(dag, key=lambda n: (distances[n], n)):
+            if node not in widest:
+                continue
+            for neighbor in dag.successors(node):
+                value = min(widest[node], getattr(dag.edges[node, neighbor]["link"], attribute))
+                widest[neighbor] = max(widest.get(neighbor, -float("inf")), value)
+        threshold = widest[target]
+        dag.remove_edges_from([(u, v) for u, v, data in dag.edges(data=True) if getattr(data["link"], attribute) < threshold])
+    best: dict[str, tuple[tuple[float, float, float], list[str]]] = {
+        source: ((0.0, 0.0, 0.0), [source])
     }
     for depth in range(target_hops):
-        for node in [n for n, value in distances.items() if value == depth and n in best]:
+        for node in sorted(n for n, value in distances.items() if value == depth and n in best):
             score, path = best[node]
-            for neighbor in graph.neighbors(node):
+            for neighbor in sorted(dag.successors(node)):
                 if distances.get(neighbor) != depth + 1:
                     continue
                 link: LinkResult = graph.edges[node, neighbor]["link"]
                 site: Site = graph.nodes[neighbor]["site"]
                 next_score = (
-                    min(score[0], link.worst_margin_db),
-                    min(score[1], link.minimum_fresnel_clearance_ratio),
-                    score[2] - (site.antenna_height_m if neighbor != target else 0.0),
-                    score[3] + site.site_quality,
-                    score[4] - link.distance_m,
+                    score[0] - (site.antenna_height_m if neighbor != target else 0.0),
+                    score[1] + site.site_quality,
+                    score[2] - link.distance_m,
                 )
-                if neighbor not in best or next_score > best[neighbor][0]:
+                if neighbor not in best or next_score > best[neighbor][0] or (next_score == best[neighbor][0] and [*path, neighbor] < best[neighbor][1]):
                     best[neighbor] = (next_score, [*path, neighbor])
     return best.get(target, ((), None))[1]
 
@@ -70,26 +86,18 @@ def maximum_reliability_path(graph: nx.Graph, source: str, target: str) -> list[
     """Widest path by worst RF margin, with fewer hops and Fresnel as tie-breakers."""
     if source not in graph or target not in graph:
         return None
-    best: dict[str, tuple[float, int, float]] = {source: (float("inf"), 0, float("inf"))}
-    paths: dict[str, list[str]] = {source: [source]}
-    queue: list[tuple[float, int, float, str]] = [(-float("inf"), 0, -float("inf"), source)]
-    while queue:
-        _negative_margin, _hops, _negative_fresnel, node = heapq.heappop(queue)
-        if node == target:
-            return paths[node]
-        margin, negative_hops, fresnel = best[node]
-        for neighbor in graph.neighbors(node):
-            link: LinkResult = graph.edges[node, neighbor]["link"]
-            score = (
-                min(margin, link.worst_margin_db),
-                negative_hops - 1,
-                min(fresnel, link.minimum_fresnel_clearance_ratio),
-            )
-            if neighbor not in best or score > best[neighbor]:
-                best[neighbor] = score
-                paths[neighbor] = [*paths[node], neighbor]
-                heapq.heappush(queue, (-score[0], -score[1], -score[2], neighbor))
-    return None
+    if source == target:
+        return [source]
+    weighted = nx.Graph()
+    weighted.add_nodes_from(graph)
+    weighted.add_edges_from((u, v, {"weight": data["link"].worst_margin_db}) for u, v, data in graph.edges(data=True))
+    tree = nx.maximum_spanning_tree(weighted)
+    if not nx.has_path(tree, source, target):
+        return None
+    path = nx.shortest_path(tree, source, target)
+    threshold = min(tree.edges[a, b]["weight"] for a, b in zip(path, path[1:], strict=False))
+    eligible = nx.subgraph_view(graph, filter_edge=lambda a, b: graph.edges[a, b]["link"].worst_margin_db >= threshold)
+    return lexicographic_minimum_hop_path(eligible, source, target)
 
 
 def select_path(

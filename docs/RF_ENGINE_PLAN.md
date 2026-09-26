@@ -53,7 +53,7 @@ optimality over continuous terrain.
   during validation. Guarantees apply to the generated candidate set and selected
   edge pool, not all possible sites or arbitrary larger meshes.
 
-### M3 — Correct route and topology objectives [in progress]
+### M3 — Correct route and topology objectives [complete]
 
 - Fix shortest-hop tie-breaking when a later bottleneck erases an earlier lead.
 - Make topology ranking honor minimum repeaters, installation/mast cost and
@@ -62,7 +62,7 @@ optimality over continuous terrain.
 - Test adversarial converging paths, cheap mast alternatives, reliability and
   input-order invariance with exhaustive small-graph references.
 
-### M4 — Responsive and bounded topology search [pending]
+### M4 — Responsive and bounded topology search [in progress]
 
 - Thread cancellation through exact enumeration, beam expansion and validation.
 - Prune disconnected candidate components before combinatorial work.
@@ -106,6 +106,14 @@ changes and are not prerequisites for this release.
   Full suite before new scenarios: 55 passed. Eight screening tests pass,
   including hidden two-router vs three-router, 29 rejected alternatives, coarse
   rejection recovery and cancellation during validation.
+- M2 commit: `f82b4db`.
+- M3: shortest-hop routing solves margin and Fresnel thresholds before additive
+  tie-breakers, avoiding invalid prefix dominance. Widest routing uses a maximum
+  spanning-tree bottleneck followed by constrained shortest-hop optimization.
+  Topology objectives now distinguish infrastructure cost (100 installation units
+  plus mast metres), minimum count and reliability. Site ordering is deterministic.
+  Twelve graph/topology tests pass, including 40 seeded exhaustive graph oracles,
+  later-bottleneck regression, mast-cost tradeoff and reordered inputs.
 
 ## Reference
 

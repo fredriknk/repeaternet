@@ -184,3 +184,28 @@ def test_site_origin_and_topology_settings_round_trip(tmp_path) -> None:
     assert loaded.selected_routers[0].enabled
     assert loaded.candidate_settings.maximum_solution_routers == 4
     assert loaded.candidate_settings.reliability_paths == 3
+
+
+def test_infrastructure_can_prefer_two_short_masts_over_one_tall_mast():
+    a, b = client("A", 0), client("B", 10)
+    tall, left, right = router("tall", 5), router("left", 3), router("right", 7)
+    tall.antenna_height_m = 200
+    left.antenna_height_m = right.antenna_height_m = 3
+    links = [link("A", "tall"), link("tall", "B"), link("A", "left"), link("left", "right"), link("right", "B")]
+    settings = CandidateSettings(maximum_solution_routers=2, priority=OptimizationPriority.MINIMUM_INFRASTRUCTURE)
+    alternatives = solve_topologies([a, b, tall, left, right], links, settings)
+    selected = alternatives[select_active_solution_index(alternatives, settings.priority)]
+    assert set(selected.router_ids) == {"left", "right"}
+    assert alternatives[select_active_solution_index(alternatives, OptimizationPriority.MINIMUM_ROUTERS)].router_ids == ["tall"]
+
+
+def test_topology_selection_is_stable_under_input_reversal():
+    a, b = client("A", 0), client("B", 10)
+    x, y = router("X", 4), router("Y", 6)
+    sites = [a, b, x, y]
+    edges = [link("A", "X"), link("X", "B"), link("A", "Y"), link("Y", "B")]
+    settings = CandidateSettings(maximum_solution_routers=1)
+    forward = solve_topologies(sites, edges, settings)
+    reverse = solve_topologies(sites[::-1], edges[::-1], settings)
+    assert forward[0].router_ids == reverse[0].router_ids == ["X"]
+    assert forward[0].client_paths == reverse[0].client_paths
