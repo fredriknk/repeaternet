@@ -102,6 +102,9 @@ def main() -> None:
                     for name in ("from_a", "to_b", "frontier_pairs", "seen_pairs", "cross_links"):
                         container = frame.f_locals.get(name)
                         if container is not None:
+                            if not isinstance(container, (list, set, dict)):
+                                row[name] = "streamed"
+                                continue
                             row[name] = len(container)
                             if name in {"frontier_pairs", "seen_pairs"}:
                                 row[name + "_mib"] = round(

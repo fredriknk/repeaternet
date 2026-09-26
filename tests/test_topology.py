@@ -26,6 +26,25 @@ def client(site_id: str, x: float) -> Site:
     return Site(site_id, x, 0, kind=SiteKind.CLIENT)
 
 
+def test_known_feasible_seed_survives_empty_heuristic_beam(monkeypatch):
+    monkeypatch.setattr("rf_router_planner.optimization.topology._EXACT_COMBINATION_LIMIT", 0)
+    monkeypatch.setattr(
+        "rf_router_planner.optimization.topology._heuristic_router_layers", lambda *a: {}
+    )
+    sites = [client("A", 0), client("B", 100), router("L", 25), router("R", 75)]
+    edges = [link("A", "L"), link("L", "R"), link("R", "B")]
+    settings = CandidateSettings(maximum_solution_routers=2, reliability_paths=1)
+    assert not solve_topologies(sites, edges, settings)
+    solutions = solve_topologies(sites, edges, settings, seed_router_subsets=[["L", "R"]])
+    assert len(solutions) == 1
+    assert solutions[0].router_ids == ["L", "R"]
+    # Seeds do not bypass connectivity or required-router constraints.
+    assert not solve_topologies(sites, edges[:-1], settings, seed_router_subsets=[["L", "R"]])
+    sites.append(router("required", 50, required=True))
+    edges.append(link("L", "required"))
+    assert not solve_topologies(sites, edges, settings, seed_router_subsets=[["L", "R"]])
+
+
 def router(
     site_id: str,
     x: float,

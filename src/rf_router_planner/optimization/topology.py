@@ -309,13 +309,15 @@ def solve_topologies(
     settings: CandidateSettings,
     priority: OptimizationPriority | None = None,
     cancelled: Callable[[], bool] | None = None,
+    seed_router_subsets: Sequence[Sequence[str]] = (),
 ) -> list[NetworkSolution]:
     """Find the best feasible mesh for each exact router count.
 
     Every enabled endpoint/client is mandatory.  Enabled non-client sites are
     router candidates, and candidates marked ``required`` occur in every
     solution.  Small candidate sets are solved exactly; large terrain-derived
-    sets use a bounded deterministic beam search.
+    sets use a bounded deterministic beam search. Optional seed subsets are
+    evaluated alongside that search, under the same constraints and objective.
     """
     is_cancelled = cancelled or (lambda: False)
     if is_cancelled():
@@ -362,11 +364,31 @@ def solve_topologies(
         if needs_heuristic
         else {}
     )
+    # A bounded beam can lose a feasible route discovered by the exact low-hop
+    # pass. Score these subsets normally alongside the beam, without forcing
+    # them or bypassing RF certification/objective ranking.
+    routers_by_id = {site.id: site for site in router_candidates}
+    required_ids = {site.id for site in required}
+    seeds: dict[int, list[tuple[Site, ...]]] = {}
+    seen_seeds: set[tuple[str, ...]] = set()
+    for seed_ids in seed_router_subsets:
+        key = tuple(sorted(set(seed_ids)))
+        if (
+            key not in seen_seeds
+            and required_ids.issubset(key)
+            and all(site_id in routers_by_id for site_id in key)
+            and len(key) <= maximum_router_count
+        ):
+            seeds.setdefault(len(key), []).append(tuple(routers_by_id[site_id] for site_id in key))
+            seen_seeds.add(key)
     for router_count in range(len(required), maximum_router_count + 1):
         if is_cancelled():
             return []
         best: _EvaluatedTopology | None = None
-        for routers in _router_combinations(required, optional, router_count, heuristic_layers):
+        for routers in itertools.chain(
+            _router_combinations(required, optional, router_count, heuristic_layers),
+            seeds.get(router_count, ()),
+        ):
             if is_cancelled():
                 return []
             evaluated = _evaluate_router_subset(

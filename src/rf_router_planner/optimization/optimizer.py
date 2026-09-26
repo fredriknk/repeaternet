@@ -127,7 +127,37 @@ class RouteOptimizer:
             )
         except ValueError:
             return None
+        # Search needs scalar metrics; full terrain arrays are materialized only
+        # for the final alternatives shown to the user.
+        link.profile = None
         return link if link.valid else None
+
+    def _restore_profiles(
+        self,
+        links: list[LinkResult],
+        sites: list[Site],
+        notify: ProgressCallback,
+        is_cancelled: CancelCallback,
+    ) -> bool:
+        by_id = {site.id: site for site in sites}
+        unique = {(link.source_id, link.target_id): link for link in links}
+        notify("Preparing solution profiles", 0, len(unique))
+        for number, (key, link) in enumerate(unique.items(), 1):
+            if is_cancelled():
+                return False
+            if link.profile is None:
+                evaluated = self.evaluator.evaluate(
+                    by_id[key[0]], by_id[key[1]], self.candidate_settings.final_sample_step_m
+                )
+                if not evaluated.valid:
+                    raise ValueError(
+                        "Terrain or RF inputs changed while preparing solution profiles"
+                    )
+                link.profile = evaluated.profile
+            notify("Preparing solution profiles", number, len(unique))
+        for link in links:
+            link.profile = unique[(link.source_id, link.target_id)].profile
+        return not is_cancelled()
 
     def _find_low_hop_route(
         self,
@@ -185,32 +215,21 @@ class RouteOptimizer:
             ]
             return route, route_links
 
-        frontier_pairs: list[tuple[Site, Site]] = []
-        seen_pairs: set[tuple[str, str]] = set()
-        for left_site in from_a.values():
-            for right_site in to_b.values():
-                if left_site.id == right_site.id:
-                    continue
-                key = (
-                    (left_site.id, right_site.id)
-                    if left_site.id < right_site.id
-                    else (right_site.id, left_site.id)
-                )
-                if key in seen_pairs:
-                    continue
-                seen_pairs.add(key)
-                frontier_pairs.append((left_site, right_site))
-
+        # A shared candidate would already have produced a one-router route
+        # above, so the two endpoint-visible sets are disjoint. Stream their
+        # Cartesian product without allocating pairs or a deduplication set.
+        total_pairs = len(from_a) * len(to_b)
+        frontier_pairs = itertools.product(from_a.values(), to_b.values())
         cross_links: list[LinkResult] = []
-        notify("Checking two-repeater summit links", 0, len(frontier_pairs))
+        notify("Checking two-repeater summit links", 0, total_pairs)
         for number, (left_site, right_site) in enumerate(frontier_pairs, 1):
             if is_cancelled():
                 return None
             link = self._progressively_validate_link(left_site, right_site)
             if link is not None:
                 cross_links.append(link)
-            if number % 10 == 0 or number == len(frontier_pairs):
-                notify("Checking two-repeater summit links", number, len(frontier_pairs))
+            if number % 10 == 0 or number == total_pairs:
+                notify("Checking two-repeater summit links", number, total_pairs)
 
         final_links = [*endpoint_links, *cross_links]
         graph = build_graph(sites, final_links)
@@ -360,6 +379,9 @@ class RouteOptimizer:
             validated_keys.add(key)
             if final is not None:
                 link_by_key[key] = final
+        low_hop = None
+        low_hop_checked = False
+        seed_router_subsets: list[list[str]] = []
         if (
             not network_mode
             and self.candidate_settings.priority == OptimizationPriority.MINIMUM_ROUTERS
@@ -374,10 +396,12 @@ class RouteOptimizer:
                 endpoint_b,
             ]
             low_hop = self._find_low_hop_route(ordered, notify, is_cancelled)
+            low_hop_checked = True
             if (
                 low_hop is not None
                 and len(low_hop[0]) - 2 <= self.candidate_settings.maximum_solution_routers
             ):
+                seed_router_subsets.append([site.id for site in low_hop[0][1:-1]])
                 for link in low_hop[1]:
                     key = frozenset((link.source_id, link.target_id))
                     link_by_key[key] = link
@@ -393,6 +417,7 @@ class RouteOptimizer:
                 list(link_by_key.values()),
                 self.candidate_settings,
                 cancelled=is_cancelled,
+                seed_router_subsets=seed_router_subsets,
             )
             if not alternatives:
                 break
@@ -429,6 +454,8 @@ class RouteOptimizer:
                             self.candidate_settings.final_sample_step_m,
                         )
                         final = candidate if candidate.valid else None
+                        if final is not None:
+                            final.profile = None
                 except ValueError:
                     final = None
                 validated_keys.add(key)
@@ -444,10 +471,18 @@ class RouteOptimizer:
             list(link_by_key.values()),
             self.candidate_settings,
             cancelled=is_cancelled,
+            seed_router_subsets=seed_router_subsets,
         )
         if is_cancelled():
             return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
         if alternatives:
+            if not self._restore_profiles(
+                [link for solution in alternatives for link in solution.links],
+                sites,
+                notify,
+                is_cancelled,
+            ):
+                return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
             active_index = select_active_solution_index(
                 alternatives, self.candidate_settings.priority
             )
@@ -473,13 +508,16 @@ class RouteOptimizer:
             and self.candidate_settings.priority != OptimizationPriority.MAXIMUM_RELIABILITY
         ):
             notify("Checking long summit alternatives", 0, 1)
-            low_hop = self._find_low_hop_route(sites, notify, is_cancelled)
+            if not low_hop_checked:
+                low_hop = self._find_low_hop_route(sites, notify, is_cancelled)
             if is_cancelled():
                 return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
             if low_hop is not None:
                 fallback_route, fallback_links = low_hop
                 router_ids = [site.id for site in fallback_route[1:-1]]
                 if len(router_ids) <= self.candidate_settings.maximum_solution_routers:
+                    if not self._restore_profiles(fallback_links, sites, notify, is_cancelled):
+                        return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
                     solution = NetworkSolution(
                         name=f"{len(router_ids)} router" + ("s" if len(router_ids) != 1 else ""),
                         sites=list(fallback_route),
@@ -489,10 +527,10 @@ class RouteOptimizer:
                         client_paths={
                             (endpoint_a.id, endpoint_b.id): [[site.id for site in fallback_route]]
                         },
-                        requested_path_count=1,
+                        requested_path_count=max(1, self.candidate_settings.reliability_paths),
                         achieved_path_count=1,
                         diagnostics=[
-                            "Long summit links were used after the local mesh graph was disconnected."
+                            "A certified low-hop route was retained after topology search found no alternative."
                         ],
                     )
                     return OptimizationResult(

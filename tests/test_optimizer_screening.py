@@ -1,8 +1,14 @@
+import tracemalloc
+import weakref
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 
 from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.settings import CandidateSettings, OptimizationPriority, RFSettings
 from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.optimization.graph import build_graph, select_path
 from rf_router_planner.optimization.optimizer import RouteOptimizer, screening_pair_indices
 from rf_router_planner.terrain.raster import ArrayTerrain
 
@@ -347,5 +353,133 @@ def test_pre_cancelled_search_skips_candidate_generation(monkeypatch):
         ArrayTerrain(np.zeros((3, 101)), resolution_m=1), RFSettings(), CandidateSettings()
     )
     result = optimizer.optimize(Site("A", 0, 0), Site("B", 100, 0), cancelled=lambda: True)
+    assert not result.found
+    assert result.diagnostics == ["Optimization cancelled"]
+
+
+def test_dense_low_hop_search_releases_profiles_and_matches_reference():
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
+    b = Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    left = [Site(f"L{i:02}", 25, i) for i in range(20)]
+    right = [Site(f"R{i:02}", 75, i) for i in range(20)]
+    pairs = [(a, s) for s in left] + [(s, b) for s in right]
+    pairs += [(u, v) for u in left for v in right]
+    live = weakref.WeakValueDictionary()
+    peak = 0
+
+    class WithProfiles(ChainOnlyEvaluator):
+        def evaluate(self, source, target, step):
+            nonlocal peak
+            result = super().evaluate(source, target, step)
+            samples = np.zeros(8192)
+            live[id(samples)] = samples
+            peak = max(peak, len(live))
+            result.profile = SimpleNamespace(samples=samples)
+            return result
+
+    evaluator = WithProfiles({ChainOnlyEvaluator._edge(u, v) for u, v in pairs})
+    sites = [a, *left, *right, b]
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((30, 110)), resolution_m=1), RFSettings(), CandidateSettings()
+    )
+    optimizer.evaluator = evaluator
+    result = optimizer._find_low_hop_route(sites, lambda *_: None, lambda: False)
+    reference = build_graph(sites, [ChainOnlyEvaluator._result(u, v, True, 20) for u, v in pairs])
+    assert result is not None
+    assert [s.id for s in result[0]] == select_path(
+        reference, "A", "B", OptimizationPriority.MINIMUM_ROUTERS
+    )
+    assert peak <= 2  # Bound live payloads independently of hundreds of accepted links.
+    assert not live
+    assert all(link.profile is None for link in result[1])
+
+
+def test_large_frontier_cancels_before_quadratic_pair_allocation():
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
+    b = Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    left = [Site(f"L{i}", 25, i) for i in range(400)]
+    right = [Site(f"R{i}", 75, i) for i in range(400)]
+    evaluator = ChainOnlyEvaluator(
+        {
+            ChainOnlyEvaluator._edge(u, v)
+            for u, v in [(a, s) for s in left] + [(s, b) for s in right]
+        }
+    )
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((2, 2)), resolution_m=1), RFSettings(), CandidateSettings()
+    )
+    optimizer.evaluator = evaluator
+    stopped = False
+
+    def progress(stage, done, total):
+        nonlocal stopped
+        if stage == "Checking two-repeater summit links":
+            assert total == 160_000
+            stopped = True
+
+    tracemalloc.start()
+    try:
+        result = optimizer._find_low_hop_route([a, *left, *right, b], progress, lambda: stopped)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result is None and stopped
+    assert peak < 4 * 1024**2  # Generous graph allowance; old pair list/set exceeded 20 MiB.
+
+
+@pytest.mark.parametrize("found", [False, True])
+@pytest.mark.parametrize(
+    "priority", [OptimizationPriority.MINIMUM_ROUTERS, OptimizationPriority.MINIMUM_INFRASTRUCTURE]
+)
+def test_fallback_reuses_low_hop_result_and_restores_profiles(monkeypatch, found, priority):
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
+    b = Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((2, 101)), resolution_m=1),
+        RFSettings(),
+        CandidateSettings(priority=priority),
+    )
+    original = optimizer._find_low_hop_route
+    calls = 0
+
+    def low_hop(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args) if found else None
+
+    monkeypatch.setattr(optimizer, "_find_low_hop_route", low_hop)
+    monkeypatch.setattr(
+        "rf_router_planner.optimization.optimizer.solve_topologies", lambda *a, **kw: []
+    )
+    result = optimizer.optimize(a, b, candidates=[a, b])
+    assert calls == 1
+    assert result.found == found
+    if found:
+        assert all(link.profile is not None for link in result.links)
+        assert not result.active_solution.resilient  # Default requests two independent paths.
+
+
+def test_all_alternative_profiles_restored_and_preparation_cancellable():
+    a = Site("A", 0, 0, kind=SiteKind.ENDPOINT_A)
+    b = Site("B", 100, 0, kind=SiteKind.ENDPOINT_B)
+    sites = [a, Site("R", 50, 1), b]
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((3, 101)), resolution_m=1), RFSettings(), CandidateSettings()
+    )
+    result = optimizer.optimize(a, b, candidates=sites)
+    assert len(result.alternatives) >= 2
+    assert all(
+        link.profile is not None for solution in result.alternatives for link in solution.links
+    )
+    stopped = False
+
+    def progress(stage, done, total):
+        nonlocal stopped
+        if stage == "Preparing solution profiles" and done == 1:
+            stopped = True
+
+    result = optimizer.optimize(
+        a, b, candidates=sites, progress=progress, cancelled=lambda: stopped
+    )
     assert not result.found
     assert result.diagnostics == ["Optimization cancelled"]

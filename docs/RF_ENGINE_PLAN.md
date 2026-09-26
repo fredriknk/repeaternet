@@ -329,7 +329,8 @@ add the selection workflow to the desktop UI.
 
 ### Scaling investigation — 2026-09-26
 
-Investigation complete; production remediation remains open. Added
+Investigation complete; production remediation was open at this point and is
+completed in the subsequent remediation section below. Added
 [`tools/profile_rf_search.py`](../tools/profile_rf_search.py), which instruments
 the existing benchmark in a separate process, counts live profile-array payloads
 using weak references, reports peak process working set and pair-container sizes,
@@ -413,6 +414,58 @@ All recorded runs used the real RF evaluator. The completed baseline/experimenta
 800-site pair performed the same 48,271 evaluations; the 2,000-site reuse
 experiment performed 243,211. The diagnostic script passes Ruff; application
 source was unchanged, so this investigation did not rerun the application suite.
+
+## Scaling remediation — complete, 2026-09-26
+
+- [x] Release terrain-profile arrays after search evaluation; restore profiles
+  only for final returned alternatives, including fallback routes.
+- [x] Stream disjoint endpoint-frontier pairs and reuse a completed low-hop search.
+- [x] Score known feasible low-hop subsets alongside the topology heuristic.
+- [x] Verify dense-search memory, cancellation, seed preservation, fallback
+  reuse and charts/exports; run full regressions and repeat scaling measurements.
+- [x] Record results and commit the completed remediation milestone.
+
+The application now retains scalar metrics during both low-hop exploration and
+iterative final certification. After selecting alternatives, it rebuilds profiles
+once per distinct returned link at final resolution, checks validity again, and
+honors cancellation while preparing those profiles. All alternatives receive
+profiles, not just the active route. Fallback retains the requested reliability
+count instead of silently reporting a one-path request.
+
+Endpoint-visible sets are disjoint whenever no zero/one-router route exists, so
+their Cartesian product can be streamed without deduplication storage. A low-hop
+result (including no route) is reused within the current optimize call. Known
+feasible low-hop router subsets are also scored under the normal topology
+constraints and objective, so a beam miss cannot silently discard that solution.
+
+Repeated the same 100 km optional-anchor workload in fresh processes, with all
+experimental omission/reuse flags **off**:
+
+| Candidates | Production optimize time | Peak working set | Peak live profile arrays | Result |
+| ---: | ---: | ---: | ---: | --- |
+| 800 | 13.014 s | 94.0 MiB | 0.58 MiB | Two routers, 10 distinct profiles across alternatives |
+| 2,000 | 62.557 s | 135.2 MiB | 0.34 MiB | Two routers, 3 returned profiles; one low-hop scan |
+
+At 800 sites, the route IDs, margins and alternative router lists match the
+566.5 MiB baseline exactly: about 83% less peak memory, with ten extra RF
+evaluations to restore the displayed profiles. At 2,000 sites, the route remains
+`A -> C0201 -> C1803 -> B`, with the same per-edge metrics as the earlier reuse
+experiment. It now survives topology selection without needing fallback. Link
+ordering follows the normal topology representation. The 214,080-pair scan still
+takes about 56 seconds: this fixes memory retention and repeated work, not the
+quadratic worst-case number of RF evaluations. Retained scalar edge metrics also
+still grow with the number of valid links. Timings are single-run observations.
+
+Verification includes eight new cases covering dense-search profile lifetime
+and graph-reference route equivalence; cancellation before enumerating a 160,000
+pair frontier with a 4 MiB allocation ceiling; cached success/failure for both
+minimum-router and infrastructure modes; profile restoration for all alternatives
+and fallback; cancellation during restoration; and preserving a feasible seed
+when the heuristic beam misses it. Existing browser upload/optimize/profile/CSV/
+GeoJSON integration tests pass. Full suite: **78 passed** (13 non-failing
+dependency warnings); Ruff passes across `src`, `tests` and `tools`; mypy passes
+across all 40 source files; whitespace checks pass. The completed milestone commit is named
+`fix: bound RF search memory and retain feasible low-hop routes`.
 
 ## Reference
 
