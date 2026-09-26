@@ -10,6 +10,8 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
 from rf_router_planner.integrations.corescope import CoreScopeClient, CoreScopeRepeater
+from rf_router_planner.models.network import NetworkSolution
+from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
 from rf_router_planner.web import create_app
 
@@ -79,6 +81,20 @@ def test_real_route_upload_optimize_profile_export(client):
     result = client.get("/api/result").json()
     assert result["found"]
     assert result["router_count"] == 0
+    assert result["active_alternative_id"]
+    assert result["alternatives"]
+    alternative = next(
+        item for item in result["alternatives"] if item["id"] == result["active_alternative_id"]
+    )
+    assert alternative["selected"]
+    assert alternative["primary_distance_m"] > 0
+    assert alternative["total_link_distance_m"] >= alternative["primary_distance_m"]
+    misses = client.get("/api/state").json()["rf_cache"]["misses"]
+    selected = client.post(
+        f"/api/alternatives/{result['active_alternative_id']}/select"
+    ).json()
+    assert selected["active_alternative_id"] == result["active_alternative_id"]
+    assert client.get("/api/state").json()["rf_cache"]["misses"] == misses
     assert len(result["links"][0]["profile"]["distances_m"]) > 2
     assert client.get("/api/export/csv").text.startswith("hop,from,to")
     assert client.get("/api/export/geojson").json()["type"] == "FeatureCollection"
@@ -119,6 +135,72 @@ def test_real_route_upload_optimize_profile_export(client):
     assert client.get("/api/result").status_code == 404
 
 
+def test_selecting_an_alternative_changes_active_route_without_search(client, monkeypatch):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+
+    def fake_optimize(self, endpoint_a, endpoint_b, **kwargs):
+        del self, kwargs
+        x = (endpoint_a.x + endpoint_b.x) / 2
+        y = (endpoint_a.y + endpoint_b.y) / 2
+        manual = Site(
+            "M-alt",
+            x,
+            y,
+            kind=SiteKind.ROUTER,
+            origin=SiteOrigin.MANUAL,
+        )
+        direct = NetworkSolution(
+            "0 routers",
+            [endpoint_a, endpoint_b],
+            [],
+            [endpoint_a.id, endpoint_b.id],
+            [],
+            {("A", "B"): [["A", "B"]]},
+        )
+        via_manual = NetworkSolution(
+            "1 router",
+            [endpoint_a, manual, endpoint_b],
+            [],
+            [endpoint_a.id, endpoint_b.id],
+            [manual.id],
+            {("A", "B"): [["A", manual.id, "B"]]},
+        )
+        return OptimizationResult([], [], [], [], alternatives=[direct, via_manual])
+
+    monkeypatch.setattr(RouteOptimizer, "optimize", fake_optimize)
+    response = client.post(
+        "/api/optimize",
+        json={"a": a, "b": b, "rf": {}, "candidates": {"maximum_candidates": 20}},
+    )
+    assert response.status_code == 200, response.text
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] not in {"running", "queued"}:
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete", job
+    before = client.get("/api/result").json()
+    assert before["router_count"] == 0
+    selected_id = next(item["id"] for item in before["alternatives"] if item["router_count"] == 1)
+    revision = before["input_revision"]
+    misses = client.get("/api/state").json()["rf_cache"]["misses"]
+    selected = client.post(f"/api/alternatives/{selected_id}/select").json()
+    assert selected["active_alternative_id"] == selected_id
+    assert selected["router_count"] == 1
+    assert "M-alt" in {site["id"] for site in selected["route"]}
+    assert selected["input_revision"] == revision
+    assert client.get("/api/state").json()["rf_cache"]["misses"] == misses
+    exported = client.get("/api/export/geojson").json()
+    assert "M-alt" in {
+        feature["properties"]["id"]
+        for feature in exported["features"]
+        if feature["geometry"]["type"] == "Point"
+    }
+
+
 def test_quick_effort_reports_resolved_search_scope(client):
     assert (
         client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
@@ -146,6 +228,7 @@ def test_quick_effort_reports_resolved_search_scope(client):
         "generated_candidate_limit": 200,
         "known_router_count": 0,
         "excluded_router_count": 0,
+        "manual_router_count": 0,
         "infrastructure_policy": "existing_and_proposed",
     }
     assert job["started_at"] > 0
@@ -352,6 +435,49 @@ def test_existing_only_uses_required_router_without_generating_sites(client, mon
     assert result["router_count"] == 1
     assert result["existing_router_count"] == 1
     assert result["proposed_router_count"] == 0
+
+
+def test_manual_proposed_router_is_a_fixed_height_search_site(client):
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    latitude, longitude = reversed(reverse.transform(500450, 6650500))
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    response = client.post(
+        "/api/optimize",
+        json={
+            "a": a,
+            "b": b,
+            "rf": {"router": {"height_agl_m": 5}},
+            "candidates": {
+                "maximum_candidates": 20,
+                "maximum_solution_routers": 1,
+                "refine_radius_m": 0,
+            },
+            "manual_routers": [
+                {
+                    "id": "M-test",
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "antenna_height_m": 37,
+                    "policy": "required",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] not in {"running", "queued"}:
+            break
+        time.sleep(0.02)
+    assert job["state"] == "complete", job
+    result = client.get("/api/result").json()
+    manual_site = next(site for site in result["route"] if site["id"] == "M-test")
+    assert manual_site["origin"] == "manual"
+    assert manual_site["antenna_height_m"] == 37
+    assert manual_site["height_override"]
+    assert client.get("/api/export/project").json()["manual_routers"][0]["policy"] == "required"
 
 
 def test_excluded_existing_router_does_not_enter_existing_only_graph(client):

@@ -19,3 +19,13 @@
 .terrain-tools .check-line{display:flex;align-items:center;gap:7px}
 .terrain-tools .check-line input{width:auto}
 #coverage-note.error{color:#b44735}
+.known-router.manual-router{align-items:end;flex-wrap:wrap}
+.manual-router label{flex:1 1 88px;min-width:82px;font-size:10px}
+.manual-router input,.manual-router select{width:100%;margin-top:4px;padding:5px}
+.manual-router .remove-router{flex:0 0 auto;padding:5px 8px}
+#alternatives{display:grid;grid-template-columns:minmax(150px,240px) 1fr;gap:4px 12px;align-items:center;margin:10px 0;padding:10px;background:#f2f6f2;border:1px solid var(--border);border-radius:7px}
+#alternatives label{font-size:12px;font-weight:650}
+#alternatives select{width:100%}
+#alternatives .hint{grid-column:1/-1;margin:0}
+#status.stale{color:#895e26;background:#fff6e4;border-left:3px solid #d69a45;padding:7px 9px}
+.map-tools{flex-wrap:wrap}

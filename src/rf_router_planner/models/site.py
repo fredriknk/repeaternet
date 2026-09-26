@@ -48,6 +48,7 @@ class Site:
     origin: SiteOrigin = SiteOrigin.OPTIMIZED
     required: bool = False
     enabled: bool = True
+    height_override: bool = False
 
     @property
     def obstruction_height_m(self) -> float | None:

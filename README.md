@@ -31,10 +31,14 @@ server process: optimization state is managed in that process. Set
 2. Click A/B and then the map, drag markers, or enter latitude/longitude. The
    map outlines loaded terrain and highlights sampled nodata gaps.
 3. Optionally load nearby CoreScope routers and mark each Optional, Required, or
-   Excluded. Choose existing-only, proposed-only, or mixed infrastructure and a
-   route objective, then select **Find repeater route**.
-4. Select a hop for its terrain/Fresnel profile and RF budget. Export CSV or
-   GeoJSON, or save a `.webplan.json` file to reopen settings and endpoints.
+   Excluded. You can also place proposed routers on the map, edit their antenna
+   heights, or drag a proposed route marker to pin it as a required site. Choose
+   an infrastructure policy and route objective, then select **Find repeater route**.
+4. Compare exact-router-count alternatives and switch the active route without
+   rerunning RF evaluation. Use Undo/Redo for plan edits; changed inputs visibly
+   mark the old route stale and disable its exports until it is revalidated.
+   Select a hop for its terrain/Fresnel profile and RF budget. Export CSV or
+   GeoJSON, or save a `.webplan.json` file to reopen settings and sites.
 
 Ground and surface tiles can be cleared separately. Clearing tiles permanently
 removes those terrain copies from that browser's server workspace. Prepared
@@ -43,10 +47,9 @@ full DTM/optional-DOM generation validates. Plan files do not embed terrain.
 Kartverket preparation and basemap tiles need internet access; uploaded terrain
 and RF calculations run locally. Browser assets, including Leaflet, are bundled.
 
-The web workflow currently covers two-endpoint planning and existing CoreScope
-router candidates. Desktop multi-client network editing, contour generation,
-manual router editing, and desktop `.rfplan.json` projects remain available in
-the desktop app:
+The web workflow currently covers two-endpoint planning with existing CoreScope
+and proposed router candidates. Desktop multi-client network editing, contour
+generation, and desktop `.rfplan.json` projects remain available in the desktop app:
 
 ```sh
 python -m pip install -e ".[desktop]"

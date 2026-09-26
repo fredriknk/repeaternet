@@ -325,10 +325,9 @@ Acceptance:
 
 Primary areas: `terrain/kartverket.py`, raster metadata, web background jobs,
 map coverage layers and mocked provider tests.
-Commit: `feat: prepare and validate terrain from the web planner` (record hash
-in the progress log after commit).
+Commit: `1ecd0f3 feat: prepare and validate terrain from the web planner`.
 
-### P5 — Alternative comparison and map editing [planned]
+### P5 — Alternative comparison and map editing [implemented]
 
 Implementation:
 
@@ -343,14 +342,33 @@ Implementation:
 - Keep map, table, profile, selected alternative and exports synchronized.
   Load larger profiles on demand if payload measurements justify it.
 
+Implementation notes:
+
+- `/api/result` now carries topology-derived alternative IDs and concise metrics
+  (existing/proposed counts, weakest link margin, total network-link and
+  primary-path distance, achieved/requested independent paths). `/api/alternatives/{id}/select` switches
+  the active `NetworkSolution` without starting a search or changing the input
+  revision; CSV/GeoJSON exports read that selected solution.
+- Plan files accept additive `manual_routers` entries. These can be placed,
+  moved, assigned optional/required/excluded policy, and given a per-site antenna
+  height in the web UI. Dragging a generated proposed route site creates a
+  required manual site; MeshCore physical sites are not draggable. Existing
+  P2 RF-link cache reuse limits recalculation to changed link inputs.
+- A 50-step plan undo/redo stack restores settings and site edits. Existing
+  certified results remain visible but are muted and explicitly marked stale;
+  stale exports and alternative switching are disabled until a new search
+  certifies the current inputs.
+
 Acceptance:
 
-- Switching alternatives performs no unnecessary RF search. Edits trigger only
-  the required recomputation, measured with P0/P2 counters.
-- Selected-alternative exports match the map and table. Undo restores settings
-  and a valid corresponding snapshot or correctly triggers revalidation.
-- Keyboard operation, readable narrow-screen layout and comprehensible loading/
-  stale/error states receive a browser walkthrough as well as API regression tests.
+- Switching alternatives leaves RF cache misses and the input revision unchanged;
+  the API regression test verifies that a different topology becomes active.
+- Manual-router integration verifies required-site inclusion and per-site antenna
+  height preservation. Selected-route serialization drives the map/table and
+  exports; Undo/Redo restore plan state and explicitly require revalidation.
+- API regression suite, Ruff, mypy and JavaScript syntax checks pass. A visual
+  browser walkthrough remains outstanding because no browser provider/window was
+  available in this environment; narrow-screen and keyboard checks are not claimed.
 
 Primary areas: web alternative/edit APIs, map UI, plan revisions and export tests.
 Commit: `feat: compare and edit route alternatives interactively`.
@@ -426,7 +444,7 @@ packaging change. Update README feature coverage and user instructions with each
 release. Keep every milestone independently reviewable and the working
 tree clean after its commit.
 
-- Planning baseline: P0–P4 are committed; P5–P7 remain planned. P3 adds the
+- Planning baseline: P0–P5 are committed; P6–P7 remain planned. P3 adds the
   `infrastructure_policy` setting and router
   `policy`/`provenance` plan fields; missing fields in older plans retain their
   previous behavior (mixed mode, selected known routers optional).

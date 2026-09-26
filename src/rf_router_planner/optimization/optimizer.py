@@ -354,7 +354,7 @@ class RouteOptimizer:
                 SiteKind.ENDPOINT_A,
                 SiteKind.ENDPOINT_B,
                 SiteKind.CLIENT,
-            }:
+            } and not site.height_override:
                 site.antenna_height_m = (
                     self.candidate_settings.maximum_router_height_m
                     if self.candidate_settings.optimize_heights

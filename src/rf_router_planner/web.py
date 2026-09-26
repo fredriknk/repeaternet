@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -53,6 +54,96 @@ def encode(value: Any) -> Any:
     if isinstance(value, np.bool_):
         return bool(value)
     return value
+
+
+def solution_id(solution: Any) -> str:
+    """Identify an alternative by its topology rather than its list position."""
+    signature = json.dumps(
+        {
+            "routers": sorted(solution.router_ids),
+            "paths": [
+                [list(path) for path in paths]
+                for _, paths in sorted(solution.client_paths.items())
+            ],
+        },
+        sort_keys=True,
+        default=list,
+        separators=(",", ":"),
+    )
+    return "alt-" + hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+
+
+def result_payload(
+    result: OptimizationResult,
+    job_id: str | None,
+    input_revision: int,
+    snapshot_version: int,
+) -> dict[str, Any]:
+    solution = result.active_solution
+    sites = solution.sites if solution else result.route
+    existing_router_count = (
+        solution.existing_router_count
+        if solution
+        else sum(site.origin == SiteOrigin.KNOWN for site in result.route[1:-1])
+    )
+    alternatives = []
+    for item in result.alternatives:
+        site_by_id = {site.id: site for site in item.sites}
+        primary_ids = item.primary_path_ids
+        primary_links = [
+            next(
+                (
+                    link
+                    for link in item.links
+                    if {link.source_id, link.target_id} == {source, target}
+                ),
+                None,
+            )
+            for source, target in zip(primary_ids, primary_ids[1:], strict=False)
+        ]
+        alternatives.append(
+            {
+                "id": solution_id(item),
+                "name": item.name,
+                "router_count": item.router_count,
+                "existing_router_count": item.existing_router_count,
+                "proposed_router_count": item.proposed_router_count,
+                "minimum_margin_db": (
+                    min(link.worst_margin_db for link in item.links) if item.links else None
+                ),
+                "total_link_distance_m": sum(link.distance_m for link in item.links),
+                "primary_distance_m": sum(
+                    link.distance_m for link in primary_links if link is not None
+                ),
+                "requested_path_count": item.requested_path_count,
+                "achieved_path_count": item.achieved_path_count,
+                "resilient": item.resilient,
+                "search_complete": result.search_complete,
+                "selected": bool(solution and solution_id(item) == solution_id(solution)),
+                "route": [encode(site_by_id[site_id]) for site_id in primary_ids],
+            }
+        )
+    return {
+        "found": result.found,
+        "router_count": result.router_count,
+        "existing_router_count": existing_router_count,
+        "proposed_router_count": max(0, result.router_count - existing_router_count),
+        "route": encode(sites),
+        "links": [
+            {**encode(link), "worst_margin_db": link.worst_margin_db} for link in result.links
+        ],
+        "diagnostics": result.diagnostics,
+        "elapsed_seconds": result.elapsed_seconds,
+        "search_complete": result.search_complete,
+        "requested_path_count": solution.requested_path_count if solution else 1,
+        "achieved_path_count": solution.achieved_path_count if solution else 1,
+        "job_id": job_id,
+        "input_revision": input_revision,
+        "snapshot_version": snapshot_version,
+        "candidates": encode(result.candidates),
+        "active_alternative_id": solution_id(solution) if solution else None,
+        "alternatives": alternatives,
+    }
 
 
 def settings(cls: Any, values: dict[str, Any]) -> Any:
@@ -297,6 +388,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         {"router": [item.get("latitude"), item.get("longitude")]}, "router"
                     )
                     router_points.append(router)
+        manual_data = body.get("manual_routers", [])
+        if not isinstance(manual_data, list) or any(
+            not isinstance(item, dict) for item in manual_data
+        ):
+            raise ValueError("manual_routers must be a list of router objects")
+        if candidates.infrastructure_policy != InfrastructurePolicy.EXISTING_ONLY:
+            for item in manual_data:
+                if item.get("policy", "optional") != "excluded":
+                    router_points.append(
+                        coordinate_pair(
+                            {"router": [item.get("latitude"), item.get("longitude")]}, "router"
+                        )
+                    )
         all_points = [*endpoints, *router_points]
         longitude = sum(point[1] for point in all_points) / len(all_points)
         crs = f"EPSG:{norway_utm_epsg(longitude)}"
@@ -347,6 +451,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ):
                     raise ValueError("Known routers must be a list of router objects")
                 for item in known_routers:
+                    if item.get("policy", "optional") != "excluded":
+                        lat, lon = coordinate_pair(
+                            {"router": [item.get("latitude"), item.get("longitude")]}, "router"
+                        )
+                        named_sites.append((str(item.get("name") or item.get("id")), lat, lon))
+            manual_routers = body.get("manual_routers", [])
+            if not isinstance(manual_routers, list) or any(
+                not isinstance(item, dict) for item in manual_routers
+            ):
+                raise ValueError("manual_routers must be a list of router objects")
+            if candidates.infrastructure_policy != InfrastructurePolicy.EXISTING_ONLY:
+                for item in manual_routers:
                     if item.get("policy", "optional") != "excluded":
                         lat, lon = coordinate_pair(
                             {"router": [item.get("latitude"), item.get("longitude")]}, "router"
@@ -792,19 +908,58 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ):
                     included_known_count += 1
                     required_known_count += router_policy == "required"
-            if included_known_count > candidates.maximum_candidates:
-                raise ValueError("Selected existing routers exceed the Max candidates setting")
-            if required_known_count > candidates.maximum_solution_routers:
-                raise ValueError("Required existing routers exceed the Max total routers setting")
+            manual_data = body.get("manual_routers", [])
+            if not isinstance(manual_data, list):
+                raise ValueError("manual_routers must be a list")
+            included_manual_count = 0
+            required_manual_count = 0
+            for item in manual_data:
+                if not isinstance(item, dict):
+                    raise ValueError("Each proposed router must be an object")
+                site_id = item.get("id")
+                if (
+                    not isinstance(site_id, str)
+                    or not site_id.startswith("M-")
+                    or len(site_id) > 64
+                    or any(not (character.isalnum() or character in "-_") for character in site_id)
+                ):
+                    raise ValueError("Each proposed router needs a valid id")
+                if site_id in known_ids:
+                    raise ValueError("Router ids must be unique")
+                known_ids.add(site_id)
+                coordinate_pair({"router": [item.get("latitude"), item.get("longitude")]}, "router")
+                router_policy = item.get("policy", "optional")
+                if router_policy not in {"optional", "required", "excluded"}:
+                    raise ValueError("Proposed router policy must be optional, required, or excluded")
+                height = item.get("antenna_height_m", rf.router.height_agl_m)
+                if (
+                    not isinstance(height, (int, float))
+                    or isinstance(height, bool)
+                    or not math.isfinite(height)
+                    or not 0 < height <= 1000
+                ):
+                    raise ValueError("Proposed-router antenna height must be between 0 and 1,000 m")
+                if (
+                    candidates.infrastructure_policy != InfrastructurePolicy.EXISTING_ONLY
+                    and router_policy != "excluded"
+                ):
+                    included_manual_count += 1
+                    required_manual_count += router_policy == "required"
+            included_router_count = included_known_count + included_manual_count
+            if included_router_count > candidates.maximum_candidates:
+                raise ValueError("Selected routers exceed the Max candidates setting")
+            if required_known_count + required_manual_count > candidates.maximum_solution_routers:
+                raise ValueError("Required routers exceed the Max total routers setting")
             body["resolved_search"].update(
                 {
                     "generated_candidate_limit": (
                         0
                         if candidates.infrastructure_policy == InfrastructurePolicy.EXISTING_ONLY
-                        else candidates.maximum_candidates - included_known_count
+                        else candidates.maximum_candidates - included_router_count
                     ),
                     "known_router_count": included_known_count,
                     "excluded_router_count": len(known_data) - included_known_count,
+                    "manual_router_count": included_manual_count,
                     "infrastructure_policy": candidates.infrastructure_policy.value,
                 }
             )
@@ -939,8 +1094,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 required=item.get("policy", "optional") == "required",
                             )
                         )
-                    required_sites = [site for site in known_sites if site.required]
-                    optional_sites = [site for site in known_sites if not site.required]
+                    manual_sites = []
+                    manual_data = body.get("manual_routers", [])
+                    if candidates.infrastructure_policy != InfrastructurePolicy.EXISTING_ONLY:
+                        for item in manual_data:
+                            if item.get("policy", "optional") == "excluded":
+                                continue
+                            latitude = float(item["latitude"])
+                            longitude = float(item["longitude"])
+                            x, y = forward.transform(longitude, latitude)
+                            ground = float(terrain.sample(np.array([x]), np.array([y]))[0])
+                            if not math.isfinite(ground):
+                                raise ValueError(
+                                    f"Proposed router {item['id']} is outside terrain coverage"
+                                )
+                            surface = None
+                            if terrain.has_surface:
+                                value = float(
+                                    terrain.sample(np.array([x]), np.array([y]), surface=True)[0]
+                                )
+                                surface = value if math.isfinite(value) else None
+                            manual_sites.append(
+                                Site(
+                                    item["id"],
+                                    x,
+                                    y,
+                                    latitude,
+                                    longitude,
+                                    SiteKind.ROUTER,
+                                    ground_elevation_m=ground,
+                                    surface_elevation_m=surface,
+                                    antenna_height_m=float(
+                                        item.get("antenna_height_m", rf.router.height_agl_m)
+                                    ),
+                                    origin=SiteOrigin.MANUAL,
+                                    locked=True,
+                                    required=item.get("policy", "optional") == "required",
+                                    height_override=True,
+                                )
+                            )
+                    required_sites = [
+                        site for site in [*known_sites, *manual_sites] if site.required
+                    ]
+                    optional_sites = [
+                        site for site in [*known_sites, *manual_sites] if not site.required
+                    ]
 
                     def progress(stage: str, done: int, total: int) -> None:
                         with ws.lock:
@@ -987,7 +1185,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         maximum_candidates=(
                             0
                             if candidates.infrastructure_policy == InfrastructurePolicy.EXISTING_ONLY
-                            else candidates.maximum_candidates - len(known_sites)
+                            else candidates.maximum_candidates - len(known_sites) - len(manual_sites)
                         ),
                     )
                     optimizer = RouteOptimizer(
@@ -1086,39 +1284,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if ws.result is None:
                 raise HTTPException(404, "No certified route is available yet")
-            result = ws.result
-            job_id = ws.job_id
-            input_revision = ws.input_revision
-            snapshot_version = ws.snapshot_version
-        sites = result.active_solution.sites if result.active_solution else result.route
-        existing_router_count = (
-            result.active_solution.existing_router_count
-            if result.active_solution
-            else sum(site.origin == SiteOrigin.KNOWN for site in result.route[1:-1])
-        )
-        return {
-            "found": result.found,
-            "router_count": result.router_count,
-            "existing_router_count": existing_router_count,
-            "proposed_router_count": max(0, result.router_count - existing_router_count),
-            "route": encode(sites),
-            "links": [
-                {**encode(link), "worst_margin_db": link.worst_margin_db} for link in result.links
-            ],
-            "diagnostics": result.diagnostics,
-            "elapsed_seconds": result.elapsed_seconds,
-            "search_complete": result.search_complete,
-            "requested_path_count": (
-                result.active_solution.requested_path_count if result.active_solution else 1
-            ),
-            "achieved_path_count": (
-                result.active_solution.achieved_path_count if result.active_solution else 1
-            ),
-            "job_id": job_id,
-            "input_revision": input_revision,
-            "snapshot_version": snapshot_version,
-            "candidates": encode(result.candidates),
-        }
+            return result_payload(
+                ws.result, ws.job_id, ws.input_revision, ws.snapshot_version
+            )
+
+    @app.post("/api/alternatives/{alternative_id}/select")
+    def select_alternative(alternative_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
+                raise HTTPException(409, "Wait until the search completes before switching routes")
+            if ws.result is None:
+                raise HTTPException(404, "No route alternatives are available")
+            selected_index = next(
+                (
+                    index
+                    for index, alternative in enumerate(ws.result.alternatives)
+                    if solution_id(alternative) == alternative_id
+                ),
+                None,
+            )
+            if selected_index is None:
+                raise HTTPException(404, "That route alternative is no longer available")
+            ws.result.select_solution(selected_index)
+            ws.snapshot_version += 1
+            ws.status = {**ws.status, "snapshot_version": ws.snapshot_version}
+            return result_payload(
+                ws.result, ws.job_id, ws.input_revision, ws.snapshot_version
+            )
 
     @app.delete("/api/cache")
     def clear_cache(request: Request) -> Any:
