@@ -295,6 +295,9 @@ That allocation is a plausible contributor, though the interrupted run did not
 profile memory by operation. Treat this as a concrete scale risk to investigate:
 count and stream those pairs (preserving exact-search semantics), add a
 cancellation/memory regression, and compare against a bounded alternative.
+The subsequent scaling investigation below identifies retained terrain-profile
+arrays as the dominant allocation in a reproducible optional-relay workload;
+the pair containers are a smaller, independently measurable contribution.
 
 Reproduce with `python tools/benchmark_rf_search.py --repetitions 2` for the
 direct case, or add `--topology mesh` for the anchored two-path screening case.
@@ -323,6 +326,93 @@ Regression coverage verifies corridor filtering, optional (not forced) solver
 behavior and plan export. CoreScope calls are mocked in tests; a live feed fetch
 was not part of this verification. This is a web-app feature and does not yet
 add the selection workflow to the desktop UI.
+
+### Scaling investigation — 2026-09-26
+
+Investigation complete; production remediation remains open. Added
+[`tools/profile_rf_search.py`](../tools/profile_rf_search.py), which instruments
+the existing benchmark in a separate process, counts live profile-array payloads
+using weak references, reports peak process working set and pair-container sizes,
+and supports cooperative time and retained-profile limits. These limits are
+diagnostic guards, not hard process memory limits. Experimental flags temporarily
+omit search profiles or reuse a low-hop result within this one fixed search;
+the application engine is unchanged.
+
+Workload: 100 km flat 25 m terrain, 10 m endpoints, 100 m routers, strict
+LOS/Fresnel, one requested path, maximum four routers, seed 20260926. Four chain
+sites remain in the candidate pool but are **optional**, alongside randomized
+sites. This exercises subset selection and the exhaustive two-router prepass;
+it is still synthetic and includes seed sites. Each row is one fresh process
+with diagnostic overhead, not a repeated performance estimate.
+
+| Candidates | Mode | Time | Peak working set | Outcome |
+| ---: | --- | ---: | ---: | --- |
+| 200 | Current engine | 7.604 s | 118.3 MiB | Complete, two routers |
+| 800 | Current engine, 600 MiB profile limit | 13.062 s | 566.5 MiB | Complete, two routers |
+| 800 | Omit search profiles experimentally | 12.683 s | 98.9 MiB | Same route, margins and alternative router lists |
+| 2,000 | Current engine, 384 MiB profile limit | 14.169 s | 544.2 MiB | Cancelled by diagnostic guard during first pair scan |
+| 2,000 | Omit search profiles experimentally | 90.032 s | 171.4 MiB | Cancelled by time guard during repeated pair scan |
+| 2,000 | Omit profiles and reuse low-hop result experimentally | 63.262 s | 171.2 MiB | Complete, two routers |
+
+Findings:
+
+1. **Retained terrain profiles dominate memory.** `LinkEvaluator.evaluate`
+   attaches eleven NumPy arrays to every result. The initial bulk evaluator
+   drops them, but `_find_low_hop_route` retains them in `endpoint_links` and
+   `cross_links`. At 800 candidates, 382 endpoint links plus 2,254 cross-links
+   retained 459.76 MiB of arrays at the end of the pair scan; the pair list and
+   set occupied only 6.19 MiB. Profile payloads are released when that search
+   returns, so this is excessive intermediate retention rather than evidence
+   of a cross-request leak.
+2. **Pair storage is secondary but still quadratic.** At 2,000 candidates,
+   the endpoint-visible sets contained 446 and 480 sites: 214,080 pairs. The
+   pair list occupied 13.18 MiB and its deduplication set 19.43 MiB (including
+   their tuples, excluding referenced sites/strings). Streaming these pairs
+   would save about 33 MiB in this case, but would not address the main profile
+   allocation. The profile guard stopped the baseline after about 15% of the
+   scan, already at 384.22 MiB of live array payloads.
+3. **Fallback repeats expensive work.** With profiles omitted, the 2,000-site
+   scan completed all 214,080 pairs at 62.013 s. The topology stage produced
+   no alternatives and the fallback restarted the same low-hop search at
+   63.162 s. At 90 s it was still repeating the scan. The engine should retain
+   the already computed result for fallback and preserve known feasible routes
+   when the bounded topology heuristic does not retain their subset. A separate
+   experiment reused that result and finished in 63.262 s at 171.2 MiB, returning
+   the already discovered `A -> C0201 -> C1803 -> B` route with no second RF scan.
+   This also shows the fallback's existing "graph was disconnected" diagnostic
+   is misleading in this case: a feasible route was already known.
+4. **Memory improvement alone does not remove quadratic runtime.** The
+   800-site experiment evaluated exactly the same 48,271 RF links as baseline
+   and retained the same route IDs, margins and alternative router lists.
+   Peak memory fell about 83%, but total time remained around 13 s. At 2,000
+   sites the first pair scan alone took roughly 56 s.
+
+Recommended remediation order (not implemented in the application yet):
+
+- Keep compact metrics for search links and materialize terrain profiles only
+  for returned/displayed links. Explicitly restore profiles for low-hop winners
+  and fallback links so browser charts and exports remain intact; the diagnostic
+  omission flag intentionally does not do that and is not a deployable fix.
+- Reuse the low-hop result during fallback and seed/preserve that feasible
+  topology through heuristic selection.
+- Stream frontier pairs with cancellation during enumeration; investigate
+  lossless pruning and compact best-route selection to reduce further work.
+- Add memory/cancellation regressions and route/metric equivalence checks,
+  including charts/exports, then rerun this sweep and representative real DEMs.
+
+Reproduce the complete 800-site baseline with:
+
+```console
+python tools/profile_rf_search.py --topology long --optional-anchors --candidates 800 --seconds 45 --profile-limit-mib 600
+```
+
+Add `--omit-search-profiles` for the controlled memory experiment. For the
+2,000-site diagnostic use `--candidates 2000 --seconds 90`; the default profile
+limit is 384 MiB. `--reuse-low-hop` enables the separate fallback experiment.
+All recorded runs used the real RF evaluator. The completed baseline/experimental
+800-site pair performed the same 48,271 evaluations; the 2,000-site reuse
+experiment performed 243,211. The diagnostic script passes Ruff; application
+source was unchanged, so this investigation did not rerun the application suite.
 
 ## Reference
 
