@@ -43,7 +43,7 @@ def test_real_route_upload_optimize_profile_export(client):
     payload = {
         "a": a,
         "b": b,
-        "rf": {"endpoint_a": {"height_agl_m": 20}, "endpoint_b": {"height_agl_m": 20}},
+        "rf": {},
         "candidates": {"maximum_candidates": 20, "refine_radius_m": 0},
     }
     response = client.post("/api/optimize", json=payload)

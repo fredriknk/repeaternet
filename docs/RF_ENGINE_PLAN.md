@@ -71,7 +71,7 @@ optimality over continuous terrain.
 - Remove unreachable legacy flow only after active behavior has regression cover.
 - Test pre-cancellation, cancellation during search and irrelevant-component pruning.
 
-### M5 — Release verification and documentation [in progress]
+### M5 — Release verification and documentation [complete]
 
 - Run all tests, targeted lint/type checks, packaging and source-diff review.
 - Record counts, limitations and commit milestones here; update README model and
@@ -122,6 +122,41 @@ changes and are not prerequisites for this release.
   route flow while retaining local-edit helpers used by the desktop UI.
   Twenty topology/screening tests pass, including cancellation inside both search
   modes and a 40-site irrelevant island reduced to two subset evaluations.
+- M4 commit: `5c7b279`.
+- M5: full suite **68 passed**, up from baseline 46 passed / 1 failed. Ruff passes
+  across `src` and `tests`; mypy passes across all 40 source files. Wheel builds
+  successfully (`rf_router_planner-0.1.0-py3-none-any.whl`). Source whitespace
+  validation passes. Dependency deprecation warnings and headless Qt GPU messages
+  remain non-failing. Default-height browser upload/optimize/export integration
+  passes with the new model; directional-pattern peak-gain regression passes.
+- Numerical reproduction: flat 700 m path, 3 m antennas, 869.5 MHz, k=4/3.
+
+  | Profile samples | Legacy Deygout loss (dB) | Bullington component loss (dB) |
+  | --- | ---: | ---: |
+  | 15 | 41.147 | 4.008 |
+  | 71 | 77.331 | 4.008 |
+  | 701 | 83.574 | 4.008 |
+
+  This checks sampling stability, not agreement with field measurements.
+- Final milestone commit includes verification fixes, consistent formatting,
+  README changes and this completed plan. Use `git log --oneline` to locate
+  `test: verify and document RF engine improvement milestones` (its own hash
+  cannot be embedded in the committed document without changing that hash).
+
+## Release boundaries and operational notes
+
+All five implementation milestones are complete. Restart a running desktop/web
+process to load the changed engine. Saved desktop plans missing a model field
+intentionally retain Deygout; choose Bullington to compare recalculated predictions.
+
+Final certification guarantees validity at the configured final sample spacing,
+not raster sub-cell obstacle coverage. Minimum 0/1/2-hop discovery applies only to
+two-client minimum-router plans with no required intermediate sites. Wider search
+still uses the screened graph; final reevaluation of selected edges does not prove
+that an unselected coarse edge could not rank better. Beam search is heuristic.
+Cancellation is cooperative between operations, not an interruption of an active
+NumPy, GDAL or graph-flow call. No full delta-Bullington, field-calibration or
+automatic mesh-wide refinement claims are made by this release.
 
 ## Reference
 

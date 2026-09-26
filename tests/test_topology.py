@@ -19,9 +19,7 @@ def link(left: str, right: str, margin: float = 10.0) -> LinkResult:
     reverse = DirectionResult(
         right, left, 1_000, 0, 0, 0, 0, 0, 0, -100, -130, margin, margin, 0, 0, True
     )
-    return LinkResult(
-        left, right, 1_000, forward, reverse, True, True, True, 10, 1, 500, 5, 0
-    )
+    return LinkResult(left, right, 1_000, forward, reverse, True, True, True, 10, 1, 500, 5, 0)
 
 
 def client(site_id: str, x: float) -> Site:
@@ -47,9 +45,7 @@ def router(
 
 def test_maximum_reliability_chooses_small_redundant_topology_not_dense_chain() -> None:
     a, b = client("A", 0), client("B", 10)
-    redundant_left, redundant_right = router("redundant-left", 4), router(
-        "redundant-right", 6
-    )
+    redundant_left, redundant_right = router("redundant-left", 4), router("redundant-right", 6)
     chain = [router(f"chain-{index}", float(index + 1)) for index in range(3)]
     links = [
         link("A", "redundant-left", 5),
@@ -84,14 +80,9 @@ def test_returns_best_solution_for_each_exact_router_count() -> None:
     a, b = client("A", 0), client("B", 10)
     routers = [router(f"R{index}", float(index)) for index in range(1, 4)]
     links = [
-        edge
-        for candidate in routers
-        for edge in (link("A", candidate.id), link(candidate.id, "B"))
+        edge for candidate in routers for edge in (link("A", candidate.id), link(candidate.id, "B"))
     ]
-    links.extend(
-        link(left.id, right.id)
-        for left, right in zip(routers, routers[1:], strict=False)
-    )
+    links.extend(link(left.id, right.id) for left, right in zip(routers, routers[1:], strict=False))
     links.append(link("R1", "R3"))
     settings = CandidateSettings(maximum_solution_routers=3)
 
@@ -191,12 +182,22 @@ def test_infrastructure_can_prefer_two_short_masts_over_one_tall_mast():
     tall, left, right = router("tall", 5), router("left", 3), router("right", 7)
     tall.antenna_height_m = 200
     left.antenna_height_m = right.antenna_height_m = 3
-    links = [link("A", "tall"), link("tall", "B"), link("A", "left"), link("left", "right"), link("right", "B")]
-    settings = CandidateSettings(maximum_solution_routers=2, priority=OptimizationPriority.MINIMUM_INFRASTRUCTURE)
+    links = [
+        link("A", "tall"),
+        link("tall", "B"),
+        link("A", "left"),
+        link("left", "right"),
+        link("right", "B"),
+    ]
+    settings = CandidateSettings(
+        maximum_solution_routers=2, priority=OptimizationPriority.MINIMUM_INFRASTRUCTURE
+    )
     alternatives = solve_topologies([a, b, tall, left, right], links, settings)
     selected = alternatives[select_active_solution_index(alternatives, settings.priority)]
     assert set(selected.router_ids) == {"left", "right"}
-    assert alternatives[select_active_solution_index(alternatives, OptimizationPriority.MINIMUM_ROUTERS)].router_ids == ["tall"]
+    assert alternatives[
+        select_active_solution_index(alternatives, OptimizationPriority.MINIMUM_ROUTERS)
+    ].router_ids == ["tall"]
 
 
 def test_topology_selection_is_stable_under_input_reversal():
@@ -219,11 +220,17 @@ def test_disconnected_candidates_are_pruned_before_subset_enumeration(monkeypatc
     unrelated = [router(f"island-{i}", 100 + i) for i in range(40)]
     calls = []
     original = topology._evaluate_router_subset
+
     def observe(graph, clients, routers, paths, priority):
         calls.append([s.id for s in routers])
         return original(graph, clients, routers, paths, priority)
+
     monkeypatch.setattr(topology, "_evaluate_router_subset", observe)
-    solutions = solve_topologies([a, b, bridge, *unrelated], [link("A", "bridge"), link("bridge", "B")], CandidateSettings(maximum_solution_routers=6))
+    solutions = solve_topologies(
+        [a, b, bridge, *unrelated],
+        [link("A", "bridge"), link("bridge", "B")],
+        CandidateSettings(maximum_solution_routers=6),
+    )
     assert calls == [[], ["bridge"]]
     assert solutions[0].router_ids == ["bridge"]
     assert "Exhaustive" in solutions[0].diagnostics[0]
@@ -232,13 +239,26 @@ def test_disconnected_candidates_are_pruned_before_subset_enumeration(monkeypatc
 def test_topology_cancellation_discards_partial_alternatives():
     a, b = client("A", 0), client("B", 10)
     routers = [router(f"R{i}", i) for i in range(20)]
-    edges = [link("A", "B"), *[edge for r in routers for edge in (link("A", r.id), link(r.id, "B"))]]
+    edges = [
+        link("A", "B"),
+        *[edge for r in routers for edge in (link("A", r.id), link(r.id, "B"))],
+    ]
     checks = 0
+
     def cancelled():
         nonlocal checks
         checks += 1
         return checks >= 8
-    assert solve_topologies([a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2), cancelled=cancelled) == []
+
+    assert (
+        solve_topologies(
+            [a, b, *routers],
+            edges,
+            CandidateSettings(maximum_solution_routers=2),
+            cancelled=cancelled,
+        )
+        == []
+    )
     assert checks == 8
 
 
@@ -249,12 +269,24 @@ def test_heuristic_search_is_labeled_and_cancellable(monkeypatch):
     a, b = client("A", 0), client("B", 10)
     routers = [router(f"R{i}", i) for i in range(5)]
     edges = [edge for r in routers for edge in (link("A", r.id), link(r.id, "B"))]
-    solutions = solve_topologies([a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2))
+    solutions = solve_topologies(
+        [a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2)
+    )
     assert all("Heuristic" in s.diagnostics[0] for s in solutions)
     checks = 0
+
     def cancelled():
         nonlocal checks
         checks += 1
         return checks >= 6
-    assert solve_topologies([a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2), cancelled=cancelled) == []
+
+    assert (
+        solve_topologies(
+            [a, b, *routers],
+            edges,
+            CandidateSettings(maximum_solution_routers=2),
+            cancelled=cancelled,
+        )
+        == []
+    )
     assert checks < 10

@@ -74,7 +74,9 @@ class LinkEvaluator:
         min_ratio = float(profile.fresnel_clearance_ratio[min_ratio_index])
         fresnel_clear = min_ratio >= self.settings.required_fresnel_clearance
         model = DiffractionModel(self.settings.diffraction_model)
-        diffraction_function = bullington_loss_db if model == DiffractionModel.BULLINGTON else deygout_loss_db
+        diffraction_function = (
+            bullington_loss_db if model == DiffractionModel.BULLINGTON else deygout_loss_db
+        )
         diffraction = diffraction_function(
             profile.distances_m,
             profile.effective_obstruction_m,

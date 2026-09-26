@@ -81,8 +81,7 @@ def _representative_paths(
             key=lambda path: (
                 len(path),
                 -min(
-                    float(graph.edges[a, b]["margin"])
-                    for a, b in zip(path, path[1:], strict=False)
+                    float(graph.edges[a, b]["margin"]) for a, b in zip(path, path[1:], strict=False)
                 ),
                 tuple(path),
             )
@@ -104,9 +103,7 @@ def _evaluate_router_subset(
     if len(graph) != len(selected_ids) or not nx.is_connected(graph):
         return None
 
-    client_paths, achieved_paths = _representative_paths(
-        graph, clients, max(1, requested_paths)
-    )
+    client_paths, achieved_paths = _representative_paths(graph, clients, max(1, requested_paths))
     pair_margins = [
         _widest_path_margin(graph, left.id, right.id)
         for left, right in itertools.combinations(clients, 2)
@@ -116,7 +113,9 @@ def _evaluate_router_subset(
     mean_margin = sum(margins) / len(margins) if margins else float("-inf")
     minimum_degree = min((graph.degree[node] for node in graph), default=0)
     site_quality = sum(router.site_quality for router in routers)
-    total_distance = sum(float(attributes["distance"]) for _, _, attributes in graph.edges(data=True))
+    total_distance = sum(
+        float(attributes["distance"]) for _, _, attributes in graph.edges(data=True)
+    )
     quality_score = (
         minimum_pair_margin,
         float(minimum_degree),
@@ -124,15 +123,22 @@ def _evaluate_router_subset(
         site_quality,
         -total_distance,
     )
+    score: tuple[float, ...]
     if priority == OptimizationPriority.MAXIMUM_RELIABILITY:
         score = (float(achieved_paths), *quality_score)
     elif priority == OptimizationPriority.MINIMUM_INFRASTRUCTURE:
         score = (-sum(100 + router.antenna_height_m for router in routers), *quality_score)
     else:
-        score = (minimum_pair_margin,
-                 min(attributes["link"].minimum_fresnel_clearance_ratio for _, _, attributes in graph.edges(data=True)),
-                 -sum(router.antenna_height_m for router in routers),
-                 site_quality, -total_distance)
+        score = (
+            minimum_pair_margin,
+            min(
+                attributes["link"].minimum_fresnel_clearance_ratio
+                for _, _, attributes in graph.edges(data=True)
+            ),
+            -sum(router.antenna_height_m for router in routers),
+            site_quality,
+            -total_distance,
+        )
     selected_links: list[LinkResult] = []
     for left, right in sorted((min(a, b), max(a, b)) for a, b in graph.edges):
         selected_links.append(graph.edges[left, right]["link"])
@@ -258,9 +264,7 @@ def _heuristic_router_layers(
             site.site_quality,
         )
 
-    target_pool_size = min(
-        len(optional), max(64, maximum_optional_count * 24, len(clients) * 16)
-    )
+    target_pool_size = min(len(optional), max(64, maximum_optional_count * 24, len(clients) * 16))
     ranked_optional = sorted(optional, key=lambda site: site.id)
     ranked_optional.sort(key=static_score, reverse=True)
     pool_ids = set(protected)
@@ -322,9 +326,7 @@ def solve_topologies(
         raise ValueError("Site IDs must be unique")
     disabled_required = [site.id for site in sites if site.required and not site.enabled]
     if disabled_required:
-        raise ValueError(
-            "Required sites cannot be disabled: " + ", ".join(disabled_required)
-        )
+        raise ValueError("Required sites cannot be disabled: " + ", ".join(disabled_required))
     clients = [site for site in enabled_sites if site.kind in CLIENT_KINDS]
     if len(clients) < 2:
         return []
@@ -364,16 +366,18 @@ def solve_topologies(
         if is_cancelled():
             return []
         best: _EvaluatedTopology | None = None
-        for routers in _router_combinations(
-            required, optional, router_count, heuristic_layers
-        ):
+        for routers in _router_combinations(required, optional, router_count, heuristic_layers):
             if is_cancelled():
                 return []
-            evaluated = _evaluate_router_subset(graph, clients, routers, requested_paths, effective_priority)
+            evaluated = _evaluate_router_subset(
+                graph, clients, routers, requested_paths, effective_priority
+            )
             if evaluated is None:
                 continue
-            if best is None or evaluated.score > best.score or (
-                evaluated.score == best.score and evaluated.router_key < best.router_key
+            if (
+                best is None
+                or evaluated.score > best.score
+                or (evaluated.score == best.score and evaluated.router_key < best.router_key)
             ):
                 best = evaluated
         if best is not None:
@@ -405,11 +409,13 @@ def select_active_solution_index(
     if not alternatives:
         return -1
     if priority == OptimizationPriority.MINIMUM_INFRASTRUCTURE:
+
         def infrastructure_score(index: int) -> tuple[float, float, tuple[str, ...]]:
             solution = alternatives[index]
             routers = set(solution.router_ids)
             cost = sum(100 + site.antenna_height_m for site in solution.sites if site.id in routers)
             return cost, -solution.minimum_margin_db, tuple(sorted(routers))
+
         return min(range(len(alternatives)), key=infrastructure_score)
     if priority != OptimizationPriority.MAXIMUM_RELIABILITY:
         return min(range(len(alternatives)), key=lambda index: alternatives[index].router_count)

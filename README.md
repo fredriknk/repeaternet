@@ -156,7 +156,17 @@ The first-zone radius is calculated at every profile point from wavelength and t
 
 ### Diffraction
 
-The implementation uses the ITU-R P.526 single knife-edge approximation and a recursive Deygout multiple-edge method. In **RF propagation** mode, obstruction is not automatically fatal: calculated diffraction loss enters the budget. In **strict LOS** mode, clear LOS, required Fresnel clearance, and budget margin must all pass.
+New plans use the Bullington terrain component from ITU-R P.526-16 §4.5.1,
+with the existing effective-Earth curvature adjustment. This avoids treating
+each sample on a smooth terrain shoulder as another diffracting obstacle.
+It is not the complete delta-Bullington/spherical-Earth method. Legacy recursive
+Deygout remains selectable in desktop propagation settings and through the
+`diffraction_model` RF setting (`bullington` or `deygout`). Existing desktop
+projects without this field load as `deygout` to preserve their model choice.
+
+In **RF propagation** mode, calculated diffraction loss enters the budget.
+In **strict LOS** mode, clear LOS, required Fresnel clearance, and budget margin
+must all pass. Results remain planning estimates, not measured coverage.
 
 DOM already changes diffraction geometry. A simple configurable DOM−DTM clutter hook exists but is disabled by default; no undocumented forest or urban attenuation constants are invented.
 
@@ -172,13 +182,37 @@ The core problem is a constrained mesh-topology search, not a highest-point sear
 
 ```text
 multi-client area → candidate sites → cheap geographic/RF screening
-→ parallel coarse link evaluation → valid-link graph
+→ parallel coarse link evaluation → final retry of coarse failures
+→ exhaustive low-hop discovery for two-client minimum-router plans
 → best connected topology for each exact router count
 → node-independent client-path measurement
-→ medium/final validation of every selected topology edge
+→ final certification of every selected topology edge until stable
 ```
 
-Every client and every required manual router is mandatory. Small candidate pools are enumerated exactly; large terrain-derived pools use a deterministic bounded beam search so the exact-count alternatives remain practical. Each selected topology retains all induced valid RF links, not only a shortest-path tree. Failed medium- or final-resolution edges are removed and the alternatives are solved again. The default objective selects the lowest feasible router count. Resilient mode first seeks the requested number of node-independent paths between every pair of clients, then chooses the smallest qualifying router count and breaks ties with RF margin and topology quality.
+Every client and every required manual router is mandatory. Disconnected candidate
+islands are pruned. Small candidate pools are enumerated exactly; large pools use
+a deterministic bounded beam search. Diagnostics distinguish these modes.
+Each selected topology retains all induced valid RF links, not only a tree.
+Final-invalid edges are removed and alternatives are solved again until all
+selected edges are certified; there is no fixed-round escape returning coarse
+edges. Cancellation is checked during enumeration, beam expansion and validation.
+
+Minimum-router mode also searches all zero-, one- and two-repeater possibilities
+within the generated candidate set, even when the sparse graph already connects.
+Larger meshes remain limited by graph screening and heuristic subset search.
+Exhaustive subset enumeration describes the current screened graph, not a proof
+of global optimality on continuous terrain or an entirely final-evaluated graph.
+Coarse/final disagreement can still affect ranking of unselected alternatives.
+
+The default objective minimizes repeater count, then RF quality. Infrastructure
+mode minimizes a proxy of 100 installation units plus mast metres per repeater;
+it can prefer two short masts over one very tall mast. Reliability mode first
+seeks the requested node-independent paths, then the smallest qualifying mesh.
+Standalone route scoring resolves bottleneck margin and Fresnel clearance before
+additive tie-breakers, with deterministic site-ID ties.
+
+Implementation milestones, regression evidence and deferred work are tracked in
+[the RF engine plan](docs/RF_ENGINE_PLAN.md).
 
 Coarse terrain-profile evaluations are independent and therefore run in a `ProcessPoolExecutor` for local raster terrain. Each worker reopens the GeoTIFFs read-only, batches link jobs to reduce inter-process overhead, and returns results in deterministic input order. Small jobs and in-memory synthetic terrains stay single-process because process startup would cost more than it saves.
 
@@ -223,7 +257,7 @@ The RF and optimizer packages have no Qt dependency. `ArrayTerrain` makes the co
 
 ## Known limitations and next improvements
 
-- Deygout is an engineering approximation, not a full ITU terrain/climate propagation suite. Troposcatter, ducting, rain, polarization mismatch, and statistically calibrated clutter are not modeled.
+- Neither the Bullington component nor legacy Deygout is a full ITU terrain/climate propagation suite. Troposcatter, ducting, rain, polarization mismatch, and statistically calibrated clutter are not modeled.
 - Candidate generation uses terrain grid maxima/quality rather than road, ownership, power, protected-area, or access datasets. Exclusion geometry is represented in the project and honored by the generator API, but polygon drawing is not yet exposed in the first GUI.
 - Local refinement is a deterministic grid search, not continuous optimization.
 - The minimum-infrastructure objective uses a documented installation/mast proxy; real costs should be supplied by a future cost model.

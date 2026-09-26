@@ -31,7 +31,10 @@ def lexicographic_minimum_hop_path(graph: nx.Graph, source: str, target: str) ->
     dag = nx.DiGraph()
     for node in sorted(distances):
         for neighbor in sorted(graph.neighbors(node)):
-            if distances.get(neighbor) == distances[node] + 1 and distances[node] + 1 + remaining.get(neighbor, target_hops + 1) == target_hops:
+            if (
+                distances.get(neighbor) == distances[node] + 1
+                and distances[node] + 1 + remaining.get(neighbor, target_hops + 1) == target_hops
+            ):
                 dag.add_edge(node, neighbor, link=graph.edges[node, neighbor]["link"])
     # Solve the bottleneck criteria one at a time. A single lexicographic label
     # at an intermediate node is unsafe: a later weak edge can erase its lead,
@@ -45,7 +48,13 @@ def lexicographic_minimum_hop_path(graph: nx.Graph, source: str, target: str) ->
                 value = min(widest[node], getattr(dag.edges[node, neighbor]["link"], attribute))
                 widest[neighbor] = max(widest.get(neighbor, -float("inf")), value)
         threshold = widest[target]
-        dag.remove_edges_from([(u, v) for u, v, data in dag.edges(data=True) if getattr(data["link"], attribute) < threshold])
+        dag.remove_edges_from(
+            [
+                (u, v)
+                for u, v, data in dag.edges(data=True)
+                if getattr(data["link"], attribute) < threshold
+            ]
+        )
     best: dict[str, tuple[tuple[float, float, float], list[str]]] = {
         source: ((0.0, 0.0, 0.0), [source])
     }
@@ -62,13 +71,19 @@ def lexicographic_minimum_hop_path(graph: nx.Graph, source: str, target: str) ->
                     score[1] + site.site_quality,
                     score[2] - link.distance_m,
                 )
-                if neighbor not in best or next_score > best[neighbor][0] or (next_score == best[neighbor][0] and [*path, neighbor] < best[neighbor][1]):
+                if (
+                    neighbor not in best
+                    or next_score > best[neighbor][0]
+                    or (next_score == best[neighbor][0] and [*path, neighbor] < best[neighbor][1])
+                ):
                     best[neighbor] = (next_score, [*path, neighbor])
     return best.get(target, ((), None))[1]
 
 
 def minimum_infrastructure_path(graph: nx.Graph, source: str, target: str) -> list[str] | None:
     """Minimize router installations plus mast metres, then RF distance."""
+    if source not in graph or target not in graph:
+        return None
 
     def cost(u: str, v: str, attributes: dict[str, object]) -> float:
         site: Site = graph.nodes[v]["site"]
@@ -90,13 +105,17 @@ def maximum_reliability_path(graph: nx.Graph, source: str, target: str) -> list[
         return [source]
     weighted = nx.Graph()
     weighted.add_nodes_from(graph)
-    weighted.add_edges_from((u, v, {"weight": data["link"].worst_margin_db}) for u, v, data in graph.edges(data=True))
+    weighted.add_edges_from(
+        (u, v, {"weight": data["link"].worst_margin_db}) for u, v, data in graph.edges(data=True)
+    )
     tree = nx.maximum_spanning_tree(weighted)
     if not nx.has_path(tree, source, target):
         return None
     path = nx.shortest_path(tree, source, target)
     threshold = min(tree.edges[a, b]["weight"] for a, b in zip(path, path[1:], strict=False))
-    eligible = nx.subgraph_view(graph, filter_edge=lambda a, b: graph.edges[a, b]["link"].worst_margin_db >= threshold)
+    eligible = nx.subgraph_view(
+        graph, filter_edge=lambda a, b: graph.edges[a, b]["link"].worst_margin_db >= threshold
+    )
     return lexicographic_minimum_hop_path(eligible, source, target)
 
 

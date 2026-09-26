@@ -34,12 +34,15 @@ def test_clear_profile_and_reversal():
     assert bullington_loss_db(d, np.zeros(5), np.full(5, 100), 869.5).loss_db == 0
 
 
-@pytest.mark.parametrize("distances,terrain,frequency", [
-    ([0, 0, 1], [0, 0, 0], 900),
-    ([0, 1, 2], [0, float('nan'), 0], 900),
-    ([0, 1, 2], [0, 0], 900),
-    ([0, 1, 2], [0, 0, 0], 0),
-])
+@pytest.mark.parametrize(
+    "distances,terrain,frequency",
+    [
+        ([0, 0, 1], [0, 0, 0], 900),
+        ([0, 1, 2], [0, float("nan"), 0], 900),
+        ([0, 1, 2], [0, 0], 900),
+        ([0, 1, 2], [0, 0, 0], 0),
+    ],
+)
 def test_invalid_profiles_rejected(distances, terrain, frequency):
     with pytest.raises(ValueError):
         bullington_loss_db(np.array(distances), np.array(terrain), np.ones(3), frequency)

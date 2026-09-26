@@ -47,12 +47,18 @@ def bullington_loss_db(
         for values in (distances_m, obstruction_elevations_m, los_elevations_m)
     )
     if (
-        d.ndim != 1 or surface.shape != d.shape or los.shape != d.shape
-        or len(d) < 2 or not all(np.all(np.isfinite(a)) for a in (d, surface, los))
+        d.ndim != 1
+        or surface.shape != d.shape
+        or los.shape != d.shape
+        or len(d) < 2
+        or not all(np.all(np.isfinite(a)) for a in (d, surface, los))
         or np.any(np.diff(d) <= 0)
-        or not math.isfinite(frequency_mhz) or frequency_mhz <= 0
+        or not math.isfinite(frequency_mhz)
+        or frequency_mhz <= 0
     ):
-        raise ValueError("Diffraction requires matching finite profiles, increasing distances and positive frequency")
+        raise ValueError(
+            "Diffraction requires matching finite profiles, increasing distances and positive frequency"
+        )
     if len(d) == 2:
         return DiffractionResult(0.0, [])
     d = d - d[0]
@@ -73,19 +79,27 @@ def bullington_loss_db(
         slope_rx = float(np.max((surface[1:-1] - rx) / (length - x)))
         # A profile exactly tangent to LOS has v=0 and no unique intersection.
         denominator = slope_tx + slope_rx
-        edge_distance = (rx - tx + slope_rx * length) / denominator if denominator > 0 else length / 2
+        edge_distance = (
+            (rx - tx + slope_rx * length) / denominator if denominator > 0 else length / 2
+        )
         edge_distance = float(np.clip(edge_distance, x[0], x[-1]))
         edge_height = tx + slope_tx * edge_distance
         height = edge_height - (tx + direct_slope * edge_distance)
         v = knife_edge_v(height, edge_distance, length - edge_distance, frequency_mhz)
     knife_loss = knife_edge_loss_db(v)
     loss = knife_loss + (-math.expm1(-knife_loss / 6)) * (10 + 0.02 * length / 1000)
-    obstacles = [] if loss == 0 else [{
-        "distance_m": edge_distance,
-        "elevation_m": edge_height,
-        "v": v,
-        "loss_db": loss,
-    }]
+    obstacles = (
+        []
+        if loss == 0
+        else [
+            {
+                "distance_m": edge_distance,
+                "elevation_m": edge_height,
+                "v": v,
+                "loss_db": loss,
+            }
+        ]
+    )
     return DiffractionResult(loss, obstacles)
 
 

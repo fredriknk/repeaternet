@@ -122,7 +122,9 @@ class RouteOptimizer:
         if self.evaluator.optimistic_margin_db(source, target) < 0.0:
             return None
         try:
-            link = self.evaluator.evaluate(source, target, self.candidate_settings.final_sample_step_m)
+            link = self.evaluator.evaluate(
+                source, target, self.candidate_settings.final_sample_step_m
+            )
         except ValueError:
             return None
         return link if link.valid else None
@@ -255,9 +257,7 @@ class RouteOptimizer:
             max_y = max(site.y for site in [*network_clients, *mandatory])
             anchor_a = replace(network_clients[0], x=min_x, y=min_y)
             anchor_b = replace(network_clients[-1], x=max_x, y=max_y)
-            candidate_settings = replace(
-                self.candidate_settings, unrestricted_bounding_area=True
-            )
+            candidate_settings = replace(self.candidate_settings, unrestricted_bounding_area=True)
             generated = generate_candidates(
                 self.terrain, anchor_a, anchor_b, candidate_settings, exclusions or []
             )[1:-1]
@@ -271,7 +271,7 @@ class RouteOptimizer:
         else:
             sites = generate_candidates(
                 self.terrain, endpoint_a, endpoint_b, self.candidate_settings, exclusions or []
-        )
+            )
         for site in sites:
             if site.kind not in {
                 SiteKind.ENDPOINT_A,
@@ -325,9 +325,7 @@ class RouteOptimizer:
             return OptimizationResult([], [], sites, links, ["Optimization cancelled"])
         links.extend(link for link in evaluated if link.valid)
         failures.extend(link for link in evaluated if not link.valid)
-        link_by_key = {
-            frozenset((link.source_id, link.target_id)): link for link in links
-        }
+        link_by_key = {frozenset((link.source_id, link.target_id)): link for link in links}
         validated_keys: set[frozenset[str]] = set()
         by_id = {site.id: site for site in sites}
         # Coarse failures can be aliasing/model-resolution effects, not proofs.
@@ -335,14 +333,30 @@ class RouteOptimizer:
             if is_cancelled():
                 return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
             key = frozenset((failed.source_id, failed.target_id))
-            final = self._progressively_validate_link(by_id[failed.source_id], by_id[failed.target_id])
+            final = self._progressively_validate_link(
+                by_id[failed.source_id], by_id[failed.target_id]
+            )
             validated_keys.add(key)
             if final is not None:
                 link_by_key[key] = final
-        if not network_mode and self.candidate_settings.priority == OptimizationPriority.MINIMUM_ROUTERS:
-            ordered = [endpoint_a, *(site for site in sites if site.id not in {endpoint_a.id, endpoint_b.id} and site.enabled), endpoint_b]
+        if (
+            not network_mode
+            and self.candidate_settings.priority == OptimizationPriority.MINIMUM_ROUTERS
+        ):
+            ordered = [
+                endpoint_a,
+                *(
+                    site
+                    for site in sites
+                    if site.id not in {endpoint_a.id, endpoint_b.id} and site.enabled
+                ),
+                endpoint_b,
+            ]
             low_hop = self._find_low_hop_route(ordered, notify, is_cancelled)
-            if low_hop is not None and len(low_hop[0]) - 2 <= self.candidate_settings.maximum_solution_routers:
+            if (
+                low_hop is not None
+                and len(low_hop[0]) - 2 <= self.candidate_settings.maximum_solution_routers
+            ):
                 for link in low_hop[1]:
                     key = frozenset((link.source_id, link.target_id))
                     link_by_key[key] = link
@@ -381,12 +395,11 @@ class RouteOptimizer:
                 if is_cancelled():
                     return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
                 left_id, right_id = sorted(key)
-                final: LinkResult | None = None
+                final = None
                 try:
                     left, right = by_id[left_id], by_id[right_id]
                     too_far = (
-                        maximum_distance is not None
-                        and left.distance_to(right) > maximum_distance
+                        maximum_distance is not None and left.distance_to(right) > maximum_distance
                     )
                     if not too_far and self.evaluator.optimistic_margin_db(left, right) >= 0:
                         candidate = self.evaluator.evaluate(
@@ -447,16 +460,13 @@ class RouteOptimizer:
                 router_ids = [site.id for site in fallback_route[1:-1]]
                 if len(router_ids) <= self.candidate_settings.maximum_solution_routers:
                     solution = NetworkSolution(
-                        name=f"{len(router_ids)} router"
-                        + ("s" if len(router_ids) != 1 else ""),
+                        name=f"{len(router_ids)} router" + ("s" if len(router_ids) != 1 else ""),
                         sites=list(fallback_route),
                         links=list(fallback_links),
                         client_ids=[endpoint_a.id, endpoint_b.id],
                         router_ids=router_ids,
                         client_paths={
-                            (endpoint_a.id, endpoint_b.id): [
-                                [site.id for site in fallback_route]
-                            ]
+                            (endpoint_a.id, endpoint_b.id): [[site.id for site in fallback_route]]
                         },
                         requested_path_count=1,
                         achieved_path_count=1,
@@ -475,9 +485,7 @@ class RouteOptimizer:
                         0,
                     )
         required_names = ", ".join(site.id for site in mandatory)
-        diagnostics = [
-            "No connected mesh was found within the configured router-count limit."
-        ]
+        diagnostics = ["No connected mesh was found within the configured router-count limit."]
         if required_names:
             diagnostics.append(f"Required routers checked: {required_names}")
         diagnostics.append(
@@ -491,7 +499,6 @@ class RouteOptimizer:
             diagnostics,
             time.perf_counter() - started,
         )
-
 
     def _refine_site(self, previous: Site, site: Site, following: Site) -> Site:
         radius = self.candidate_settings.refine_radius_m
@@ -549,9 +556,7 @@ class RouteOptimizer:
             original = site.antenna_height_m
             for height in heights:
                 site.antenna_height_m = float(height)
-                left = self.evaluator.evaluate(
-                    route[index - 1], site, settings.final_sample_step_m
-                )
+                left = self.evaluator.evaluate(route[index - 1], site, settings.final_sample_step_m)
                 right = self.evaluator.evaluate(
                     site, route[index + 1], settings.final_sample_step_m
                 )
