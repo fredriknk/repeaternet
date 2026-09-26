@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import random
@@ -60,7 +61,7 @@ def peak_working_set_mib() -> float | None:
         return None
 
 
-def run_case(count: int, seed: int, topology: str) -> dict[str, Any]:
+def run_case(count: int, seed: int, topology: str, distance_km: float) -> dict[str, Any]:
     from rf_router_planner.models.settings import (
         CandidateSettings,
         OptimizationPriority,
@@ -71,28 +72,42 @@ def run_case(count: int, seed: int, topology: str) -> dict[str, Any]:
     from rf_router_planner.terrain.raster import ArrayTerrain
 
     rng = random.Random(seed)
-    terrain = ArrayTerrain(np.zeros((401, 1001), dtype=np.float32), resolution_m=25.0)
+    distance_m = distance_km * 1_000.0
+    terrain_columns = math.ceil((distance_m + 1_000.0) / 25.0) + 1
+    terrain = ArrayTerrain(
+        np.zeros((401, terrain_columns), dtype=np.float32), resolution_m=25.0
+    )
     rf = RFSettings()
-    if topology == "mesh":
+    if topology in {"mesh", "long"}:
         from rf_router_planner.models.settings import ValidationMode
 
         rf.validation_mode = ValidationMode.STRICT_LOS
         rf.required_fresnel_clearance = 0.6
         rf.fade_margin_db = 0.0
-        rf.endpoint_a.height_agl_m = 3.0
-        rf.endpoint_b.height_agl_m = 3.0
+        endpoint_height = 10.0 if topology == "long" else 3.0
+        rf.endpoint_a.height_agl_m = endpoint_height
+        rf.endpoint_b.height_agl_m = endpoint_height
         rf.router.height_agl_m = 100.0
     else:
         rf.endpoint_a.height_agl_m = 100.0
         rf.endpoint_b.height_agl_m = 100.0
+    long_relay_count = max(1, math.ceil(distance_m / 22_000.0) - 1)
     settings = CandidateSettings(
         maximum_candidates=count,
         maximum_neighbors_per_site=16,
-        maximum_solution_routers=4 if topology == "mesh" else 6,
-        reliability_paths=2,
-        priority=OptimizationPriority.MAXIMUM_RELIABILITY
-        if topology == "mesh"
-        else OptimizationPriority.MINIMUM_ROUTERS,
+        maximum_solution_routers=(
+            long_relay_count
+            if topology == "long"
+            else 4
+            if topology == "mesh"
+            else 6
+        ),
+        reliability_paths=1 if topology == "long" else 2,
+        priority=(
+            OptimizationPriority.MINIMUM_ROUTERS
+            if topology in {"direct", "long"}
+            else OptimizationPriority.MAXIMUM_RELIABILITY
+        ),
         refine_radius_m=0.0,
         parallel_workers=1,
     )
@@ -101,7 +116,11 @@ def run_case(count: int, seed: int, topology: str) -> dict[str, Any]:
         "A", 500.0, 5_000.0, kind=SiteKind.ENDPOINT_A, antenna_height_m=endpoint_height
     )
     endpoint_b = Site(
-        "B", 24_500.0, 5_000.0, kind=SiteKind.ENDPOINT_B, antenna_height_m=endpoint_height
+        "B",
+        500.0 + distance_m,
+        5_000.0,
+        kind=SiteKind.ENDPOINT_B,
+        antenna_height_m=endpoint_height,
     )
     candidates = []
     if topology == "mesh":
@@ -116,13 +135,31 @@ def run_case(count: int, seed: int, topology: str) -> dict[str, Any]:
                 antenna_height_m=rf.router.height_agl_m,
             )
             for index, (x, y) in enumerate(
-                ((8_000.0, 3_500.0), (16_000.0, 3_500.0), (8_000.0, 6_500.0), (16_000.0, 6_500.0))
+                (
+                    (500.0 + distance_m * (7_500 / 24_000), 3_500.0),
+                    (500.0 + distance_m * (15_500 / 24_000), 3_500.0),
+                    (500.0 + distance_m * (7_500 / 24_000), 6_500.0),
+                    (500.0 + distance_m * (15_500 / 24_000), 6_500.0),
+                )
             )
+        )
+    elif topology == "long":
+        # Required relays ensure a long, strict-LOS route exists independently
+        # of the randomized distractors; this measures scale, not subset choice.
+        candidates.extend(
+            Site(
+                f"C{index - 1:04d}",
+                500.0 + distance_m * index / (long_relay_count + 1),
+                5_000.0,
+                required=True,
+                antenna_height_m=rf.router.height_agl_m,
+            )
+            for index in range(1, long_relay_count + 1)
         )
     candidates.extend(
         Site(
             f"C{index:04d}",
-            rng.uniform(500.0, 24_500.0),
+            rng.uniform(500.0, 500.0 + distance_m),
             rng.uniform(0.0, 10_000.0),
             antenna_height_m=rf.router.height_agl_m,
         )
@@ -142,10 +179,12 @@ def run_case(count: int, seed: int, topology: str) -> dict[str, Any]:
         last_progress = now
 
     started = time.perf_counter()
+    required_routers = [site for site in candidates if site.required] if topology == "long" else None
     result = optimizer.optimize(
         endpoint_a,
         endpoint_b,
         candidates=[endpoint_a, *candidates, endpoint_b],
+        required_routers=required_routers,
         progress=progress,
     )
     elapsed = time.perf_counter() - started
@@ -157,6 +196,7 @@ def run_case(count: int, seed: int, topology: str) -> dict[str, Any]:
     return {
         "candidates": count,
         "topology": topology,
+        "distance_km": distance_km,
         "seconds": round(elapsed, 3),
         "peak_rss_mib": round(memory, 1)
         if (memory := peak_working_set_mib()) is not None
@@ -199,34 +239,65 @@ def main() -> None:
     parser.add_argument("--sizes", nargs="+", type=int, default=[200, 800, 2_000])
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=int, default=180)
-    parser.add_argument("--topology", choices=("direct", "mesh"), default="direct")
+    parser.add_argument("--topology", choices=("direct", "mesh", "long"), default="direct")
+    parser.add_argument("--distance-km", type=float, default=24.0)
     parser.add_argument("--seed", type=int, default=20260926)
     parser.add_argument("--worker-count", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--worker-seed", type=int, default=20260926, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--worker-topology", choices=("direct", "mesh"), default="direct", help=argparse.SUPPRESS
+        "--worker-topology",
+        choices=("direct", "mesh", "long"),
+        default="direct",
+        help=argparse.SUPPRESS,
     )
+    parser.add_argument("--worker-distance-km", type=float, default=24.0, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.repetitions < 1 or any(size < 2 for size in args.sizes):
         parser.error("sizes must be at least 2 and repetitions must be positive")
+    if args.distance_km <= 0:
+        parser.error("distance must be positive")
     if args.topology == "mesh" and any(size < 4 for size in args.sizes):
         parser.error("mesh sizes must be at least 4 to include the four relay anchors")
+    if args.topology == "long":
+        relay_count = max(1, math.ceil(args.distance_km * 1_000 / 22_000) - 1)
+        if any(size < relay_count for size in args.sizes):
+            parser.error(f"candidate counts must be at least {relay_count} for this distance")
     if args.worker_count is not None:
-        print(json.dumps(run_case(args.worker_count, args.worker_seed, args.worker_topology)))
+        print(
+            json.dumps(
+                run_case(
+                    args.worker_count,
+                    args.worker_seed,
+                    args.worker_topology,
+                    args.worker_distance_km,
+                )
+            )
+        )
         return
     print(
         f"RF planner size benchmark | {platform.platform()} | Python {platform.python_version()} | {os.cpu_count()} logical CPUs"
     )
+    print(
+        f"Flat 25 m ArrayTerrain ({args.distance_km:g} km x 10 km); "
+        "times cover RouteOptimizer.optimize, one process per measurement."
+    )
     if args.topology == "direct":
-        print("Flat 25 m ArrayTerrain (25 x 10 km); randomized sites; clear direct route.")
+        print("Randomized sites; 100 m endpoint antennas; clear direct route.")
     else:
+        if args.topology == "mesh":
+            case_description = (
+                "Four required relay anchors; strict LOS, 2-path reliability. "
+                "Candidate scaling measures screening, not subset search."
+            )
+        else:
+            relay_count = max(1, math.ceil(args.distance_km * 1_000 / 22_000) - 1)
+            case_description = (
+                f"{relay_count} required chain relays; strict LOS, one path. "
+                "Candidate scaling measures screening, not subset search."
+            )
         print(
-            "Flat 25 m ArrayTerrain (25 x 10 km); four required relay anchors plus random sites; strict LOS, 2-path reliability."
+            case_description
         )
-        print(
-            "Mesh mode fixes the four-relay solution; candidate scaling measures screening, not subset search."
-        )
-    print("One process per measurement; reported times cover RouteOptimizer.optimize.")
     print("RSS is child process peak working set.")
     for size in args.sizes:
         runs = []
@@ -242,6 +313,8 @@ def main() -> None:
                         str(args.seed + repetition),
                         "--worker-topology",
                         args.topology,
+                        "--worker-distance-km",
+                        str(args.distance_km),
                     ],
                     check=True,
                     capture_output=True,

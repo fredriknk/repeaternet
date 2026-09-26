@@ -262,13 +262,49 @@ does **not** exercise size-scaled router-subset search. Each size ran once:
 | 800 | 1.810 s | 82.1 MiB | 10,967 | 4 routers, 2 independent paths |
 | 2,000 | 5.686 s | 122.5 MiB | 27,360 | 4 routers, 2 independent paths |
 
+### Long-distance corridor sweep
+
+The benchmark also supports `--topology long --distance-km D`. These cases use
+flat 25 m terrain with a 10 km corridor, strict LOS/Fresnel validation, 10 m
+endpoint antennas and 100 m relays. Four required relays span 100 km; nine span
+200 km, at roughly 20 km per hop. Random candidates are added around the route.
+Each measurement ran twice in a fresh process:
+
+| Distance | Candidates | Median optimize time | Median peak RSS | Valid screened links | Result |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 100 km | 200 | 0.482 s | 72.9 MiB | 2,546–2,578 | 4 relays, 1 path |
+| 100 km | 800 | 2.077 s | 93.4 MiB | 10,476–10,576 | 4 relays, 1 path |
+| 100 km | 2,000 | 6.261 s | 133.3 MiB | 26,066–26,166 | 4 relays, 1 path |
+| 200 km | 200 | 0.841 s | 89.7 MiB | 2,634–2,638 | 9 relays, 1 path |
+| 200 km | 800 | 3.671 s | 116.9 MiB | 11,308–11,313 | 9 relays, 1 path |
+| 200 km | 2,000 | 10.208 s | 169.2 MiB | 28,247–28,265 | 9 relays, 1 path |
+
+These long cases pass the chain sites as required network routers. This avoids
+the specialized two-client, at-most-two-repeater prepass, and the maximum router
+count equals the required-chain size. As a result, they test long-distance link
+evaluation, final certification and candidate-screening scale with a successful
+route, but **not** selection among alternative relay subsets or discovery of an
+unseeded long route.
+
+That distinction matters: an exploratory 100 km run using ordinary two-client
+minimum-router mode at 2,000 candidates reached about 1.25 GB (1.17 GiB) working
+set before I stopped it; it produced no timing result. In that mode,
+`_find_low_hop_route` builds a list and deduplication set for the Cartesian
+product of endpoint-visible candidate sets before checking two-repeater links.
+That allocation is a plausible contributor, though the interrupted run did not
+profile memory by operation. Treat this as a concrete scale risk to investigate:
+count and stream those pairs (preserving exact-search semantics), add a
+cancellation/memory regression, and compare against a bounded alternative.
+
 Reproduce with `python tools/benchmark_rf_search.py --repetitions 2` for the
 direct case, or add `--topology mesh` for the anchored two-path screening case.
 The mesh default is one repetition because its purpose is a quick scaling check.
-Neither workload models rugged terrain, GDAL/DEM I/O, GUI responsiveness, or
-open-ended multi-hop optimization. The next useful performance dataset should
-use a representative DEM and report both successful route quality and search
-states across increasing candidate counts.
+For long cases, use `--topology long --distance-km 100` (or `200`); add
+`--sizes 200 800 2000 --repetitions 2` for the recorded sweep. None of these
+synthetic workloads models rugged terrain, GDAL/DEM I/O, GUI responsiveness, or
+open-ended multi-hop subset optimization. The next useful performance dataset
+should use a representative DEM and report successful route quality, peak memory
+and explored search states across increasing candidate counts.
 
 ## Reference
 
