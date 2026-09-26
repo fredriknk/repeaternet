@@ -200,8 +200,10 @@ for the complete method definition.
    independent reference implementation, then calibrate only with field data.
 5. **Operational cancellation and scale:** cancellation cannot interrupt an
    in-flight GDAL/NumPy/NetworkX call; process batches can contain up to 32 links.
-   Benchmark wall time and peak memory for candidate counts 200, 800 and 2,000,
-   then consider smaller batches, bounded worker counts and progress latency.
+   Synthetic 200/800/2,000-candidate measurements are recorded below. They do
+   not measure real-terrain profile costs or unrestricted large-mesh search.
+   Before tuning batch size, worker count or progress latency, benchmark actual
+   DEMs and successful non-anchored meshes as well.
 6. **Cost model:** the 100-installation-unit plus mast-metre score is a proxy.
    Keep that assumption visible, and permit project-specific install/mast costs
    before users interpret the infrastructure objective as monetary cost.
@@ -212,9 +214,61 @@ for the complete method definition.
 - `ruff check src tests`: passed.
 - `mypy src/rf_router_planner --ignore-missing-imports`: passed (40 source files).
 - The headless Qt test process emitted GPU-context fallback diagnostics after
-  tests completed; process exit was successful. No numerical perf claim was
-  measured during this review.
-- This review updates the plan only; it makes no source or test changes.
+  tests completed; process exit was successful. The initial review did not
+  measure performance; a synthetic candidate sweep is recorded below.
+- At the time of the initial review, only the plan document changed; the later
+  performance sweep adds the benchmark utility described below.
+
+### Larger-search benchmark — 2026-09-26
+
+Added [`tools/benchmark_rf_search.py`](../tools/benchmark_rf_search.py) to make
+the size sweep repeatable. It runs each measurement in a fresh process, reports
+`RouteOptimizer.optimize` wall time and peak working set, and uses deterministic
+random seeds. Timings have no pass/fail threshold. Environment: Windows 11,
+Python 3.13.12, 24 logical CPUs; flat 0 m `ArrayTerrain` (401 x 1,001 cells at
+25 m spacing), single worker, 16 neighbors per site, and a 24 km endpoint gap.
+These are synthetic load tests rather than timings over an imported DEM.
+
+The direct case uses 100 m endpoint antennas and a clear direct route. It shows
+the cost of screening and optimization as candidate alternatives grow, but the
+winning solution uses no repeaters. Each table entry is median wall time and
+peak working set from fresh processes; link counts are the observed run range.
+
+| Candidates | Repetitions | Median optimize time | Median peak RSS | Valid screened links | Result |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 200 | 2 | 14.814 s | 69.6 MiB | 2,205–2,216 | direct, 0 routers |
+| 800 | 3 | 3.805 s | 85.1 MiB | 8,802–8,847 | direct, 0 routers |
+| 2,000 | 2 | 10.885 s | 118.7 MiB | 21,916 | direct, 0 routers |
+
+The 200-site result is slower than 800, so candidate count alone is not a useful
+runtime predictor here. The topology solver's 100,000-subset exact-search limit
+provides a plausible explanation: at 200 candidates, the two-router layer has
+19,900 subsets and is exact; at 800, its 319,600 subsets exceed the limit and
+that layer uses the bounded heuristic. This is consistent with the timings, but
+the benchmark does not emit per-layer explored-state counts, so it is not a
+causal attribution. At 2,000 sites, peak memory is about 1.7x the 200-site
+median; screening/evaluation and final validation are the largest measured
+phases in the worker output.
+
+A second, strict-LOS case checks a real multi-hop result while scaling candidate
+screening. Four required 100 m relays form two parallel paths between 3 m
+endpoints; randomized sites fill out the candidate pool. To keep this focused on
+candidate-screening cost, the solution limit is exactly four routers, so this
+does **not** exercise size-scaled router-subset search. Each size ran once:
+
+| Candidates | Optimize time | Peak RSS | Valid screened links | Result |
+| ---: | ---: | ---: | ---: | --- |
+| 200 | 0.419 s | 60.9 MiB | 2,671 | 4 routers, 2 independent paths |
+| 800 | 1.810 s | 82.1 MiB | 10,967 | 4 routers, 2 independent paths |
+| 2,000 | 5.686 s | 122.5 MiB | 27,360 | 4 routers, 2 independent paths |
+
+Reproduce with `python tools/benchmark_rf_search.py --repetitions 2` for the
+direct case, or add `--topology mesh` for the anchored two-path screening case.
+The mesh default is one repetition because its purpose is a quick scaling check.
+Neither workload models rugged terrain, GDAL/DEM I/O, GUI responsiveness, or
+open-ended multi-hop optimization. The next useful performance dataset should
+use a representative DEM and report both successful route quality and search
+states across increasing candidate counts.
 
 ## Reference
 
