@@ -1,5 +1,9 @@
 # RF pathfinding improvement plan
 
+Next phase: [Web usability and search performance implementation plan](USABILITY_PERFORMANCE_PLAN.md).
+The milestones below describe the completed engine work; the linked plan tracks
+the upcoming feature releases.
+
 Owner: current implementation session. Started: 2026-09-26.
 
 ## Goal and completion criteria
