@@ -209,3 +209,52 @@ def test_topology_selection_is_stable_under_input_reversal():
     reverse = solve_topologies(sites[::-1], edges[::-1], settings)
     assert forward[0].router_ids == reverse[0].router_ids == ["X"]
     assert forward[0].client_paths == reverse[0].client_paths
+
+
+def test_disconnected_candidates_are_pruned_before_subset_enumeration(monkeypatch):
+    import rf_router_planner.optimization.topology as topology
+
+    a, b = client("A", 0), client("B", 10)
+    bridge = router("bridge", 5)
+    unrelated = [router(f"island-{i}", 100 + i) for i in range(40)]
+    calls = []
+    original = topology._evaluate_router_subset
+    def observe(graph, clients, routers, paths, priority):
+        calls.append([s.id for s in routers])
+        return original(graph, clients, routers, paths, priority)
+    monkeypatch.setattr(topology, "_evaluate_router_subset", observe)
+    solutions = solve_topologies([a, b, bridge, *unrelated], [link("A", "bridge"), link("bridge", "B")], CandidateSettings(maximum_solution_routers=6))
+    assert calls == [[], ["bridge"]]
+    assert solutions[0].router_ids == ["bridge"]
+    assert "Exhaustive" in solutions[0].diagnostics[0]
+
+
+def test_topology_cancellation_discards_partial_alternatives():
+    a, b = client("A", 0), client("B", 10)
+    routers = [router(f"R{i}", i) for i in range(20)]
+    edges = [link("A", "B"), *[edge for r in routers for edge in (link("A", r.id), link(r.id, "B"))]]
+    checks = 0
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 8
+    assert solve_topologies([a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2), cancelled=cancelled) == []
+    assert checks == 8
+
+
+def test_heuristic_search_is_labeled_and_cancellable(monkeypatch):
+    import rf_router_planner.optimization.topology as topology
+
+    monkeypatch.setattr(topology, "_EXACT_COMBINATION_LIMIT", 1)
+    a, b = client("A", 0), client("B", 10)
+    routers = [router(f"R{i}", i) for i in range(5)]
+    edges = [edge for r in routers for edge in (link("A", r.id), link(r.id, "B"))]
+    solutions = solve_topologies([a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2))
+    assert all("Heuristic" in s.diagnostics[0] for s in solutions)
+    checks = 0
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 6
+    assert solve_topologies([a, b, *routers], edges, CandidateSettings(maximum_solution_routers=2), cancelled=cancelled) == []
+    assert checks < 10

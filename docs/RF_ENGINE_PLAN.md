@@ -62,7 +62,7 @@ optimality over continuous terrain.
 - Test adversarial converging paths, cheap mast alternatives, reliability and
   input-order invariance with exhaustive small-graph references.
 
-### M4 — Responsive and bounded topology search [in progress]
+### M4 — Responsive and bounded topology search [complete]
 
 - Thread cancellation through exact enumeration, beam expansion and validation.
 - Prune disconnected candidate components before combinatorial work.
@@ -71,7 +71,7 @@ optimality over continuous terrain.
 - Remove unreachable legacy flow only after active behavior has regression cover.
 - Test pre-cancellation, cancellation during search and irrelevant-component pruning.
 
-### M5 — Release verification and documentation [pending]
+### M5 — Release verification and documentation [in progress]
 
 - Run all tests, targeted lint/type checks, packaging and source-diff review.
 - Record counts, limitations and commit milestones here; update README model and
@@ -114,6 +114,14 @@ changes and are not prerequisites for this release.
   plus mast metres), minimum count and reliability. Site ordering is deterministic.
   Twelve graph/topology tests pass, including 40 seeded exhaustive graph oracles,
   later-bottleneck regression, mast-cost tradeoff and reordered inputs.
+- M3 commit: `bd4d11d`. Combined graph, topology and screening tests: 20 passed.
+- M4: cancellation now reaches exact subset enumeration and heuristic beam
+  expansion; partial alternatives are discarded on cancellation. Disconnected
+  candidate islands are pruned before enumeration. Diagnostics label exhaustive
+  subset search versus bounded beam search. Removed 150+ lines of unreachable
+  route flow while retaining local-edit helpers used by the desktop UI.
+  Twenty topology/screening tests pass, including cancellation inside both search
+  modes and a 40-site irrelevant island reduced to two subset evaluations.
 
 ## Reference
 

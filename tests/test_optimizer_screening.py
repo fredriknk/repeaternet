@@ -296,3 +296,13 @@ def test_cancellation_during_final_validation_returns_no_route(monkeypatch):
     result = optimizer.optimize(a, b, candidates=[a, b], progress=progress, cancelled=lambda: stopped)
     assert not result.found
     assert "cancelled" in result.diagnostics[0]
+
+
+def test_pre_cancelled_search_skips_candidate_generation(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("Candidate generation should not run")
+    monkeypatch.setattr("rf_router_planner.optimization.optimizer.generate_candidates", fail)
+    optimizer = RouteOptimizer(ArrayTerrain(np.zeros((3, 101)), resolution_m=1), RFSettings(), CandidateSettings())
+    result = optimizer.optimize(Site("A", 0, 0), Site("B", 100, 0), cancelled=lambda: True)
+    assert not result.found
+    assert result.diagnostics == ["Optimization cancelled"]

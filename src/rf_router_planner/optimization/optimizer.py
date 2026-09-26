@@ -238,6 +238,10 @@ class RouteOptimizer:
         started = time.perf_counter()
         notify = progress or (lambda _stage, _done, _total: None)
         is_cancelled = cancelled or (lambda: False)
+        if is_cancelled():
+            return OptimizationResult([], [], [], [], ["Optimization cancelled"])
+        if any(site.required and not site.enabled for site in (required_routers or [])):
+            raise ValueError("Required routers cannot be disabled")
         notify("Generating candidates", 0, 1)
         network_clients = clients or [endpoint_a, endpoint_b]
         mandatory = [site for site in (required_routers or []) if site.enabled]
@@ -353,6 +357,7 @@ class RouteOptimizer:
                 sites,
                 list(link_by_key.values()),
                 self.candidate_settings,
+                cancelled=is_cancelled,
             )
             if not alternatives:
                 break
@@ -404,7 +409,10 @@ class RouteOptimizer:
             sites,
             list(link_by_key.values()),
             self.candidate_settings,
+            cancelled=is_cancelled,
         )
+        if is_cancelled():
+            return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
         if alternatives:
             active_index = select_active_solution_index(
                 alternatives, self.candidate_settings.priority
@@ -432,6 +440,8 @@ class RouteOptimizer:
         ):
             notify("Checking long summit alternatives", 0, 1)
             low_hop = self._find_low_hop_route(sites, notify, is_cancelled)
+            if is_cancelled():
+                return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
             if low_hop is not None:
                 fallback_route, fallback_links = low_hop
                 router_ids = [site.id for site in fallback_route[1:-1]]
@@ -482,149 +492,6 @@ class RouteOptimizer:
             time.perf_counter() - started,
         )
 
-        # Legacy single-route code is intentionally retained below for project
-        # compatibility while network solutions replace it in the GUI.
-        notify("Building graph", len(links), len(plausible))
-        graph = build_graph(sites, links)
-        notify("Finding minimum router path", 0, 1)
-        path_ids = select_path(
-            graph, endpoint_a.id, endpoint_b.id, self.candidate_settings.priority
-        )
-        # Medium and final validation both remove false-positive edges and
-        # continue searching.  A single aliased coarse path must not turn into
-        # a false "no route" result while alternatives remain in the graph.
-        route: list[Site] | None = None
-        route_links: list[LinkResult] = []
-        while path_ids:
-            invalid_edges: list[tuple[str, str]] = []
-            notify("Medium-resolution RF validation", 0, len(path_ids) - 1)
-            for number, (source_id, target_id) in enumerate(
-                zip(path_ids, path_ids[1:], strict=False), 1
-            ):
-                source = graph.nodes[source_id]["site"]
-                target = graph.nodes[target_id]["site"]
-                medium = self.evaluator.evaluate(
-                    source, target, self.candidate_settings.medium_sample_step_m
-                )
-                if not medium.valid:
-                    invalid_edges.append((source_id, target_id))
-                else:
-                    graph.edges[source_id, target_id]["link"] = medium
-                notify("Medium-resolution RF validation", number, len(path_ids) - 1)
-            if not invalid_edges:
-                base_route = [graph.nodes[site_id]["site"] for site_id in path_ids]
-                base_link_results: list[LinkResult | None] = []
-                notify("Final-resolution RF validation", 0, len(base_route) - 1)
-                for number, (source, target) in enumerate(
-                    zip(base_route, base_route[1:], strict=False), 1
-                ):
-                    try:
-                        final_link = self.evaluator.evaluate(
-                            source,
-                            target,
-                            self.candidate_settings.final_sample_step_m,
-                        )
-                    except ValueError:
-                        final_link = None
-                    base_link_results.append(final_link)
-                    notify("Final-resolution RF validation", number, len(base_route) - 1)
-                if all(
-                    link is not None and link.valid for link in base_link_results
-                ):
-                    route = base_route
-                    route_links = [
-                        link for link in base_link_results if link is not None
-                    ]
-                    break
-
-                # A medium-valid seed can still be rescued by the configured
-                # local search.  Work on copies so rejected attempts do not
-                # mutate graph candidates or mast heights.
-                refined_route = [
-                    base_route[0],
-                    *(replace(site) for site in base_route[1:-1]),
-                    base_route[-1],
-                ]
-                notify("Refining router locations", 0, max(1, len(refined_route) - 2))
-                for index in range(1, len(refined_route) - 1):
-                    refined_route[index] = self._refine_site(
-                        refined_route[index - 1],
-                        refined_route[index],
-                        refined_route[index + 1],
-                    )
-                    notify("Refining router locations", index, len(refined_route) - 2)
-                if self.candidate_settings.optimize_heights:
-                    self._reduce_mast_heights(refined_route)
-                refined_links = [
-                    self.evaluator.evaluate(
-                        source,
-                        target,
-                        self.candidate_settings.final_sample_step_m,
-                    )
-                    for source, target in zip(
-                        refined_route, refined_route[1:], strict=False
-                    )
-                ]
-                if all(link.valid for link in refined_links):
-                    route, route_links = refined_route, refined_links
-                    break
-
-                invalid_edges = [
-                    edge
-                    for edge, link in zip(
-                        zip(path_ids, path_ids[1:], strict=False),
-                        base_link_results,
-                        strict=True,
-                    )
-                    if link is None or not link.valid
-                ]
-            graph.remove_edges_from(invalid_edges)
-            path_ids = select_path(
-                graph, endpoint_a.id, endpoint_b.id, self.candidate_settings.priority
-            )
-        if route is None:
-            diagnostics = ["No valid route found with the current constraints."]
-            if failures:
-                nearest = max(failures, key=lambda item: item.worst_margin_db)
-                diagnostics.extend(
-                    [
-                        f"Best near-valid link: {nearest.source_id} → {nearest.target_id}",
-                        f"Predicted usable margin: {nearest.worst_margin_db:.1f} dB",
-                        "Try increasing router height or candidate density, widening the corridor, or reducing the fade margin.",
-                    ]
-                )
-            return OptimizationResult(
-                [], [], sites, links, diagnostics, time.perf_counter() - started
-            )
-        for index, site in enumerate(route[1:-1], 1):
-            site.kind = SiteKind.ROUTER
-            site.id = f"R{index}"
-        # Re-evaluate route links after stable router IDs and at final resolution.
-        notify("Validating final solution", 0, len(route) - 1)
-        route_links = []
-        for index, (source, target) in enumerate(zip(route, route[1:], strict=False), 1):
-            route_links.append(
-                self.evaluator.evaluate(source, target, self.candidate_settings.final_sample_step_m)
-            )
-            notify("Validating final solution", index, len(route) - 1)
-        if not all(link.valid for link in route_links):
-            return OptimizationResult(
-                [],
-                route_links,
-                sites,
-                links,
-                ["The selected route changed during finalization and is no longer valid."],
-                time.perf_counter() - started,
-            )
-        logger.info(
-            "Selected route %s in %.2fs (%d valid edges)",
-            " -> ".join(site.id for site in route),
-            time.perf_counter() - started,
-            len(links),
-        )
-        return OptimizationResult(
-            route, route_links, sites, links, [], time.perf_counter() - started
-        )
 
     def _refine_site(self, previous: Site, site: Site, following: Site) -> Site:
         radius = self.candidate_settings.refine_radius_m

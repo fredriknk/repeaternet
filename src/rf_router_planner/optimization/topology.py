@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 import networkx as nx
@@ -223,6 +223,7 @@ def _heuristic_router_layers(
     required: Sequence[Site],
     optional: Sequence[Site],
     maximum_optional_count: int,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> dict[int, list[tuple[Site, ...]]]:
     """Build every beam depth once and reuse it for exact-count alternatives."""
     if maximum_optional_count <= 0:
@@ -238,6 +239,8 @@ def _heuristic_router_layers(
     by_id = {site.id: site for site in optional}
     protected: set[str] = set()
     for left, right in itertools.combinations(clients, 2):
+        if cancelled():
+            return {}
         try:
             protected.update(nx.shortest_path(graph, left.id, right.id)[1:-1])
         except nx.NetworkXNoPath:
@@ -271,10 +274,14 @@ def _heuristic_router_layers(
     layers: dict[int, list[tuple[Site, ...]]] = {}
     required_ids = {site.id for site in required}
     for depth in range(1, maximum_optional_count + 1):
+        if cancelled():
+            return {}
         expanded: dict[tuple[str, ...], tuple[Site, ...]] = {}
         for selection in beam:
             selected_ids = {site.id for site in selection}
             for router in search_pool:
+                if cancelled():
+                    return {}
                 if router.id in selected_ids or router.id in required_ids:
                     continue
                 trial = (*selection, router)
@@ -297,6 +304,7 @@ def solve_topologies(
     links: Sequence[LinkResult],
     settings: CandidateSettings,
     priority: OptimizationPriority | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> list[NetworkSolution]:
     """Find the best feasible mesh for each exact router count.
 
@@ -305,6 +313,9 @@ def solve_topologies(
     solution.  Small candidate sets are solved exactly; large terrain-derived
     sets use a bounded deterministic beam search.
     """
+    is_cancelled = cancelled or (lambda: False)
+    if is_cancelled():
+        return []
     enabled_sites = sorted((site for site in sites if site.enabled), key=lambda s: s.id)
     ids = [site.id for site in enabled_sites]
     if len(ids) != len(set(ids)):
@@ -327,6 +338,12 @@ def solve_topologies(
         )
 
     graph = _valid_link_graph(enabled_sites, links)
+    component = nx.node_connected_component(graph, clients[0].id)
+    if any(site.id not in component for site in [*clients, *required]):
+        return []
+    optional = [site for site in optional if site.id in component]
+    router_candidates = [*required, *optional]
+    graph = graph.subgraph(component).copy()
     requested_paths = max(1, settings.reliability_paths)
     effective_priority = priority or settings.priority
     alternatives: list[NetworkSolution] = []
@@ -338,16 +355,20 @@ def solve_topologies(
     )
     heuristic_layers = (
         _heuristic_router_layers(
-            graph, clients, required, optional, maximum_optional_count
+            graph, clients, required, optional, maximum_optional_count, is_cancelled
         )
         if needs_heuristic
         else {}
     )
     for router_count in range(len(required), maximum_router_count + 1):
+        if is_cancelled():
+            return []
         best: _EvaluatedTopology | None = None
         for routers in _router_combinations(
             required, optional, router_count, heuristic_layers
         ):
+            if is_cancelled():
+                return []
             evaluated = _evaluate_router_subset(graph, clients, routers, requested_paths, effective_priority)
             if evaluated is None:
                 continue
@@ -356,6 +377,12 @@ def solve_topologies(
             ):
                 best = evaluated
         if best is not None:
+            combinations = math.comb(len(optional), router_count - len(required))
+            best.solution.diagnostics.append(
+                f"Exhaustive subset search within screened graph ({combinations} subsets)."
+                if combinations <= _EXACT_COMBINATION_LIMIT
+                else f"Heuristic subset search within screened graph (beam width {_HEURISTIC_BEAM_WIDTH}); global optimum not guaranteed."
+            )
             alternatives.append(best.solution)
 
     # Keep exact-count alternatives stable for dropdowns.  Selection policy is
