@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C5 implemented; browser/accuracy validation remains open for C3–C5; C6–C8 planned; release validation open.
+Created: 2026-09-27. Status: C0–C6 implemented; browser/accuracy validation remains open for C3–C6; C7–C8 planned; release validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -361,7 +361,7 @@ available in this session (same C3 limitation).
 
 Commit: `feat: simulate router failures and surviving mesh coverage`.
 
-## C6 — Compare alternatives and antenna-height scenarios [planned]
+## C6 — Compare alternatives and antenna-height scenarios [implemented; visual validation open]
 
 Implementation:
 
@@ -381,6 +381,28 @@ Acceptance: identical snapshots give zero change; swapping baseline/scenario
 reverses gained/lost areas; height/radio changes invalidate only applicable cache
 entries; missing terrain is excluded from claims of improvement; source edits
 cannot leak into the baseline.
+
+Progress: completed coverage jobs are now archived as project-local immutable
+snapshots, with a bounded recent-run selector. Comparison requires the same project
+terrain revision, radio/model version, handheld profile, sample spacing, area and
+cell grid; it rejects different or incomplete grids. The comparison streams saved
+JSONL chunks (rather than retaining both cell matrices), computes local and
+reference-connected gained/lost/retained cells separately, excludes unknown cells
+from both denominators, and exposes an overlay plus a common evaluated-area summary.
+Height scenarios accept per-router overrides with 3/6/10 m shortcuts. They rerun
+client links, revalidate affected certified router-to-router links under the shared
+bounded worker, and never invent new backbone edges. Applying a scenario height is
+an explicit plan edit: optimized routers are pinned as required proposed sites,
+existing MeshCore/manual site values are updated, and normal undo restores the
+baseline. The original route snapshot remains unchanged until that edit.
+
+Verification: identical runs yield zero deltas; swapped runs reverse gained/lost;
+unknown and misaligned coordinates are handled conservatively. API tests verify
+history persistence, same-grid comparison, changed terrain/profile rejection,
+separate height snapshots, height bounds, and a height change that invalidates a
+certified bridge before reference-connected comparison. Full suite: 138 passed; Ruff, mypy,
+JavaScript syntax and diff checks pass. Synthetic rasters only; browser visual review
+and comparative real-terrain performance remain open.
 
 Commit: `feat: compare coverage and antenna-height planning scenarios`.
 
@@ -482,8 +504,9 @@ Current implementation record (2026-09-27):
 | C2 | Implemented · `1ae3ba6`, `1a1b905` | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
 | C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
-| C5 | Implemented · commit pending | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
-| C6–C8 | Planned | No implementation started. |
+| C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
+| C6 | Implemented · commit pending | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
+| C7–C8 | Planned | No implementation started. |
 
 Validation recorded so far: full suite `python -m pytest` passes 126 tests;
 `python -m ruff check src tests tools` and `python -m mypy src/rf_router_planner

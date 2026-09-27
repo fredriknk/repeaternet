@@ -13,6 +13,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields, is_dataclass, replace
 from enum import Enum
@@ -26,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
 
 from .coordinates import norway_utm_epsg
+from .coverage.compare import compare_coverage_streams
 from .coverage.engine import calculate_coverage, make_grid
 from .coverage.scenarios import analyze_node_failures
 from .export.csv_export import export_route_csv
@@ -49,6 +51,8 @@ from .terrain.raster import RasterTerrain
 
 ASSETS = Path(__file__).parent / "web_assets"
 MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
+MAX_COVERAGE_BACKBONE_REVALIDATION_LINKS = 4_096
+COVERAGE_MODEL_VERSION = "coverage-v1"
 
 
 def encode(value: Any) -> Any:
@@ -458,6 +462,47 @@ def _write_json_atomic(path: Path, value: Any) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def _save_coverage_manifest(workspace: Workspace, job: dict[str, Any]) -> None:
+    _write_json_atomic(workspace.coverage_job_path, job)
+    archive = workspace.directory / "coverage-jobs"
+    archive.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(archive / f"{job['job_id']}.json", job)
+
+
+def _load_coverage_manifest(workspace: Workspace, job_id: str) -> dict[str, Any] | None:
+    if len(job_id) != 32 or any(character not in "0123456789abcdef" for character in job_id):
+        return None
+    if workspace.coverage_job and workspace.coverage_job.get("job_id") == job_id:
+        return dict(workspace.coverage_job)
+    try:
+        value = json.loads(
+            (workspace.directory / "coverage-jobs" / f"{job_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) and value.get("job_id") == job_id else None
+
+
+def _iter_coverage_cells(
+    directory: Path, job: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    result_path = (directory / str(job.get("result_file", ""))).resolve()
+    if directory.resolve() not in result_path.parents or not result_path.is_file():
+        raise FileNotFoundError("Coverage results are unavailable")
+    with result_path.open(encoding="utf-8") as source:
+        for line in source:
+            if line:
+                try:
+                    chunk = json.loads(line)
+                except ValueError as exc:
+                    raise OSError("Coverage result chunk is malformed") from exc
+                if not isinstance(chunk, list):
+                    raise OSError("Coverage result chunk is malformed")
+                yield from chunk
 
 
 def _terrain_fingerprint(workspace: Workspace) -> list[list[str | int]]:
@@ -1004,6 +1049,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             context = coverage_context(ws, body)
             coverage_settings: CoverageSettings = context["settings"]
             sources: list[Site] = context["sources"]
+            raw_height_overrides = body.get("source_height_overrides", {})
+            if not isinstance(raw_height_overrides, dict) or len(raw_height_overrides) > 64:
+                raise ValueError("Source-height scenario must be a map of at most 64 router IDs")
+            source_ids = set(context["solution"].router_ids) & {
+                site.id for site in sources
+            }
+            height_overrides: dict[str, float] = {}
+            for source_id, height in raw_height_overrides.items():
+                if not isinstance(source_id, str) or source_id not in source_ids:
+                    raise ValueError("Height scenarios may change only selected router sources")
+                if (
+                    not isinstance(height, (int, float))
+                    or isinstance(height, bool)
+                    or not math.isfinite(height)
+                    or not 0.1 <= height <= 500
+                ):
+                    raise ValueError("Scenario antenna height must be between 0.1 and 500 m AGL")
+                height_overrides[source_id] = float(height)
+            if height_overrides:
+                sources = [
+                    replace(
+                        source,
+                        antenna_height_m=height_overrides.get(
+                            source.id, source.antenna_height_m
+                        ),
+                        height_override=source.id in height_overrides,
+                    )
+                    for source in sources
+                ]
             if coverage_settings.maximum_evaluations // len(sources) < 1:
                 raise ValueError("Coverage limits allow no source evaluations")
             with ws.lock:
@@ -1052,7 +1126,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "terrain_fingerprint": context["terrain_fingerprint"],
                     "settings_fingerprint": _plan_fingerprint(encode(coverage_settings)),
                     "settings": encode(coverage_settings),
+                    "radio_fingerprint": _plan_fingerprint(
+                        {
+                            "rf": encode(context["rf"]),
+                            "candidates": encode(context["candidates"]),
+                        }
+                    ),
+                    "model_version": COVERAGE_MODEL_VERSION,
                     "source_ids": [site.id for site in sources],
+                    "source_sites": encode(sources),
+                    "source_height_overrides": height_overrides,
                     "router_ids": list(context["solution"].router_ids),
                     "network_links": [
                         {
@@ -1071,7 +1154,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 }
                 ws.coverage_cancel.clear()
                 ws.coverage_job = job
-                _write_json_atomic(ws.coverage_job_path, job)
+                _save_coverage_manifest(ws, job)
         except HTTPException:
             raise
         except (ValueError, TypeError, KeyError) as exc:
@@ -1085,7 +1168,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if not ws.coverage_job or ws.coverage_job.get("job_id") != job_id:
                         return
                     ws.coverage_job.update(values)
-                    _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                    _save_coverage_manifest(ws, ws.coverage_job)
 
             def stream_chunk(cells: list[Any]) -> None:
                 if not coverage_current(ws, job):
@@ -1108,7 +1191,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         ws.coverage_job.update(
                             state="failed", stage="Coverage result exceeded the project storage limit"
                         )
-                        _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                        _save_coverage_manifest(ws, ws.coverage_job)
                         raise ValueError("Coverage result exceeded the project storage limit")
                     with result_path.open("a", encoding="utf-8") as output:
                         output.write(line)
@@ -1122,11 +1205,73 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ws.coverage_job["unknown_cells"] += states.count("unknown_terrain")
                     ws.coverage_job["evaluated_cells"] += states.count("covered") + states.count("uncovered")
                     ws.coverage_job["stage"] = "Calculating mesh coverage"
-                    _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                    _save_coverage_manifest(ws, ws.coverage_job)
 
             try:
                 update_job(state="running", stage="Opening terrain")
                 with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                    if height_overrides:
+                        router_ids = set(context["solution"].router_ids)
+                        original_sites = {site.id: site for site in context["solution"].sites}
+                        adjusted_sites = {site.id: site for site in sources}
+                        affected = [
+                            link
+                            for link in context["solution"].links
+                            if link.valid
+                            and link.source_id in router_ids
+                            and link.target_id in router_ids
+                            and bool(
+                                {link.source_id, link.target_id} & set(height_overrides)
+                            )
+                        ]
+                        if len(affected) > MAX_COVERAGE_BACKBONE_REVALIDATION_LINKS:
+                            raise ValueError(
+                                "Height scenario affects too many certified mesh links to revalidate safely"
+                            )
+                        evaluator = LinkEvaluator(
+                            terrain,
+                            context["rf"],
+                            cache=coverage_rf_cache,
+                            cache_namespace=f"coverage-height:{ws.directory.name}",
+                        )
+                        validity: dict[tuple[str, str], bool] = {}
+                        for link in affected:
+                            left = adjusted_sites.get(
+                                link.source_id, original_sites[link.source_id]
+                            )
+                            right = adjusted_sites.get(
+                                link.target_id, original_sites[link.target_id]
+                            )
+                            distance = left.distance_to(right)
+                            step = max(
+                                coverage_settings.profile_step_m,
+                                distance
+                                / max(1, coverage_settings.maximum_profile_samples - 1),
+                            )
+                            try:
+                                validity[(link.source_id, link.target_id)] = evaluator.evaluate(
+                                    left, right, step, include_profile=False
+                                ).valid
+                            except ValueError:
+                                validity[(link.source_id, link.target_id)] = False
+                        network_links = [
+                            {
+                                "source_id": link.source_id,
+                                "target_id": link.target_id,
+                                "valid": validity.get(
+                                    (link.source_id, link.target_id), bool(link.valid)
+                                ),
+                            }
+                            for link in context["solution"].links
+                        ]
+                        update_job(
+                            network_links=network_links,
+                            backbone_revalidated_edges=len(affected),
+                            backbone_invalidated_edges=sum(
+                                not valid for valid in validity.values()
+                            ),
+                            stage="Revalidated affected certified mesh links",
+                        )
                     bounded_settings = replace(
                         coverage_settings,
                         maximum_cells=min(
@@ -1188,7 +1333,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 requested_cells=grid.requested_cells,
                                 finished_at=time.time(),
                             )
-                        _write_json_atomic(ws.coverage_job_path, current_job)
+                        _save_coverage_manifest(ws, current_job)
             except Exception as exc:
                 update_job(state="failed", stage=str(exc), finished_at=time.time())
             finally:
@@ -1202,9 +1347,150 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
             with ws.lock:
                 ws.coverage_job.update(state="failed", stage="Could not queue coverage job")
-                _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                _save_coverage_manifest(ws, ws.coverage_job)
             raise HTTPException(503, "Could not queue coverage job") from exc
         return dict(ws.coverage_job)
+
+    @app.get("/api/coverage/jobs")
+    def list_mesh_coverage_jobs(request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            current_job = dict(ws.coverage_job) if ws.coverage_job else None
+            directory = ws.directory
+        manifests: dict[str, dict[str, Any]] = {}
+        archive = directory / "coverage-jobs"
+        if archive.is_dir():
+            for path in archive.glob("*.json"):
+                try:
+                    item = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(item, dict) and isinstance(item.get("job_id"), str):
+                    manifests[item["job_id"]] = item
+        if current_job:
+            manifests[current_job["job_id"]] = current_job
+        recent = sorted(
+            manifests.values(), key=lambda value: value.get("created_at", 0), reverse=True
+        )[:50]
+        return {
+            "jobs": [
+                {
+                    "job_id": item["job_id"],
+                    "project_id": item.get("project_id"),
+                    "state": item.get("state"),
+                    "created_at": item.get("created_at"),
+                    "alternative_id": item.get("alternative_id"),
+                    "source_ids": item.get("source_ids", []),
+                    "router_ids": item.get("router_ids", []),
+                    "settings": item.get("settings", {}),
+                    "requested_cells": item.get("requested_cells", item.get("total", 0)),
+                    "done": item.get("done", 0),
+                }
+                for item in recent
+            ]
+        }
+
+    @app.post("/api/coverage/compare")
+    def compare_mesh_coverage(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        baseline_id, scenario_id = body.get("baseline_job_id"), body.get("scenario_job_id")
+        reference_id = body.get("reference_id")
+        if (
+            not isinstance(baseline_id, str)
+            or not isinstance(scenario_id, str)
+            or not isinstance(reference_id, str)
+            or baseline_id == scenario_id
+        ):
+            raise HTTPException(422, "Choose two different completed runs and a shared reference router")
+        with ws.lock:
+            baseline = _load_coverage_manifest(ws, baseline_id)
+            scenario = _load_coverage_manifest(ws, scenario_id)
+            if baseline is None or scenario is None:
+                raise HTTPException(404, "Coverage run not found in this project workspace")
+            if baseline.get("state") != "complete" or scenario.get("state") != "complete":
+                raise HTTPException(409, "Both coverage runs must be complete")
+            if baseline.get("project_id") != ws.project_id or scenario.get("project_id") != ws.project_id:
+                raise HTTPException(404, "Coverage run not found in this project workspace")
+            if (
+                baseline.get("terrain_fingerprint") != scenario.get("terrain_fingerprint")
+                or baseline.get("terrain_fingerprint") != _terrain_fingerprint(ws)
+            ):
+                raise HTTPException(409, "Runs use different or changed terrain; recalculate on the same terrain")
+            if baseline.get("radio_fingerprint") != scenario.get("radio_fingerprint"):
+                raise HTTPException(409, "Runs use different radio or propagation settings")
+            if baseline.get("model_version") != scenario.get("model_version"):
+                raise HTTPException(409, "Runs were calculated with different coverage model versions")
+            baseline_settings, scenario_settings = baseline.get("settings", {}), scenario.get("settings", {})
+            compatible_settings = all(
+                baseline_settings.get(key) == scenario_settings.get(key)
+                for key in ("profile_step_m", "maximum_profile_samples", "client")
+            )
+            if not compatible_settings:
+                raise HTTPException(409, "Runs use different client radios or profile resolution")
+            compatible_grid = all(
+                baseline.get(key) == scenario.get(key)
+                for key in ("rows", "columns", "effective_cell_size_m", "area_bounds_wgs84")
+            )
+            if not compatible_grid:
+                raise HTTPException(409, "Runs use different grid bounds or cell spacing")
+            baseline_routers = set(baseline.get("router_ids", []))
+            scenario_routers = set(scenario.get("router_ids", []))
+            if (
+                reference_id not in baseline_routers
+                or reference_id not in scenario_routers
+                or reference_id not in set(baseline.get("source_ids", []))
+                or reference_id not in set(scenario.get("source_ids", []))
+            ):
+                raise HTTPException(422, "Reference router must be a selected repeater in both runs")
+            requested_cells = baseline.get("requested_cells", baseline.get("total"))
+            scenario_cells_count = scenario.get("requested_cells", scenario.get("total"))
+            if requested_cells != scenario_cells_count or not isinstance(requested_cells, int):
+                raise HTTPException(409, "Coverage runs are incomplete and cannot be compared")
+            try:
+                baseline_network = analyze_node_failures(
+                    [],
+                    list(baseline_routers),
+                    baseline.get("source_ids", []),
+                    baseline.get("network_links", []),
+                    [],
+                    reference_id,
+                )
+                scenario_network = analyze_node_failures(
+                    [],
+                    list(scenario_routers),
+                    scenario.get("source_ids", []),
+                    scenario.get("network_links", []),
+                    [],
+                    reference_id,
+                )
+                report = compare_coverage_streams(
+                    _iter_coverage_cells(ws.directory, baseline),
+                    _iter_coverage_cells(ws.directory, scenario),
+                    set(baseline_network["connected_source_ids"]),
+                    set(scenario_network["connected_source_ids"]),
+                    expected_count=requested_cells,
+                )
+            except OSError as exc:
+                raise HTTPException(404, "Coverage result pages are unavailable") from exc
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        return {
+            "baseline_job_id": baseline_id,
+            "scenario_job_id": scenario_id,
+            "reference_id": reference_id,
+            "baseline_reference_available": baseline_network["reference_available"],
+            "scenario_reference_available": scenario_network["reference_available"],
+            "baseline_connected_source_ids": baseline_network["connected_source_ids"],
+            "scenario_connected_source_ids": scenario_network["connected_source_ids"],
+            "effective_cell_size_m": scenario["effective_cell_size_m"],
+            "area_bounds_wgs84": scenario["area_bounds_wgs84"],
+            "approximate_sampled_area_km2": (
+                report["counts"]["evaluated_cells"]
+                * float(baseline["effective_cell_size_m"]) ** 2
+                / 1_000_000
+            ),
+            **report,
+        }
 
     @app.get("/api/coverage/jobs/{job_id}")
     def get_mesh_coverage_job(job_id: str, request: Request) -> Any:
@@ -1271,7 +1557,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(409, "There is no active coverage job")
             ws.coverage_cancel.set()
             ws.coverage_job.update(stage="Cancelling coverage")
-            _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+            _save_coverage_manifest(ws, ws.coverage_job)
         return {"ok": True}
 
     @app.post("/api/coverage/jobs/{job_id}/scenario")
@@ -1320,19 +1606,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if ws.directory.resolve() not in result_path.parents or not result_path.is_file():
                 raise HTTPException(404, "Coverage results are unavailable")
             try:
-                chunks = [
-                    json.loads(line)
-                    for line in result_path.read_text(encoding="utf-8").splitlines()
-                    if line
-                ]
-            except (OSError, ValueError) as exc:
-                raise HTTPException(404, "Coverage results are unavailable") from exc
-            cells = [cell for chunk in chunks for cell in chunk]
-            if len(cells) != job.get("requested_cells", job.get("total", -1)):
-                raise HTTPException(409, "Coverage results are incomplete; calculate again first")
-            try:
                 scenario = analyze_node_failures(
-                    cells,
+                    _iter_coverage_cells(ws.directory, job),
                     job.get("router_ids", []),
                     job.get("source_ids", []),
                     job.get("network_links", []),
@@ -1341,6 +1616,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
+            except OSError as exc:
+                raise HTTPException(404, "Coverage results are unavailable") from exc
+            if len(scenario["cells"]) != job.get("requested_cells", job.get("total", -1)):
+                raise HTTPException(409, "Coverage results are incomplete; calculate again first")
         return {"job_id": job_id, **scenario}
 
     def _compute_mesh_coverage_inspection(
@@ -2231,6 +2510,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 router_policy = item.get("policy", "optional")
                 if router_policy not in {"optional", "required", "excluded"}:
                     raise ValueError("MeshCore router policy must be optional, required, or excluded")
+                if not isinstance(item.get("height_override", False), bool):
+                    raise ValueError("MeshCore height_override must be a boolean")
+                if item.get("height_override"):
+                    height = item.get("antenna_height_m")
+                    if (
+                        not isinstance(height, (int, float))
+                        or isinstance(height, bool)
+                        or not math.isfinite(height)
+                        or not 0.1 <= height <= 500
+                    ):
+                        raise ValueError("MeshCore antenna-height override must be between 0.1 and 500 m")
                 if (
                     candidates.infrastructure_policy != InfrastructurePolicy.PROPOSED_ONLY
                     and router_policy != "excluded"
@@ -2428,10 +2718,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 SiteKind.ROUTER,
                                 ground_elevation_m=ground,
                                 surface_elevation_m=surface,
-                                antenna_height_m=rf.router.height_agl_m,
+                                antenna_height_m=(
+                                    float(item["antenna_height_m"])
+                                    if item.get("height_override")
+                                    else rf.router.height_agl_m
+                                ),
                                 origin=SiteOrigin.KNOWN,
                                 locked=True,
                                 required=item.get("policy", "optional") == "required",
+                                height_override=bool(item.get("height_override", False)),
                             )
                         )
                     manual_sites = []

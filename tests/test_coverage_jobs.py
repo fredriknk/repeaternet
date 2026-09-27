@@ -12,6 +12,7 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
 import rf_router_planner.web as web_module
+from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
@@ -61,6 +62,35 @@ def fake_optimizer(self, endpoint_a, endpoint_b, **kwargs):
     )
 
 
+def fake_two_router_optimizer(self, endpoint_a, endpoint_b, **kwargs):
+    del self, kwargs
+    first = Site("R-1", 500500.0, 6650500.0, kind=SiteKind.ROUTER, antenna_height_m=50.0)
+    second = Site("R-2", 520500.0, 6650500.0, kind=SiteKind.ROUTER, antenna_height_m=50.0)
+    forward = DirectionResult(
+        "R-1", "R-2", 20_000.0, 100.0, 0.0, 0.0, 100.0, 2.15, 2.15,
+        -70.0, -130.0, 60.0, 50.0, 0.0, 0.0, True,
+    )
+    reverse = DirectionResult(
+        "R-2", "R-1", 20_000.0, 100.0, 0.0, 0.0, 100.0, 2.15, 2.15,
+        -70.0, -130.0, 60.0, 50.0, 0.0, 0.0, True,
+    )
+    link = LinkResult(
+        "R-1", "R-2", 20_000.0, forward, reverse, True, True, True,
+        10.0, 0.8, 10_000.0, 100.0, 0.0,
+    )
+    solution = NetworkSolution(
+        "Two-router route",
+        [endpoint_a, first, second, endpoint_b],
+        [link],
+        [endpoint_a.id, endpoint_b.id],
+        [first.id, second.id],
+        {(endpoint_a.id, endpoint_b.id): [[endpoint_a.id, first.id, second.id, endpoint_b.id]]},
+    )
+    return OptimizationResult(
+        [endpoint_a, first, second, endpoint_b], [link], [first, second], [], alternatives=[solution]
+    )
+
+
 def wait_for(client: TestClient, job_id: str, terminal: set[str]) -> dict:
     for _ in range(500):
         response = client.get(f"/api/coverage/jobs/{job_id}")
@@ -70,8 +100,8 @@ def wait_for(client: TestClient, job_id: str, terminal: set[str]) -> dict:
     pytest.fail(f"Coverage job {job_id} did not reach {terminal}")
 
 
-def prepare_workspace(client: TestClient, monkeypatch) -> dict:
-    monkeypatch.setattr(RouteOptimizer, "optimize", fake_optimizer)
+def prepare_workspace(client: TestClient, monkeypatch, optimizer=fake_optimizer) -> dict:
+    monkeypatch.setattr(RouteOptimizer, "optimize", optimizer)
     assert client.get("/").status_code == 200
     assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", terrain_tile())}).status_code == 200
     coverage_settings = {
@@ -111,7 +141,7 @@ def prepare_workspace(client: TestClient, monkeypatch) -> dict:
         time.sleep(0.01)
     assert state["job"]["state"] == "complete", state["job"]
     result = client.get("/api/result").json()
-    assert result["router_count"] == 1
+    assert result["router_count"] >= 1
     body = {
         "snapshot_version": state["job"]["snapshot_version"],
         "alternative_id": result["active_alternative_id"],
@@ -329,3 +359,135 @@ def test_failure_scenarios_use_completed_workspace_snapshot_without_rf_work(
             json={"failed_ids": [], "reference_id": "R-coverage"},
         ).status_code == 404
         other_workspace.close()
+
+
+def test_compatible_coverage_runs_are_archived_and_compared_on_common_grid(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        baseline = start_coverage(client, prepared)
+        assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
+        scenario = start_coverage(client, prepared)
+        assert wait_for(client, scenario["job_id"], {"complete"})["state"] == "complete"
+
+        available = client.get("/api/coverage/jobs").json()["jobs"]
+        assert {item["job_id"] for item in available} >= {
+            baseline["job_id"],
+            scenario["job_id"],
+        }
+        comparison = client.post(
+            "/api/coverage/compare",
+            json={
+                "baseline_job_id": baseline["job_id"],
+                "scenario_job_id": scenario["job_id"],
+                "reference_id": "R-coverage",
+            },
+        )
+        assert comparison.status_code == 200, comparison.text
+        result = comparison.json()
+        assert result["counts"]["gained_local"] == 0
+        assert result["counts"]["lost_local"] == 0
+        assert result["counts"]["retained_local"] == result["counts"]["scenario_covered_cells"]
+        assert result["counts"]["evaluated_cells"] == 4
+        assert len(result["cells"]) == 4
+
+
+def test_height_scenario_is_bounded_and_saved_without_editing_baseline(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        invalid = {**prepared["coverage"], "source_height_overrides": {"R-coverage": 0}}
+        assert client.post("/api/coverage/jobs", json=invalid).status_code == 422
+        scenario_request = {
+            **prepared["coverage"],
+            "source_height_overrides": {"R-coverage": 10.0},
+        }
+        response = client.post("/api/coverage/jobs", json=scenario_request)
+        assert response.status_code == 200, response.text
+        completed = wait_for(client, response.json()["job_id"], {"complete"})
+        assert completed["source_height_overrides"] == {"R-coverage": 10.0}
+        assert completed["source_sites"][0]["antenna_height_m"] == 10.0
+        assert prepared["result"]["route"][1]["antenna_height_m"] == 50.0
+
+
+def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch, fake_two_router_optimizer)
+        baseline = start_coverage(client, prepared)
+        assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
+        request = {
+            **prepared["coverage"],
+            "source_height_overrides": {"R-1": 10.0},
+        }
+        started = client.post("/api/coverage/jobs", json=request)
+        assert started.status_code == 200, started.text
+        completed = wait_for(client, started.json()["job_id"], {"complete"})
+        assert completed["backbone_revalidated_edges"] == 1
+        assert completed["backbone_invalidated_edges"] == 1
+        assert completed["network_links"] == [
+            {"source_id": "R-1", "target_id": "R-2", "valid": False}
+        ]
+        comparison = client.post(
+            "/api/coverage/compare",
+            json={
+                "baseline_job_id": baseline["job_id"],
+                "scenario_job_id": completed["job_id"],
+                "reference_id": "R-1",
+            },
+        )
+        assert comparison.status_code == 200, comparison.text
+        assert comparison.json()["baseline_connected_source_ids"] == ["R-1", "R-2"]
+        assert comparison.json()["scenario_connected_source_ids"] == ["R-1"]
+
+
+def test_comparison_rejects_different_client_profile_resolution(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        baseline = start_coverage(client, prepared)
+        assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
+        settings = json.loads(json.dumps(prepared["coverage"]["settings"]))
+        settings["profile_step_m"] = 50.0
+        plan = json.loads(json.dumps(prepared["plan"]))
+        plan["coverage"] = settings
+        assert client.post("/api/projects/autosave", json={"plan": plan}).status_code == 200
+        request = {**prepared["coverage"], "settings": settings}
+        scenario = client.post("/api/coverage/jobs", json=request)
+        assert scenario.status_code == 200, scenario.text
+        assert wait_for(client, scenario.json()["job_id"], {"complete"})["state"] == "complete"
+        compared = client.post(
+            "/api/coverage/compare",
+            json={
+                "baseline_job_id": baseline["job_id"],
+                "scenario_job_id": scenario.json()["job_id"],
+                "reference_id": "R-coverage",
+            },
+        )
+        assert compared.status_code == 409
+        assert "profile resolution" in compared.json()["detail"]
+
+
+def test_comparison_rejects_terrain_changed_after_snapshot(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        baseline = start_coverage(client, prepared)
+        assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
+        scenario = start_coverage(client, prepared)
+        assert wait_for(client, scenario["job_id"], {"complete"})["state"] == "complete"
+        assert client.post(
+            "/api/terrain/dtm", files={"file": ("extra-ground.tif", terrain_tile())}
+        ).status_code == 200
+        compared = client.post(
+            "/api/coverage/compare",
+            json={
+                "baseline_job_id": baseline["job_id"],
+                "scenario_job_id": scenario["job_id"],
+                "reference_id": "R-coverage",
+            },
+        )
+        assert compared.status_code == 409
+        assert "terrain" in compared.json()["detail"]

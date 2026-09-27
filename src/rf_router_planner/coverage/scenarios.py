@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from typing import Any
 
 
 def analyze_node_failures(
-    cells: list[dict[str, Any]],
+    cells: Iterable[dict[str, Any]],
     router_ids: list[str],
     source_ids: list[str],
     links: list[dict[str, Any]],

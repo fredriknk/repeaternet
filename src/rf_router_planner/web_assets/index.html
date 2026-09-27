@@ -151,6 +151,30 @@
             </div>
             <p id="failure-summary" class="hint" role="status" aria-live="polite">Complete a coverage calculation to analyze router failures.</p>
           </details>
+          <details id="coverage-comparison-controls">
+            <summary>Compare alternatives & antenna heights</summary>
+            <p class="hint">Height runs are separate immutable scenarios. Affected certified router-to-router links are revalidated; previously uncertified links are never invented.</p>
+            <div id="coverage-height-sources" class="coverage-source-list"></div>
+            <div class="coverage-height-presets">
+              <button type="button" data-height-preset="3">Set all to 3 m</button>
+              <button type="button" data-height-preset="6">Set all to 6 m</button>
+              <button type="button" data-height-preset="10">Set all to 10 m</button>
+            </div>
+            <button id="coverage-height-run" class="wide-button" disabled>Calculate height scenario</button>
+            <button id="coverage-height-apply" class="wide-button" disabled>Apply heights to plan · undo available</button>
+            <hr>
+            <label>Baseline run<select id="coverage-baseline-run"></select></label>
+            <label>Scenario run<select id="coverage-scenario-run"></select></label>
+            <label>Reference router<select id="coverage-compare-reference"></select></label>
+            <button id="coverage-compare-run" class="wide-button" disabled>Compare runs on map</button>
+            <p id="coverage-compare-summary" class="hint" role="status" aria-live="polite">Run compatible coverage snapshots to compare coverage changes.</p>
+            <div id="coverage-diff-legend" class="coverage-diff-legend" aria-label="Coverage difference legend">
+              <span><i class="diff-gained"></i> Newly connected</span>
+              <span><i class="diff-lost"></i> Lost connection</span>
+              <span><i class="diff-retained"></i> Still connected</span>
+              <span><i class="diff-unknown"></i> Unknown in either run</span>
+            </div>
+          </details>
           <div class="coverage-legend" aria-label="Coverage estimate legend">
             <span><i class="cov-strong"></i> ≥ 10 dB</span>
             <span><i class="cov-good"></i> 5–10 dB</span>
