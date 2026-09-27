@@ -18,7 +18,7 @@ from rf_router_planner.models.coverage import (
     CoverageSourceResult,
     CoverageState,
 )
-from rf_router_planner.models.settings import RFSettings, ValidationMode
+from rf_router_planner.models.settings import CandidateSettings, RFSettings, ValidationMode
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.raster import TerrainSource
@@ -88,7 +88,7 @@ def make_grid(
 def calculate_coverage(
     terrain: TerrainSource,
     rf_settings: RFSettings,
-    candidate_settings,
+    candidate_settings: CandidateSettings,
     sources: list[Site],
     coverage_settings: CoverageSettings,
     *,
@@ -173,6 +173,19 @@ def calculate_coverage(
                     )
                 except ValueError:
                     terrain_profile_failed = True
+                    cell.unknown_sources += 1
+                    cell.sources.append(
+                        CoverageSourceResult(
+                            source.id,
+                            None,
+                            None,
+                            None,
+                            False,
+                            False,
+                            False,
+                            "unknown_terrain",
+                        )
+                    )
                     continue
                 structural_ok = structural_validation or (link.los_clear and link.fresnel_clear)
                 down_margin = link.forward.usable_margin_db

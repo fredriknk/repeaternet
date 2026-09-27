@@ -48,6 +48,25 @@ server process: optimization state is managed in that process. Set
    current named project is autosaved as you edit; the JSON file is an explicit
    portable export/import.
 
+After a completed route search, **Predicted mesh coverage** estimates handheld
+reach over the selected mesh extent or current map view. By default it uses all
+repeaters in the selected alternative; choose a subset or include the endpoints as
+additional sources. Set the client antenna height, transmit power, gain, feed loss,
+receiver sensitivity, and other losses. An estimate shows the effective grid size,
+cell count, source evaluations, and terrain-known/unknown cells before calculation.
+Results stream to a separate map layer with two-way, downlink, uplink, overlap, and
+best-serving-router views. Click **Inspect a map location** to inspect the exact
+point, per-router directional margins, selected network component, and terrain/
+Fresnel profile. Missing ground terrain remains unknown, not uncovered. These are
+planning predictions for the configured radio, not measured coverage, emitted
+radiation, packet-delivery probability, or independent mesh paths.
+
+Coverage grids default to at most 4,096 cells and 250,000 cell/source evaluations;
+the estimate reports when spacing is coarsened to fit. One coverage or point
+inspection job runs per workspace at a time, using the shared planner scheduler.
+Persisted cell results have a 100 MiB hard limit; a job over that limit fails with
+an explanatory status rather than evicting another result.
+
 Ground and surface tiles can be cleared separately. Clearing tiles permanently
 removes those terrain copies from that browser's server workspace. Prepared
 Kartverket tiles are cached per workspace and only become available after the

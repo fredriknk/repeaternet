@@ -31,11 +31,18 @@ from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
 from .models.coverage import ClientRadioProfile, CoverageMode, CoverageSettings
-from .models.settings import CandidateSettings, InfrastructurePolicy, RFSettings, TerrainSettings
+from .models.settings import (
+    CandidateSettings,
+    InfrastructurePolicy,
+    RFSettings,
+    TerrainSettings,
+    ValidationMode,
+)
 from .models.site import Site, SiteKind, SiteOrigin
 from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .project_store import ProjectStore
+from .rf.propagation import LinkEvaluator
 from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
 
@@ -298,6 +305,20 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
     include_endpoints = value.get("include_endpoints", defaults.include_endpoints)
     if not isinstance(include_endpoints, bool):
         raise ValueError("include_endpoints must be a boolean")
+    source_ids = value.get("source_ids", defaults.source_ids)
+    if (
+        not isinstance(source_ids, list)
+        or len(source_ids) > defaults.maximum_sources
+        or any(
+            not isinstance(source_id, str)
+            or not source_id
+            or len(source_id) > 128
+            or any(ord(character) < 32 for character in source_id)
+            for source_id in source_ids
+        )
+        or len(source_ids) != len(set(source_ids))
+    ):
+        raise ValueError("Coverage source_ids must be a unique list of source IDs")
     return CoverageSettings(
         mode=mode,
         area_mode=area_mode,
@@ -313,6 +334,7 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
             "maximum_evaluations", defaults.maximum_evaluations, 250_000
         ),
         include_endpoints=include_endpoints,
+        source_ids=source_ids,
         client=client,
     )
 
@@ -352,6 +374,9 @@ class Workspace:
         self.lock = threading.Lock()
         self.cancel = threading.Event()
         self.coverage_cancel = threading.Event()
+        self.inspection_cancels: dict[str, threading.Event] = {}
+        self.inspection_job: dict[str, Any] | None = None
+        self.inspection_result: dict[str, Any] | None = None
         recovered = project["run_state"] == "interrupted"
         self.status: dict[str, Any] = {
             "state": "interrupted" if recovered else "idle",
@@ -398,6 +423,11 @@ class Workspace:
         self.result_plan_fingerprint = None
         self.job_id = None
         self.coverage_cancel = threading.Event()
+        for cancel_event in self.inspection_cancels.values():
+            cancel_event.set()
+        self.inspection_cancels.clear()
+        self.inspection_job = None
+        self.inspection_result = None
         self.restore_coverage_job()
         self.input_revision += 1
         self.snapshot_version = 0
@@ -443,6 +473,22 @@ def _terrain_fingerprint(workspace: Workspace) -> list[list[str | int]]:
     ]
 
 
+def _coverage_area_bounds_wgs84(
+    bounds: tuple[float, float, float, float], source_crs: str
+) -> list[float]:
+    left, bottom, right, top = bounds
+    reverse = Transformer.from_crs(source_crs, 4326, always_xy=True)
+    corners = [
+        reverse.transform(left, bottom),
+        reverse.transform(left, top),
+        reverse.transform(right, top),
+        reverse.transform(right, bottom),
+    ]
+    latitudes = [latitude for _longitude, latitude in corners]
+    longitudes = [longitude for longitude, _latitude in corners]
+    return [min(latitudes), min(longitudes), max(latitudes), max(longitudes)]
+
+
 def _plan_fingerprint(plan: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -450,7 +496,13 @@ def _plan_fingerprint(plan: dict[str, Any]) -> str:
 
 
 def _route_plan_fingerprint(plan: dict[str, Any]) -> str:
-    return _plan_fingerprint({key: value for key, value in plan.items() if key != "coverage"})
+    return _plan_fingerprint(
+        {
+            key: value
+            for key, value in plan.items()
+            if key not in {"coverage", "resolved_search"}
+        }
+    )
 
 
 def _refresh_recovery_summary(workspace: Workspace) -> None:
@@ -458,7 +510,11 @@ def _refresh_recovery_summary(workspace: Workspace) -> None:
     if summary is None:
         return
     summary["stale"] = (
-        summary.get("plan_fingerprint") != _plan_fingerprint(workspace.inputs)
+        summary.get("plan_fingerprint")
+        not in {
+            _route_plan_fingerprint(workspace.inputs),
+            _plan_fingerprint(workspace.inputs),  # Older saved summaries included derived search metadata.
+        }
         or summary.get("terrain_fingerprint") != _terrain_fingerprint(workspace)
     )
 
@@ -748,6 +804,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if site.kind in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
                     and site.id not in known_source_ids
                 )
+            available_sources = {site.id: site for site in sources}
+            if coverage_settings.source_ids:
+                router_ids = {
+                    site.id
+                    for site in sources
+                    if site.kind not in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
+                }
+                unknown_source_ids = set(coverage_settings.source_ids) - router_ids
+                if unknown_source_ids:
+                    raise HTTPException(
+                        422,
+                        "Selected coverage sources are not in this route alternative; refresh the source list",
+                    )
+                selected_ids = set(coverage_settings.source_ids)
+                sources = [
+                    site
+                    for site_id, site in available_sources.items()
+                    if site_id in selected_ids
+                    or (
+                        coverage_settings.include_endpoints
+                        and site.kind in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B}
+                    )
+                ]
             if not sources:
                 raise HTTPException(422, "This route has no radio sources; include endpoints to preview their coverage")
             if len(sources) > coverage_settings.maximum_sources:
@@ -787,6 +866,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {
             "settings": coverage_settings,
             "sources": sources,
+            "solution": result.active_solution,
             "rf": settings(RFSettings, plan.get("rf", {})),
             "candidates": settings(CandidateSettings, plan.get("candidates", {})),
             "dtm_paths": dtm_paths,
@@ -892,6 +972,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     sources, terrain, bounded_settings, context["requested_bounds"]
                 )
                 terrain_cells = int(np.isfinite(terrain.sample(xs, ys)).sum())
+                area_bounds = _coverage_area_bounds_wgs84(grid.bounds, terrain.crs)
             return {
                 "source_count": len(sources),
                 "source_ids": [site.id for site in sources],
@@ -902,6 +983,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "planned_evaluations": grid.requested_cells * len(sources),
                 "mode": coverage_settings.mode.value,
                 "surface_available": grid.surface_available,
+                "area_bounds_wgs84": area_bounds,
             }
         except HTTPException:
             raise
@@ -918,8 +1000,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if coverage_settings.maximum_evaluations // len(sources) < 1:
                 raise ValueError("Coverage limits allow no source evaluations")
             with ws.lock:
-                if ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}:
-                    raise HTTPException(409, "A coverage calculation is already running")
+                if (
+                    ws.coverage_job
+                    and ws.coverage_job.get("state") in {"queued", "running"}
+                ) or (
+                    ws.inspection_job
+                    and ws.inspection_job.get("state") in {"queued", "running"}
+                ):
+                    raise HTTPException(409, "A coverage calculation or inspection is already running")
                 if (
                     ws.snapshot_version != context["snapshot_version"]
                     or ws.project_id != context["project_id"]
@@ -1004,7 +1092,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     with result_path.open("a", encoding="utf-8") as output:
                         output.write(line)
                     states = [cell.state.value for cell in cells]
-                    ws.coverage_job["done"] += len(cells)
+                    if cells:
+                        ws.coverage_job["done"] = max(
+                            ws.coverage_job["done"],
+                            max(cell.index for cell in cells) + 1,
+                        )
                     ws.coverage_job["covered_cells"] += states.count("covered")
                     ws.coverage_job["unknown_cells"] += states.count("unknown_terrain")
                     ws.coverage_job["evaluated_cells"] += states.count("covered") + states.count("uncovered")
@@ -1014,6 +1106,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 update_job(state="running", stage="Opening terrain")
                 with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                    bounded_settings = replace(
+                        coverage_settings,
+                        maximum_cells=min(
+                            coverage_settings.maximum_cells,
+                            coverage_settings.maximum_evaluations // len(sources),
+                        ),
+                    )
+                    estimate_grid = make_grid(
+                        sources,
+                        terrain,
+                        bounded_settings,
+                        context["requested_bounds"],
+                    )[0]
+                    update_job(
+                        total=estimate_grid.requested_cells,
+                        requested_cells=estimate_grid.requested_cells,
+                        effective_cell_size_m=estimate_grid.effective_cell_size_m,
+                        rows=estimate_grid.rows,
+                        columns=estimate_grid.columns,
+                        area_bounds_wgs84=_coverage_area_bounds_wgs84(
+                            estimate_grid.bounds, terrain.crs
+                        ),
+                    )
                     grid = calculate_coverage(
                         terrain,
                         context["rf"],
@@ -1026,23 +1141,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         on_chunk=stream_chunk,
                     )
                 with ws.lock:
-                    current = ws.coverage_job and ws.coverage_job.get("job_id") == job_id
-                    if current:
-                        if ws.coverage_job.get("state") not in {"stale", "failed"}:
+                    current_job = ws.coverage_job
+                    if current_job is not None and current_job.get("job_id") == job_id:
+                        if current_job.get("state") not in {"stale", "failed"}:
                             if ws.coverage_cancel.is_set():
                                 state = "cancelled"
                                 stage = "Coverage calculation cancelled; completed cells are available"
                             else:
                                 state = "complete"
                                 stage = "Coverage calculation complete"
-                            ws.coverage_job.update(
+                            current_job.update(
                                 state=state,
                                 stage=stage,
                                 done=grid.completed_cells,
                                 total=grid.requested_cells,
                                 terrain_available_cells=grid.terrain_available_cells,
                                 unknown_cells=max(
-                                    ws.coverage_job["unknown_cells"], grid.unknown_cells
+                                    current_job["unknown_cells"], grid.unknown_cells
                                 ),
                                 effective_cell_size_m=grid.effective_cell_size_m,
                                 rows=grid.rows,
@@ -1050,7 +1165,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 requested_cells=grid.requested_cells,
                                 finished_at=time.time(),
                             )
-                        _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                        _write_json_atomic(ws.coverage_job_path, current_job)
             except Exception as exc:
                 update_job(state="failed", stage=str(exc), finished_at=time.time())
             finally:
@@ -1136,6 +1251,366 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
         return {"ok": True}
 
+    def _compute_mesh_coverage_inspection(
+        ws: Workspace,
+        body: dict[str, Any],
+        cancelled: threading.Event,
+    ) -> dict[str, Any]:
+        try:
+            context = coverage_context(ws, body)
+            latitude, longitude = coordinate_pair(
+                {"point": [body.get("latitude"), body.get("longitude")]}, "point"
+            )
+            settings_for_client = context["settings"]
+            client = settings_for_client.client
+            with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
+                x, y = forward.transform(longitude, latitude)
+                ground_values = terrain.sample(np.array([x]), np.array([y]))
+                ground = float(ground_values[0])
+                if not math.isfinite(ground):
+                    return {
+                        "state": "unknown_terrain",
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "client": encode(client),
+                        "surface_available": terrain.has_surface,
+                        "message": "No ground-elevation data at this location; RF coverage is unknown.",
+                        "sources": [],
+                    }
+                if cancelled.is_set():
+                    raise InterruptedError("Location inspection superseded")
+                surface_elevation = None
+                if terrain.has_surface:
+                    surface = float(terrain.sample(np.array([x]), np.array([y]), surface=True)[0])
+                    surface_elevation = surface if math.isfinite(surface) else None
+                target = Site(
+                    "coverage-inspection-client",
+                    float(x),
+                    float(y),
+                    latitude,
+                    longitude,
+                    SiteKind.CLIENT,
+                    ground_elevation_m=ground,
+                    surface_elevation_m=surface_elevation,
+                    antenna_height_m=client.height_agl_m,
+                )
+                evaluator = LinkEvaluator(terrain, context["rf"])
+                client_radio = client.as_radio_budget()
+                profile_floor = context["candidates"].final_sample_step_m
+                source_results: list[dict[str, Any]] = []
+                profile_steps: dict[str, float] = {}
+                structural_validation = (
+                    context["rf"].validation_mode != ValidationMode.STRICT_LOS
+                )
+                for source in context["sources"]:
+                    if cancelled.is_set():
+                        raise InterruptedError("Location inspection superseded")
+                    distance = source.distance_to(target)
+                    profile_step = max(
+                        profile_floor,
+                        distance / max(1, settings_for_client.maximum_profile_samples - 1),
+                    )
+                    profile_steps[source.id] = profile_step
+                    try:
+                        link = evaluator.evaluate(
+                            source,
+                            target,
+                            profile_step,
+                            include_profile=False,
+                            target_radio=client_radio,
+                        )
+                    except ValueError:
+                        source_results.append(
+                            {
+                                "source_id": source.id,
+                                "distance_m": distance,
+                                "downlink_margin_db": None,
+                                "uplink_margin_db": None,
+                                "two_way_margin_db": None,
+                                "valid_downlink": False,
+                                "valid_uplink": False,
+                                "valid_two_way": False,
+                                "rejection": "unknown_terrain",
+                            }
+                        )
+                        continue
+                    structural_ok = structural_validation or (
+                        link.los_clear and link.fresnel_clear
+                    )
+                    downlink = link.forward.usable_margin_db
+                    uplink = link.reverse.usable_margin_db
+                    downlink_valid = structural_ok and link.forward.valid
+                    uplink_valid = structural_ok and link.reverse.valid
+                    two_way_valid = downlink_valid and uplink_valid
+                    source_results.append(
+                        {
+                            "source_id": source.id,
+                            "distance_m": distance,
+                            "downlink_margin_db": downlink,
+                            "uplink_margin_db": uplink,
+                            "two_way_margin_db": min(downlink, uplink),
+                            "valid_downlink": downlink_valid,
+                            "valid_uplink": uplink_valid,
+                            "valid_two_way": two_way_valid,
+                            "rejection": (
+                                None
+                                if two_way_valid
+                                else "LOS/Fresnel validation"
+                                if not structural_ok
+                                else "radio margin"
+                            ),
+                        }
+                    )
+
+                source_results.sort(
+                    key=lambda item: (
+                        not item["valid_two_way"],
+                        -item["two_way_margin_db"]
+                        if item["two_way_margin_db"] is not None
+                        else math.inf,
+                        item["source_id"],
+                    )
+                )
+                best_source = None
+                profile_link = None
+                if source_results and source_results[0]["two_way_margin_db"] is not None:
+                    best_id = source_results[0]["source_id"]
+                    best_source = next(
+                        source for source in context["sources"] if source.id == best_id
+                    )
+                    if cancelled.is_set():
+                        raise InterruptedError("Location inspection superseded")
+                    try:
+                        profile_link = evaluator.evaluate(
+                            best_source,
+                            target,
+                            profile_steps[best_id],
+                            include_profile=True,
+                            target_radio=client_radio,
+                        )
+                    except ValueError:
+                        # The scalar link evaluation is still useful if only the
+                        # denser display profile encounters a terrain-data gap.
+                        profile_link = None
+
+                solution = context["solution"]
+                adjacency: dict[str, set[str]] = {site.id: set() for site in solution.sites}
+                for link in solution.links:
+                    if link.valid:
+                        adjacency.setdefault(link.source_id, set()).add(link.target_id)
+                        adjacency.setdefault(link.target_id, set()).add(link.source_id)
+                component_by_site: dict[str, tuple[str, int]] = {}
+                remaining = set(adjacency)
+                while remaining:
+                    first = min(remaining)
+                    pending = [first]
+                    component: set[str] = set()
+                    while pending:
+                        node = pending.pop()
+                        if node in component:
+                            continue
+                        component.add(node)
+                        pending.extend(adjacency.get(node, set()) - component)
+                    remaining.difference_update(component)
+                    component_label = min(component)
+                    for node in component:
+                        component_by_site[node] = (component_label, len(component))
+                best_component = (
+                    component_by_site.get(best_source.id) if best_source is not None else None
+                )
+                inspection = {
+                    "state": (
+                        "unknown_links"
+                        if source_results
+                        and all(item["rejection"] == "unknown_terrain" for item in source_results)
+                        else "evaluated"
+                    ),
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "ground_elevation_m": ground,
+                    "surface_available": terrain.has_surface,
+                    "surface_sample_available": surface_elevation is not None,
+                    "surface_elevation_m": surface_elevation,
+                    "client": encode(client),
+                    "selected_source_id": best_source.id if best_source else None,
+                    "selected_source": encode(best_source) if best_source else None,
+                    "selected_source_component": best_component[0] if best_component else None,
+                    "selected_source_component_size": best_component[1] if best_component else None,
+                    "sources": encode(source_results),
+                    "profile_link": encode(profile_link),
+                    "message": (
+                        "Ground is known here, but terrain data is missing along every candidate path; RF coverage is unknown."
+                        if source_results
+                        and all(item["rejection"] == "unknown_terrain" for item in source_results)
+                        else None
+                    ),
+                }
+                guard = {
+                    "project_id": context["project_id"],
+                    "route_fingerprint": context["route_fingerprint"],
+                    "terrain_fingerprint": context["terrain_fingerprint"],
+                    "settings_fingerprint": _plan_fingerprint(encode(settings_for_client)),
+                    "snapshot_version": context["snapshot_version"],
+                    "alternative_id": context["alternative_id"],
+                }
+                if not coverage_current(ws, guard):
+                    raise HTTPException(409, "Route, terrain, project, or coverage settings changed during inspection")
+                return inspection
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/coverage/inspect")
+    def start_coverage_inspection(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            context = coverage_context(ws, body)
+            latitude, longitude = coordinate_pair(
+                {"point": [body.get("latitude"), body.get("longitude")]}, "point"
+            )
+            with ws.lock:
+                if ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}:
+                    raise HTTPException(409, "Wait for coverage calculation to finish before inspecting a point")
+                if (
+                    ws.project_id != context["project_id"]
+                    or ws.snapshot_version != context["snapshot_version"]
+                    or ws.result_plan_fingerprint != context["route_fingerprint"]
+                    or _terrain_fingerprint(ws) != context["terrain_fingerprint"]
+                    or _plan_fingerprint(
+                        encode(parse_coverage_settings((ws.inputs or {}).get("coverage", {})))
+                    )
+                    != _plan_fingerprint(encode(context["settings"]))
+                ):
+                    raise HTTPException(409, "The selected route, terrain, or saved coverage settings changed; refresh before inspecting")
+                with scheduler_lock:
+                    if job_slots["outstanding"] >= max_outstanding_jobs:
+                        raise HTTPException(429, "The planner queue is full; retry shortly")
+                    queued = job_slots["outstanding"] >= max_workers
+                    job_slots["outstanding"] += 1
+                previous = ws.inspection_job
+                if previous and previous.get("state") in {"queued", "running"}:
+                    previous_event = ws.inspection_cancels.get(previous["job_id"])
+                    if previous_event:
+                        previous_event.set()
+                    previous.update(state="superseded", stage="Replaced by a newer map click")
+                job_id = secrets.token_hex(16)
+                cancel_event = threading.Event()
+                ws.inspection_cancels[job_id] = cancel_event
+                job = {
+                    "job_id": job_id,
+                    "state": "queued" if queued else "running",
+                    "stage": "Waiting for a planner worker" if queued else "Opening terrain",
+                    "created_at": time.time(),
+                    "project_id": context["project_id"],
+                    "route_fingerprint": context["route_fingerprint"],
+                    "terrain_fingerprint": context["terrain_fingerprint"],
+                    "settings_fingerprint": _plan_fingerprint(encode(context["settings"])),
+                    "snapshot_version": context["snapshot_version"],
+                    "alternative_id": context["alternative_id"],
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "source_count": len(context["sources"]),
+                }
+                ws.inspection_job = job
+                ws.inspection_result = None
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        def run_inspection() -> None:
+            try:
+                with ws.lock:
+                    if ws.inspection_job and ws.inspection_job.get("job_id") == job_id:
+                        ws.inspection_job.update(
+                            state="running", stage="Evaluating client links and terrain profile"
+                        )
+                if cancel_event.is_set():
+                    raise InterruptedError("Location inspection superseded")
+                inspection_body = {
+                    **body,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                }
+                result = _compute_mesh_coverage_inspection(ws, inspection_body, cancel_event)
+                if not coverage_current(ws, job):
+                    raise HTTPException(409, "Route, terrain, project, or coverage settings changed during inspection")
+                with ws.lock:
+                    if ws.inspection_job and ws.inspection_job.get("job_id") == job_id:
+                        if cancel_event.is_set():
+                            ws.inspection_job.update(
+                                state="cancelled", stage="Location inspection cancelled"
+                            )
+                        else:
+                            ws.inspection_result = result
+                            ws.inspection_job.update(
+                                state="complete",
+                                stage="Location inspection complete",
+                                finished_at=time.time(),
+                            )
+            except InterruptedError:
+                with ws.lock:
+                    if ws.inspection_job and ws.inspection_job.get("job_id") == job_id:
+                        ws.inspection_job.update(
+                            state="cancelled", stage="Location inspection superseded"
+                        )
+            except Exception as exc:
+                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                with ws.lock:
+                    if ws.inspection_job and ws.inspection_job.get("job_id") == job_id:
+                        ws.inspection_job.update(
+                            state="failed", stage=str(detail), finished_at=time.time()
+                        )
+            finally:
+                with ws.lock:
+                    ws.inspection_cancels.pop(job_id, None)
+                with scheduler_lock:
+                    job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+
+        try:
+            scheduler.submit(run_inspection)
+        except RuntimeError as exc:
+            with scheduler_lock:
+                job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+            with ws.lock:
+                ws.inspection_cancels.pop(job_id, None)
+                if ws.inspection_job and ws.inspection_job.get("job_id") == job_id:
+                    ws.inspection_job.update(state="failed", stage="Could not queue inspection")
+            raise HTTPException(503, "Could not queue location inspection") from exc
+        return dict(job)
+
+    @app.get("/api/coverage/inspect/{job_id}")
+    def get_coverage_inspection(job_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            job = ws.inspection_job
+            if not job or job.get("job_id") != job_id:
+                raise HTTPException(404, "Location inspection was superseded or is unavailable")
+            response = dict(job)
+            result = ws.inspection_result if job.get("state") == "complete" else None
+        if job.get("state") == "complete" and not coverage_current(ws, job):
+            response["stale"] = True
+        if result is not None:
+            response["result"] = encode(result)
+        return response
+
+    @app.post("/api/coverage/inspect/{job_id}/cancel")
+    def cancel_coverage_inspection(job_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            job = ws.inspection_job
+            if not job or job.get("job_id") != job_id:
+                raise HTTPException(404, "Location inspection was superseded or is unavailable")
+            if job.get("state") not in {"queued", "running"}:
+                raise HTTPException(409, "There is no active location inspection")
+            cancel_event = ws.inspection_cancels.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            job.update(stage="Cancelling location inspection")
+        return {"ok": True}
+
     def project_name(value: Any) -> str:
         if not isinstance(value, str):
             raise HTTPException(422, "Project name must be text")
@@ -1147,6 +1622,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def ensure_projects_idle(ws: Workspace) -> None:
         if ws.status["state"] in {"queued", "running", "preparing"} or (
             ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+        ) or (
+            ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
         ):
             raise HTTPException(409, "Wait for the current job before switching projects")
 
@@ -1163,11 +1640,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "Plan inputs are locked while a job is active")
+            if ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}:
+                cancel_event = ws.inspection_cancels.get(ws.inspection_job["job_id"])
+                if cancel_event:
+                    cancel_event.set()
+            route_inputs_changed = _route_plan_fingerprint(ws.inputs or {}) != _route_plan_fingerprint(plan)
             if not project_store.autosave(ws.workspace_key, ws.project_id, plan):
                 raise HTTPException(404, "Active project is no longer available")
             ws.inputs = plan
-            ws.result_summary = None
-            project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
+            if route_inputs_changed:
+                ws.result_summary = None
+                project_store.save_result_summary(ws.workspace_key, ws.project_id, None)
             _write_json_atomic(ws.directory / "plan.json", plan)
         saved_project = project_store.get(ws.workspace_key, ws.project_id)
         return {
@@ -1332,6 +1815,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if ws.status["state"] in {"queued", "running", "preparing"} or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ) or (
+                ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "A planner or terrain job is already active")
             with scheduler_lock:
@@ -1488,6 +1973,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if ws.status["state"] in {"queued", "running", "preparing"} or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ) or (
+                ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "Wait for the current job")
             directory = ws.directory / kind
@@ -1533,6 +2020,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if ws.status["state"] in {"queued", "running", "preparing"} or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ) or (
+                ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "Wait for the current job")
             for path in _terrain_paths(ws, kind):
@@ -1715,6 +2204,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if ws.status["state"] in {"queued", "running", "preparing"} or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ) or (
+                ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "A job is already queued or running")
             dtm = _terrain_paths(ws, "dtm")
@@ -2021,7 +2512,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             {key: value for key, value in item.items() if key != "route"}
                             for item in payload["alternatives"]
                         ],
-                        "plan_fingerprint": _plan_fingerprint(ws.inputs),
+                        "plan_fingerprint": _route_plan_fingerprint(ws.inputs),
                         "terrain_fingerprint": _terrain_fingerprint(ws),
                         "saved_at": time.time(),
                     }
@@ -2074,6 +2565,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             if ws.status["state"] in {"queued", "running", "preparing"} or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ) or (
+                ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "Wait until the search completes before switching routes")
             if ws.result is None:
@@ -2101,7 +2594,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "proposed_router_count": payload["proposed_router_count"],
                 "elapsed_seconds": payload["elapsed_seconds"],
                 "search_complete": payload["search_complete"],
-                "plan_fingerprint": _plan_fingerprint(ws.inputs),
+                "plan_fingerprint": _route_plan_fingerprint(ws.inputs),
                 "terrain_fingerprint": _terrain_fingerprint(ws),
                 "saved_at": time.time(),
             }

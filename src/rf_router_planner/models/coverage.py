@@ -13,6 +13,7 @@ class CoverageMode(str, Enum):
     DOWNLINK = "downlink"
     UPLINK = "uplink"
     OVERLAP = "overlap"
+    BEST_SOURCE = "best_source"
 
 
 class CoverageState(str, Enum):
@@ -69,6 +70,7 @@ class CoverageSettings:
     maximum_sources: int = 64
     maximum_evaluations: int = 250_000
     include_endpoints: bool = False
+    source_ids: list[str] = field(default_factory=list)
     client: ClientRadioProfile = field(default_factory=ClientRadioProfile)
 
 
@@ -93,6 +95,7 @@ class CoverageCell:
     longitude: float
     state: CoverageState = CoverageState.NOT_EVALUATED
     source_count: int = 0
+    unknown_sources: int = 0
     best_margin_db: float | None = None
     best_source_id: str | None = None
     sources: list[CoverageSourceResult] = field(default_factory=list)

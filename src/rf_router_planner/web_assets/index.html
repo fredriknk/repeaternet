@@ -7,8 +7,10 @@
     <link rel="stylesheet" href="/leaflet/leaflet.css">
     <link rel="stylesheet" href="/assets/style.css">
     <link rel="stylesheet" href="/assets/meshcore.css">
+    <link rel="stylesheet" href="/assets/coverage.css">
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/app.js"></script>
+    <script defer src="/assets/coverage_inspection.js"></script>
   </head>
   <body>
     <header>
@@ -86,6 +88,66 @@
         <section>
           <h2><span>04</span> Radio & search</h2>
           <div id="settings"></div>
+        </section>
+        <section class="coverage-panel">
+          <h2><span>05</span> Predicted mesh coverage</h2>
+          <p class="hint">Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p>
+          <label>Coverage view<select id="coverage-mode">
+            <option value="two_way">Two-way margin</option>
+            <option value="downlink">Router → handheld</option>
+            <option value="uplink">Handheld → router</option>
+            <option value="overlap">Overlapping routers</option>
+            <option value="best_source">Best serving router</option>
+          </select></label>
+          <label>Area<select id="coverage-area">
+            <option value="mesh">Selected mesh + buffer</option>
+            <option value="view">Current map extent</option>
+          </select></label>
+          <label>Layer opacity<input id="coverage-opacity" type="range" min="10" max="90" value="55"></label>
+          <div class="fields">
+            <label>Cell spacing · m<input id="coverage-cell-size" type="number" min="100" max="100000" step="100" value="1000"></label>
+            <label>Mesh buffer · m<input id="coverage-buffer" type="number" min="0" max="100000" step="500" value="5000"></label>
+            <label>Profile step · m<input id="coverage-profile-step" type="number" min="10" max="10000" step="10" value="200"></label>
+            <label class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
+          </div>
+          <details>
+            <summary>Router sources <span id="coverage-source-count" class="hint">All routers in selected route</span></summary>
+            <div id="coverage-sources" class="coverage-source-list"><p class="hint">Run a route search to choose sources.</p></div>
+          </details>
+          <details>
+            <summary>Handheld radio assumptions</summary>
+            <p class="hint">Example profile only; adjust to match the client radio you care about.</p>
+            <div class="fields">
+              <label>Height AGL · m<input id="client-height" type="number" min="0.1" max="1000" step="any" value="1.5"></label>
+              <label>Transmit power · dBm<input id="client-tx" type="number" min="-20" max="60" step="any" value="20"></label>
+              <label>Antenna gain · dBi<input id="client-gain" type="number" min="-30" max="60" step="any" value="2.15"></label>
+              <label>Feed loss · dB<input id="client-feed" type="number" min="0" max="100" step="any" value="0"></label>
+              <label>Sensitivity · dBm<input id="client-sensitivity" type="number" min="-200" max="0" step="any" value="-130"></label>
+              <label>Other losses · dB<input id="client-loss" type="number" min="0" max="200" step="any" value="0"></label>
+            </div>
+          </details>
+          <div class="coverage-actions">
+            <button id="coverage-estimate" class="wide-button">Estimate calculation</button>
+            <button id="coverage-start" class="wide-button primary">Calculate coverage</button>
+            <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
+            <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
+          </div>
+          <p id="coverage-job-status" class="hint" role="status" aria-live="polite">Complete a route search to calculate coverage.</p>
+          <div id="coverage-inspection" hidden>
+            <h3 id="inspection-title">Location inspection</h3>
+            <p id="inspection-summary" class="hint"></p>
+            <canvas id="inspection-chart" height="190" aria-label="Terrain and radio profile to the best serving router" role="img"></canvas>
+            <p class="hint">Profile: brown = ground + curvature · green = surface + curvature · blue = line of sight · orange = Fresnel clearance boundary.</p>
+            <pre id="inspection-detail"></pre>
+          </div>
+          <div class="coverage-legend" aria-label="Coverage estimate legend">
+            <span><i class="cov-strong"></i> ≥ 10 dB</span>
+            <span><i class="cov-good"></i> 5–10 dB</span>
+            <span><i class="cov-marginal"></i> 0–5 dB</span>
+            <span><i class="cov-none"></i> Not usable</span>
+            <span><i class="cov-unknown"></i> Unknown terrain</span>
+          </div>
+          <p class="hint">Bands are planning margins, not reliability classes. Overlap means multiple usable RF links, not independent mesh paths. Hide or show the layer using the map’s layer control.</p>
         </section>
         <div class="run-panel">
           <label for="search-effort">Search effort</label>

@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C2 implementation in progress; validation open.
+Created: 2026-09-27. Status: C2–C4 implemented; C0–C1 foundations incomplete; release validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -158,10 +158,11 @@ Implementation:
   or retain its explicitly labelled candidate preview until that separate migration.
 
 Progress: deterministic metric-CRS grids, cell-centre terrain classification,
-streamed chunks, pair/cell/source limits, two-way/downlink/uplink aggregation,
-and per-client radio budgets are implemented. Reference fixtures, cache isolation
-and benchmark evidence remain open; the desktop preview still uses its existing
-candidate-site workflow.
+streamed chunks, pair/cell/source limits, two-way/downlink/uplink/overlap/best-source
+aggregation and per-client radio budgets are implemented. Cancellation discards a
+partially evaluated cell; profile failures are retained as unknown-source counts,
+not negative links. Reference fixtures, cache isolation and benchmark evidence
+remain open; the desktop preview still uses its existing candidate-site workflow.
 
 Acceptance: asymmetric and strict-LOS reference cases pass; nodata is preserved;
 streamed and exhaustive outputs match; batch size does not change results;
@@ -207,9 +208,11 @@ Implementation:
 
 Progress: estimate and bounded paging APIs, shared scheduler dispatch, project
 settings persistence, atomic job manifests, restart recovery, cancellation, stale
-revision checks, and a 100 MiB project-output guard are implemented. One-job-per-
-workspace contention and the intentionally locked project/terrain lifecycle have
-not yet been exercised. No API tests or restart/quota experiments have been run.
+revision checks, and a 100 MiB project-output guard are implemented. Route
+fingerprints ignore client-only coverage settings and optimizer-generated
+`resolved_search` metadata. One-job-per-workspace contention and the intentionally
+locked project/terrain lifecycle have not yet been exercised. No API tests or
+restart/quota experiments have been run.
 
 Acceptance still open: verify cross-workspace isolation, delayed callbacks, queued
 and running cancellation, restart recovery, quota failure, project lifecycle, and
@@ -219,36 +222,45 @@ storage use warrants it; the current safe behaviour is an explicit failure.
 Areas: `web.py`, `project_store.py`, a shared job helper if needed, web API tests.
 Commit: `feat: run revision-safe coverage jobs and persist coverage settings`.
 
-## C3 — Coverage map and useful controls [planned]
+## C3 — Coverage map and useful controls [implemented; visual validation open]
 
 Implementation:
 
-- Add a Coverage panel with source selection, client preset/details, area, detail,
-  estimate, Calculate, Cancel, opacity and visibility. Require a usable certified
-  route; incomplete route-search previews may be analysed only after stopping and
-  keeping that route. Explain missing terrain before dispatch.
+- Add a coverage panel with selected/all repeater sources, optional endpoints,
+  editable client radio assumptions, area, detail, estimate, Calculate, Cancel,
+  opacity and layer visibility. Require a completed certified route. Report missing
+  ground data as unknown before or during calculation.
 - Add modes for two-way margin (default), downlink, uplink, source overlap and best
-  serving node. Suggested margin bands: below 0, 0–5, 5–10 and at least 10 dB above
-  the configured fade margin. Label these as planning bands, not reliability classes.
+  serving node. Implemented modes are two-way margin, downlink, uplink, overlap and
+  best serving node. Margin bands are below 0, 0–5, 5–10 and at least 10 dB above
+  the configured fade margin. They are labelled as planning bands, not reliability.
 - Render with a Leaflet canvas/grid layer rather than one DOM marker per cell.
-  Use a colour-blind-friendly palette, numeric labels and a text legend; unknown
-  areas use a distinct pattern. Keep route markers and links above the overlay.
-- Show completed/total cells, effective grid and profile spacing, unknown fraction,
-  source count and client assumptions. Preserve pan/zoom while chunks arrive.
-- Visibility/opacity/mode changes reuse stored results. Input changes mark coverage
-  stale immediately; hide it by default and allow explicit viewing of the old
-  assumptions. Changing the selected alternative invalidates or restores an exact
-  matching cached result, with no silent mixing of revisions.
+  Use a colour-blind-conscious palette, numeric tooltips and a text legend; unknown
+  areas use a distinct gray fill and dashed outline. Keep route markers and links above.
+- Show estimate counts, completed/total cells, effective grid, unknown cells, source
+  count and client assumptions. Preserve pan/zoom while chunks arrive.
+- Visibility/opacity/mode changes reuse stored results. Plan/source/client/area
+  changes clear the layer and require recalculation; stale assumptions are never
+  silently mixed. Changing the selected alternative invalidates the current result.
 
-Acceptance: manually walk through calculate, hide/show, mode switches, cancel,
-refine, alternative change and project switch. Verify desktop/narrow-screen layout,
-keyboard controls, accessible legend and no false fill across nodata. Measure map
-interaction and response size at the maximum supported cell count.
+Progress: project-persisted coverage settings, all-or-selected repeater sources,
+optional endpoint
+sources, two-way/downlink/uplink/overlap/best-source views, estimate-before-confirm,
+shared-job cancellation/progress, streamed JSONL result pages, Leaflet canvas cells,
+opacity/layer control, and explicit unknown terrain rendering are implemented.
+Mode and opacity changes reuse retained per-source data. Plan/alternative changes
+clear the overlay; retaining a visibly stale prior result is deferred.
+
+Acceptance open: no browser walkthrough has been run. Walk through calculate,
+hide/show, mode switches, cancel, alternative change and project switch; verify
+desktop/narrow-screen layout, keyboard controls, accessible legend, nodata rendering,
+and responsiveness at the maximum grid. A distinct approximate preview and seamless
+preview replacement are not implemented.
 
 Areas: `web_assets/app.js`, `index.html`, `meshcore.css`, browser/API integration tests.
-Commit: `feat: display interactive predicted mesh coverage on the web map`.
+Commit: included in shared C3–C4 milestone, `feat: add predicted mesh coverage map and point inspection`.
 
-## C4 — Inspect any location [planned]
+## C4 — Inspect any location [implemented; accuracy validation open]
 
 Implementation:
 
@@ -257,16 +269,27 @@ Implementation:
 - Evaluate the exact clicked point, independently of its cell centre, using final
   profile resolution. Rank sources by valid two-way margin, then stable source ID.
   Display uplink/downlink, serving-node/component identity and terrain availability.
-- Fetch the selected source's terrain/Fresnel profile on demand using the existing
-  profile panel. Return rejection reasons and distinguish missing data from failure.
-- Run through the bounded job system; a newer click cancels/supersedes an old one.
-  Share scalar caches, but cap full profile retention to the current inspection.
+- Fetch the selected source's terrain/Fresnel profile on demand in the inspection
+  chart. Return rejection reasons and distinguish missing data from failure.
+- Run through the shared bounded job scheduler; a newer click cancels/supersedes an
+  old one. Share scalar route cache only where radio budgets match; the asymmetric
+  client override currently bypasses the scalar cache. Retain one profile only.
 
-Acceptance: a click at a grid centre agrees at the same resolution; different radio
-budgets produce the expected directional result; nodata and blocked-link cases are
-readable; rapid clicks or project changes never show a late profile at the wrong point.
+Progress: exact point terrain sampling, capped final-resolution profiles, directional
+link margins, deterministic best same-router two-way ranking, rejection reasons,
+selected network-component identity, bounded scheduler dispatch and stale-revision
+guards are implemented. Browser cancellation aborts/supersedes late requests and
+the server checks cancellation between source evaluations. Missing terrain along
+one candidate path is retained as an unknown link; if every path is unknown, the
+inspection reports unknown rather than an RF failure. The on-demand terrain profile
+is labelled, and a profile-only terrain gap does not discard a valid scalar result.
 
-Commit: `feat: inspect mesh access and terrain profiles at any location`.
+Acceptance open: hand-check at grid centres, test asymmetric budgets and strict LOS,
+exercise nodata/blocked links and rapid clicks/project edits, and verify chart/map
+presentation. The route-scalar cache cannot be reused with the alternate client
+budget, so cache sharing is deferred until cache keys support those budgets.
+
+Commit: included in shared C3–C4 milestone, `feat: add predicted mesh coverage map and point inspection`.
 
 ## C5 — Node-failure scenarios [planned]
 
@@ -358,18 +381,18 @@ Commit: `feat: export mesh coverage reports and verify self-hosted operation`.
 
 ## Resource limits and benchmark gates
 
-Initial defaults, to be resolved and reported by the estimate endpoint:
+Current defaults and remaining release gates:
 
 | Limit | Initial proposal | Behaviour at the limit |
 | --- | --- | --- |
-| Preview grid | 256 cells | Explicitly approximate preview |
-| Standard grid | 4,096 cells | Resolve spacing before dispatch |
-| Detailed grid | 16,384 cells maximum | Require smaller area or coarser grid |
+| Preview grid | Not implemented | A separate 256-cell approximate preview remains planned |
+| Standard grid | 4,096 cells by default | Estimate resolves effective spacing against cell/evaluation caps |
+| Detailed grid | 16,384 cells maximum in saved settings | Still bounded by the cell/source evaluation cap |
 | Selected radio sources | 64 maximum | Return actionable validation error |
 | Cell/source evaluations | 250,000 per job maximum | Estimate includes all requested passes/scenarios |
-| Outstanding RF work | 128 pairs per batch initially | Stream; do not materialize the Cartesian product |
-| Coverage scalar cache | 16 MiB accounted payload initially | Evict independently of route metrics; measure actual RSS |
-| Persisted results | 100 MiB per project initially | Evict reproducible old results with visible status |
+| Stream chunks | 128 cells per chunk | Write JSONL and release worker cell buffers |
+| Coverage scalar cache | Not implemented | Client radio overrides currently bypass route-metric cache |
+| Persisted results | 100 MiB hard output limit | Fail visibly at the limit; no automatic eviction yet |
 | Concurrent work | Existing server-wide active/queued limits | One active compute job per workspace initially |
 
 Also bound samples per RF profile, chunk bytes, inspection profiles and total job
@@ -400,7 +423,25 @@ unavailable browser/real-terrain checks as passed.
 
 For each C0–C8 entry append: status; commit; implemented scope; tests and commands;
 timings/RSS and fixture identity; schema/default changes; visual review; unresolved
-acceptance criteria and their next action. Current status: all milestones planned.
+acceptance criteria and their next action.
+
+Current implementation record (2026-09-27):
+
+| Milestone | Status / commit | Verification and remaining work |
+| --- | --- | --- |
+| C0 | In progress · `aa6f879` | Typed models committed; no reference fixtures or baseline benchmark yet. |
+| C1 | In progress · `ef91b2c` | Engine committed; no coverage regression fixtures, dedicated cache, or performance benchmark yet. |
+| C2 | Implemented · `1ae3ba6` | Shared scheduler, revision checks and streamed project-local results; API isolation/restart/quota/cancellation scenarios not run. |
+| C3 | Implemented · shared C3–C4 commit | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
+| C4 | Implemented · shared C3–C4 commit | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
+| C5–C8 | Planned | No implementation started. |
+
+Static checks on the implementation workspace: `uv run ruff check
+src/rf_router_planner`, `node --check` for `app.js` and
+`coverage_inspection.js`, and `uv run mypy src/rf_router_planner
+--ignore-missing-imports` pass. Pytest was not run and no tests were added in this
+implementation pass. No real-raster timing, RSS, field validation or browser visual
+review has been measured; these remain release gates, not implied successes.
 
 Deferred beyond this plan: live packet/RSSI ingestion and calibration, traffic or
 airtime simulation, automatic optimisation for area coverage, mobile GPS tracking,
