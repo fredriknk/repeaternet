@@ -1,0 +1,522 @@
+{
+  "benchmark": "local raster mesh coverage",
+  "cache_warm_rerun": "measured against a separate bounded coverage cache per child process",
+  "host": {
+    "cpu_count": 24,
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.12"
+  },
+  "measurement_notes": [
+    "Cold means a fresh application cache, not flushed OS or storage caches.",
+    "terrain_reads counts sampling calls; terrain_bytes_returned is sampled array bytes, not disk I/O.",
+    "Peak memory is the child process high-water working set, including setup and all passes.",
+    "Cancellation acknowledgement starts after the requested RF evaluation returns; no server scheduler is measured."
+  ],
+  "results": [
+    {
+      "cancellation_acknowledgement_seconds": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0
+      },
+      "cold_peak_working_set_mib": {
+        "max": 188.4844,
+        "median": 188.3789,
+        "min": 188.3203
+      },
+      "cold_warm_results_identical": true,
+      "elapsed_seconds": {
+        "max": 12.4047,
+        "median": 12.3352,
+        "min": 12.3321
+      },
+      "first_chunk_seconds": {
+        "max": 0.3456,
+        "median": 0.3436,
+        "min": 0.3417
+      },
+      "fixture": {
+        "crs": "EPSG:25832",
+        "file_bytes": 4195950,
+        "kind": "local_geotiff",
+        "path": "C:\\Users\\fnk\\pythonprojects\\repeaternet\\cache\\wcs_large_smoke\\kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+        "raster_bounds_m": [
+          550000.0,
+          6620000.0,
+          650000.0,
+          6640000.0
+        ],
+        "resolution_m": 50.0,
+        "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+        "surface_available": false
+      },
+      "grid_cells": 4096,
+      "peak_working_set_mib": {
+        "max": 188.6328,
+        "median": 188.5391,
+        "min": 188.4609
+      },
+      "profile_step_m": 50.0,
+      "radio_profile": {
+        "client_height_agl_m": 1.5,
+        "client_sensitivity_dbm": -130.0,
+        "client_tx_power_dbm": 20.0,
+        "fade_margin_db": 0.0,
+        "frequency_mhz": 869.5,
+        "router_height_agl_m": 50.0,
+        "validation_mode": "rf_propagation"
+      },
+      "repetition_count": 3,
+      "repetitions": [
+        {
+          "cache_capacity": 50000,
+          "cancellation_probe": {
+            "acknowledgement_seconds": 1.6000005416572094e-05,
+            "completed_cells_before_observed": 2,
+            "probe_total_seconds": 0.009493899997323751,
+            "requested_after_rf_calls": 16,
+            "rf_evaluations_before_observed": 16,
+            "terrain_bytes_returned": 69448,
+            "terrain_nodata_points": 0,
+            "terrain_reads": 17,
+            "terrain_sample_points": 8681
+          },
+          "cold_cache_hits": 0,
+          "cold_cache_misses": 32768,
+          "cold_peak_working_set_mib": 188.3203125,
+          "cold_warm_results_identical": true,
+          "completed_cells": 4096,
+          "effective_cell_size_m": 310.9375,
+          "elapsed_seconds": 12.404676200007088,
+          "evaluated_cells": 4096,
+          "first_chunk_seconds": 0.3435706999152899,
+          "fixture": {
+            "crs": "EPSG:25832",
+            "file_bytes": 4195950,
+            "kind": "local_geotiff",
+            "path": "C:\\Users\\fnk\\pythonprojects\\repeaternet\\cache\\wcs_large_smoke\\kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+            "raster_bounds_m": [
+              550000.0,
+              6620000.0,
+              650000.0,
+              6640000.0
+            ],
+            "resolution_m": 50.0,
+            "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+            "surface_available": false
+          },
+          "grid_cells": 4096,
+          "maximum_profile_samples": 4096,
+          "peak_working_set_mib": 188.4609375,
+          "profile_step_m": 50.0,
+          "radio_profile": {
+            "client_height_agl_m": 1.5,
+            "client_sensitivity_dbm": -130.0,
+            "client_tx_power_dbm": 20.0,
+            "fade_margin_db": 0.0,
+            "frequency_mhz": 869.5,
+            "router_height_agl_m": 50.0,
+            "validation_mode": "rf_propagation"
+          },
+          "requested_area_km2": 396.01,
+          "requested_bounds_m": [
+            590050.0,
+            6620050.0,
+            609950.0,
+            6639950.0
+          ],
+          "requested_cells": 4096,
+          "result_sha256": "3a11ded81997c61a22beee3692c0bd4ec29d8253360e4486d47a489aacfac227",
+          "rf_evaluations": 32768,
+          "scenario": "local_raster",
+          "serialized_result_bytes_estimate": 8181630,
+          "source_count": 8,
+          "sources_projected": [
+            {
+              "height_agl_m": 50.0,
+              "id": "R00",
+              "x": 592261.1111111111,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R01",
+              "x": 594472.2222222222,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R02",
+              "x": 596683.3333333334,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R03",
+              "x": 598894.4444444445,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R04",
+              "x": 601105.5555555555,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R05",
+              "x": 603316.6666666666,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R06",
+              "x": 605527.7777777778,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R07",
+              "x": 607738.8888888889,
+              "y": 6630000.0
+            }
+          ],
+          "state_counts": {
+            "covered": 3349,
+            "uncovered": 747
+          },
+          "terrain_bytes_returned": 46195488,
+          "terrain_fixture_sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+          "terrain_nodata_points": 0,
+          "terrain_reads": 32769,
+          "terrain_sample_points": 5774436,
+          "unknown_cells": 0,
+          "unknown_source_evaluations": 0,
+          "warm_run": {
+            "cache_hits": 32768,
+            "cache_misses": 0,
+            "completed_cells": 4096,
+            "elapsed_seconds": 0.6423767999513075,
+            "first_chunk_seconds": 0.017971099936403334,
+            "pair_requests": 32768
+          }
+        },
+        {
+          "cache_capacity": 50000,
+          "cancellation_probe": {
+            "acknowledgement_seconds": 1.279998105019331e-05,
+            "completed_cells_before_observed": 2,
+            "probe_total_seconds": 0.009989700047299266,
+            "requested_after_rf_calls": 16,
+            "rf_evaluations_before_observed": 16,
+            "terrain_bytes_returned": 69448,
+            "terrain_nodata_points": 0,
+            "terrain_reads": 17,
+            "terrain_sample_points": 8681
+          },
+          "cold_cache_hits": 0,
+          "cold_cache_misses": 32768,
+          "cold_peak_working_set_mib": 188.484375,
+          "cold_warm_results_identical": true,
+          "completed_cells": 4096,
+          "effective_cell_size_m": 310.9375,
+          "elapsed_seconds": 12.33214469999075,
+          "evaluated_cells": 4096,
+          "first_chunk_seconds": 0.341672399896197,
+          "fixture": {
+            "crs": "EPSG:25832",
+            "file_bytes": 4195950,
+            "kind": "local_geotiff",
+            "path": "C:\\Users\\fnk\\pythonprojects\\repeaternet\\cache\\wcs_large_smoke\\kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+            "raster_bounds_m": [
+              550000.0,
+              6620000.0,
+              650000.0,
+              6640000.0
+            ],
+            "resolution_m": 50.0,
+            "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+            "surface_available": false
+          },
+          "grid_cells": 4096,
+          "maximum_profile_samples": 4096,
+          "peak_working_set_mib": 188.6328125,
+          "profile_step_m": 50.0,
+          "radio_profile": {
+            "client_height_agl_m": 1.5,
+            "client_sensitivity_dbm": -130.0,
+            "client_tx_power_dbm": 20.0,
+            "fade_margin_db": 0.0,
+            "frequency_mhz": 869.5,
+            "router_height_agl_m": 50.0,
+            "validation_mode": "rf_propagation"
+          },
+          "requested_area_km2": 396.01,
+          "requested_bounds_m": [
+            590050.0,
+            6620050.0,
+            609950.0,
+            6639950.0
+          ],
+          "requested_cells": 4096,
+          "result_sha256": "3a11ded81997c61a22beee3692c0bd4ec29d8253360e4486d47a489aacfac227",
+          "rf_evaluations": 32768,
+          "scenario": "local_raster",
+          "serialized_result_bytes_estimate": 8181630,
+          "source_count": 8,
+          "sources_projected": [
+            {
+              "height_agl_m": 50.0,
+              "id": "R00",
+              "x": 592261.1111111111,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R01",
+              "x": 594472.2222222222,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R02",
+              "x": 596683.3333333334,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R03",
+              "x": 598894.4444444445,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R04",
+              "x": 601105.5555555555,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R05",
+              "x": 603316.6666666666,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R06",
+              "x": 605527.7777777778,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R07",
+              "x": 607738.8888888889,
+              "y": 6630000.0
+            }
+          ],
+          "state_counts": {
+            "covered": 3349,
+            "uncovered": 747
+          },
+          "terrain_bytes_returned": 46195488,
+          "terrain_fixture_sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+          "terrain_nodata_points": 0,
+          "terrain_reads": 32769,
+          "terrain_sample_points": 5774436,
+          "unknown_cells": 0,
+          "unknown_source_evaluations": 0,
+          "warm_run": {
+            "cache_hits": 32768,
+            "cache_misses": 0,
+            "completed_cells": 4096,
+            "elapsed_seconds": 0.6397625999525189,
+            "first_chunk_seconds": 0.020472000003792346,
+            "pair_requests": 32768
+          }
+        },
+        {
+          "cache_capacity": 50000,
+          "cancellation_probe": {
+            "acknowledgement_seconds": 1.2599979527294636e-05,
+            "completed_cells_before_observed": 2,
+            "probe_total_seconds": 0.009506999980658293,
+            "requested_after_rf_calls": 16,
+            "rf_evaluations_before_observed": 16,
+            "terrain_bytes_returned": 69448,
+            "terrain_nodata_points": 0,
+            "terrain_reads": 17,
+            "terrain_sample_points": 8681
+          },
+          "cold_cache_hits": 0,
+          "cold_cache_misses": 32768,
+          "cold_peak_working_set_mib": 188.37890625,
+          "cold_warm_results_identical": true,
+          "completed_cells": 4096,
+          "effective_cell_size_m": 310.9375,
+          "elapsed_seconds": 12.335207900032401,
+          "evaluated_cells": 4096,
+          "first_chunk_seconds": 0.34558060008566827,
+          "fixture": {
+            "crs": "EPSG:25832",
+            "file_bytes": 4195950,
+            "kind": "local_geotiff",
+            "path": "C:\\Users\\fnk\\pythonprojects\\repeaternet\\cache\\wcs_large_smoke\\kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+            "raster_bounds_m": [
+              550000.0,
+              6620000.0,
+              650000.0,
+              6640000.0
+            ],
+            "resolution_m": 50.0,
+            "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+            "surface_available": false
+          },
+          "grid_cells": 4096,
+          "maximum_profile_samples": 4096,
+          "peak_working_set_mib": 188.5390625,
+          "profile_step_m": 50.0,
+          "radio_profile": {
+            "client_height_agl_m": 1.5,
+            "client_sensitivity_dbm": -130.0,
+            "client_tx_power_dbm": 20.0,
+            "fade_margin_db": 0.0,
+            "frequency_mhz": 869.5,
+            "router_height_agl_m": 50.0,
+            "validation_mode": "rf_propagation"
+          },
+          "requested_area_km2": 396.01,
+          "requested_bounds_m": [
+            590050.0,
+            6620050.0,
+            609950.0,
+            6639950.0
+          ],
+          "requested_cells": 4096,
+          "result_sha256": "3a11ded81997c61a22beee3692c0bd4ec29d8253360e4486d47a489aacfac227",
+          "rf_evaluations": 32768,
+          "scenario": "local_raster",
+          "serialized_result_bytes_estimate": 8181630,
+          "source_count": 8,
+          "sources_projected": [
+            {
+              "height_agl_m": 50.0,
+              "id": "R00",
+              "x": 592261.1111111111,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R01",
+              "x": 594472.2222222222,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R02",
+              "x": 596683.3333333334,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R03",
+              "x": 598894.4444444445,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R04",
+              "x": 601105.5555555555,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R05",
+              "x": 603316.6666666666,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R06",
+              "x": 605527.7777777778,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R07",
+              "x": 607738.8888888889,
+              "y": 6630000.0
+            }
+          ],
+          "state_counts": {
+            "covered": 3349,
+            "uncovered": 747
+          },
+          "terrain_bytes_returned": 46195488,
+          "terrain_fixture_sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+          "terrain_nodata_points": 0,
+          "terrain_reads": 32769,
+          "terrain_sample_points": 5774436,
+          "unknown_cells": 0,
+          "unknown_source_evaluations": 0,
+          "warm_run": {
+            "cache_hits": 32768,
+            "cache_misses": 0,
+            "completed_cells": 4096,
+            "elapsed_seconds": 0.6362387000117451,
+            "first_chunk_seconds": 0.01727089995983988,
+            "pair_requests": 32768
+          }
+        }
+      ],
+      "requested_bounds_m": [
+        590050.0,
+        6620050.0,
+        609950.0,
+        6639950.0
+      ],
+      "requested_cells": 4096,
+      "result_sha256": "3a11ded81997c61a22beee3692c0bd4ec29d8253360e4486d47a489aacfac227",
+      "rf_evaluations": {
+        "max": 32768,
+        "median": 32768,
+        "min": 32768
+      },
+      "scenario": "local_raster",
+      "serialized_result_bytes_estimate": {
+        "max": 8181630,
+        "median": 8181630,
+        "min": 8181630
+      },
+      "source_count": 8,
+      "state_counts": {
+        "covered": 3349,
+        "uncovered": 747
+      },
+      "unknown_cells": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "unknown_source_evaluations": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "warm_cache_hits": {
+        "max": 32768,
+        "median": 32768,
+        "min": 32768
+      },
+      "warm_cache_misses": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "warm_elapsed_seconds": {
+        "max": 0.6424,
+        "median": 0.6398,
+        "min": 0.6362
+      }
+    }
+  ]
+}

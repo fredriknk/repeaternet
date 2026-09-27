@@ -82,6 +82,8 @@ class ArrayTerrain(TerrainSource):
 class RasterTerrain(TerrainSource):
     """Windowed, on-demand GeoTIFF sampler with optional DTM/DOM mosaics."""
 
+    SAMPLE_WINDOW_SIDE = 256
+
     def __init__(
         self, dtm_paths: Iterable[str | Path], dom_paths: Iterable[str | Path] = ()
     ) -> None:
@@ -116,26 +118,51 @@ class RasterTerrain(TerrainSource):
         )
 
     def sample(self, x: np.ndarray, y: np.ndarray, surface: bool = False) -> np.ndarray:
+        from rasterio.transform import rowcol
+        from rasterio.windows import Window
+
         datasets = self._dom if surface and self._dom else self._dtm
-        points = list(zip(np.asarray(x, dtype=float), np.asarray(y, dtype=float), strict=True))
-        output = np.full(len(points), np.nan, dtype=float)
-        remaining = np.ones(len(points), dtype=bool)
+        xs, ys = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+        if xs.ndim != 1 or ys.shape != xs.shape:
+            raise ValueError("Terrain sampling requires equally sized one-dimensional coordinates")
+        output = np.full(xs.size, np.nan, dtype=float)
+        remaining = np.isfinite(xs) & np.isfinite(ys)
+        side = self.SAMPLE_WINDOW_SIDE
         for dataset in datasets:
-            indices = [
-                i
-                for i, (px, py) in enumerate(points)
-                if remaining[i]
-                and dataset.bounds.left <= px <= dataset.bounds.right
-                and dataset.bounds.bottom <= py <= dataset.bounds.top
-            ]
-            if not indices:
+            bounds = dataset.bounds
+            indices = np.flatnonzero(
+                remaining & (xs >= bounds.left) & (xs <= bounds.right)
+                & (ys >= bounds.bottom) & (ys <= bounds.top)
+            )
+            if indices.size == 0:
                 continue
-            values = list(dataset.sample([points[i] for i in indices], indexes=1, masked=True))
-            for index, value in zip(indices, values, strict=True):
-                scalar = value[0]
-                if not np.ma.is_masked(scalar):
-                    output[index] = float(scalar)
-                    remaining[index] = False
+            rows, columns = rowcol(dataset.transform, xs[indices], ys[indices])
+            rows, columns = np.asarray(rows), np.asarray(columns)
+            in_grid = (rows >= 0) & (rows < dataset.height) & (columns >= 0) & (columns < dataset.width)
+            indices, rows, columns = indices[in_grid], rows[in_grid], columns[in_grid]
+            if indices.size == 0:
+                continue
+            # Read only touched, bounded windows. A long diagonal must not load
+            # the whole rectangular extent of its profile into a Python array.
+            window_columns = (dataset.width + side - 1) // side
+            keys = (rows // side) * window_columns + columns // side
+            order = np.argsort(keys, kind="stable")
+            groups = np.split(order, np.flatnonzero(np.diff(keys[order])) + 1)
+            for group in groups:
+                first = group[0]
+                row_start = int(rows[first] // side) * side
+                column_start = int(columns[first] // side) * side
+                window = Window(
+                    column_start, row_start,
+                    min(side, dataset.width - column_start),
+                    min(side, dataset.height - row_start),
+                )
+                block = dataset.read(1, window=window, masked=True)
+                sampled = block[rows[group] - row_start, columns[group] - column_start]
+                valid = ~np.ma.getmaskarray(sampled)
+                destinations = indices[group][valid]
+                output[destinations] = np.asarray(sampled)[valid]
+                remaining[destinations] = False
         return output
 
     @property
