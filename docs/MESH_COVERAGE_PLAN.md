@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0 implemented (warm-cache comparison pending C1); C1 in progress; C2–C4 implemented; C5–C8 planned; release validation open.
+Created: 2026-09-27. Status: C0–C1 implemented; C2–C4 implemented with validation open; C5–C8 planned; release validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -108,7 +108,7 @@ requested area, evaluated area, unknown area and estimated covered area separate
 Report coverage percentage over evaluated area alongside the evaluated fraction
 of the requested area. Partial jobs cannot silently acquire a complete denominator.
 
-## C0 — Contract, fixtures and baseline [implemented; warm-cache validation pending C1]
+## C0 — Contract, fixtures and baseline [implemented]
 
 Implementation:
 
@@ -141,14 +141,16 @@ MiB; each run made 512 RF evaluations and estimated 145,348 result bytes. The
 the second source. Cancellation was observed after four pair evaluations, with a
 2.2–2.5 ms acknowledgement in these small synthetic cases. These are process-level
 synthetic figures, not real-raster, concurrent-worker, or field-performance claims.
-Warm-cache comparison remains pending the C1 coverage-cache implementation; no
-redistribution-approved real raster was available for this baseline.
+After C1 added caching, the same fresh-process flat case measured 0.0858 s cold,
+0.0089 s warm, with 512/512 scalar-cache hits. The nodata case reused 256 valid
+links and recomputed its 256 unknown paths; failed terrain evaluations are not
+cached. No redistribution-approved real raster was available for this baseline.
 
 Areas: `models/coverage.py`, `tests/test_coverage.py`,
 `tools/benchmark_mesh_coverage.py` and fixture documentation.
 Commit: `test: add coverage reference fixtures and benchmark harness`.
 
-## C1 — Area coverage engine and asymmetric client budgets [in progress]
+## C1 — Area coverage engine and asymmetric client budgets [implemented; real-terrain validation open]
 
 Implementation:
 
@@ -172,15 +174,23 @@ Progress: deterministic metric-CRS grids, cell-centre terrain classification,
 streamed chunks, pair/cell/source limits, two-way/downlink/uplink/overlap/best-source
 aggregation and per-client radio budgets are implemented. Cancellation discards a
 partially evaluated cell; profile failures are retained as unknown-source counts,
-not negative links. C0 fixtures also found and corrected omission of initial DTM
-nodata from the grid's unknown-cell counter. Cache isolation and warm-benchmark
-evidence remain open; the desktop preview still uses its existing candidate-site
-workflow.
+not negative links. C0 fixtures found and corrected omission of initial DTM nodata
+from the grid's unknown-cell counter. A separate 50,000-entry coverage cache now
+uses radio-budget-, route-, terrain-, model-, coordinate- and sample-spacing-aware
+keys; it is namespace-isolated and cannot evict route metrics. Cached values retain
+scalar link data only, never terrain profiles. The desktop preview still uses its
+existing candidate-site workflow.
 
-Acceptance: asymmetric and strict-LOS reference cases pass; nodata is preserved;
-streamed and exhaustive outputs match; batch size does not change results;
-cancellation leaves unprocessed cells unknown; RF memory scales with configured
-batch/cache limits rather than the number of sampled terrain profiles.
+Synthetic acceptance passes: asymmetric client TX changes only the uplink budget;
+strict-LOS flat/ridge/valley references pass; nodata remains unknown; streamed and
+retained small-grid outputs match at chunk sizes 1 and 16; cancellation does not
+publish a partially evaluated cell; and repeated 4,096-cell/eight-source coverage
+reuses 32,768/32,768 scalar evaluations. That reference run completed in 5.17 s,
+produced its first chunk in 0.169 s, and peaked at 162.54 MiB, below the 512 MiB
+synthetic target. The default 50,000-entry cache fits that reference workload.
+Real-raster I/O, concurrent workspaces, larger-than-cache repeated runs, and desktop
+worker migration remain unverified or deferred; no real-raster fixture was
+available in this workspace.
 
 Areas: `rf/propagation.py`, `optimization/cache.py`, new
 `coverage/engine.py`, `coverage/grid.py`, and engine regression tests.
@@ -404,7 +414,7 @@ Current defaults and remaining release gates:
 | Selected radio sources | 64 maximum | Return actionable validation error |
 | Cell/source evaluations | 250,000 per job maximum | Estimate includes all requested passes/scenarios |
 | Stream chunks | 128 cells per chunk | Write JSONL and release worker cell buffers |
-| Coverage scalar cache | Not implemented | Client radio overrides currently bypass route-metric cache |
+| Coverage scalar cache | 50,000 compact metrics by default | Separate from route metrics; configurable with `RF_PLANNER_COVERAGE_CACHE_ENTRIES` |
 | Persisted results | 100 MiB hard output limit | Fail visibly at the limit; no automatic eviction yet |
 | Concurrent work | Existing server-wide active/queued limits | One active compute job per workspace initially |
 
@@ -442,19 +452,19 @@ Current implementation record (2026-09-27):
 
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
-| C0 | Implemented · commit pending | Eight coverage contract checks pass; synthetic fresh-process baseline captured; warm-cache comparison deferred until C1. |
-| C1 | In progress · `ef91b2c` | Engine committed; no coverage regression fixtures, dedicated cache, or performance benchmark yet. |
+| C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
+| C1 | Implemented · follow-up commit pending | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
 | C2 | Implemented · `1ae3ba6` | Shared scheduler, revision checks and streamed project-local results; API isolation/restart/quota/cancellation scenarios not run. |
 | C3 | Implemented · `61a8fb6` | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
 | C5–C8 | Planned | No implementation started. |
 
-Static checks on the implementation workspace: `uv run ruff check
-src/rf_router_planner`, `node --check` for `app.js` and
-`coverage_inspection.js`, and `uv run mypy src/rf_router_planner
---ignore-missing-imports` pass. Pytest was not run and no tests were added in this
-implementation pass. No real-raster timing, RSS, field validation or browser visual
-review has been measured; these remain release gates, not implied successes.
+Validation recorded so far: full suite `python -m pytest` passes 122 tests;
+`python -m ruff check src tests tools` and `python -m mypy src/rf_router_planner
+--ignore-missing-imports` pass. JavaScript syntax checks passed in the previous C3/C4
+implementation pass. No real-raster timing, concurrent-workspace RSS, field
+validation or browser visual review has been measured; these remain release gates,
+not implied successes.
 
 Deferred beyond this plan: live packet/RSSI ingestion and calibration, traffic or
 airtime simulation, automatic optimisation for area coverage, mobile GPS tracking,

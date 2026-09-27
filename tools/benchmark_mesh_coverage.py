@@ -101,6 +101,7 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
     from rf_router_planner.models.coverage import CoverageSettings
     from rf_router_planner.models.settings import CandidateSettings, RFSettings
     from rf_router_planner.models.site import Site, SiteKind
+    from rf_router_planner.optimization.cache import LinkMetricsCache
     from rf_router_planner.terrain.raster import ArrayTerrain
 
     side_cells = math.ceil(math.sqrt(requested_cells))
@@ -158,16 +159,20 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
     unknown_source_evaluations = 0
     rf_calls = 0
     cancel_rf_calls = 0
-    counting_cancel_run = False
+    warm_rf_calls = 0
+    measurement_phase = "cold"
+    cache = LinkMetricsCache(max_entries=50_000)
 
     from rf_router_planner.rf.propagation import LinkEvaluator
 
     original_evaluate = LinkEvaluator.evaluate
 
     def counted_evaluate(self, *args, **kwargs):
-        nonlocal cancel_rf_calls, rf_calls
-        if counting_cancel_run:
+        nonlocal cancel_rf_calls, rf_calls, warm_rf_calls
+        if measurement_phase == "cancel":
             cancel_rf_calls += 1
+        elif measurement_phase == "warm":
+            warm_rf_calls += 1
         else:
             rf_calls += 1
         return original_evaluate(self, *args, **kwargs)
@@ -221,8 +226,12 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
             requested_bounds=bounds,
             on_chunk=stream_chunk,
             chunk_size=128,
+            evaluation_cache=cache,
+            cache_namespace="benchmark",
         )
     elapsed = time.perf_counter() - started
+    cold_cache_stats = cache.stats("benchmark")
+    cold_peak_working_set = peak_working_set_mib()
     primary_terrain_metrics = (
         terrain.sample_calls,
         terrain.sample_points,
@@ -230,9 +239,33 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
         terrain.sample_nodata_points,
     )
 
+    measurement_phase = "warm"
+    warm_first_chunk: float | None = None
+    warm_started = time.perf_counter()
+
+    def warm_chunk(_cells: list[Any]) -> None:
+        nonlocal warm_first_chunk
+        if warm_first_chunk is None:
+            warm_first_chunk = time.perf_counter() - warm_started
+
+    with patch.object(LinkEvaluator, "evaluate", counted_evaluate):
+        warm_grid = calculate_coverage(
+            terrain,
+            rf,
+            CandidateSettings(),
+            sources,
+            settings,
+            requested_bounds=bounds,
+            on_chunk=warm_chunk,
+            evaluation_cache=cache,
+            cache_namespace="benchmark",
+        )
+    warm_elapsed = time.perf_counter() - warm_started
+    warm_cache_stats = cache.stats("benchmark")
+
     # A repeatable cooperative-cancel probe records how much work is completed
     # before the engine observes cancellation at its bounded pair checks.
-    counting_cancel_run = True
+    measurement_phase = "cancel"
     cancel_threshold = max(1, source_count * 2)
     cancel_started = time.perf_counter()
     with patch.object(LinkEvaluator, "evaluate", counted_evaluate):
@@ -244,9 +277,11 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
             settings,
             requested_bounds=bounds,
             cancelled=lambda: cancel_rf_calls >= cancel_threshold,
+            evaluation_cache=cache,
+            cache_namespace="benchmark-cancel",
         )
     cancellation_seconds = time.perf_counter() - cancel_started
-    counting_cancel_run = False
+    measurement_phase = "cold"
     cancel_terrain_metrics = (
         terrain.sample_calls - primary_terrain_metrics[0],
         terrain.sample_points - primary_terrain_metrics[1],
@@ -266,8 +301,17 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
         "unknown_cells": grid.unknown_cells,
         "unknown_source_evaluations": unknown_source_evaluations,
         "rf_evaluations": rf_calls,
-        "cache_hits": 0,
-        "cache_status": "not implemented in C0 baseline",
+        "cold_cache_hits": cold_cache_stats["hits"],
+        "cold_cache_misses": cold_cache_stats["misses"],
+        "warm_run": {
+            "elapsed_seconds": warm_elapsed,
+            "first_chunk_seconds": warm_first_chunk,
+            "pair_requests": warm_rf_calls,
+            "cache_hits": warm_cache_stats["hits"] - cold_cache_stats["hits"],
+            "cache_misses": warm_cache_stats["misses"] - cold_cache_stats["misses"],
+            "completed_cells": warm_grid.completed_cells,
+        },
+        "cache_capacity": cache.max_entries,
         "terrain_fixture_sha256": terrain_sha256,
         "radio_profile": {
             "frequency_mhz": rf.frequency_mhz,
@@ -285,6 +329,7 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
         "first_chunk_seconds": first_chunk_seconds,
         "elapsed_seconds": elapsed,
         "serialized_result_bytes_estimate": response_bytes,
+        "cold_peak_working_set_mib": cold_peak_working_set,
         "peak_working_set_mib": peak_working_set_mib(),
         "cancellation_probe": {
             "requested_after_rf_calls": cancel_threshold,
@@ -353,6 +398,13 @@ def main() -> None:
                     "peak_working_set_mib": summarize(
                         [run["peak_working_set_mib"] for run in runs if run["peak_working_set_mib"]]
                     ),
+                    "cold_peak_working_set_mib": summarize(
+                        [
+                            run["cold_peak_working_set_mib"]
+                            for run in runs
+                            if run["cold_peak_working_set_mib"]
+                        ]
+                    ),
                     "unknown_cells": summarize([run["unknown_cells"] for run in runs]),
                     "unknown_source_evaluations": summarize(
                         [run["unknown_source_evaluations"] for run in runs]
@@ -363,6 +415,15 @@ def main() -> None:
                     ),
                     "cancellation_acknowledgement_seconds": summarize(
                         [run["cancellation_probe"]["acknowledgement_seconds"] for run in runs]
+                    ),
+                    "warm_elapsed_seconds": summarize(
+                        [run["warm_run"]["elapsed_seconds"] for run in runs]
+                    ),
+                    "warm_cache_hits": summarize(
+                        [run["warm_run"]["cache_hits"] for run in runs]
+                    ),
+                    "warm_cache_misses": summarize(
+                        [run["warm_run"]["cache_misses"] for run in runs]
                     ),
                 }
                 if not args.summary_only:
@@ -377,7 +438,7 @@ def main() -> None:
                     "python": platform.python_version(),
                     "cpu_count": os.cpu_count(),
                 },
-                "cache_warm_rerun": "not measured; coverage cache is a C1 item",
+                "cache_warm_rerun": "measured against a separate bounded coverage cache per child process",
                 "results": reports,
             },
             indent=2,

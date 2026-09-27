@@ -20,6 +20,7 @@ from rf_router_planner.models.coverage import (
 )
 from rf_router_planner.models.settings import CandidateSettings, RFSettings, ValidationMode
 from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.optimization.cache import LinkMetricsCache
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.raster import TerrainSource
 
@@ -97,6 +98,8 @@ def calculate_coverage(
     cancelled: Cancel | None = None,
     on_chunk: ChunkCallback | None = None,
     chunk_size: int = 128,
+    evaluation_cache: LinkMetricsCache | None = None,
+    cache_namespace: str = "coverage",
 ) -> CoverageGrid:
     """Evaluate best valid source links at bounded cell centres.
 
@@ -126,7 +129,12 @@ def calculate_coverage(
     )
     dtm = terrain.sample(xs, ys, surface=False)
     grid.terrain_available_cells = int(np.isfinite(dtm).sum())
-    evaluator = LinkEvaluator(terrain, rf_settings)
+    evaluator = LinkEvaluator(
+        terrain,
+        rf_settings,
+        cache=evaluation_cache,
+        cache_namespace=cache_namespace,
+    )
     client_profile: ClientRadioProfile = coverage_settings.client
     client_radio = client_profile.as_radio_budget()
     structural_validation = rf_settings.validation_mode != ValidationMode.STRICT_LOS

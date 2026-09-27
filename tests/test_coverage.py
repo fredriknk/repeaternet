@@ -12,8 +12,13 @@ from rf_router_planner.models.coverage import (
     CoverageState,
 )
 from rf_router_planner.models.link import DirectionResult, LinkResult
-from rf_router_planner.models.settings import CandidateSettings, RFSettings, ValidationMode
+from rf_router_planner.models.settings import (
+    CandidateSettings,
+    RFSettings,
+    ValidationMode,
+)
 from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.optimization.cache import LinkMetricsCache
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.raster import ArrayTerrain
 
@@ -107,7 +112,7 @@ def _sample_direction(
 
 def test_two_way_coverage_never_combines_different_best_sources(monkeypatch) -> None:
     class ContradictoryDirectionEvaluator:
-        def __init__(self, _terrain, _settings) -> None:
+        def __init__(self, _terrain, _settings, **_kwargs) -> None:
             pass
 
         def evaluate(self, source, target, *_args, **_kwargs) -> LinkResult:
@@ -202,11 +207,95 @@ def test_coverage_counts_cells_without_ground_data_as_unknown(
     assert result.unknown_cells == 1
 
 
+def test_coverage_cache_reuses_scalar_metrics_and_keys_client_budget() -> None:
+    terrain = ArrayTerrain(np.zeros((21, 21)), resolution_m=100.0)
+    source = Site("router", 200.0, 1_000.0, kind=SiteKind.ROUTER, antenna_height_m=100.0)
+    settings = CoverageSettings(
+        cell_size_m=500.0,
+        maximum_cells=1,
+        area_buffer_m=0.0,
+        profile_step_m=100.0,
+    )
+    cache = LinkMetricsCache(max_entries=4)
+    args = (terrain, RFSettings(), CandidateSettings(), [source], settings)
+    bounds = {"requested_bounds": (1_400.0, 900.0, 1_600.0, 1_100.0)}
+
+    cold = engine.calculate_coverage(*args, evaluation_cache=cache, **bounds)
+    warm = engine.calculate_coverage(*args, evaluation_cache=cache, **bounds)
+    assert cold.cells == warm.cells
+    assert cache.stats("coverage") == {
+        "hits": 1,
+        "misses": 1,
+        "evictions": 0,
+        "entries": 1,
+        "capacity": 4,
+    }
+
+    lower_power = CoverageSettings(
+        cell_size_m=500.0,
+        maximum_cells=1,
+        area_buffer_m=0.0,
+        profile_step_m=100.0,
+        client=ClientRadioProfile(tx_power_dbm=10.0),
+    )
+    weak_client = engine.calculate_coverage(
+        terrain,
+        RFSettings(),
+        CandidateSettings(),
+        [source],
+        lower_power,
+        requested_bounds=bounds["requested_bounds"],
+        evaluation_cache=cache,
+    )
+    assert cache.stats("coverage")["misses"] == 2
+    assert cache.stats("coverage")["entries"] == 2
+    assert weak_client.cells[0].sources[0].downlink_margin_db == pytest.approx(
+        cold.cells[0].sources[0].downlink_margin_db
+    )
+    assert weak_client.cells[0].sources[0].uplink_margin_db == pytest.approx(
+        cold.cells[0].sources[0].uplink_margin_db - 10.0
+    )
+
+
+def test_streamed_and_retained_coverage_results_match() -> None:
+    terrain = ArrayTerrain(np.zeros((31, 31)), resolution_m=100.0)
+    sources = [
+        Site("router-a", 500.0, 1_000.0, kind=SiteKind.ROUTER, antenna_height_m=50.0),
+        Site("router-b", 2_500.0, 2_000.0, kind=SiteKind.ROUTER, antenna_height_m=50.0),
+    ]
+    settings = CoverageSettings(cell_size_m=500.0, maximum_cells=16, area_buffer_m=0.0)
+    bounds = (500.0, 500.0, 2_500.0, 2_500.0)
+    retained = engine.calculate_coverage(
+        terrain,
+        RFSettings(),
+        CandidateSettings(),
+        sources,
+        settings,
+        requested_bounds=bounds,
+        chunk_size=16,
+    )
+    chunks = []
+    streamed = engine.calculate_coverage(
+        terrain,
+        RFSettings(),
+        CandidateSettings(),
+        sources,
+        settings,
+        requested_bounds=bounds,
+        chunk_size=1,
+        on_chunk=lambda cells: chunks.append(list(cells)),
+    )
+
+    assert [cell for chunk in chunks for cell in chunk] == retained.cells
+    assert streamed.cells == []
+    assert streamed.completed_cells == retained.completed_cells == 16
+
+
 def test_cancellation_does_not_publish_a_partially_evaluated_cell(monkeypatch) -> None:
     started = threading.Event()
 
     class CancellingEvaluator:
-        def __init__(self, _terrain, _settings) -> None:
+        def __init__(self, _terrain, _settings, **_kwargs) -> None:
             pass
 
         def evaluate(self, source, target, *_args, **_kwargs) -> LinkResult:

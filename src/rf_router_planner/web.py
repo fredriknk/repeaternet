@@ -529,6 +529,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     rf_cache = LinkMetricsCache(
         max_entries=max(1, int(os.environ.get("RF_PLANNER_RF_CACHE_ENTRIES", "50000")))
     )
+    coverage_rf_cache = LinkMetricsCache(
+        max_entries=max(
+            1, int(os.environ.get("RF_PLANNER_COVERAGE_CACHE_ENTRIES", "50000"))
+        )
+    )
     max_workers = max(1, int(os.environ.get("RF_PLANNER_MAX_ACTIVE_JOBS", "1")))
     scheduler = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rf-plan")
     scheduler_lock = threading.Lock()
@@ -1139,6 +1144,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         progress=lambda done, total: update_job(done=done, total=total),
                         cancelled=ws.coverage_cancel.is_set,
                         on_chunk=stream_chunk,
+                        evaluation_cache=coverage_rf_cache,
+                        cache_namespace=f"coverage:{ws.directory.name}",
                     )
                 with ws.lock:
                     current_job = ws.coverage_job
@@ -1295,7 +1302,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     surface_elevation_m=surface_elevation,
                     antenna_height_m=client.height_agl_m,
                 )
-                evaluator = LinkEvaluator(terrain, context["rf"])
+                evaluator = LinkEvaluator(
+                    terrain,
+                    context["rf"],
+                    cache=coverage_rf_cache,
+                    cache_namespace=f"coverage:{ws.directory.name}",
+                )
                 client_radio = client.as_radio_budget()
                 profile_floor = context["candidates"].final_sample_step_m
                 source_results: list[dict[str, Any]] = []

@@ -28,7 +28,7 @@ from .antennas import ConstantGain, ElevationPattern, elevation_angle_deg
 from .diffraction import bullington_loss_db, deygout_loss_db
 from .link import free_space_path_loss_db, received_power_dbm
 
-_CACHE_SCHEMA = "rf-metrics-v1"
+_CACHE_SCHEMA = "rf-metrics-v2"
 
 
 def _terrain_fingerprint(terrain: TerrainSource) -> tuple[Hashable, ...]:
@@ -104,6 +104,28 @@ def _site_fingerprint(site: Site) -> tuple[Hashable, ...]:
     )
 
 
+def _radio_budget_fingerprint(budget: RadioBudget | None) -> tuple[Hashable, ...] | None:
+    if budget is None:
+        return None
+    antenna = budget.antenna
+    pattern_hash = None
+    if antenna.pattern_csv:
+        try:
+            pattern_hash = hashlib.sha256(Path(antenna.pattern_csv).read_bytes()).hexdigest()
+        except OSError:
+            pattern_hash = "missing"
+    return (
+        antenna.gain_dbi,
+        antenna.feed_loss_db,
+        antenna.height_agl_m,
+        antenna.pattern_csv,
+        pattern_hash,
+        budget.tx_power_dbm,
+        budget.sensitivity_dbm,
+        budget.miscellaneous_loss_db,
+    )
+
+
 class LinkEvaluator:
     def __init__(
         self,
@@ -166,18 +188,32 @@ class LinkEvaluator:
         source_radio: RadioBudget | None = None,
         target_radio: RadioBudget | None = None,
     ) -> LinkResult:
-        if self.cache is not None and not include_profile and source_radio is None and target_radio is None:
+        if self.cache is not None and not include_profile:
             return self.cache.get_or_compute(
                 self.cache_namespace,
-                self.cache_key(source, target, sample_step_m),
-                lambda: self._evaluate_uncached(source, target, sample_step_m, False),
+                self.cache_key(
+                    source,
+                    target,
+                    sample_step_m,
+                    source_radio=source_radio,
+                    target_radio=target_radio,
+                ),
+                lambda: self._evaluate_uncached(
+                    source, target, sample_step_m, False, source_radio, target_radio
+                ),
             )
         return self._evaluate_uncached(
             source, target, sample_step_m, include_profile, source_radio, target_radio
         )
 
     def cache_key(
-        self, source: Site, target: Site, sample_step_m: float | None
+        self,
+        source: Site,
+        target: Site,
+        sample_step_m: float | None,
+        *,
+        source_radio: RadioBudget | None = None,
+        target_radio: RadioBudget | None = None,
     ) -> tuple[Hashable, ...]:
         return (
             _CACHE_SCHEMA,
@@ -186,6 +222,8 @@ class LinkEvaluator:
             _site_fingerprint(source),
             _site_fingerprint(target),
             sample_step_m,
+            _radio_budget_fingerprint(source_radio),
+            _radio_budget_fingerprint(target_radio),
         )
 
     def get_cached_metrics(
