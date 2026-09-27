@@ -1,0 +1,121 @@
+{
+  "benchmark": "local raster mesh coverage",
+  "cache_warm_rerun": "measured against a separate bounded coverage cache per child process",
+  "host": {
+    "cpu_count": 24,
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.12"
+  },
+  "measurement_notes": [
+    "Cold means a fresh application cache, not flushed OS or storage caches.",
+    "terrain_reads counts sampling calls; terrain_bytes_returned is sampled array bytes, not disk I/O.",
+    "Peak memory is the child process high-water working set, including setup and all passes.",
+    "Cancellation acknowledgement starts after the requested RF evaluation returns; no server scheduler is measured."
+  ],
+  "results": [
+    {
+      "cancellation_acknowledgement_seconds": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0
+      },
+      "cold_peak_working_set_mib": {
+        "max": 124.5625,
+        "median": 124.4414,
+        "min": 124.1094
+      },
+      "cold_warm_results_identical": true,
+      "elapsed_seconds": {
+        "max": 3.6805,
+        "median": 3.6467,
+        "min": 3.6366
+      },
+      "first_chunk_seconds": {
+        "max": 1.7935,
+        "median": 1.7743,
+        "min": 1.768
+      },
+      "fixture": {
+        "crs": "EPSG:25832",
+        "file_bytes": 4195950,
+        "kind": "local_geotiff",
+        "path": "C:\\Users\\fnk\\pythonprojects\\repeaternet\\cache\\wcs_large_smoke\\kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+        "raster_bounds_m": [
+          550000.0,
+          6620000.0,
+          650000.0,
+          6640000.0
+        ],
+        "resolution_m": 50.0,
+        "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+        "surface_available": false
+      },
+      "grid_cells": 256,
+      "peak_working_set_mib": {
+        "max": 124.6445,
+        "median": 124.5234,
+        "min": 124.2188
+      },
+      "profile_step_m": 50.0,
+      "radio_profile": {
+        "client_height_agl_m": 1.5,
+        "client_sensitivity_dbm": -130.0,
+        "client_tx_power_dbm": 20.0,
+        "fade_margin_db": 0.0,
+        "frequency_mhz": 869.5,
+        "router_height_agl_m": 50.0,
+        "validation_mode": "rf_propagation"
+      },
+      "repetition_count": 3,
+      "requested_bounds_m": [
+        590050.0,
+        6620050.0,
+        609950.0,
+        6639950.0
+      ],
+      "requested_cells": 256,
+      "result_sha256": "67fc6f96e4aec9ea49c7b6e4dde4abb0732d372779e47e968c5c6743599f3a0d",
+      "rf_evaluations": {
+        "max": 512,
+        "median": 512,
+        "min": 512
+      },
+      "scenario": "local_raster",
+      "serialized_result_bytes_estimate": {
+        "max": 170348,
+        "median": 170348,
+        "min": 170348
+      },
+      "source_count": 2,
+      "state_counts": {
+        "covered": 203,
+        "uncovered": 53
+      },
+      "unknown_cells": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "unknown_source_evaluations": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "warm_cache_hits": {
+        "max": 512,
+        "median": 512,
+        "min": 512
+      },
+      "warm_cache_misses": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "warm_elapsed_seconds": {
+        "max": 0.0248,
+        "median": 0.0247,
+        "min": 0.0239
+      }
+    }
+  ]
+}

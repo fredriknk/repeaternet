@@ -293,6 +293,13 @@ The Node tests exercise inspection request ordering under delayed autosaves,
 late job-start responses and rapid map clicks. They complement the API worker
 race tests; browser layout and chart review are separate checks.
 
+Optional local-data coverage benchmarks use `tools/benchmark_mesh_coverage.py
+--dtm path/to/ground.tif --sources 8 --cells 4096 --repeats 3 --output report.json`.
+The [Kartverket fixture manifest](docs/fixtures/kartverket-nhm-25832-50m.md) fixes
+the input and assumptions for the recorded results. No terrain is downloaded by
+the benchmark. `tools/benchmark_coverage_replay.py --sources 32 --repeats 3` measures
+large saved-result integrity checks separately, using generated JSONL files.
+
 Tests cover FSPL, Fresnel radius, Earth bulge, link budget, elevation angle and gain interpolation, knife-edge diffraction, terrain interpolation/DOM use, graph and mesh objectives, project migration/round trips, process/sequential equivalence, CoreScope parsing/filtering, map setup, and synthetic DEM routing:
 
 - flat clear terrain → zero routers;

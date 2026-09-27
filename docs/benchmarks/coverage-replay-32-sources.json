@@ -1,0 +1,81 @@
+{
+  "benchmark": "production replay validation, generated scalar JSONL fixtures",
+  "host": {
+    "cpu_count": 24,
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.12"
+  },
+  "measurement_notes": [
+    "Fixture generation and hashing are outside the timed validation calls.",
+    "OS/storage caches are warm after fixture creation; no RF or HTTP latency is measured.",
+    "Memory is the child high-water working set, including imports and fixture generation.",
+    "Current-job and 50-manifest archive lookup use the production integrity validator."
+  ],
+  "repetition_count": 3,
+  "repetitions": [
+    {
+      "archive_lookup_validation_seconds": 0.43326379999052733,
+      "cell_source_pairs": 247808,
+      "corrupt_file_rejected": true,
+      "corrupt_file_rejection_seconds": 0.2818410999607295,
+      "current_job_validation_seconds": 0.2599791999673471,
+      "grid_cells": 7744,
+      "manifest_count": 50,
+      "peak_working_set_mib": 117.5625,
+      "requested_cells": 16384,
+      "result_file_bytes": 48027449,
+      "result_file_sha256": "ecb23580bce28f96843c35b33f8a812b4bce233c0ea9f98af12680aa1d66eea4",
+      "source_count": 32
+    },
+    {
+      "archive_lookup_validation_seconds": 0.27708130003884435,
+      "cell_source_pairs": 247808,
+      "corrupt_file_rejected": true,
+      "corrupt_file_rejection_seconds": 0.26819390000309795,
+      "current_job_validation_seconds": 0.2593647000612691,
+      "grid_cells": 7744,
+      "manifest_count": 50,
+      "peak_working_set_mib": 117.859375,
+      "requested_cells": 16384,
+      "result_file_bytes": 48027449,
+      "result_file_sha256": "ecb23580bce28f96843c35b33f8a812b4bce233c0ea9f98af12680aa1d66eea4",
+      "source_count": 32
+    },
+    {
+      "archive_lookup_validation_seconds": 0.28568900004029274,
+      "cell_source_pairs": 247808,
+      "corrupt_file_rejected": true,
+      "corrupt_file_rejection_seconds": 0.26981119997799397,
+      "current_job_validation_seconds": 0.25734709994867444,
+      "grid_cells": 7744,
+      "manifest_count": 50,
+      "peak_working_set_mib": 117.62890625,
+      "requested_cells": 16384,
+      "result_file_bytes": 48027449,
+      "result_file_sha256": "ecb23580bce28f96843c35b33f8a812b4bce233c0ea9f98af12680aa1d66eea4",
+      "source_count": 32
+    }
+  ],
+  "summary": {
+    "archive_lookup_validation_seconds": {
+      "max": 0.4333,
+      "median": 0.2857,
+      "min": 0.2771
+    },
+    "corrupt_file_rejection_seconds": {
+      "max": 0.2818,
+      "median": 0.2698,
+      "min": 0.2682
+    },
+    "current_job_validation_seconds": {
+      "max": 0.26,
+      "median": 0.2594,
+      "min": 0.2573
+    },
+    "peak_working_set_mib": {
+      "max": 117.8594,
+      "median": 117.6289,
+      "min": 117.5625
+    }
+  }
+}

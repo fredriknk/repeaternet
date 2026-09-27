@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C11 implementation delivered; browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
+Created: 2026-09-27. Status: C0–C11 feature set delivered; completion audit and remaining accuracy, performance and runtime release validation are in progress. The open profile-limit finding below must be fixed before completion.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -30,6 +30,7 @@ of emitted energy or delivered packet reliability.
 | C9 | Exact-result replay for unchanged large coverage runs | C2, C6, C8 | Performance hardening |
 | C10 | Bounded approximate preview and seamless refinement | C3, C9 | Usability |
 | C11 | User-drawn coverage areas and explicit outside-area cells | C3, C7, C10 | Coverage |
+| C12 | Correct profile-limit semantics and real-raster sampling bottleneck found during acceptance audit | C1, C4, C6, C7 | Corrective validation |
 
 First useful release: C0–C4. C5–C8 are subsequent releases, not prerequisites
 for using the basic map overlay. Implementation follows this order so each
@@ -195,6 +196,27 @@ Real-raster I/O, concurrent workspaces, larger-than-cache repeated runs, and des
 worker migration remain unverified or deferred; no real-raster fixture was
 available in this workspace.
 
+Continuation evidence (2026-09-27): an existing local Kartverket DTM cache was
+subsequently identified and its request identity/checksum verified. The
+[fixture manifest](fixtures/kartverket-nhm-25832-50m.md) records attribution,
+provenance limitations, fixed coordinates and reproduction commands. Three fresh
+processes per case used 50 m RF profiles over a 396.01 km² region:
+
+| Real-raster core case | Cold median (range) | First chunk median | Warm median | Peak working set median (maximum) |
+| --- | --- | --- | --- | --- |
+| 256 cells × 2 sources | 3.6467 s (3.6366–3.6805) | 1.7743 s | 0.0247 s | 124.52 MiB (124.64) |
+| 4,096 cells × 8 sources | 271.8822 s (268.8550–273.8899) | 11.3523 s | 0.7655 s | 191.38 MiB (191.59) |
+
+Both cases produced byte-identical serialized cold/warm results, with 100% warm
+cache hits (512 and 32,768). The standard case produced 3,349 covered and 747
+uncovered cells, no unknown cells, and 8,181,630 serialized bytes. Raw measurements
+are in [preview evidence](benchmarks/coverage-raster-preview.json) and
+[standard evidence](benchmarks/coverage-raster-standard.json). The memory figure
+is the engine child high-water working set, not concurrent web-server RSS. Cold
+means an empty application cache, not flushed filesystem/GDAL/storage caches.
+This closes the absence of real-raster core measurements; browser/concurrency,
+field accuracy and the wider source/grid matrix remain open.
+
 Areas: `rf/propagation.py`, `optimization/cache.py`, new
 `coverage/engine.py`, `coverage/grid.py`, and engine regression tests.
 Commits: `ef91b2c` (`feat: calculate bounded two-way mesh coverage grids`) and
@@ -336,7 +358,7 @@ late polling response. A deterministic API test holds the older RF evaluation
 until the newer inspection completes, then releases it and confirms the newer
 result is unchanged and the older ID is unavailable. All six targeted checks pass.
 This is automated request-ordering verification, not a browser visual sign-off.
-Commit: pending C4 race-correction commit.
+Commit: `415a148` (`fix: preserve newest mesh coverage inspection across request races`).
 
 Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
 
@@ -487,7 +509,7 @@ explicitly open with a corrective milestone.
 
 Commit: `cf2d6a3` (`feat: export mesh coverage reports`).
 
-## C9 — Large-run result reuse [implemented; runtime/large-file validation open]
+## C9 — Large-run result reuse [implemented; large-file validator measured]
 
 The C0–C8 benchmark matrix showed that an unchanged full-grid rerun could miss
 the entire 50,000-entry LRU when the scan itself was larger than capacity. The
@@ -532,10 +554,49 @@ both large cases, but peak working set rose to 352.54 MiB for 8×16,384 and
 569.94 MiB for 32×16,384. Production cache capacity therefore remains 50,000;
 verified persisted-grid replay avoids this memory increase for exact reruns. The
 benchmark harness exposes `--cache-entries` for reproducing the tradeoff. The
-validation timer is exposed by the API, but a large persisted-file replay timing
-and retention/storage-pressure policy remain unmeasured.
+validation timer is exposed by the API. The continuation measurements below add
+large-file validation timings; retention/storage-pressure policy remains deferred.
+
+Continuation evidence (2026-09-27): `tools/benchmark_coverage_replay.py` generates
+bounded production-shaped JSONL files, then calls the production replay validator.
+Each case uses three fresh processes and searches 50 manifests with the matching
+one last. Eight sources × 16,384 cells produces 27,973,272 bytes: current-job
+validation median 0.1634 s (0.1598–0.1635), archive lookup 0.1879 s
+(0.1852–0.3267), peak working set median 112.75 MiB. The 32-source case is capped
+at 7,744 cells / 247,808 pairs and produces 48,027,449 bytes: current-job validation
+0.2594 s (0.2573–0.2600), archive lookup 0.2857 s (0.2771–0.4333), peak median
+117.63 MiB. Every repetition also rejects an extra out-of-grid cell appended at
+EOF. Exact fixture checksums, individual runs and commands are captured by
+[eight-source evidence](benchmarks/coverage-replay-8-sources.json) and
+[32-source evidence](benchmarks/coverage-replay-32-sources.json). These isolate
+large-file parsing/integrity and manifest selection using generated scalar data;
+they exclude RF computation, browser/HTTP latency and cold storage caches. The
+existing API regression separately proves identical requests do not rerun RF.
 
 Commit: `5a9ee78` (`perf: reuse verified coverage snapshots`).
+
+## C12 — Acceptance-audit corrections [open]
+
+The audit found two concrete issues behind previously open acceptance criteria:
+
+1. Grid, exact inspection, target and changed-backbone evaluation silently enlarge
+   profile spacing at the sample cap. Preserve the requested final resolution;
+   report over-limit links as unresolved with an actionable reason; propagate this
+   state through scenarios, targets, exports and UI; invalidate old reusable results.
+   Verify that a long link never passes because a narrow obstruction was skipped.
+2. The new real-raster baseline spends most of its cold time in point-at-a-time
+   sampling. A profiled 256-cell/two-source cold/warm/cancel probe spent 8.85 s of
+   9.81 s in `RasterTerrain.sample`, including 85,925 Rasterio sampling-generator
+   calls (profiling adds overhead; use the unprofiled timings above for performance).
+   Batch bounded raster windows while preserving nearest-pixel sampling, nodata,
+   mosaic precedence, DOM behavior and edge semantics. Compare against independent
+   Rasterio samples, then repeat the same checksum/settings benchmark.
+
+Targets set **before tuning**: standard 4,096×8 real-raster cold completion at most
+60 s, first 128-cell chunk at most 5 s, below 512 MiB engine peak working set;
+unchanged cold/warm serialized results away from corrected invalid raster edges.
+The existing two-source synthetic preview, cache-reuse and cancellation targets
+remain unchanged. Deployment-level memory and cancellation checks remain separate.
 
 ## Resource limits and benchmark gates
 
@@ -592,7 +653,7 @@ Current implementation record (2026-09-27):
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
 | C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
-| C1 | Implemented · `ef91b2c`, `d13e77f` | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
+| C1 | Implemented · `ef91b2c`, `d13e77f`; C12 corrections open | Directional budgets, bounded cache and real-raster cold/warm measurements recorded above; sampler performance and final-profile caps need C12. Concurrent-workspace verification remains open. |
 | C2 | Implemented · `1ae3ba6`, `1a1b905` | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
 | C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
 | C4 | Implemented · `61a8fb6`; race correction recorded above | Five JavaScript race regressions and a delayed-worker API regression pass. Terrain-reference and profile visual review remain open. |
@@ -600,7 +661,7 @@ Current implementation record (2026-09-27):
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
 | C7 | Implemented · `b75384b`, extended in C11 | Project-scoped targets, exact points/roads, conservative area checks, drawn-analysis-area boundaries and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
 | C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 157-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
-| C9 | Implemented · `5a9ee78` · performance checks open | Exact complete-grid reuse, integrity validation, height/terrain invalidation, same-snapshot comparisons; large synthetic benchmark documents cache churn and memory tradeoff. |
+| C9 | Implemented · `5a9ee78`; large-file measurements recorded above | Production validator measured against 28/48 MB generated JSONL fixtures with 50-manifest lookup and EOF corruption rejection. Browser/HTTP replay latency and storage-pressure policy remain open. |
 | C10 | Implemented · `8ae53bd` | `POST /api/coverage/preview` is bounded to 256 cells and 4,096 router evaluations, participates in the shared scheduler, is labelled approximate in the UI, and yields to the full calculation on its first chunk. API test verifies the cap and that previews do not create saved jobs. The 2-source/256-cell flat synthetic core benchmark (3 fresh-process repetitions, Python 3.13.12, Windows 11) took 0.0847 s median (0.0842–0.0848), first chunk 0.0454 s median, and 98.23 MiB median peak working set. This is below the 5 s synthetic engineering target; it is not a live browser or real-raster measurement. Browser visual review remains open. |
 | C11 | Implemented · `3446d91` | Draw polygon in the map and persist its WGS84 ring in plan settings; validate finite, non-self-intersecting polygons; mask projected sample centres without RF/terrain reads outside scope; report in-area/outside counts; persist `outside_area` cells; preserve the state in incomplete-grid reconstruction, GeoJSON/JSON/printable report, scenario comparisons, node-failure analysis and exact/area target assessments. Bump model identity to coverage-v2 and reject prior-version result reuse. Tests cover sample/evaluation masking, estimate and saved-job counts, corrupt/missing polygons, exports, comparisons, failures and target points outside the analysis area. Full 166-test suite, Ruff, mypy, JavaScript syntax and diff checks pass. Browser interaction and visual review remain open. |
 
@@ -614,7 +675,9 @@ unavailable; the app exposed no browser surfaces, and Chrome headless exited on
 GPU initialization before producing a screenshot. Therefore container-based
 two-workspace/restart and visual-print review are still open. No real-raster
 timing, concurrent-workspace RSS or field validation has been measured; these
-remain release gates, not implied successes.
+remain release gates, not implied successes. This paragraph records the earlier
+166-test release boundary; the subsequent C1/C4/C9 continuation evidence above
+supersedes its absence-of-raster and click-race statements.
 
 Open implementation finding from the continuation audit: coverage grids, exact
 inspection and changed-backbone validation currently increase profile spacing

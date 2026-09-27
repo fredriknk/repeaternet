@@ -1,4 +1,4 @@
-"""Fresh-process synthetic benchmarks for the area mesh-coverage engine."""
+"""Fresh-process synthetic or local-GeoTIFF mesh-coverage benchmarks."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import statistics
 import subprocess
 import sys
 import time
+from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -101,16 +103,42 @@ def run_one(
     requested_cells: int,
     scenario: str,
     cache_entries: int = 50_000,
+    dtm_path: str | None = None,
+    profile_step_m: float | None = None,
 ) -> dict[str, Any]:
-    from rf_router_planner.coverage.engine import calculate_coverage
-    from rf_router_planner.models.coverage import CoverageSettings
-    from rf_router_planner.models.settings import CandidateSettings, RFSettings
-    from rf_router_planner.models.site import Site, SiteKind
-    from rf_router_planner.optimization.cache import LinkMetricsCache
-    from rf_router_planner.terrain.raster import ArrayTerrain
+    from pyproj import CRS
+
+    from rf_router_planner.terrain.raster import ArrayTerrain, RasterTerrain
+
+    if dtm_path is not None:
+        path = Path(dtm_path).resolve()
+        with path.open("rb") as handle:
+            checksum = hashlib.file_digest(handle, "sha256").hexdigest()
+        with RasterTerrain([path]) as raster:
+            crs = CRS.from_user_input(raster.crs)
+            if not crs.is_projected or any(
+                axis.unit_conversion_factor != 1.0 for axis in crs.axis_info[:2]
+            ):
+                raise ValueError("Benchmark raster must have a projected metre CRS")
+            left, bottom, right, top = raster.bounds
+            width = min(right - left, top - bottom) - 2 * raster.resolution_m
+            if width <= 0:
+                raise ValueError("Benchmark raster must span more than two pixels per axis")
+            centre_x, centre_y = (left + right) / 2, (bottom + top) / 2
+            bounds = (
+                centre_x - width / 2, centre_y - width / 2,
+                centre_x + width / 2, centre_y + width / 2,
+            )
+            return measure_coverage(
+                raster, bounds, source_count, requested_cells, "local_raster", cache_entries,
+                profile_step_m or raster.resolution_m,
+                {"kind": "local_geotiff", "path": str(path), "sha256": checksum,
+                 "file_bytes": path.stat().st_size, "crs": raster.crs,
+                 "raster_bounds_m": raster.bounds, "resolution_m": raster.resolution_m,
+                 "surface_available": False},
+            )
 
     side_cells = math.ceil(math.sqrt(requested_cells))
-    requested_cells_actual = side_cells**2
     cell_size = 1_000.0
     padding = 1_000.0
     width = side_cells * cell_size
@@ -131,14 +159,42 @@ def run_one(
             values[:, terrain_slice] = -80.0
         else:
             values[:, terrain_slice] = np.nan
-    terrain = MeteredTerrain(
-        ArrayTerrain(
-            values,
-            origin_x=left - padding,
-            origin_y=bottom - padding,
-            resolution_m=terrain_resolution,
-        )
+    terrain = ArrayTerrain(
+        values,
+        origin_x=left - padding,
+        origin_y=bottom - padding,
+        resolution_m=terrain_resolution,
     )
+    return measure_coverage(
+        terrain, bounds, source_count, requested_cells, scenario, cache_entries,
+        profile_step_m or 200.0,
+        {"kind": "synthetic_array", "sha256": hashlib.sha256(values.tobytes()).hexdigest(),
+         "crs": terrain.crs, "resolution_m": terrain_resolution},
+    )
+
+
+def measure_coverage(
+    raw_terrain: Any,
+    bounds: tuple[float, float, float, float],
+    source_count: int,
+    requested_cells: int,
+    scenario: str,
+    cache_entries: int,
+    profile_step_m: float,
+    fixture: dict[str, Any],
+) -> dict[str, Any]:
+    from rf_router_planner.coverage.engine import calculate_coverage
+    from rf_router_planner.models.coverage import CoverageSettings
+    from rf_router_planner.models.settings import CandidateSettings, RFSettings
+    from rf_router_planner.models.site import Site, SiteKind
+    from rf_router_planner.optimization.cache import LinkMetricsCache
+
+    terrain = MeteredTerrain(raw_terrain)
+    left, bottom, right, _top = bounds
+    width = right - left
+    side_cells = math.ceil(math.sqrt(requested_cells))
+    cell_size = width / side_cells
+    requested_cells_actual = side_cells**2
     sources = [
         Site(
             f"R{index:02d}",
@@ -154,11 +210,13 @@ def run_one(
         area_buffer_m=0.0,
         maximum_cells=requested_cells_actual,
         maximum_evaluations=250_000,
-        profile_step_m=200.0,
+        profile_step_m=profile_step_m,
         maximum_profile_samples=4_096,
     )
     rf = RFSettings(fade_margin_db=0.0)
-    terrain_sha256 = hashlib.sha256(values.tobytes()).hexdigest()
+    cold_result_hash = hashlib.sha256()
+    warm_result_hash = hashlib.sha256()
+    state_counts: Counter[str] = Counter()
     first_chunk_seconds: float | None = None
     response_bytes = 0
     unknown_source_evaluations = 0
@@ -166,6 +224,7 @@ def run_one(
     cancel_rf_calls = 0
     warm_rf_calls = 0
     measurement_phase = "cold"
+    cancel_requested_at: float | None = None
     cache = LinkMetricsCache(max_entries=cache_entries)
 
     from rf_router_planner.rf.propagation import LinkEvaluator
@@ -173,14 +232,18 @@ def run_one(
     original_evaluate = LinkEvaluator.evaluate
 
     def counted_evaluate(self, *args, **kwargs):
-        nonlocal cancel_rf_calls, rf_calls, warm_rf_calls
+        nonlocal cancel_rf_calls, rf_calls, warm_rf_calls, cancel_requested_at
         if measurement_phase == "cancel":
             cancel_rf_calls += 1
         elif measurement_phase == "warm":
             warm_rf_calls += 1
         else:
             rf_calls += 1
-        return original_evaluate(self, *args, **kwargs)
+        try:
+            return original_evaluate(self, *args, **kwargs)
+        finally:
+            if measurement_phase == "cancel" and cancel_rf_calls >= cancel_threshold:
+                cancel_requested_at = time.perf_counter()
 
     from unittest.mock import patch
 
@@ -191,35 +254,12 @@ def run_one(
         if first_chunk_seconds is None:
             first_chunk_seconds = time.perf_counter() - started
         unknown_source_evaluations += sum(cell.unknown_sources for cell in cells)
-        response_bytes += len(
-            json.dumps(
-                [
-                    {
-                        "index": cell.index,
-                        "state": cell.state.value,
-                        "source_count": cell.source_count,
-                        "unknown_sources": cell.unknown_sources,
-                        "best_margin_db": cell.best_margin_db,
-                        "best_source_id": cell.best_source_id,
-                        "sources": [
-                            {
-                                "source_id": source.source_id,
-                                "downlink_margin_db": source.downlink_margin_db,
-                                "uplink_margin_db": source.uplink_margin_db,
-                                "two_way_margin_db": source.two_way_margin_db,
-                                "valid_downlink": source.valid_downlink,
-                                "valid_uplink": source.valid_uplink,
-                                "valid_two_way": source.valid_two_way,
-                                "rejection": source.rejection,
-                            }
-                            for source in cell.sources
-                        ],
-                    }
-                    for cell in cells
-                ],
-                separators=(",", ":"),
-            ).encode()
-        )
+        encoded = json.dumps(
+            [asdict(cell) for cell in cells], separators=(",", ":"), allow_nan=False,
+        ).encode()
+        response_bytes += len(encoded)
+        cold_result_hash.update(encoded)
+        state_counts.update(cell.state.value for cell in cells)
 
     with patch.object(LinkEvaluator, "evaluate", counted_evaluate):
         grid = calculate_coverage(
@@ -248,10 +288,13 @@ def run_one(
     warm_first_chunk: float | None = None
     warm_started = time.perf_counter()
 
-    def warm_chunk(_cells: list[Any]) -> None:
+    def warm_chunk(cells: list[Any]) -> None:
         nonlocal warm_first_chunk
         if warm_first_chunk is None:
             warm_first_chunk = time.perf_counter() - warm_started
+        warm_result_hash.update(json.dumps(
+            [asdict(cell) for cell in cells], separators=(",", ":"), allow_nan=False,
+        ).encode())
 
     with patch.object(LinkEvaluator, "evaluate", counted_evaluate):
         warm_grid = calculate_coverage(
@@ -267,6 +310,12 @@ def run_one(
         )
     warm_elapsed = time.perf_counter() - warm_started
     warm_cache_stats = cache.stats("benchmark")
+    if warm_result_hash.digest() != cold_result_hash.digest():
+        raise AssertionError("Cold and warm coverage cells differ")
+    before_cancel_metrics = (
+        terrain.sample_calls, terrain.sample_points, terrain.sample_bytes,
+        terrain.sample_nodata_points,
+    )
 
     # A repeatable cooperative-cancel probe records how much work is completed
     # before the engine observes cancellation at its bounded pair checks.
@@ -281,17 +330,20 @@ def run_one(
             sources,
             settings,
             requested_bounds=bounds,
-            cancelled=lambda: cancel_rf_calls >= cancel_threshold,
+            cancelled=lambda: cancel_requested_at is not None,
             evaluation_cache=cache,
             cache_namespace="benchmark-cancel",
         )
-    cancellation_seconds = time.perf_counter() - cancel_started
+    cancel_finished = time.perf_counter()
+    if cancel_requested_at is None:
+        raise AssertionError("Fixture did not reach the cancellation probe's RF threshold")
+    cancellation_seconds = cancel_finished - cancel_requested_at
     measurement_phase = "cold"
     cancel_terrain_metrics = (
-        terrain.sample_calls - primary_terrain_metrics[0],
-        terrain.sample_points - primary_terrain_metrics[1],
-        terrain.sample_bytes - primary_terrain_metrics[2],
-        terrain.sample_nodata_points - primary_terrain_metrics[3],
+        terrain.sample_calls - before_cancel_metrics[0],
+        terrain.sample_points - before_cancel_metrics[1],
+        terrain.sample_bytes - before_cancel_metrics[2],
+        terrain.sample_nodata_points - before_cancel_metrics[3],
     )
     return {
         "source_count": source_count,
@@ -317,7 +369,17 @@ def run_one(
             "completed_cells": warm_grid.completed_cells,
         },
         "cache_capacity": cache.max_entries,
-        "terrain_fixture_sha256": terrain_sha256,
+        "terrain_fixture_sha256": fixture["sha256"],
+        "fixture": fixture,
+        "profile_step_m": profile_step_m,
+        "maximum_profile_samples": settings.maximum_profile_samples,
+        "sources_projected": [
+            {"id": source.id, "x": source.x, "y": source.y,
+             "height_agl_m": source.antenna_height_m} for source in sources
+        ],
+        "state_counts": dict(state_counts),
+        "cold_warm_results_identical": True,
+        "result_sha256": cold_result_hash.hexdigest(),
         "radio_profile": {
             "frequency_mhz": rf.frequency_mhz,
             "validation_mode": rf.validation_mode.value,
@@ -341,6 +403,7 @@ def run_one(
             "rf_evaluations_before_observed": cancel_rf_calls,
             "completed_cells_before_observed": cancelled_grid.completed_cells,
             "acknowledgement_seconds": cancellation_seconds,
+            "probe_total_seconds": cancel_finished - cancel_started,
             "terrain_reads": cancel_terrain_metrics[0],
             "terrain_sample_points": cancel_terrain_metrics[1],
             "terrain_bytes_returned": cancel_terrain_metrics[2],
@@ -364,6 +427,9 @@ def main() -> None:
     parser.add_argument("--scenarios", type=_parse_scenarios, default=["flat"])
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cache-entries", type=int, default=50_000)
+    parser.add_argument("--dtm", type=Path, help="Local metric-CRS GeoTIFF; no downloads")
+    parser.add_argument("--profile-step-m", type=float, help="Default: 200 m synthetic, raster pixel size otherwise")
+    parser.add_argument("--output", type=Path, help="Also save the JSON measurement artifact")
     parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--_case", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -371,11 +437,17 @@ def main() -> None:
         parser.error("--repeats must be positive")
     if args.cache_entries < 1:
         parser.error("--cache-entries must be positive")
+    if args.profile_step_m is not None and (
+        not math.isfinite(args.profile_step_m) or args.profile_step_m <= 0
+    ):
+        parser.error("--profile-step-m must be finite and positive")
+    if args.dtm is not None and args.scenarios != ["flat"]:
+        parser.error("--dtm replaces the synthetic fixture; omit --scenarios")
     if args._case:
-        source_count, cells, scenario, cache_entries = json.loads(args._case)
+        case = json.loads(args._case)
         print(
             json.dumps(
-                run_one(source_count, cells, scenario, cache_entries), sort_keys=True
+                run_one(**case), sort_keys=True
             )
         )
         return
@@ -392,7 +464,10 @@ def main() -> None:
                             str(Path(__file__).resolve()),
                             "--_case",
                             json.dumps(
-                                [source_count, requested_cells, scenario, args.cache_entries]
+                                {"source_count": source_count, "requested_cells": requested_cells,
+                                 "scenario": scenario, "cache_entries": args.cache_entries,
+                                 "dtm_path": str(args.dtm.resolve()) if args.dtm else None,
+                                 "profile_step_m": args.profile_step_m}
                             ),
                         ],
                         check=True,
@@ -401,7 +476,15 @@ def main() -> None:
                     )
                     runs.append(json.loads(child.stdout.strip()))
                 report = {
-                    "scenario": scenario,
+                    "scenario": runs[0]["scenario"],
+                    "fixture": runs[0]["fixture"],
+                    "radio_profile": runs[0]["radio_profile"],
+                    "profile_step_m": runs[0]["profile_step_m"],
+                    "requested_bounds_m": runs[0]["requested_bounds_m"],
+                    "grid_cells": runs[0]["grid_cells"],
+                    "state_counts": runs[0]["state_counts"],
+                    "result_sha256": runs[0]["result_sha256"],
+                    "cold_warm_results_identical": all(run["cold_warm_results_identical"] for run in runs),
                     "source_count": source_count,
                     "requested_cells": requested_cells,
                     "repetition_count": len(runs),
@@ -443,10 +526,15 @@ def main() -> None:
                 if not args.summary_only:
                     report["repetitions"] = runs
                 reports.append(report)
-    print(
-        json.dumps(
+    output = json.dumps(
             {
-                "benchmark": "synthetic area mesh coverage",
+                "benchmark": "local raster mesh coverage" if args.dtm else "synthetic area mesh coverage",
+                "measurement_notes": [
+                    "Cold means a fresh application cache, not flushed OS or storage caches.",
+                    "terrain_reads counts sampling calls; terrain_bytes_returned is sampled array bytes, not disk I/O.",
+                    "Peak memory is the child process high-water working set, including setup and all passes.",
+                    "Cancellation acknowledgement starts after the requested RF evaluation returns; no server scheduler is measured.",
+                ],
                 "host": {
                     "platform": platform.platform(),
                     "python": platform.python_version(),
@@ -458,7 +546,10 @@ def main() -> None:
             indent=2,
             sort_keys=True,
         )
-    )
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(output + "\n", encoding="utf-8")
+    print(output)
 
 
 if __name__ == "__main__":

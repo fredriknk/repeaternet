@@ -1,6 +1,11 @@
 # Real terrain benchmark fixture manifest
 
 No redistribution-approved DTM is currently checked into this repository.
+An existing local Kartverket cache is now documented in the
+[50 m NHM fixture manifest](fixtures/kartverket-nhm-25832-50m.md), with its verified
+checksum, reconstructed request and provenance limitations. That file is used for
+optional coverage benchmarks; CI does not require it.
+
 Keep terrain data outside Git unless its provider explicitly permits it. Before
 using a real raster as a release benchmark, copy this manifest and record:
 
