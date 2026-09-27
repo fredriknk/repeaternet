@@ -47,6 +47,7 @@ from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
 
 ASSETS = Path(__file__).parent / "web_assets"
+MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
 
 
 def encode(value: Any) -> Any:
@@ -1089,11 +1090,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         or ws.coverage_cancel.is_set()
                     ):
                         return
-                    if result_path.stat().st_size + len(line.encode("utf-8")) > 100 * 1024 * 1024:
+                    if (
+                        result_path.stat().st_size + len(line.encode("utf-8"))
+                        > MAX_COVERAGE_RESULT_BYTES
+                    ):
                         ws.coverage_cancel.set()
-                        ws.coverage_job.update(state="failed", stage="Coverage result exceeded the 100 MiB project limit")
+                        ws.coverage_job.update(
+                            state="failed", stage="Coverage result exceeded the project storage limit"
+                        )
                         _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
-                        raise ValueError("Coverage result exceeded the 100 MiB project limit")
+                        raise ValueError("Coverage result exceeded the project storage limit")
                     with result_path.open("a", encoding="utf-8") as output:
                         output.write(line)
                     states = [cell.state.value for cell in cells]

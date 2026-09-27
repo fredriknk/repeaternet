@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C1 implemented; C2–C4 implemented with validation open; C5–C8 planned; release validation open.
+Created: 2026-09-27. Status: C0–C2 implemented (API validation passed); C3–C4 implemented with browser/accuracy validation open; C5–C8 planned; release validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -197,7 +197,7 @@ Areas: `rf/propagation.py`, `optimization/cache.py`, new
 Commits: `ef91b2c` (`feat: calculate bounded two-way mesh coverage grids`) and
 `d13e77f` (`perf: cache bounded coverage link metrics`).
 
-## C2 — Background jobs, stale results and saved settings [implemented; validation open]
+## C2 — Background jobs, stale results and saved settings [implemented; API validation passed]
 
 Proposed API, using the existing workspace/authentication boundary:
 
@@ -234,17 +234,21 @@ Progress: estimate and bounded paging APIs, shared scheduler dispatch, project
 settings persistence, atomic job manifests, restart recovery, cancellation, stale
 revision checks, and a 100 MiB project-output guard are implemented. Route
 fingerprints ignore client-only coverage settings and optimizer-generated
-`resolved_search` metadata. One-job-per-workspace contention and the intentionally
-locked project/terrain lifecycle have not yet been exercised. No API tests or
-restart/quota experiments have been run.
+`resolved_search` metadata. API tests now cover estimates, paged output, stale saved
+settings, browser/workspace isolation, reconnect without duplicate work, interrupted
+manifest recovery with retained result pages, running and queued cancellation, shared
+scheduler-slot release, project/terrain lifecycle locks, and quota failure. The quota
+test lowers the byte cap in-process to exercise the same failure path without writing
+a 100 MiB fixture.
 
-Acceptance still open: verify cross-workspace isolation, delayed callbacks, queued
-and running cancellation, restart recovery, quota failure, project lifecycle, and
-browser reconnection without duplicate work. Add quota eviction only if observed
-storage use warrants it; the current safe behaviour is an explicit failure.
+Acceptance: all listed API lifecycle scenarios pass in `tests/test_coverage_jobs.py`.
+The implementation fails visibly at the hard cap; quota eviction remains deferred
+because no observed storage pressure justifies an eviction policy. No separate
+fault-injected delayed-callback race test or two-live-workspace throughput benchmark
+has been run; those remain C8 deployment checks.
 
 Areas: `web.py`, `project_store.py`, a shared job helper if needed, web API tests.
-Commit: `feat: run revision-safe coverage jobs and persist coverage settings`.
+Commit: `1ae3ba6` (`feat: run revision-safe coverage jobs and persist coverage settings`); C2 API-validation follow-up commit pending.
 
 ## C3 — Coverage map and useful controls [implemented; visual validation open]
 
@@ -455,12 +459,12 @@ Current implementation record (2026-09-27):
 | --- | --- | --- |
 | C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
 | C1 | Implemented · `ef91b2c`, `d13e77f` | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
-| C2 | Implemented · `1ae3ba6` | Shared scheduler, revision checks and streamed project-local results; API isolation/restart/quota/cancellation scenarios not run. |
+| C2 | Implemented · `1ae3ba6`, follow-up commit pending | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
 | C3 | Implemented · `61a8fb6` | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
 | C5–C8 | Planned | No implementation started. |
 
-Validation recorded so far: full suite `python -m pytest` passes 122 tests;
+Validation recorded so far: full suite `python -m pytest` passes 126 tests;
 `python -m ruff check src tests tools` and `python -m mypy src/rf_router_planner
 --ignore-missing-imports` pass. JavaScript syntax checks passed in the previous C3/C4
 implementation pass. No real-raster timing, concurrent-workspace RSS, field
