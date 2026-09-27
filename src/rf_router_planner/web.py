@@ -26,9 +26,11 @@ from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
 
 from .coordinates import norway_utm_epsg
+from .coverage.engine import calculate_coverage, make_grid
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
+from .models.coverage import ClientRadioProfile, CoverageMode, CoverageSettings
 from .models.settings import CandidateSettings, InfrastructurePolicy, RFSettings, TerrainSettings
 from .models.site import Site, SiteKind, SiteOrigin
 from .optimization.cache import LinkMetricsCache
@@ -238,6 +240,83 @@ def coordinate_pair(body: dict[str, Any], key: str) -> tuple[float, float]:
     return float(latitude), float(longitude)
 
 
+def parse_coverage_settings(value: Any) -> CoverageSettings:
+    if not isinstance(value, dict):
+        raise ValueError("Coverage settings must be an object")
+    defaults = CoverageSettings()
+    client_values = value.get("client", {})
+    if not isinstance(client_values, dict):
+        raise ValueError("Client radio settings must be an object")
+    client = ClientRadioProfile()
+    for key in (
+        "name",
+        "height_agl_m",
+        "tx_power_dbm",
+        "gain_dbi",
+        "feed_loss_db",
+        "sensitivity_dbm",
+        "miscellaneous_loss_db",
+    ):
+        if key in client_values:
+            setattr(client, key, client_values[key])
+    if not isinstance(client.name, str) or not 1 <= len(client.name) <= 80:
+        raise ValueError("Client radio profile name must contain 1 to 80 characters")
+    for key, low, high in (
+        ("height_agl_m", 0.1, 1_000),
+        ("tx_power_dbm", -20, 60),
+        ("gain_dbi", -30, 60),
+        ("feed_loss_db", 0, 100),
+        ("sensitivity_dbm", -200, 0),
+        ("miscellaneous_loss_db", 0, 200),
+    ):
+        number = getattr(client, key)
+        if not isinstance(number, (int, float)) or isinstance(number, bool):
+            raise ValueError(f"Client {key} must be numeric")
+        if not math.isfinite(number) or not low <= number <= high:
+            raise ValueError(f"Client {key} must be between {low} and {high}")
+        setattr(client, key, float(number))
+
+    mode = CoverageMode(value.get("mode", defaults.mode.value))
+    area_mode = value.get("area_mode", defaults.area_mode)
+    if area_mode not in {"mesh", "view"}:
+        raise ValueError("Coverage area mode must be mesh or view")
+
+    def positive_number(key: str, default: float, maximum: float) -> float:
+        item = value.get(key, default)
+        if not isinstance(item, (int, float)) or isinstance(item, bool):
+            raise ValueError(f"Coverage {key} must be numeric")
+        if not math.isfinite(item) or not 0 < item <= maximum:
+            raise ValueError(f"Coverage {key} must be above zero and at most {maximum}")
+        return float(item)
+
+    def positive_int(key: str, default: int, maximum: int) -> int:
+        item = value.get(key, default)
+        if not isinstance(item, int) or isinstance(item, bool) or not 1 <= item <= maximum:
+            raise ValueError(f"Coverage {key} must be between 1 and {maximum}")
+        return item
+
+    include_endpoints = value.get("include_endpoints", defaults.include_endpoints)
+    if not isinstance(include_endpoints, bool):
+        raise ValueError("include_endpoints must be a boolean")
+    return CoverageSettings(
+        mode=mode,
+        area_mode=area_mode,
+        cell_size_m=positive_number("cell_size_m", defaults.cell_size_m, 100_000),
+        area_buffer_m=positive_number("area_buffer_m", defaults.area_buffer_m, 500_000),
+        profile_step_m=positive_number("profile_step_m", defaults.profile_step_m, 10_000),
+        maximum_profile_samples=positive_int(
+            "maximum_profile_samples", defaults.maximum_profile_samples, 16_384
+        ),
+        maximum_cells=positive_int("maximum_cells", defaults.maximum_cells, 16_384),
+        maximum_sources=positive_int("maximum_sources", defaults.maximum_sources, 64),
+        maximum_evaluations=positive_int(
+            "maximum_evaluations", defaults.maximum_evaluations, 250_000
+        ),
+        include_endpoints=include_endpoints,
+        client=client,
+    )
+
+
 def distance_to_segment_m(
     point: tuple[float, float],
     start: tuple[float, float],
@@ -272,6 +351,7 @@ class Workspace:
         self.project = project
         self.lock = threading.Lock()
         self.cancel = threading.Event()
+        self.coverage_cancel = threading.Event()
         recovered = project["run_state"] == "interrupted"
         self.status: dict[str, Any] = {
             "state": "interrupted" if recovered else "idle",
@@ -280,6 +360,9 @@ class Workspace:
             "total": 1,
         }
         self.result: Any = None
+        self.result_plan_fingerprint: str | None = None
+        self.coverage_job: dict[str, Any] | None = None
+        self.restore_coverage_job()
         self.inputs: dict[str, Any] = project["plan"]
         self.result_summary: dict[str, Any] | None = project["result_summary"]
         self.job_id: str | None = None
@@ -287,6 +370,22 @@ class Workspace:
         self.snapshot_version = 0
         self.keep_result_on_cancel = False
         self.storage_usage_bytes: int | None = None
+
+    @property
+    def coverage_job_path(self) -> Path:
+        return self.directory / "coverage-job.json"
+
+    def restore_coverage_job(self) -> None:
+        try:
+            job = json.loads(self.coverage_job_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.coverage_job = None
+            return
+        if job.get("state") in {"queued", "running"}:
+            job["state"] = "interrupted"
+            job["stage"] = "Coverage job interrupted by restart; calculate again to continue."
+            _write_json_atomic(self.coverage_job_path, job)
+        self.coverage_job = job
 
     def activate_project(self, project: dict[str, Any]) -> None:
         self.project = project
@@ -296,7 +395,10 @@ class Workspace:
         self.inputs = project["plan"]
         self.result_summary = project["result_summary"]
         self.result = None
+        self.result_plan_fingerprint = None
         self.job_id = None
+        self.coverage_cancel = threading.Event()
+        self.restore_coverage_job()
         self.input_revision += 1
         self.snapshot_version = 0
         self.storage_usage_bytes = None
@@ -345,6 +447,10 @@ def _plan_fingerprint(plan: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _route_plan_fingerprint(plan: dict[str, Any]) -> str:
+    return _plan_fingerprint({key: value for key, value in plan.items() if key != "coverage"})
 
 
 def _refresh_recovery_summary(workspace: Workspace) -> None:
@@ -611,6 +717,89 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "surface_available": bool(dom_paths),
         }
 
+    def coverage_context(ws: Workspace, body: dict[str, Any]) -> dict[str, Any]:
+        coverage_settings = parse_coverage_settings(body.get("settings", {}))
+        snapshot_version = body.get("snapshot_version")
+        if not isinstance(snapshot_version, int) or isinstance(snapshot_version, bool):
+            raise ValueError("Coverage request needs a route snapshot version")
+        with ws.lock:
+            if ws.status["state"] in {"queued", "running", "preparing"}:
+                raise HTTPException(409, "Wait until route search or terrain preparation finishes")
+            result = ws.result
+            if result is None or result.active_solution is None or not result.search_complete:
+                raise HTTPException(409, "Finish a route search before calculating coverage")
+            if snapshot_version != ws.snapshot_version:
+                raise HTTPException(409, "The selected route changed; refresh before calculating coverage")
+            if ws.result_plan_fingerprint != _route_plan_fingerprint(ws.inputs):
+                raise HTTPException(409, "The current plan differs from the certified route")
+            alternative_id = body.get("alternative_id")
+            if alternative_id != solution_id(result.active_solution):
+                raise HTTPException(409, "The selected route alternative changed")
+            sources = [
+                site
+                for site in result.active_solution.sites
+                if site.kind not in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
+            ]
+            if coverage_settings.include_endpoints:
+                known_source_ids = {site.id for site in sources}
+                sources.extend(
+                    site
+                    for site in result.candidates
+                    if site.kind in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
+                    and site.id not in known_source_ids
+                )
+            if not sources:
+                raise HTTPException(422, "This route has no radio sources; include endpoints to preview their coverage")
+            if len(sources) > coverage_settings.maximum_sources:
+                raise HTTPException(422, f"Select no more than {coverage_settings.maximum_sources} radio sources")
+            dtm_paths = _terrain_paths(ws, "dtm")
+            dom_paths = _terrain_paths(ws, "dom")
+            if not dtm_paths:
+                raise HTTPException(422, "Prepare or upload ground terrain first")
+            plan = dict(ws.inputs)
+            route_fingerprint = _route_plan_fingerprint(plan)
+            terrain_fingerprint = _terrain_fingerprint(ws)
+            project_id = ws.project_id
+            input_revision = ws.input_revision
+            selected_snapshot = ws.snapshot_version
+            selected_alternative = solution_id(result.active_solution)
+
+        requested_bounds = None
+        if coverage_settings.area_mode == "view":
+            values = body.get("map_bounds")
+            if not isinstance(values, list) or len(values) != 4:
+                raise ValueError("Map coverage needs south, west, north, and east bounds")
+            south, west, north, east = values
+            south, west = coordinate_pair({"southwest": [south, west]}, "southwest")
+            north, east = coordinate_pair({"northeast": [north, east]}, "northeast")
+            if south >= north or west >= east:
+                raise ValueError("Map coverage bounds must have positive width and height")
+            with RasterTerrain(dtm_paths) as terrain:
+                forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
+                first = forward.transform(west, south)
+                last = forward.transform(east, north)
+                requested_bounds = (
+                    min(first[0], last[0]),
+                    min(first[1], last[1]),
+                    max(first[0], last[0]),
+                    max(first[1], last[1]),
+                )
+        return {
+            "settings": coverage_settings,
+            "sources": sources,
+            "rf": settings(RFSettings, plan.get("rf", {})),
+            "candidates": settings(CandidateSettings, plan.get("candidates", {})),
+            "dtm_paths": dtm_paths,
+            "dom_paths": dom_paths,
+            "requested_bounds": requested_bounds,
+            "route_fingerprint": route_fingerprint,
+            "terrain_fingerprint": terrain_fingerprint,
+            "project_id": project_id,
+            "input_revision": input_revision,
+            "snapshot_version": selected_snapshot,
+            "alternative_id": selected_alternative,
+        }
+
     @app.get("/")
     def index(request: Request) -> Any:
         response = FileResponse(ASSETS / "index.html")
@@ -640,6 +829,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "input_revision": ws.input_revision,
                 "snapshot_version": ws.snapshot_version,
             },
+            "coverage_job": dict(ws.coverage_job) if ws.coverage_job else None,
             "rf_cache": rf_cache.stats(ws.directory.name),
             "rf": encode(RFSettings()),
             "candidates": encode(CandidateSettings()),
@@ -648,6 +838,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for kind in ("dtm", "dom")
             },
             "plan": ws.inputs or None,
+            "coverage_settings": (ws.inputs or {}).get("coverage", encode(CoverageSettings())),
             "projects": {
                 "active_id": ws.project_id,
                 "active_name": ws.project["name"],
@@ -661,6 +852,290 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             },
         }
 
+    def coverage_current(ws: Workspace, job: dict[str, Any]) -> bool:
+        try:
+            with ws.lock:
+                result = ws.result
+                current_settings = encode(
+                    parse_coverage_settings((ws.inputs or {}).get("coverage", {}))
+                )
+                route_matches = bool(
+                    ws.project_id == job["project_id"]
+                    and result is not None
+                    and result.active_solution is not None
+                    and ws.snapshot_version == job["snapshot_version"]
+                    and ws.result_plan_fingerprint == job["route_fingerprint"]
+                    and _route_plan_fingerprint(ws.inputs) == job["route_fingerprint"]
+                    and solution_id(result.active_solution) == job["alternative_id"]
+                    and _plan_fingerprint(current_settings) == job["settings_fingerprint"]
+                )
+                return route_matches and _terrain_fingerprint(ws) == job["terrain_fingerprint"]
+        except (ValueError, TypeError, KeyError):
+            return False
+
+    @app.post("/api/coverage/estimate")
+    def estimate_mesh_coverage(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            context = coverage_context(ws, body)
+            coverage_settings: CoverageSettings = context["settings"]
+            sources: list[Site] = context["sources"]
+            bounded_settings = replace(
+                coverage_settings,
+                maximum_cells=min(
+                    coverage_settings.maximum_cells,
+                    coverage_settings.maximum_evaluations // len(sources),
+                ),
+            )
+            with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                grid, xs, ys, _latitudes, _longitudes = make_grid(
+                    sources, terrain, bounded_settings, context["requested_bounds"]
+                )
+                terrain_cells = int(np.isfinite(terrain.sample(xs, ys)).sum())
+            return {
+                "source_count": len(sources),
+                "source_ids": [site.id for site in sources],
+                "requested_cells": grid.requested_cells,
+                "effective_cell_size_m": grid.effective_cell_size_m,
+                "terrain_available_cells": terrain_cells,
+                "unknown_cells": grid.requested_cells - terrain_cells,
+                "planned_evaluations": grid.requested_cells * len(sources),
+                "mode": coverage_settings.mode.value,
+                "surface_available": grid.surface_available,
+            }
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/coverage/jobs")
+    def start_mesh_coverage(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            context = coverage_context(ws, body)
+            coverage_settings: CoverageSettings = context["settings"]
+            sources: list[Site] = context["sources"]
+            if coverage_settings.maximum_evaluations // len(sources) < 1:
+                raise ValueError("Coverage limits allow no source evaluations")
+            with ws.lock:
+                if ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}:
+                    raise HTTPException(409, "A coverage calculation is already running")
+                if (
+                    ws.snapshot_version != context["snapshot_version"]
+                    or ws.project_id != context["project_id"]
+                    or ws.result_plan_fingerprint != context["route_fingerprint"]
+                    or _terrain_fingerprint(ws) != context["terrain_fingerprint"]
+                    or _plan_fingerprint(
+                        encode(parse_coverage_settings((ws.inputs or {}).get("coverage", {})))
+                    )
+                    != _plan_fingerprint(encode(coverage_settings))
+                ):
+                    raise HTTPException(409, "Save coverage settings and refresh the route before calculating")
+                with scheduler_lock:
+                    if job_slots["outstanding"] >= max_outstanding_jobs:
+                        raise HTTPException(429, "The planner queue is full; retry shortly")
+                    queued = job_slots["outstanding"] >= max_workers
+                    job_slots["outstanding"] += 1
+                job_id = secrets.token_hex(16)
+                result_directory = ws.directory / "coverage-results"
+                result_directory.mkdir(parents=True, exist_ok=True)
+                result_name = f"coverage-results/{job_id}.jsonl"
+                (ws.directory / result_name).write_text("", encoding="utf-8")
+                job = {
+                    "job_id": job_id,
+                    "project_id": ws.project_id,
+                    "state": "queued" if queued else "running",
+                    "stage": "Waiting for a planner worker" if queued else "Opening terrain",
+                    "done": 0,
+                    "total": 0,
+                    "covered_cells": 0,
+                    "unknown_cells": 0,
+                    "evaluated_cells": 0,
+                    "created_at": time.time(),
+                    "result_file": result_name,
+                    "route_fingerprint": context["route_fingerprint"],
+                    "terrain_fingerprint": context["terrain_fingerprint"],
+                    "settings_fingerprint": _plan_fingerprint(encode(coverage_settings)),
+                    "settings": encode(coverage_settings),
+                    "source_ids": [site.id for site in sources],
+                    "alternative_id": context["alternative_id"],
+                    "snapshot_version": context["snapshot_version"],
+                    "input_revision": context["input_revision"],
+                    "surface_available": bool(context["dom_paths"]),
+                    "mode": coverage_settings.mode.value,
+                    "stale": False,
+                }
+                ws.coverage_cancel.clear()
+                ws.coverage_job = job
+                _write_json_atomic(ws.coverage_job_path, job)
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        def run_coverage() -> None:
+            result_path = ws.directory / result_name
+
+            def update_job(**values: Any) -> None:
+                with ws.lock:
+                    if not ws.coverage_job or ws.coverage_job.get("job_id") != job_id:
+                        return
+                    ws.coverage_job.update(values)
+                    _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+
+            def stream_chunk(cells: list[Any]) -> None:
+                if not coverage_current(ws, job):
+                    ws.coverage_cancel.set()
+                    update_job(state="stale", stale=True, stage="Route, terrain, or settings changed")
+                    return
+                line = json.dumps(encode(cells), separators=(",", ":")) + "\n"
+                with ws.lock:
+                    if (
+                        not ws.coverage_job
+                        or ws.coverage_job.get("job_id") != job_id
+                        or ws.coverage_cancel.is_set()
+                    ):
+                        return
+                    if result_path.stat().st_size + len(line.encode("utf-8")) > 100 * 1024 * 1024:
+                        ws.coverage_cancel.set()
+                        ws.coverage_job.update(state="failed", stage="Coverage result exceeded the 100 MiB project limit")
+                        _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                        raise ValueError("Coverage result exceeded the 100 MiB project limit")
+                    with result_path.open("a", encoding="utf-8") as output:
+                        output.write(line)
+                    states = [cell.state.value for cell in cells]
+                    ws.coverage_job["done"] += len(cells)
+                    ws.coverage_job["covered_cells"] += states.count("covered")
+                    ws.coverage_job["unknown_cells"] += states.count("unknown_terrain")
+                    ws.coverage_job["evaluated_cells"] += states.count("covered") + states.count("uncovered")
+                    ws.coverage_job["stage"] = "Calculating mesh coverage"
+                    _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+
+            try:
+                update_job(state="running", stage="Opening terrain")
+                with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                    grid = calculate_coverage(
+                        terrain,
+                        context["rf"],
+                        context["candidates"],
+                        sources,
+                        coverage_settings,
+                        requested_bounds=context["requested_bounds"],
+                        progress=lambda done, total: update_job(done=done, total=total),
+                        cancelled=ws.coverage_cancel.is_set,
+                        on_chunk=stream_chunk,
+                    )
+                with ws.lock:
+                    current = ws.coverage_job and ws.coverage_job.get("job_id") == job_id
+                    if current:
+                        if ws.coverage_job.get("state") not in {"stale", "failed"}:
+                            if ws.coverage_cancel.is_set():
+                                state = "cancelled"
+                                stage = "Coverage calculation cancelled; completed cells are available"
+                            else:
+                                state = "complete"
+                                stage = "Coverage calculation complete"
+                            ws.coverage_job.update(
+                                state=state,
+                                stage=stage,
+                                done=grid.completed_cells,
+                                total=grid.requested_cells,
+                                terrain_available_cells=grid.terrain_available_cells,
+                                unknown_cells=max(
+                                    ws.coverage_job["unknown_cells"], grid.unknown_cells
+                                ),
+                                effective_cell_size_m=grid.effective_cell_size_m,
+                                rows=grid.rows,
+                                columns=grid.columns,
+                                requested_cells=grid.requested_cells,
+                                finished_at=time.time(),
+                            )
+                        _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+            except Exception as exc:
+                update_job(state="failed", stage=str(exc), finished_at=time.time())
+            finally:
+                with scheduler_lock:
+                    job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+
+        try:
+            scheduler.submit(run_coverage)
+        except RuntimeError as exc:
+            with scheduler_lock:
+                job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+            with ws.lock:
+                ws.coverage_job.update(state="failed", stage="Could not queue coverage job")
+                _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+            raise HTTPException(503, "Could not queue coverage job") from exc
+        return dict(ws.coverage_job)
+
+    @app.get("/api/coverage/jobs/{job_id}")
+    def get_mesh_coverage_job(job_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            if not ws.coverage_job or ws.coverage_job.get("job_id") != job_id:
+                raise HTTPException(404, "Coverage job not found in this workspace")
+            job = dict(ws.coverage_job)
+        if not coverage_current(ws, job) and job["state"] in {
+            "queued",
+            "running",
+            "complete",
+            "cancelled",
+            "interrupted",
+        }:
+            job["stale"] = True
+        return job
+
+    @app.get("/api/coverage/jobs/{job_id}/cells")
+    def get_mesh_coverage_cells(
+        job_id: str, request: Request, cursor: int = 0, limit: int = 128
+    ) -> Any:
+        ws = workspace(request)
+        if cursor < 0 or not 1 <= limit <= 256:
+            raise HTTPException(422, "Cursor must be nonnegative and page size between 1 and 256")
+        with ws.lock:
+            job = ws.coverage_job
+            if not job or job.get("job_id") != job_id:
+                raise HTTPException(404, "Coverage job not found in this workspace")
+            result_path = (ws.directory / job["result_file"]).resolve()
+            if ws.directory.resolve() not in result_path.parents:
+                raise HTTPException(404, "Coverage results are unavailable")
+            rows: list[Any] = []
+            total = 0
+            try:
+                with result_path.open(encoding="utf-8") as source:
+                    for line in source:
+                        chunk = json.loads(line)
+                        chunk_start, chunk_end = total, total + len(chunk)
+                        if chunk_end > cursor and chunk_start < cursor + limit:
+                            low = max(0, cursor - chunk_start)
+                            high = min(len(chunk), cursor + limit - chunk_start)
+                            rows.extend(chunk[low:high])
+                        total = chunk_end
+            except OSError as exc:
+                raise HTTPException(404, "Coverage results are unavailable") from exc
+            return {
+                "cells": rows,
+                "cursor": cursor,
+                "next_cursor": cursor + len(rows) if cursor + len(rows) < total else None,
+                "stored_cells": total,
+                "requested_cells": job.get("requested_cells", job.get("total", 0)),
+                "state": job["state"],
+                "stale": bool(job.get("stale")),
+            }
+
+    @app.post("/api/coverage/jobs/{job_id}/cancel")
+    def cancel_mesh_coverage(job_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            if not ws.coverage_job or ws.coverage_job.get("job_id") != job_id:
+                raise HTTPException(404, "Coverage job not found in this workspace")
+            if ws.coverage_job.get("state") not in {"queued", "running"}:
+                raise HTTPException(409, "There is no active coverage job")
+            ws.coverage_cancel.set()
+            ws.coverage_job.update(stage="Cancelling coverage")
+            _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+        return {"ok": True}
+
     def project_name(value: Any) -> str:
         if not isinstance(value, str):
             raise HTTPException(422, "Project name must be text")
@@ -670,7 +1145,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return name
 
     def ensure_projects_idle(ws: Workspace) -> None:
-        if ws.status["state"] in {"queued", "running", "preparing"}:
+        if ws.status["state"] in {"queued", "running", "preparing"} or (
+            ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+        ):
             raise HTTPException(409, "Wait for the current job before switching projects")
 
     @app.post("/api/projects/autosave")
@@ -682,7 +1159,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if body.get("project_id") is not None and body.get("project_id") != ws.project_id:
             raise HTTPException(409, "Autosave belongs to a project that is no longer active")
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
                 raise HTTPException(409, "Plan inputs are locked while a job is active")
             if not project_store.autosave(ws.workspace_key, ws.project_id, plan):
                 raise HTTPException(404, "Active project is no longer available")
@@ -851,7 +1330,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
                 raise HTTPException(409, "A planner or terrain job is already active")
             with scheduler_lock:
                 if job_slots["outstanding"] >= max_outstanding_jobs:
@@ -860,6 +1341,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 job_slots["outstanding"] += 1
             ws.cancel.clear()
             ws.result = None
+            ws.result_plan_fingerprint = None
             ws.snapshot_version = 0
             ws.job_id = secrets.token_hex(12)
             ws.input_revision += 1
@@ -1004,7 +1486,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
                 raise HTTPException(409, "Wait for the current job")
             directory = ws.directory / kind
             directory.mkdir(exist_ok=True)
@@ -1031,6 +1515,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ]
                 ws.input_revision += 1
                 ws.result = None
+                ws.result_plan_fingerprint = None
                 ws.result_summary = None
                 ws.snapshot_version = 0
                 ws.storage_usage_bytes = None
@@ -1046,12 +1531,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
                 raise HTTPException(409, "Wait for the current job")
             for path in _terrain_paths(ws, kind):
                 path.unlink()
             ws.input_revision += 1
             ws.result = None
+            ws.result_plan_fingerprint = None
             ws.result_summary = None
             ws.snapshot_version = 0
             ws.storage_usage_bytes = None
@@ -1225,7 +1713,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
                 raise HTTPException(409, "A job is already queued or running")
             dtm = _terrain_paths(ws, "dtm")
             dom = _terrain_paths(ws, "dom")
@@ -1245,6 +1735,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 job_slots["outstanding"] += 1
             ws.cancel.clear()
             ws.result = None
+            ws.result_plan_fingerprint = _route_plan_fingerprint(body)
             ws.result_summary = None
             ws.inputs = body
             ws.job_id = secrets.token_hex(12)
@@ -1581,7 +2072,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def select_alternative(alternative_id: str, request: Request) -> Any:
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
                 raise HTTPException(409, "Wait until the search completes before switching routes")
             if ws.result is None:
                 raise HTTPException(404, "No route alternatives are available")

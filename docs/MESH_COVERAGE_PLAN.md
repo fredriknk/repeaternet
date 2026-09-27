@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C1 in progress.
+Created: 2026-09-27. Status: C0–C2 implementation in progress; validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -172,7 +172,7 @@ Areas: `rf/propagation.py`, `optimization/cache.py`, new
 `coverage/engine.py`, `coverage/grid.py`, and engine regression tests.
 Commit: `feat: calculate bounded two-way mesh coverage grids`.
 
-## C2 — Background jobs, stale results and saved settings [planned]
+## C2 — Background jobs, stale results and saved settings [implemented; validation open]
 
 Proposed API, using the existing workspace/authentication boundary:
 
@@ -186,28 +186,35 @@ Proposed API, using the existing workspace/authentication boundary:
 
 Implementation:
 
-- Reuse the shared scheduler and outstanding-job cap. First release runs one
-  compute job per workspace; another workspace can use available global capacity.
-  Distinguish coverage jobs from route/terrain jobs in the UI and recovery state.
+- Reuse the shared scheduler and outstanding-job cap. A workspace can have only
+  one active coverage job; another workspace can use available global capacity.
+  Coverage jobs have a separate manifest/state from route/terrain jobs.
 - Freeze project ID, input revision, route/alternative content fingerprint,
   terrain fingerprint, source settings and client profile when dispatching.
   An alternative ID alone is insufficient when heights or geometry can change.
 - Use worker-owned raster handles. Check cancellation between cells, pairs and
   bounded batches; release scheduler slots on success, failure, cancel and submit
   failure. Do not hold a workspace lock while computing or reading large rasters.
-- Persist coverage settings with additive project-schema defaults. Save a compact
-  result manifest; store optional completed chunks on disk with an initial 100 MiB
-  per-project quota and eviction metadata. Reopening missing/expired chunks offers
-  recomputation. Restart marks incomplete jobs interrupted.
-- Editing inputs immediately marks the overlay stale; the server also rejects
-  outdated snapshot requests. Project switching and terrain replacement cancel
-  active coverage before disposing resources. Late callbacks cannot publish into
-  another project. Duplicate/delete/archive follow existing project semantics.
+- Persist settings additively in each saved plan. Save a job manifest and stream
+  completed chunks to workspace-local JSONL with a hard 100 MiB output limit.
+  Exceeding the limit fails visibly (eviction/recomputation policy remains open).
+  Restart marks queued/running jobs interrupted while retaining completed chunks.
+- Server fingerprints reject stale route, alternative, terrain or settings
+  revisions. Plan edits, project switching and terrain changes are locked while a
+  coverage job runs; users can cancel before making those changes. Result reads
+  and cancellation are scoped to the browser workspace. Late callbacks cannot
+  publish into a replacement job.
 
-Acceptance: cross-workspace job/chunk access is rejected; old callbacks and delayed
-requests cannot overwrite current results; queued and running jobs cancel; restart,
-quota eviction and project lifecycle tests succeed; browser reconnection resumes
-polling without launching duplicate work.
+Progress: estimate and bounded paging APIs, shared scheduler dispatch, project
+settings persistence, atomic job manifests, restart recovery, cancellation, stale
+revision checks, and a 100 MiB project-output guard are implemented. One-job-per-
+workspace contention and the intentionally locked project/terrain lifecycle have
+not yet been exercised. No API tests or restart/quota experiments have been run.
+
+Acceptance still open: verify cross-workspace isolation, delayed callbacks, queued
+and running cancellation, restart recovery, quota failure, project lifecycle, and
+browser reconnection without duplicate work. Add quota eviction only if observed
+storage use warrants it; the current safe behaviour is an explicit failure.
 
 Areas: `web.py`, `project_store.py`, a shared job helper if needed, web API tests.
 Commit: `feat: run revision-safe coverage jobs and persist coverage settings`.

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.coverage import RadioBudget
+from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.settings import (
     AntennaSettings,
     DiffractionModel,

@@ -12,6 +12,7 @@ class CoverageMode(str, Enum):
     TWO_WAY = "two_way"
     DOWNLINK = "downlink"
     UPLINK = "uplink"
+    OVERLAP = "overlap"
 
 
 class CoverageState(str, Enum):
@@ -59,6 +60,7 @@ class RadioBudget:
 @dataclass(slots=True)
 class CoverageSettings:
     mode: CoverageMode = CoverageMode.TWO_WAY
+    area_mode: str = "mesh"
     cell_size_m: float = 1_000.0
     area_buffer_m: float = 5_000.0
     profile_step_m: float = 200.0

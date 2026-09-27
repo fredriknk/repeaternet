@@ -153,8 +153,10 @@ def calculate_coverage(
             )
             best_margin = -math.inf
             terrain_profile_failed = False
+            interrupted = False
             for source in sources:
                 if is_cancelled():
+                    interrupted = True
                     break
                 try:
                     distance = source.distance_to(target)
@@ -200,6 +202,11 @@ def calculate_coverage(
                         best_margin = margin
                         cell.best_source_id = source.id
                 cell.sources.append(source_result)
+
+            # A partially evaluated cell must not be represented as a finished
+            # result: doing so can create false negatives in an overlap layer.
+            if interrupted:
+                break
 
             if cell.source_count:
                 cell.best_margin_db = best_margin
