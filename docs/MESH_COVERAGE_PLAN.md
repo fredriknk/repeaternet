@@ -258,7 +258,7 @@ and responsiveness at the maximum grid. A distinct approximate preview and seaml
 preview replacement are not implemented.
 
 Areas: `web_assets/app.js`, `index.html`, `meshcore.css`, browser/API integration tests.
-Commit: included in shared C3–C4 milestone, `feat: add predicted mesh coverage map and point inspection`.
+Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
 
 ## C4 — Inspect any location [implemented; accuracy validation open]
 
@@ -289,7 +289,7 @@ exercise nodata/blocked links and rapid clicks/project edits, and verify chart/m
 presentation. The route-scalar cache cannot be reused with the alternate client
 budget, so cache sharing is deferred until cache keys support those budgets.
 
-Commit: included in shared C3–C4 milestone, `feat: add predicted mesh coverage map and point inspection`.
+Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
 
 ## C5 — Node-failure scenarios [planned]
 
@@ -432,8 +432,8 @@ Current implementation record (2026-09-27):
 | C0 | In progress · `aa6f879` | Typed models committed; no reference fixtures or baseline benchmark yet. |
 | C1 | In progress · `ef91b2c` | Engine committed; no coverage regression fixtures, dedicated cache, or performance benchmark yet. |
 | C2 | Implemented · `1ae3ba6` | Shared scheduler, revision checks and streamed project-local results; API isolation/restart/quota/cancellation scenarios not run. |
-| C3 | Implemented · shared C3–C4 commit | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
-| C4 | Implemented · shared C3–C4 commit | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
+| C3 | Implemented · `61a8fb6` | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
+| C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
 | C5–C8 | Planned | No implementation started. |
 
 Static checks on the implementation workspace: `uv run ruff check
