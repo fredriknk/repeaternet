@@ -163,6 +163,57 @@ def start_coverage(client: TestClient, prepared: dict) -> dict:
     return response.json()
 
 
+def test_delayed_inspection_worker_cannot_overwrite_newer_click(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    monkeypatch.setenv("RF_PLANNER_MAX_ACTIVE_JOBS", "2")
+    entered, release = Event(), Event()
+    futures = []
+    original_evaluate = web_module.LinkEvaluator.evaluate
+    original_submit = web_module.ThreadPoolExecutor.submit
+
+    def delayed_evaluate(self, source, target, *args, **kwargs):
+        if target.id == "coverage-inspection-client" and target.x < 500400:
+            entered.set()
+            assert release.wait(5), "Test did not release the older inspection"
+        return original_evaluate(self, source, target, *args, **kwargs)
+
+    def tracked_submit(self, function, *args, **kwargs):
+        future = original_submit(self, function, *args, **kwargs)
+        if function.__name__ == "run_inspection":
+            futures.append(future)
+        return future
+
+    monkeypatch.setattr(web_module.LinkEvaluator, "evaluate", delayed_evaluate)
+    monkeypatch.setattr(web_module.ThreadPoolExecutor, "submit", tracked_submit)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+
+        def inspect(x):
+            latitude, longitude = coordinates(x, 6650500.0)
+            response = client.post("/api/coverage/inspect", json={
+                **prepared["coverage"], "latitude": latitude, "longitude": longitude,
+            })
+            assert response.status_code == 200, response.text
+            return response.json()["job_id"]
+
+        try:
+            older = inspect(500200.0)
+            assert entered.wait(5)
+            newer = inspect(500800.0)
+            assert len(futures) == 2
+            futures[1].result(timeout=5)
+            before = client.get(f"/api/coverage/inspect/{newer}").json()
+            assert before["state"] == "complete", before
+            assert before["result"]["longitude"] == pytest.approx(coordinates(500800, 6650500)[1])
+            release.set()
+            futures[0].result(timeout=5)
+            after = client.get(f"/api/coverage/inspect/{newer}").json()
+            assert after == before
+            assert client.get(f"/api/coverage/inspect/{older}").status_code == 404
+        finally:
+            release.set()
+
+
 def test_coverage_preview_is_bounded_approximate_and_not_saved_as_a_job(
     tmp_path, monkeypatch
 ) -> None:

@@ -1,4 +1,23 @@
 /* Exact-point terrain and client-link inspection. Loaded after app.js. */
+let inspectionStartQueue=Promise.resolve();
+
+function startCurrentInspection(payload,isCurrent){
+  // Creating a job changes server state: aborting fetch can lose the job ID
+  // without stopping that work. Serialize starts and cancel obsolete replies
+  // before dispatching the next click, so arrival order matches click order.
+  const request=inspectionStartQueue.then(async()=>{
+    if(!isCurrent())return null;
+    const job=await api('/api/coverage/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!isCurrent()){
+      await api(`/api/coverage/inspect/${encodeURIComponent(job.job_id)}/cancel`,{method:'POST'}).catch(()=>{});
+      return null;
+    }
+    return job;
+  });
+  inspectionStartQueue=request.catch(()=>{});
+  return request;
+}
+
 function cancelActiveInspection(){
   const jobId=activeInspectionId;
   activeInspectionId=null;
@@ -34,18 +53,25 @@ async function inspectAt(latlng){
   const requestId=++inspectionRequest;
   inspectionController?.abort();
   cancelActiveInspection();
-  inspectionController=new AbortController();
+  const controller=new AbortController();
+  inspectionController=controller;
+  const isCurrent=()=>requestId===inspectionRequest&&inspectCoverage&&!controller.signal.aborted;
   inspectionLayer.clearLayers();
   const latitude=Number(latlng.lat.toFixed(6)),longitude=Number(latlng.lng.toFixed(6));
   setCoverageStatus(`Inspecting ${latitude.toFixed(5)}, ${longitude.toFixed(5)}…`);
   try{
     readCoverageInputs();
     await autosaveNow();
-    const job=await api('/api/coverage/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...coveragePayload(),latitude,longitude}),signal:inspectionController.signal});
-    if(requestId!==inspectionRequest||!inspectCoverage)return;
+    if(!isCurrent())return;
+    const job=await startCurrentInspection({...coveragePayload(),latitude,longitude},isCurrent);
+    if(!job)return;
+    if(!isCurrent()){
+      await api(`/api/coverage/inspect/${encodeURIComponent(job.job_id)}/cancel`,{method:'POST'}).catch(()=>{});
+      return;
+    }
     activeInspectionId=job.job_id;
-    const response=await waitForInspection(job.job_id,requestId,inspectionController.signal);
-    if(!response||requestId!==inspectionRequest||!inspectCoverage)return;
+    const response=await waitForInspection(job.job_id,requestId,controller.signal);
+    if(!response||!isCurrent())return;
     renderCoverageInspection(response,latitude,longitude);
   }catch(error){if(error.name!=='AbortError'&&requestId===inspectionRequest)setCoverageStatus(error.message,true);}
 }

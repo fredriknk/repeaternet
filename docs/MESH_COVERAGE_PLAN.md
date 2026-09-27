@@ -308,8 +308,8 @@ Implementation:
 - Fetch the selected source's terrain/Fresnel profile on demand in the inspection
   chart. Return rejection reasons and distinguish missing data from failure.
 - Run through the shared bounded job scheduler; a newer click cancels/supersedes an
-  old one. Share scalar route cache only where radio budgets match; the asymmetric
-  client override currently bypasses the scalar cache. Retain one profile only.
+  old one. Use the separate coverage cache with both radio budgets included in its
+  key. Retain one profile only.
 
 Progress: exact point terrain sampling, capped final-resolution profiles, directional
 link margins, deterministic best same-router two-way ranking, rejection reasons,
@@ -321,9 +321,22 @@ inspection reports unknown rather than an RF failure. The on-demand terrain prof
 is labelled, and a profile-only terrain gap does not discard a valid scalar result.
 
 Acceptance open: hand-check at grid centres, test asymmetric budgets and strict LOS,
-exercise nodata/blocked links and rapid clicks/project edits, and verify chart/map
-presentation. The route-scalar cache cannot be reused with the alternate client
-budget, so cache sharing is deferred until cache keys support those budgets.
+exercise nodata/blocked links and project edits, and verify chart/map presentation.
+Rapid-click ordering now has the regression evidence below; a live browser review
+is still required. The coverage scalar cache keys already include both budgets.
+
+C4 continuation audit (2026-09-27): delayed autosaves could dispatch obsolete
+clicks after newer results, and a start response arriving after inspection mode
+was closed could leave an orphan server job. Three Node regression checks
+reproduced these failures before the fix. Job-start requests are now serialized,
+each click retains its own cancellation controller, and obsolete start responses
+are cancelled before the next click dispatches. Five JavaScript tests verify
+delayed autosave, pending start, exiting inspection, failed-start recovery and a
+late polling response. A deterministic API test holds the older RF evaluation
+until the newer inspection completes, then releases it and confirms the newer
+result is unchanged and the older ID is unavailable. All six targeted checks pass.
+This is automated request-ordering verification, not a browser visual sign-off.
+Commit: pending C4 race-correction commit.
 
 Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
 
@@ -582,7 +595,7 @@ Current implementation record (2026-09-27):
 | C1 | Implemented · `ef91b2c`, `d13e77f` | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
 | C2 | Implemented · `1ae3ba6`, `1a1b905` | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
 | C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
-| C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
+| C4 | Implemented · `61a8fb6`; race correction recorded above | Five JavaScript race regressions and a delayed-worker API regression pass. Terrain-reference and profile visual review remain open. |
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
 | C7 | Implemented · `b75384b`, extended in C11 | Project-scoped targets, exact points/roads, conservative area checks, drawn-analysis-area boundaries and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
@@ -602,6 +615,14 @@ GPU initialization before producing a screenshot. Therefore container-based
 two-workspace/restart and visual-print review are still open. No real-raster
 timing, concurrent-workspace RSS or field validation has been measured; these
 remain release gates, not implied successes.
+
+Open implementation finding from the continuation audit: coverage grids, exact
+inspection and changed-backbone validation currently increase profile spacing
+when the sample cap would be exceeded. This violates the resource-limit contract
+above (over-limit final profiles must stay unresolved with an actionable reason,
+not silently use a coarser profile). Correct this across grid/inspection/targets/
+height scenarios, add long-distance regression checks, and invalidate reusable
+results produced under the old semantics before claiming roadmap completion.
 
 Deferred beyond this plan: live packet/RSSI ingestion and calibration, traffic or
 airtime simulation, automatic optimisation for area coverage, mobile GPS tracking,
