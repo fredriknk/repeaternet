@@ -446,9 +446,7 @@ handling and compatible C6 report comparison. Full suite: 148 passed; Ruff, mypy
 and JavaScript syntax checks pass. No browser visual review or licensed real-raster
 accuracy/performance check was available; these remain explicit open checks.
 
-Commit: pending.
-
-Commit: `feat: assess coverage for target locations areas and roads`.
+Commit: `b75384b` (`feat: assess targets against predicted mesh coverage`).
 
 ## C8 — Reports, exports and release verification [planned]
 
@@ -533,7 +531,7 @@ Current implementation record (2026-09-27):
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
-| C7 | Implemented · commit pending | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
+| C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
 | C8 | Planned | GeoJSON/JSON/printable report exports, container/two-workspace/restart release validation and user-visible review remain. |
 
 Latest validation: `uv run pytest` passes 148 tests; `uv run ruff check src tests`,
