@@ -3,6 +3,8 @@
 Created: 2026-09-26. Status: P0–P7 implementation milestones committed;
 representative real-terrain and multi-workspace performance validation remains open.
 
+Next planned feature phase: [mesh coverage and planning tools](MESH_COVERAGE_PLAN.md).
+
 This is the next development phase after the completed
 [RF engine plan](RF_ENGINE_PLAN.md). Its milestones are independent of the
 completed engine and memory-remediation work. Implement in the order below,
