@@ -519,7 +519,7 @@ benchmark harness exposes `--cache-entries` for reproducing the tradeoff. The
 validation timer is exposed by the API, but a large persisted-file replay timing
 and retention/storage-pressure policy remain unmeasured.
 
-Commit: pending C9 milestone commit.
+Commit: `5a9ee78` (`perf: reuse verified coverage snapshots`).
 
 ## Resource limits and benchmark gates
 
@@ -584,7 +584,7 @@ Current implementation record (2026-09-27):
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
 | C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
 | C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 157-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
-| C9 | Implemented · commit pending · performance checks open | Exact complete-grid reuse, integrity validation, height/terrain invalidation, same-snapshot comparisons; large synthetic benchmark documents cache churn and memory tradeoff. |
+| C9 | Implemented · `5a9ee78` · performance checks open | Exact complete-grid reuse, integrity validation, height/terrain invalidation, same-snapshot comparisons; large synthetic benchmark documents cache churn and memory tradeoff. |
 
 Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 157
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
