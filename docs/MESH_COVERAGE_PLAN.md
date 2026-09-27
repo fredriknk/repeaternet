@@ -468,7 +468,7 @@ settings are included, project data stays workspace-scoped, report printing is
 legible, and cold/warm benchmarks meet the recorded release targets or remain
 explicitly open with a corrective milestone.
 
-Commit: pending milestone commit.
+Commit: `cf2d6a3` (`feat: export mesh coverage reports`).
 
 ## Resource limits and benchmark gates
 
@@ -532,7 +532,7 @@ Current implementation record (2026-09-27):
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
 | C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
-| C8 | Implemented · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 154-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
+| C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 154-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
 
 Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 154
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
