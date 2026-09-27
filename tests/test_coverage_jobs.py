@@ -12,6 +12,7 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
 import rf_router_planner.web as web_module
+from rf_router_planner.models.coverage import CoverageCell, CoverageState
 from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.site import Site, SiteKind
@@ -572,6 +573,155 @@ def test_saved_target_reports_compare_compatible_coverage_scenarios(tmp_path, mo
             baseline_report.json()["report_id"],
             scenario_report.json()["report_id"],
         }
+
+
+def test_coverage_geojson_json_and_offline_html_exports_are_workspace_scoped(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch, fake_two_router_optimizer)
+        targets = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "T-export",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": list(reversed(coordinates(500600.0, 6650500.0))),
+                    },
+                    "properties": {
+                        "name": "Export target",
+                        "minimum_margin_db": -100,
+                        "reference_id": "R-1",
+                    },
+                }
+            ],
+        }
+        assert client.put("/api/coverage/targets", json=targets).status_code == 200
+        baseline = start_coverage(client, prepared)
+        assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
+        baseline_report = client.post(
+            f"/api/coverage/jobs/{baseline['job_id']}/targets", json={}
+        )
+        assert baseline_report.status_code == 200, baseline_report.text
+
+        scenario_started = client.post(
+            "/api/coverage/jobs",
+            json={**prepared["coverage"], "source_height_overrides": {"R-1": 10.0}},
+        )
+        assert scenario_started.status_code == 200, scenario_started.text
+        scenario = wait_for(client, scenario_started.json()["job_id"], {"complete"})
+        scenario_report = client.post(f"/api/coverage/jobs/{scenario['job_id']}/targets", json={})
+        assert scenario_report.status_code == 200, scenario_report.text
+
+        geojson_response = client.get(
+            f"/api/coverage/jobs/{baseline['job_id']}/export.geojson",
+            params={"target_report_id": baseline_report.json()["report_id"]},
+        )
+        assert geojson_response.status_code == 200, geojson_response.text
+        collection = geojson_response.json()
+        assert collection["metadata"]["coordinate_reference_system"] == "OGC:CRS84"
+        assert collection["metadata"]["counts"]["requested_cells"] == 4
+        assert len(collection["features"]) == 5
+        assert collection["features"][-1]["properties"]["coverage_state"] == "pass"
+
+        json_response = client.get(
+            f"/api/coverage/jobs/{baseline['job_id']}/export.json",
+            params={
+                "target_report_id": baseline_report.json()["report_id"],
+                "scenario_job_id": scenario["job_id"],
+                "reference_id": "R-1",
+            },
+        )
+        assert json_response.status_code == 200, json_response.text
+        exported = json_response.json()
+        assert len(exported["cells"]) == 4
+        assert exported["metadata"]["radio_settings"]["rf"]
+        assert exported["scenario_comparison"]["counts"]
+
+        report = client.get(
+            f"/api/coverage/jobs/{baseline['job_id']}/report.html",
+            params={
+                "target_report_id": baseline_report.json()["report_id"],
+                "scenario_job_id": scenario["job_id"],
+                "reference_id": "R-1",
+            },
+        )
+        assert report.status_code == 200, report.text
+        assert "<svg" in report.text
+        assert "Export target" in report.text
+        assert "R-1 → R-2" in report.text
+        assert "Scenario comparison" in report.text
+        assert "https://" not in report.text
+
+        isolated = TestClient(client.app)
+        isolated.get("/")
+        assert isolated.get(
+            f"/api/coverage/jobs/{baseline['job_id']}/export.json"
+        ).status_code == 404
+        isolated.close()
+
+
+def test_stale_and_partial_coverage_exports_require_explicit_opt_in(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        job = start_coverage(client, prepared)
+        assert wait_for(client, job["job_id"], {"complete"})["state"] == "complete"
+        assert client.post(
+            "/api/terrain/dtm", files={"file": ("extra.tif", terrain_tile())}
+        ).status_code == 200
+        export_url = f"/api/coverage/jobs/{job['job_id']}/export.geojson"
+        assert client.get(export_url).status_code == 409
+        stale = client.get(export_url, params={"include_stale": "true"})
+        assert stale.status_code == 200, stale.text
+        assert stale.json()["metadata"]["stale"] is True
+
+    def partial_coverage(terrain, rf, candidates, sources, settings, **kwargs):
+        grid, xs, ys, latitudes, longitudes = web_module.make_grid(
+            sources, terrain, settings
+        )
+        kwargs["on_chunk"](
+            [
+                CoverageCell(
+                    0,
+                    float(xs[0]),
+                    float(ys[0]),
+                    float(latitudes[0]),
+                    float(longitudes[0]),
+                    state=CoverageState.UNKNOWN_TERRAIN,
+                )
+            ]
+        )
+        raise ValueError("Injected partial coverage failure")
+
+    monkeypatch.setattr(web_module, "calculate_coverage", partial_coverage)
+    with TestClient(create_app(tmp_path / "partial")) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        job = start_coverage(client, prepared)
+        assert wait_for(client, job["job_id"], {"failed"})["state"] == "failed"
+        export_url = f"/api/coverage/jobs/{job['job_id']}/export.geojson"
+        assert client.get(export_url).status_code == 409
+        partial = client.get(export_url, params={"include_partial": "true"})
+        assert partial.status_code == 200, partial.text
+        assert partial.json()["metadata"]["partial"] is True
+        assert partial.json()["metadata"]["counts"]["not_evaluated_cells"] == 3
+
+
+def test_coverage_export_size_limit_cleans_up_temporary_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        job = start_coverage(client, prepared)
+        assert wait_for(client, job["job_id"], {"complete"})["state"] == "complete"
+        monkeypatch.setattr(web_module, "MAX_COVERAGE_EXPORT_BYTES", 64)
+        response = client.get(f"/api/coverage/jobs/{job['job_id']}/export.geojson")
+        assert response.status_code == 413
+        assert "100 MiB" in response.json()["detail"]
+        export_directory = next(tmp_path.rglob("coverage-exports"))
+        assert not list(export_directory.glob("*"))
 
 
 def test_compatible_coverage_runs_are_archived_and_compared_on_common_grid(

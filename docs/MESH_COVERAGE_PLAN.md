@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C7 implemented; browser/accuracy validation remains open for C3–C7; C8 reporting and release validation remain.
+Created: 2026-09-27. Status: C0–C8 implementation delivered; browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -448,14 +448,14 @@ accuracy/performance check was available; these remain explicit open checks.
 
 Commit: `b75384b` (`feat: assess targets against predicted mesh coverage`).
 
-## C8 — Reports, exports and release verification [planned]
+## C8 — Reports, exports and release verification [implementation complete; release checks open]
 
 Implementation:
 
 - Add GeoJSON cell/target export and compact JSON settings/results export with
   job/revision, CRS, terrain provenance, grid/profile spacing, completeness and
   radio assumptions. Export unknown states explicitly. Respect result-size limits.
-- Add a printable HTML report containing the selected network, a local map image,
+- Add a printable HTML report containing the selected network, an embedded offline SVG map,
   coverage legend, target results, scenario deltas and weakest links. It must work
   without a live basemap. Clearly label partial/stale reports; require explicit
   selection to export them. PDF generation and public share hosting can follow later.
@@ -468,7 +468,7 @@ settings are included, project data stays workspace-scoped, report printing is
 legible, and cold/warm benchmarks meet the recorded release targets or remain
 explicitly open with a corrective milestone.
 
-Commit: `feat: export mesh coverage reports and verify self-hosted operation`.
+Commit: pending milestone commit.
 
 ## Resource limits and benchmark gates
 
@@ -532,14 +532,19 @@ Current implementation record (2026-09-27):
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
 | C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
-| C8 | Planned | GeoJSON/JSON/printable report exports, container/two-workspace/restart release validation and user-visible review remain. |
+| C8 | Implemented · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 154-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
 
-Latest validation: `uv run pytest` passes 148 tests; `uv run ruff check src tests`,
-`uv run mypy src/rf_router_planner --ignore-missing-imports` and
-`node --check src/rf_router_planner/web_assets/app.js` pass. An earlier browser
-attempt found no enabled browser surface; visual review is still open. No
-real-raster timing, concurrent-workspace RSS or field validation has been measured;
-these remain release gates, not implied successes.
+Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 154
+tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
+--check` pass. C8 tests verify GeoJSON/JSON/HTML content, explicit unknown and
+not-evaluated states, target escaping/identity, compatible scenario comparisons,
+workspace isolation, stale/partial opt-in and size-limit cleanup. The native
+Uvicorn process reached application startup. Docker’s Linux engine pipe remained
+unavailable; the app exposed no browser surfaces, and Chrome headless exited on
+GPU initialization before producing a screenshot. Therefore container-based
+two-workspace/restart and visual-print review are still open. No real-raster
+timing, concurrent-workspace RSS or field validation has been measured; these
+remain release gates, not implied successes.
 
 Deferred beyond this plan: live packet/RSSI ingestion and calibration, traffic or
 airtime simulation, automatic optimisation for area coverage, mobile GPS tracking,

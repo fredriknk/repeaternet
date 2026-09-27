@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
+from starlette.background import BackgroundTask
 
 from .coordinates import norway_utm_epsg
 from .coverage.compare import compare_coverage_streams
@@ -32,6 +33,13 @@ from .coverage.engine import calculate_coverage, make_grid
 from .coverage.scenarios import analyze_node_failures
 from .coverage.target_assessment import assess_targets
 from .coverage.targets import MAX_TARGET_IMPORT_BYTES, normalize_target_collection
+from .export.coverage_report import (
+    coverage_export_metadata,
+    geojson_chunks,
+    json_export_chunks,
+    printable_report_chunks,
+    summarize_coverage_cells,
+)
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
@@ -57,6 +65,7 @@ MAX_COVERAGE_BACKBONE_REVALIDATION_LINKS = 4_096
 COVERAGE_MODEL_VERSION = "coverage-v1"
 MAX_TARGET_REPORTS_PER_JOB = 20
 MAX_TARGET_REPORT_BYTES = 5 * 1024 * 1024
+MAX_COVERAGE_EXPORT_BYTES = 100 * 1024 * 1024
 
 
 def encode(value: Any) -> Any:
@@ -1036,6 +1045,125 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             with scheduler_lock:
                 job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
 
+    def coverage_export_context(
+        request: Request,
+        job_id: str,
+        *,
+        include_partial: bool,
+        include_stale: bool,
+        target_report_id: str | None,
+    ) -> dict[str, Any]:
+        ws = workspace(request)
+        with ws.lock:
+            job = _load_coverage_manifest(ws, job_id)
+            if job is None or job.get("project_id") != ws.project_id:
+                raise HTTPException(404, "Coverage run not found in this project workspace")
+            job = dict(job)
+            directory = ws.directory
+        if job.get("state") in {"queued", "running"}:
+            raise HTTPException(409, "Wait for the coverage run to stop before exporting")
+        partial = job.get("state") != "complete"
+        if partial and not include_partial:
+            raise HTTPException(409, "This run is partial; set include_partial=true to export it explicitly")
+        stale = bool(job.get("stale")) or not coverage_current(ws, job)
+        if stale and not include_stale:
+            raise HTTPException(409, "This run is stale; set include_stale=true to export it explicitly")
+        if not all(
+            key in job
+            for key in ("terrain_crs", "grid_bounds_projected", "rows", "columns", "effective_cell_size_m")
+        ):
+            raise HTTPException(409, "Coverage run predates export metadata; recalculate before exporting")
+        result_path = (directory / str(job.get("result_file", ""))).resolve()
+        if directory.resolve() not in result_path.parents or not result_path.is_file():
+            raise HTTPException(404, "Coverage result pages are unavailable")
+        try:
+            summary = summarize_coverage_cells(_iter_coverage_cells(directory, job), job)
+        except (ValueError, TypeError, OSError) as exc:
+            raise HTTPException(409, f"Coverage result pages cannot be exported: {exc}") from exc
+        if not partial and summary["stored_cells"] != summary["requested_cells"]:
+            raise HTTPException(409, "Coverage result is incomplete; recalculate before exporting")
+        terrain_fingerprint = job.get("terrain_fingerprint", [])
+        metadata = coverage_export_metadata(job, summary, terrain_fingerprint, stale=stale)
+
+        def read_target_report(report_id: str) -> dict[str, Any] | None:
+            if len(report_id) != 32 or any(character not in "0123456789abcdef" for character in report_id):
+                return None
+            report_directory = directory / "coverage-target-reports"
+            for path in report_directory.glob(f"{job_id}-{report_id}.json"):
+                try:
+                    report = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return None
+                if (
+                    isinstance(report, dict)
+                    and report.get("project_id") == ws.project_id
+                    and report.get("coverage_job_id") == job_id
+                ):
+                    return report
+            return None
+
+        target_report = None
+        if target_report_id:
+            target_report = read_target_report(target_report_id)
+            if target_report is None:
+                raise HTTPException(404, "Target report not found for this coverage run")
+        else:
+            report_directory = directory / "coverage-target-reports"
+            if report_directory.is_dir():
+                candidates = []
+                for path in report_directory.glob(f"{job_id}-*.json"):
+                    try:
+                        candidate = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(candidate, dict) and candidate.get("project_id") == ws.project_id:
+                        candidates.append(candidate)
+                if candidates:
+                    target_report = max(candidates, key=lambda item: item.get("assessed_at", 0))
+        if target_report:
+            metadata["target_report_id"] = target_report.get("report_id")
+            metadata["target_count"] = len(target_report.get("targets", []))
+        metadata["exported_at"] = time.time()
+        return {
+            "workspace": ws,
+            "directory": directory,
+            "job": job,
+            "metadata": metadata,
+            "target_report": target_report,
+        }
+
+    def write_coverage_export(
+        directory: Path, job_id: str, extension: str, chunks: Iterator[str]
+    ) -> Path:
+        export_directory = directory / "coverage-exports"
+        export_directory.mkdir(parents=True, exist_ok=True)
+        name = f"{job_id}-{secrets.token_hex(8)}.{extension}"
+        path = export_directory / name
+        temporary = path.with_suffix(path.suffix + ".part")
+        size = 0
+        try:
+            with temporary.open("wb") as output:
+                for chunk in chunks:
+                    content = chunk.encode("utf-8")
+                    size += len(content)
+                    if size > MAX_COVERAGE_EXPORT_BYTES:
+                        raise ValueError("Coverage export exceeds the 100 MiB download limit")
+                    output.write(content)
+            temporary.replace(path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    def coverage_export_file(path: Path, job_id: str, extension: str, media_type: str) -> FileResponse:
+        return FileResponse(
+            path,
+            media_type=media_type,
+            filename=f"predicted-mesh-coverage-{job_id}.{extension}",
+            background=BackgroundTask(lambda: path.unlink(missing_ok=True)),
+        )
+
     @app.post("/api/coverage/targets/import")
     def import_coverage_targets(request: Request, file: UploadFile) -> Any:
         workspace(request)
@@ -1202,6 +1330,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "model_version": COVERAGE_MODEL_VERSION,
                     "source_ids": [site.id for site in sources],
                     "source_sites": encode(sources),
+                    "network_sites": encode(context["solution"].sites),
+                    "report_links": [
+                        {
+                            "source_id": link.source_id,
+                            "target_id": link.target_id,
+                            "distance_m": link.distance_m,
+                            "worst_margin_db": link.worst_margin_db,
+                            "valid": bool(link.valid),
+                            "los_clear": bool(link.los_clear),
+                            "fresnel_clear": bool(link.fresnel_clear),
+                        }
+                        for link in context["solution"].links
+                    ],
                     "source_height_overrides": height_overrides,
                     "router_ids": list(context["solution"].router_ids),
                     "network_links": [
@@ -1561,6 +1702,139 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             **report,
         }
 
+    def selected_export_scenario(
+        request: Request,
+        baseline_job_id: str,
+        scenario_job_id: str | None,
+        reference_id: str | None,
+    ) -> dict[str, Any] | None:
+        if scenario_job_id is None and reference_id is None:
+            return None
+        if not scenario_job_id or not reference_id:
+            raise HTTPException(422, "Scenario export needs both a scenario run and a reference router")
+        comparison = compare_mesh_coverage(
+            {
+                "baseline_job_id": baseline_job_id,
+                "scenario_job_id": scenario_job_id,
+                "reference_id": reference_id,
+            },
+            request,
+        )
+        return {
+            key: comparison.get(key)
+            for key in (
+                "baseline_job_id",
+                "scenario_job_id",
+                "reference_id",
+                "effective_cell_size_m",
+                "approximate_sampled_area_km2",
+                "baseline_connected_source_ids",
+                "scenario_connected_source_ids",
+                "counts",
+            )
+        }
+
+    @app.get("/api/coverage/jobs/{job_id}/export.geojson")
+    def export_coverage_geojson(
+        job_id: str,
+        request: Request,
+        include_partial: bool = False,
+        include_stale: bool = False,
+        target_report_id: str | None = None,
+    ) -> Any:
+        context = coverage_export_context(
+            request,
+            job_id,
+            include_partial=include_partial,
+            include_stale=include_stale,
+            target_report_id=target_report_id,
+        )
+        try:
+            path = write_coverage_export(
+                context["directory"],
+                job_id,
+                "geojson",
+                geojson_chunks(
+                    _iter_coverage_cells(context["directory"], context["job"]),
+                    context["job"],
+                    context["metadata"],
+                    context["target_report"],
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        return coverage_export_file(path, job_id, "geojson", "application/geo+json")
+
+    @app.get("/api/coverage/jobs/{job_id}/export.json")
+    def export_coverage_json(
+        job_id: str,
+        request: Request,
+        include_partial: bool = False,
+        include_stale: bool = False,
+        target_report_id: str | None = None,
+        scenario_job_id: str | None = None,
+        reference_id: str | None = None,
+    ) -> Any:
+        context = coverage_export_context(
+            request,
+            job_id,
+            include_partial=include_partial,
+            include_stale=include_stale,
+            target_report_id=target_report_id,
+        )
+        scenario = selected_export_scenario(request, job_id, scenario_job_id, reference_id)
+        try:
+            path = write_coverage_export(
+                context["directory"],
+                job_id,
+                "json",
+                json_export_chunks(
+                    _iter_coverage_cells(context["directory"], context["job"]),
+                    context["job"],
+                    context["metadata"],
+                    context["target_report"],
+                    scenario,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        return coverage_export_file(path, job_id, "json", "application/json")
+
+    @app.get("/api/coverage/jobs/{job_id}/report.html")
+    def export_coverage_print_report(
+        job_id: str,
+        request: Request,
+        include_partial: bool = False,
+        include_stale: bool = False,
+        target_report_id: str | None = None,
+        scenario_job_id: str | None = None,
+        reference_id: str | None = None,
+    ) -> Any:
+        context = coverage_export_context(
+            request,
+            job_id,
+            include_partial=include_partial,
+            include_stale=include_stale,
+            target_report_id=target_report_id,
+        )
+        scenario = selected_export_scenario(request, job_id, scenario_job_id, reference_id)
+        try:
+            path = write_coverage_export(
+                context["directory"],
+                job_id,
+                "html",
+                printable_report_chunks(
+                    _iter_coverage_cells(context["directory"], context["job"]),
+                    context["job"],
+                    context["metadata"],
+                    context["target_report"],
+                    scenario,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        return coverage_export_file(path, job_id, "html", "text/html")
+
     @app.get("/api/coverage/jobs/{job_id}")
     def get_mesh_coverage_job(job_id: str, request: Request) -> Any:
         ws = workspace(request)
@@ -1733,6 +2007,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             },
             client_profile=job["settings"].get("client"),
             profile_step_m=job["settings"].get("profile_step_m"),
+            target_features=targets["features"],
             assessed_at=time.time(),
         )
         report["assumptions"]["coverage_job_id"] = job_id

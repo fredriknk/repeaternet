@@ -197,6 +197,21 @@
               <div id="coverage-target-comparison-results" class="known-list"></div>
             </details>
           </details>
+          <details id="coverage-export-controls">
+            <summary>Export coverage &amp; print report</summary>
+            <p class="hint">Exports use the saved grid and include terrain/model assumptions. Partial or stale snapshots require an explicit checkbox and are marked in the output.</p>
+            <label>Coverage run<select id="coverage-export-run"></select></label>
+            <label class="check-line"><input id="coverage-export-partial" type="checkbox"> Allow partial/cancelled results</label>
+            <label class="check-line"><input id="coverage-export-stale" type="checkbox"> Allow stale historical results</label>
+            <label>Optional comparison run<select id="coverage-export-scenario"></select></label>
+            <label>Reference router for comparison<select id="coverage-export-reference"></select></label>
+            <div class="coverage-actions">
+              <button id="coverage-export-geojson" class="wide-button">Download GeoJSON cells &amp; targets</button>
+              <button id="coverage-export-json" class="wide-button">Download JSON results</button>
+              <button id="coverage-export-html" class="wide-button">Download printable HTML report</button>
+            </div>
+            <p id="coverage-export-status" class="hint" role="status" aria-live="polite">Choose a saved coverage run to export.</p>
+          </details>
           <div class="coverage-legend" aria-label="Coverage estimate legend">
             <span><i class="cov-strong"></i> ≥ 10 dB</span>
             <span><i class="cov-good"></i> 5–10 dB</span>

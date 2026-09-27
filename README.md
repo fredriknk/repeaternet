@@ -61,6 +61,17 @@ Fresnel profile. Missing ground terrain remains unknown, not uncovered. These ar
 planning predictions for the configured radio, not measured coverage, emitted
 radiation, packet-delivery probability, or independent mesh paths.
 
+Saved coverage runs can be exported as GeoJSON (coverage-cell polygons and saved
+target geometries in OGC:CRS84), compact JSON (cell results, settings, radio
+assumptions and terrain provenance), or a self-contained printable HTML report.
+The report embeds an offline SVG map, coverage states, selected network and
+weakest links, saved target assessments, and an optional compatible scenario
+comparison; it does not depend on a basemap or remote assets. Unknown-terrain and
+not-evaluated cells remain explicit in exports. Cancelled/failed/partial or stale
+historical runs require their respective opt-in before download, and exports are
+bounded to 100 MiB. The report is a planning snapshot, not a field-coverage
+guarantee.
+
 Coverage grids default to at most 4,096 cells and 250,000 cell/source evaluations;
 the estimate reports when spacing is coarsened to fit. One coverage or point
 inspection job runs per workspace at a time, using the shared planner scheduler.
