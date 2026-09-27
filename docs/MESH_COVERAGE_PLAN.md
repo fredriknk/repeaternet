@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C2–C4 implemented; C0–C1 foundations incomplete; release validation open.
+Created: 2026-09-27. Status: C0 implemented (warm-cache comparison pending C1); C1 in progress; C2–C4 implemented; C5–C8 planned; release validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -108,7 +108,7 @@ requested area, evaluated area, unknown area and estimated covered area separate
 Report coverage percentage over evaluated area alongside the evaluated fraction
 of the requested area. Partial jobs cannot silently acquire a complete denominator.
 
-## C0 — Contract, fixtures and baseline [in progress]
+## C0 — Contract, fixtures and baseline [implemented; warm-cache validation pending C1]
 
 Implementation:
 
@@ -124,18 +124,29 @@ Implementation:
   licensed raster can be used without committing the raster; record its checksum,
   source, settings and availability. CI remains independent of provider downloads.
 
-Progress: typed settings/results, explicit coverage states, and the default
-handheld radio profile are implemented. The offline fixtures and benchmark tool
-remain to be delivered alongside the engine in C1 because coverage did not have
-a callable implementation when this contract was committed.
+Progress: typed settings/results, explicit coverage states, the default handheld
+radio profile, deterministic flat/ridge/valley/nodata reference cases, and a
+fresh-process synthetic benchmark tool are implemented. The reference cases cover
+asymmetric radio inputs, the different-best-uplink/downlink trap, unknown terrain,
+and cancellation without publishing a partial cell. They also found and fixed the
+grid counter omission for cells whose centre has no ground data.
 
-Acceptance still open: expected coverage states and directional budgets need
-hand-checkable reference cases; benchmark output needs completion/cancellation
-and unknown counts. Record baseline evidence before optimization.
+Acceptance: eight coverage contract/reference checks pass. A three-process
+synthetic baseline was recorded on Windows 11 build 26200, Python 3.13.12, 24
+logical CPUs: for 256 cells, two sources, 1 km spacing and a 256 km² flat area,
+median completion was 0.0669 s, first chunk 0.0365 s, and peak working set 56.47
+MiB; each run made 512 RF evaluations and estimated 145,348 result bytes. The
+256 km² ridge and valley runs had similar timings. The 256 km² nodata run reported
+256 unknown source evaluations while retaining an evaluated result per cell via
+the second source. Cancellation was observed after four pair evaluations, with a
+2.2–2.5 ms acknowledgement in these small synthetic cases. These are process-level
+synthetic figures, not real-raster, concurrent-worker, or field-performance claims.
+Warm-cache comparison remains pending the C1 coverage-cache implementation; no
+redistribution-approved real raster was available for this baseline.
 
-Areas: new `models/coverage.py`, `tests/test_coverage.py`,
+Areas: `models/coverage.py`, `tests/test_coverage.py`,
 `tools/benchmark_mesh_coverage.py` and fixture documentation.
-Commit: `test: define mesh coverage prediction and performance contract`.
+Commit: `test: add coverage reference fixtures and benchmark harness`.
 
 ## C1 — Area coverage engine and asymmetric client budgets [in progress]
 
@@ -161,8 +172,10 @@ Progress: deterministic metric-CRS grids, cell-centre terrain classification,
 streamed chunks, pair/cell/source limits, two-way/downlink/uplink/overlap/best-source
 aggregation and per-client radio budgets are implemented. Cancellation discards a
 partially evaluated cell; profile failures are retained as unknown-source counts,
-not negative links. Reference fixtures, cache isolation and benchmark evidence
-remain open; the desktop preview still uses its existing candidate-site workflow.
+not negative links. C0 fixtures also found and corrected omission of initial DTM
+nodata from the grid's unknown-cell counter. Cache isolation and warm-benchmark
+evidence remain open; the desktop preview still uses its existing candidate-site
+workflow.
 
 Acceptance: asymmetric and strict-LOS reference cases pass; nodata is preserved;
 streamed and exhaustive outputs match; batch size does not change results;
@@ -429,7 +442,7 @@ Current implementation record (2026-09-27):
 
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
-| C0 | In progress · `aa6f879` | Typed models committed; no reference fixtures or baseline benchmark yet. |
+| C0 | Implemented · commit pending | Eight coverage contract checks pass; synthetic fresh-process baseline captured; warm-cache comparison deferred until C1. |
 | C1 | In progress · `ef91b2c` | Engine committed; no coverage regression fixtures, dedicated cache, or performance benchmark yet. |
 | C2 | Implemented · `1ae3ba6` | Shared scheduler, revision checks and streamed project-local results; API isolation/restart/quota/cancellation scenarios not run. |
 | C3 | Implemented · `61a8fb6` | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |

@@ -140,6 +140,7 @@ def calculate_coverage(
         cell = CoverageCell(index, float(x), float(y), float(latitude), float(longitude))
         if not math.isfinite(float(ground)):
             cell.state = CoverageState.UNKNOWN_TERRAIN
+            grid.unknown_cells += 1
         else:
             target = Site(
                 f"coverage-cell-{index}",
