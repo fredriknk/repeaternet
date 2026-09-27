@@ -62,8 +62,10 @@ class CoverageSettings:
     cell_size_m: float = 1_000.0
     area_buffer_m: float = 5_000.0
     profile_step_m: float = 200.0
+    maximum_profile_samples: int = 4_096
     maximum_cells: int = 4_096
     maximum_sources: int = 64
+    maximum_evaluations: int = 250_000
     include_endpoints: bool = False
     client: ClientRadioProfile = field(default_factory=ClientRadioProfile)
 
@@ -104,6 +106,7 @@ class CoverageGrid:
     requested_cells: int
     terrain_available_cells: int = 0
     evaluated_cells: int = 0
+    unknown_cells: int = 0
     completed_cells: int = 0
     cells: list[CoverageCell] = field(default_factory=list)
     surface_available: bool = False

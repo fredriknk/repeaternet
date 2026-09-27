@@ -137,7 +137,7 @@ Areas: new `models/coverage.py`, `tests/test_coverage.py`,
 `tools/benchmark_mesh_coverage.py` and fixture documentation.
 Commit: `test: define mesh coverage prediction and performance contract`.
 
-## C1 — Area coverage engine and asymmetric client budgets [planned]
+## C1 — Area coverage engine and asymmetric client budgets [in progress]
 
 Implementation:
 
@@ -156,6 +156,12 @@ Implementation:
   model version, sample coordinates and profile spacing; keep workspace isolation.
 - Refactor the desktop worker to use the shared service after web acceptance,
   or retain its explicitly labelled candidate preview until that separate migration.
+
+Progress: deterministic metric-CRS grids, cell-centre terrain classification,
+streamed chunks, pair/cell/source limits, two-way/downlink/uplink aggregation,
+and per-client radio budgets are implemented. Reference fixtures, cache isolation
+and benchmark evidence remain open; the desktop preview still uses its existing
+candidate-site workflow.
 
 Acceptance: asymmetric and strict-LOS reference cases pass; nodata is preserved;
 streamed and exhaustive outputs match; batch size does not change results;
