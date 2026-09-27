@@ -575,9 +575,10 @@ existing API regression separately proves identical requests do not rerun RF.
 
 Commit: `5a9ee78` (`perf: reuse verified coverage snapshots`).
 
-## C12 — Acceptance-audit corrections [open]
+## C12 — Acceptance-audit corrections [in progress]
 
-The audit found two concrete issues behind previously open acceptance criteria:
+The audit found two concrete issues behind previously open acceptance criteria.
+The raster-sampling part is implemented; final-profile cap semantics remain open.
 
 1. Grid, exact inspection, target and changed-backbone evaluation silently enlarge
    profile spacing at the sample cap. Preserve the requested final resolution;
@@ -597,6 +598,28 @@ Targets set **before tuning**: standard 4,096×8 real-raster cold completion at 
 unchanged cold/warm serialized results away from corrected invalid raster edges.
 The existing two-source synthetic preview, cache-reuse and cancellation targets
 remain unchanged. Deployment-level memory and cancellation checks remain separate.
+
+### C12a — Window-batched raster sampling [implemented · `8720a29`]
+
+`RasterTerrain.sample` now groups requested pixel coordinates by 256×256 raster
+windows, reads each touched window once, and preserves request order and the first
+unmasked tile's mosaic precedence. DOM sampling still falls back to DTM only when
+no DOM is configured; masked DOM samples remain unknown. Independent tests compare
+rotated and north-up transforms to Rasterio's nearest-pixel sampler and cover
+nodata, overlap, edges, nonfinite coordinates, empty arrays, and the bounded-window
+read contract.
+
+On the same local Kartverket DTM, bounds, 50 m profile floor, 4,096×8 settings,
+and three fresh-process repetitions as the committed point-sampling baseline,
+cold median fell from 271.88 s to 12.3352 s (22.04×); first 128-cell chunk fell
+from 11.35 s to 0.3436 s; peak engine working set was 188.54 MiB versus 191.38 MiB.
+Warm median was 0.6398 s. All three cold/warm output checksums matched the baseline
+`3a11ded81997c61a22beee3692c0bd4ec29d8253360e4486d47a489aacfac227`. Preview
+256×2 cold median was 0.1885 s (22.04× versus the baseline), first chunk 0.0915 s,
+and peak 125.06 MiB. Full per-run data is in the
+[standard real-raster benchmark](benchmarks/coverage-raster-standard-windowed.json)
+and [preview benchmark](benchmarks/coverage-raster-preview-windowed.json).
+These are local-raster timings, not server/browser latency or field accuracy.
 
 ## Resource limits and benchmark gates
 
@@ -664,6 +687,7 @@ Current implementation record (2026-09-27):
 | C9 | Implemented · `5a9ee78`; large-file measurements recorded above | Production validator measured against 28/48 MB generated JSONL fixtures with 50-manifest lookup and EOF corruption rejection. Browser/HTTP replay latency and storage-pressure policy remain open. |
 | C10 | Implemented · `8ae53bd` | `POST /api/coverage/preview` is bounded to 256 cells and 4,096 router evaluations, participates in the shared scheduler, is labelled approximate in the UI, and yields to the full calculation on its first chunk. API test verifies the cap and that previews do not create saved jobs. The 2-source/256-cell flat synthetic core benchmark (3 fresh-process repetitions, Python 3.13.12, Windows 11) took 0.0847 s median (0.0842–0.0848), first chunk 0.0454 s median, and 98.23 MiB median peak working set. This is below the 5 s synthetic engineering target; it is not a live browser or real-raster measurement. Browser visual review remains open. |
 | C11 | Implemented · `3446d91` | Draw polygon in the map and persist its WGS84 ring in plan settings; validate finite, non-self-intersecting polygons; mask projected sample centres without RF/terrain reads outside scope; report in-area/outside counts; persist `outside_area` cells; preserve the state in incomplete-grid reconstruction, GeoJSON/JSON/printable report, scenario comparisons, node-failure analysis and exact/area target assessments. Bump model identity to coverage-v2 and reject prior-version result reuse. Tests cover sample/evaluation masking, estimate and saved-job counts, corrupt/missing polygons, exports, comparisons, failures and target points outside the analysis area. Full 166-test suite, Ruff, mypy, JavaScript syntax and diff checks pass. Browser interaction and visual review remain open. |
+| C12a | Implemented · `8720a29` | Window-batched raster reads; Rasterio equivalence and nodata/mosaic/edge/window tests pass. Same Kartverket 50 m DTM fixture as baseline: 4,096×8 cold median 12.3352 s (22.04× faster), first chunk 0.3436 s, peak 188.54 MiB; checksum unchanged. Preview 256×2 cold median 0.1885 s. Artifacts linked above; final-profile cap semantics remain open. |
 
 Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 166
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
