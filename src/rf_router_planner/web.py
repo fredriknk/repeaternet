@@ -27,6 +27,7 @@ from pyproj import CRS, Transformer
 
 from .coordinates import norway_utm_epsg
 from .coverage.engine import calculate_coverage, make_grid
+from .coverage.scenarios import analyze_node_failures
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
@@ -1052,6 +1053,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "settings_fingerprint": _plan_fingerprint(encode(coverage_settings)),
                     "settings": encode(coverage_settings),
                     "source_ids": [site.id for site in sources],
+                    "router_ids": list(context["solution"].router_ids),
+                    "network_links": [
+                        {
+                            "source_id": link.source_id,
+                            "target_id": link.target_id,
+                            "valid": bool(link.valid),
+                        }
+                        for link in context["solution"].links
+                    ],
                     "alternative_id": context["alternative_id"],
                     "snapshot_version": context["snapshot_version"],
                     "input_revision": context["input_revision"],
@@ -1263,6 +1273,75 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ws.coverage_job.update(stage="Cancelling coverage")
             _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
         return {"ok": True}
+
+    @app.post("/api/coverage/jobs/{job_id}/scenario")
+    def analyze_coverage_failure_scenario(
+        job_id: str, body: dict[str, Any], request: Request
+    ) -> Any:
+        ws = workspace(request)
+        failed_ids = body.get("failed_ids", [])
+        reference_id = body.get("reference_id")
+        if (
+            not isinstance(failed_ids, list)
+            or len(failed_ids) > 64
+            or any(not isinstance(item, str) for item in failed_ids)
+            or not isinstance(reference_id, str)
+        ):
+            raise HTTPException(422, "Choose failed router IDs and one reference router")
+        with ws.lock:
+            job = ws.coverage_job
+            if not job or job.get("job_id") != job_id:
+                raise HTTPException(404, "Coverage job not found in this workspace")
+            if job.get("state") != "complete":
+                raise HTTPException(409, "Complete the coverage calculation before analyzing failures")
+            job = dict(job)
+        if job.get("stale") or not coverage_current(ws, job):
+            raise HTTPException(409, "Coverage results are stale; recalculate before analyzing failures")
+        with ws.lock:
+            if not ws.coverage_job or ws.coverage_job.get("job_id") != job_id:
+                raise HTTPException(409, "Coverage job changed; recalculate before analyzing failures")
+            current_settings = encode(
+                parse_coverage_settings((ws.inputs or {}).get("coverage", {}))
+            )
+            current = (
+                ws.project_id == job["project_id"]
+                and ws.snapshot_version == job["snapshot_version"]
+                and ws.result is not None
+                and ws.result.active_solution is not None
+                and solution_id(ws.result.active_solution) == job["alternative_id"]
+                and ws.result_plan_fingerprint == job["route_fingerprint"]
+                and _route_plan_fingerprint(ws.inputs) == job["route_fingerprint"]
+                and _plan_fingerprint(current_settings) == job["settings_fingerprint"]
+                and _terrain_fingerprint(ws) == job["terrain_fingerprint"]
+            )
+            if not current:
+                raise HTTPException(409, "Coverage results are stale; recalculate before analyzing failures")
+            result_path = (ws.directory / job["result_file"]).resolve()
+            if ws.directory.resolve() not in result_path.parents or not result_path.is_file():
+                raise HTTPException(404, "Coverage results are unavailable")
+            try:
+                chunks = [
+                    json.loads(line)
+                    for line in result_path.read_text(encoding="utf-8").splitlines()
+                    if line
+                ]
+            except (OSError, ValueError) as exc:
+                raise HTTPException(404, "Coverage results are unavailable") from exc
+            cells = [cell for chunk in chunks for cell in chunk]
+            if len(cells) != job.get("requested_cells", job.get("total", -1)):
+                raise HTTPException(409, "Coverage results are incomplete; calculate again first")
+            try:
+                scenario = analyze_node_failures(
+                    cells,
+                    job.get("router_ids", []),
+                    job.get("source_ids", []),
+                    job.get("network_links", []),
+                    failed_ids,
+                    reference_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        return {"job_id": job_id, **scenario}
 
     def _compute_mesh_coverage_inspection(
         ws: Workspace,

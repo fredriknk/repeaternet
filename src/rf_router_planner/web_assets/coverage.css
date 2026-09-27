@@ -23,4 +23,7 @@
 #coverage-inspection{border-top:1px solid var(--border);margin-top:12px;padding-top:12px}
 #coverage-inspection h3{font-size:13px;margin:0}
 #inspection-chart{height:190px}
+#coverage-failure-scenarios{margin-top:12px}
+#failure-summary{line-height:1.55}
+#failure-sources{max-height:150px}
 @media(max-width:650px){.coverage-actions{grid-template-columns:1fr 1fr}}

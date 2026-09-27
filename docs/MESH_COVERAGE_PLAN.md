@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C2 implemented (API validation passed); C3–C4 implemented with browser/accuracy validation open; C5–C8 planned; release validation open.
+Created: 2026-09-27. Status: C0–C5 implemented; browser/accuracy validation remains open for C3–C5; C6–C8 planned; release validation open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -248,7 +248,7 @@ fault-injected delayed-callback race test or two-live-workspace throughput bench
 has been run; those remain C8 deployment checks.
 
 Areas: `web.py`, `project_store.py`, a shared job helper if needed, web API tests.
-Commit: `1ae3ba6` (`feat: run revision-safe coverage jobs and persist coverage settings`); C2 API-validation follow-up commit pending.
+Commits: `1ae3ba6` (`feat: run revision-safe coverage jobs and persist coverage settings`) and `1a1b905` (`test: validate coverage job recovery and isolation`).
 
 ## C3 — Coverage map and useful controls [implemented; visual validation open]
 
@@ -279,7 +279,11 @@ opacity/layer control, and explicit unknown terrain rendering are implemented.
 Mode and opacity changes reuse retained per-source data. Plan/alternative changes
 clear the overlay; retaining a visibly stale prior result is deferred.
 
-Acceptance open: no browser walkthrough has been run. Walk through calculate,
+Acceptance open: this session exposes no browser surface (`cua` reported no apps
+or browsers), and the Windows computer-use bridge returned an access-denied error
+before browser launch. Therefore no visual walkthrough is claimed. The existing
+automated coverage-job/API checks pass, but do not substitute for the required
+browser review. When browser access is available, walk through calculate,
 hide/show, mode switches, cancel, alternative change and project switch; verify
 desktop/narrow-screen layout, keyboard controls, accessible legend, nodata rendering,
 and responsiveness at the maximum grid. A distinct approximate preview and seamless
@@ -319,7 +323,7 @@ budget, so cache sharing is deferred until cache keys support those budgets.
 
 Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
 
-## C5 — Node-failure scenarios [planned]
+## C5 — Node-failure scenarios [implemented; visual validation open]
 
 Implementation:
 
@@ -338,6 +342,22 @@ Implementation:
 Acceptance: bridge, ring and disconnected-component fixtures give exact expected
 losses; overlapping but isolated routers do not count as reference access; reset
 restores the baseline without RF work when the matrix is available.
+
+Progress: completed-coverage scenarios can disable selected repeater sources and
+recompute surviving-router components from the immutable certified route graph.
+The server reports local RF coverage separately from coverage served by sources
+still connected to a chosen reference; a failed reference is explicitly unavailable.
+The UI provides temporary failure checkboxes, reference selection, reset, component
+membership and lost-cell summaries. Stale, partial, cross-workspace and non-source
+requests are rejected. Scenario evaluation reuses stored same-source directional
+metrics and does not start RF work or edit the saved route.
+
+Verification: bridge, ring, disconnected/overlapping-router and unknown-cell
+fixtures pass in `tests/test_coverage_scenarios.py`; workspace-scoped completed-job
+API, failed-reference, invalid-source and cross-workspace checks pass in
+`tests/test_coverage_jobs.py`. Full suite: 130 passed; Ruff, mypy and JavaScript
+syntax checks pass. UI visual review remains open because no browser surface is
+available in this session (same C3 limitation).
 
 Commit: `feat: simulate router failures and surviving mesh coverage`.
 
@@ -459,10 +479,11 @@ Current implementation record (2026-09-27):
 | --- | --- | --- |
 | C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
 | C1 | Implemented · `ef91b2c`, `d13e77f` | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
-| C2 | Implemented · `1ae3ba6`, follow-up commit pending | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
-| C3 | Implemented · `61a8fb6` | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
+| C2 | Implemented · `1ae3ba6`, `1a1b905` | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
+| C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
-| C5–C8 | Planned | No implementation started. |
+| C5 | Implemented · commit pending | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
+| C6–C8 | Planned | No implementation started. |
 
 Validation recorded so far: full suite `python -m pytest` passes 126 tests;
 `python -m ruff check src tests tools` and `python -m mypy src/rf_router_planner

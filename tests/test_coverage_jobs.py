@@ -294,3 +294,38 @@ def test_coverage_output_quota_fails_visibly_without_partial_cells(tmp_path, mon
         )
         assert page.status_code == 200
         assert page.json()["stored_cells"] == 0
+
+
+def test_failure_scenarios_use_completed_workspace_snapshot_without_rf_work(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        job = start_coverage(client, prepared)
+        assert wait_for(client, job["job_id"], {"complete"})["state"] == "complete"
+        scenario = client.post(
+            f"/api/coverage/jobs/{job['job_id']}/scenario",
+            json={"failed_ids": ["R-coverage"], "reference_id": "R-coverage"},
+        )
+        assert scenario.status_code == 200, scenario.text
+        payload = scenario.json()
+        assert payload["reference_available"] is False
+        assert payload["failed_ids"] == ["R-coverage"]
+        assert len(payload["cells"]) == 4
+        assert client.post(
+            f"/api/coverage/jobs/{job['job_id']}/scenario",
+            json={"failed_ids": ["R-coverage", "R-coverage"], "reference_id": "R-coverage"},
+        ).status_code == 422
+        assert client.post(
+            f"/api/coverage/jobs/{job['job_id']}/scenario",
+            json={"failed_ids": [], "reference_id": "not-a-router"},
+        ).status_code == 422
+
+        other_workspace = TestClient(client.app)
+        other_workspace.get("/")
+        assert other_workspace.post(
+            f"/api/coverage/jobs/{job['job_id']}/scenario",
+            json={"failed_ids": [], "reference_id": "R-coverage"},
+        ).status_code == 404
+        other_workspace.close()

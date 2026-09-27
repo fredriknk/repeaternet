@@ -140,6 +140,17 @@
             <p class="hint">Profile: brown = ground + curvature · green = surface + curvature · blue = line of sight · orange = Fresnel clearance boundary.</p>
             <pre id="inspection-detail"></pre>
           </div>
+          <details id="coverage-failure-scenarios">
+            <summary>Router failure scenario</summary>
+            <p class="hint">Temporarily remove selected routers from the certified mesh graph. Coverage that is still locally reachable is separate from coverage connected to your reference router.</p>
+            <label>Reference router<select id="failure-reference"></select></label>
+            <div id="failure-sources" class="coverage-source-list"></div>
+            <div class="coverage-actions">
+              <button id="failure-run" class="wide-button" disabled>Analyze failures</button>
+              <button id="failure-reset" class="wide-button" disabled>Reset scenario</button>
+            </div>
+            <p id="failure-summary" class="hint" role="status" aria-live="polite">Complete a coverage calculation to analyze router failures.</p>
+          </details>
           <div class="coverage-legend" aria-label="Coverage estimate legend">
             <span><i class="cov-strong"></i> ≥ 10 dB</span>
             <span><i class="cov-good"></i> 5–10 dB</span>
