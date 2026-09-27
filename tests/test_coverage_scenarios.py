@@ -78,3 +78,17 @@ def test_failed_reference_and_unknown_cells_are_reported_without_false_claims() 
     )
     assert result["unknown_cells"] == 1
     assert result["lost_local_cells"] == 0
+
+
+def test_outside_area_cells_are_not_counted_as_unknown_or_lost_coverage() -> None:
+    result = analyze_node_failures(
+        [cell(0, router("A"), state="outside_area")],
+        ["A"],
+        ["A"],
+        [],
+        [],
+        "A",
+    )
+    assert result["outside_area_cells"] == 1
+    assert result["unknown_cells"] == 0
+    assert result["lost_local_cells"] == 0

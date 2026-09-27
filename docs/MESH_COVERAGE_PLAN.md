@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C10 implementation delivered; drawn-area support and browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
+Created: 2026-09-27. Status: C0–C11 implementation delivered; browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -290,8 +290,8 @@ browser review. When browser access is available, walk through calculate,
 hide/show, mode switches, cancel, alternative change and project switch; verify
 desktop/narrow-screen layout, keyboard controls, accessible legend, nodata rendering,
 and responsiveness at the maximum grid. C10 adds a bounded approximate preview and
-keeps it visible until the first refined result cells arrive. User-drawn coverage
-areas and polygon clipping/outside-area semantics are deferred to C11.
+keeps it visible until the first refined result cells arrive. C11 adds user-drawn
+areas and explicit outside-area semantics; browser verification remains open.
 
 Areas: `web_assets/app.js`, `index.html`, `meshcore.css`, browser/API integration tests.
 Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
@@ -585,13 +585,13 @@ Current implementation record (2026-09-27):
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
-| C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
+| C7 | Implemented · `b75384b`, extended in C11 | Project-scoped targets, exact points/roads, conservative area checks, drawn-analysis-area boundaries and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
 | C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 157-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
 | C9 | Implemented · `5a9ee78` · performance checks open | Exact complete-grid reuse, integrity validation, height/terrain invalidation, same-snapshot comparisons; large synthetic benchmark documents cache churn and memory tradeoff. |
 | C10 | Implemented · `8ae53bd` | `POST /api/coverage/preview` is bounded to 256 cells and 4,096 router evaluations, participates in the shared scheduler, is labelled approximate in the UI, and yields to the full calculation on its first chunk. API test verifies the cap and that previews do not create saved jobs. The 2-source/256-cell flat synthetic core benchmark (3 fresh-process repetitions, Python 3.13.12, Windows 11) took 0.0847 s median (0.0842–0.0848), first chunk 0.0454 s median, and 98.23 MiB median peak working set. This is below the 5 s synthetic engineering target; it is not a live browser or real-raster measurement. Browser visual review remains open. |
-| C11 | Planned | Draw a polygonal area from map interaction, persist its WGS84 geometry with the coverage settings, mask samples at cell centres, distinguish outside-area cells from unknown/uncovered, and carry the semantics through estimate, exports, comparisons, target assessment and reports. |
+| C11 | Implemented · pending commit | Draw polygon in the map and persist its WGS84 ring in plan settings; validate finite, non-self-intersecting polygons; mask projected sample centres without RF/terrain reads outside scope; report in-area/outside counts; persist `outside_area` cells; preserve the state in incomplete-grid reconstruction, GeoJSON/JSON/printable report, scenario comparisons, node-failure analysis and exact/area target assessments. Bump model identity to coverage-v2 and reject prior-version result reuse. Tests cover sample/evaluation masking, estimate and saved-job counts, corrupt/missing polygons, exports, comparisons, failures and target points outside the analysis area. Full 166-test suite, Ruff, mypy, JavaScript syntax and diff checks pass. Browser interaction and visual review remain open. |
 
-Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 158
+Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 166
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
 --check` pass. C8 tests verify GeoJSON/JSON/HTML content, explicit unknown and
 not-evaluated states, target escaping/identity, compatible scenario comparisons,

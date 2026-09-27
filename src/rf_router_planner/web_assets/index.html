@@ -102,7 +102,14 @@
           <label>Area<select id="coverage-area">
             <option value="mesh">Selected mesh + buffer</option>
             <option value="view">Current map extent</option>
+            <option value="drawn">Drawn polygon</option>
           </select></label>
+          <div class="coverage-actions" id="coverage-area-actions" hidden>
+            <button id="coverage-draw-area" class="wide-button">Draw area on map</button>
+            <button id="coverage-finish-area" class="wide-button" disabled>Finish polygon</button>
+            <button id="coverage-clear-area" class="wide-button">Clear drawn area</button>
+          </div>
+          <p id="coverage-area-hint" class="hint" role="status" aria-live="polite" hidden></p>
           <label>Layer opacity<input id="coverage-opacity" type="range" min="10" max="90" value="55"></label>
           <div class="fields">
             <label>Cell spacing · m<input id="coverage-cell-size" type="number" min="100" max="100000" step="100" value="1000"></label>

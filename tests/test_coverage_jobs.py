@@ -197,6 +197,67 @@ def test_coverage_preview_is_bounded_approximate_and_not_saved_as_a_job(
         assert client.get("/api/coverage/jobs").json()["jobs"] == []
 
 
+def test_drawn_area_estimate_and_saved_job_exclude_outside_centres(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    monkeypatch.setenv("RF_PLANNER_MAX_ACTIVE_JOBS", "1")
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        ring_xy = [
+            (500000.0, 6650000.0),
+            (500500.0, 6650000.0),
+            (500500.0, 6651000.0),
+            (500000.0, 6651000.0),
+            (500000.0, 6650000.0),
+        ]
+        polygon = [[coordinates(x, y)[1], coordinates(x, y)[0]] for x, y in ring_xy]
+        coverage_settings = {
+            **prepared["coverage"]["settings"],
+            "area_mode": "drawn",
+            "area_polygon_wgs84": polygon,
+            "cell_size_m": 500.0,
+            "maximum_cells": 4,
+        }
+        plan = {**prepared["plan"], "coverage": coverage_settings}
+        assert client.post("/api/projects/autosave", json={"plan": plan}).status_code == 200
+        request = {**prepared["coverage"], "settings": coverage_settings}
+
+        estimate_response = client.post("/api/coverage/estimate", json=request)
+
+        assert estimate_response.status_code == 200, estimate_response.text
+        estimate = estimate_response.json()
+        assert estimate["requested_cells"] == 4
+        assert estimate["requested_area_cells"] == 2
+        assert estimate["outside_area_cells"] == 2
+        assert estimate["planned_evaluations"] == 2
+
+        job = start_coverage(client, {"coverage": request})
+        completed = wait_for(client, job["job_id"], {"complete"})
+        assert completed["requested_area_cells"] == 2
+        assert completed["outside_area_cells"] == 2
+        page = client.get(f"/api/coverage/jobs/{job['job_id']}/cells").json()
+        assert sum(cell["state"] == "outside_area" for cell in page["cells"]) == 2
+        assert completed["evaluated_cells"] + completed["unknown_cells"] == 2
+
+
+def test_drawn_area_settings_reject_missing_and_self_intersecting_polygons() -> None:
+    with pytest.raises(ValueError, match="Draw and finish"):
+        web_module.parse_coverage_settings({"area_mode": "drawn"})
+    with pytest.raises(ValueError, match="valid, non-self-intersecting"):
+        web_module.parse_coverage_settings(
+            {
+                "area_mode": "drawn",
+                "area_polygon_wgs84": [
+                    [0.0, 0.0],
+                    [1.0, 1.0],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    [0.0, 0.0],
+                ],
+            }
+        )
+
+
 def test_coverage_job_estimate_paging_isolation_reconnect_and_recovery(
     tmp_path, monkeypatch
 ) -> None:

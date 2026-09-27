@@ -51,6 +51,7 @@ def compare_coverage_streams(
         "retained_reference_connected": 0,
         "unchanged_disconnected": 0,
         "unknown": 0,
+        "outside_area": 0,
         "margin_comparable": 0,
     }
 
@@ -80,6 +81,21 @@ def compare_coverage_streams(
             ):
                 raise ValueError("Coverage grids do not share the same sample coordinates")
         left_state, right_state = left.get("state"), right.get("state")
+        if left_state == "outside_area" or right_state == "outside_area":
+            counts["outside_area"] += 1
+            rows.append(
+                {
+                    "index": left["index"],
+                    "latitude": left["latitude"],
+                    "longitude": left["longitude"],
+                    "local_change": "outside_area",
+                    "reference_connected_change": "outside_area",
+                    "baseline_source_count": 0,
+                    "scenario_source_count": 0,
+                    "margin_delta_db": None,
+                }
+            )
+            continue
         unknown = left_state in {"unknown_terrain", "not_evaluated"} or right_state in {
             "unknown_terrain",
             "not_evaluated",
@@ -131,11 +147,12 @@ def compare_coverage_streams(
         raise ValueError("Coverage grids contain different cell counts")
     except StopIteration:
         pass
-    known = len(rows) - counts["unknown"]
+    known = len(rows) - counts["unknown"] - counts["outside_area"]
     baseline_covered = counts["gained_local"] + counts["retained_local"]
     scenario_covered = counts["lost_local"] + counts["retained_local"]
     counts.update(
         evaluated_cells=known,
+        outside_area_cells=counts["outside_area"],
         baseline_covered_cells=baseline_covered,
         scenario_covered_cells=scenario_covered,
         baseline_coverage_percent=(100.0 * baseline_covered / known if known else None),

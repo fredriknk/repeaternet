@@ -8,6 +8,9 @@ from dataclasses import replace
 
 import numpy as np
 from pyproj import Transformer
+from shapely import intersects_xy
+from shapely.geometry import box
+from shapely.geometry.base import BaseGeometry
 
 from rf_router_planner.models.coverage import (
     ClientRadioProfile,
@@ -34,6 +37,8 @@ def make_grid(
     terrain: TerrainSource,
     settings: CoverageSettings,
     requested_bounds: tuple[float, float, float, float] | None = None,
+    *,
+    requested_area_geometry: BaseGeometry | None = None,
 ) -> tuple[CoverageGrid, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build cell centres in terrain CRS and their WGS84 render coordinates."""
     if not sources:
@@ -66,6 +71,12 @@ def make_grid(
     grid_x, grid_y = np.meshgrid(xs, ys)
     flat_x = grid_x.ravel()
     flat_y = grid_y.ravel()
+    analysis_area = (
+        requested_area_geometry
+        if requested_area_geometry is not None
+        else box(left, bottom, right, top)
+    )
+    area_mask = coverage_area_mask(flat_x, flat_y, analysis_area)
     reverse = Transformer.from_crs(terrain.crs, 4326, always_xy=True)
     flat_lon, flat_lat = reverse.transform(flat_x, flat_y)
     grid = CoverageGrid(
@@ -75,6 +86,8 @@ def make_grid(
         rows,
         columns,
         rows * columns,
+        inside_area_cells=int(area_mask.sum()),
+        outside_area_cells=int((~area_mask).sum()),
         surface_available=terrain.has_surface,
     )
     return (
@@ -86,6 +99,17 @@ def make_grid(
     )
 
 
+def coverage_area_mask(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    requested_area_geometry: BaseGeometry | None,
+) -> np.ndarray:
+    """Return which projected cell centres fall inside the requested area."""
+    if requested_area_geometry is None:
+        return np.ones(len(xs), dtype=bool)
+    return np.asarray(intersects_xy(requested_area_geometry, xs, ys), dtype=bool)
+
+
 def calculate_coverage(
     terrain: TerrainSource,
     rf_settings: RFSettings,
@@ -94,6 +118,7 @@ def calculate_coverage(
     coverage_settings: CoverageSettings,
     *,
     requested_bounds: tuple[float, float, float, float] | None = None,
+    requested_area_geometry: BaseGeometry | None = None,
     progress: Progress | None = None,
     cancelled: Cancel | None = None,
     on_chunk: ChunkCallback | None = None,
@@ -125,10 +150,21 @@ def calculate_coverage(
     report = progress or (lambda _done, _total: None)
     is_cancelled = cancelled or (lambda: False)
     grid, xs, ys, latitudes, longitudes = make_grid(
-        sources, terrain, effective_settings, requested_bounds
+        sources,
+        terrain,
+        effective_settings,
+        requested_bounds,
+        requested_area_geometry=requested_area_geometry,
     )
-    dtm = terrain.sample(xs, ys, surface=False)
-    grid.terrain_available_cells = int(np.isfinite(dtm).sum())
+    analysis_area = (
+        requested_area_geometry
+        if requested_area_geometry is not None
+        else box(*grid.bounds)
+    )
+    area_mask = coverage_area_mask(xs, ys, analysis_area)
+    dtm = np.full(len(xs), np.nan, dtype=float)
+    dtm[area_mask] = terrain.sample(xs[area_mask], ys[area_mask], surface=False)
+    grid.terrain_available_cells = int(np.isfinite(dtm[area_mask]).sum())
     evaluator = LinkEvaluator(
         terrain,
         rf_settings,
@@ -140,13 +176,15 @@ def calculate_coverage(
     structural_validation = rf_settings.validation_mode != ValidationMode.STRICT_LOS
     pending: list[CoverageCell] = []
 
-    for index, (x, y, latitude, longitude, ground) in enumerate(
-        zip(xs, ys, latitudes, longitudes, dtm, strict=True)
+    for index, (x, y, latitude, longitude, ground, inside_area) in enumerate(
+        zip(xs, ys, latitudes, longitudes, dtm, area_mask, strict=True)
     ):
         if is_cancelled():
             break
         cell = CoverageCell(index, float(x), float(y), float(latitude), float(longitude))
-        if not math.isfinite(float(ground)):
+        if not inside_area:
+            cell.state = CoverageState.OUTSIDE_AREA
+        elif not math.isfinite(float(ground)):
             cell.state = CoverageState.UNKNOWN_TERRAIN
             grid.unknown_cells += 1
         else:

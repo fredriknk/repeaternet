@@ -25,11 +25,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
+from shapely.geometry import Polygon, box
+from shapely.ops import transform as transform_geometry
 from starlette.background import BackgroundTask
 
 from .coordinates import norway_utm_epsg
 from .coverage.compare import compare_coverage_streams
-from .coverage.engine import calculate_coverage, make_grid
+from .coverage.engine import calculate_coverage, coverage_area_mask, make_grid
 from .coverage.scenarios import analyze_node_failures
 from .coverage.target_assessment import assess_targets
 from .coverage.targets import MAX_TARGET_IMPORT_BYTES, normalize_target_collection
@@ -62,7 +64,7 @@ from .terrain.raster import RasterTerrain
 ASSETS = Path(__file__).parent / "web_assets"
 MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
 MAX_COVERAGE_BACKBONE_REVALIDATION_LINKS = 4_096
-COVERAGE_MODEL_VERSION = "coverage-v1"
+COVERAGE_MODEL_VERSION = "coverage-v2"
 MAX_TARGET_REPORTS_PER_JOB = 20
 MAX_TARGET_REPORT_BYTES = 5 * 1024 * 1024
 MAX_COVERAGE_EXPORT_BYTES = 100 * 1024 * 1024
@@ -306,8 +308,36 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
 
     mode = CoverageMode(value.get("mode", defaults.mode.value))
     area_mode = value.get("area_mode", defaults.area_mode)
-    if area_mode not in {"mesh", "view"}:
-        raise ValueError("Coverage area mode must be mesh or view")
+    if area_mode not in {"mesh", "view", "drawn"}:
+        raise ValueError("Coverage area mode must be mesh, view, or drawn")
+    raw_polygon = value.get("area_polygon_wgs84")
+    area_polygon: list[list[float]] | None = None
+    if raw_polygon is not None:
+        if not isinstance(raw_polygon, list) or not 4 <= len(raw_polygon) <= 501:
+            raise ValueError("Drawn coverage areas need 3 to 500 vertices")
+        area_polygon = []
+        for point in raw_polygon:
+            if (
+                not isinstance(point, list)
+                or len(point) != 2
+                or any(
+                    not isinstance(number, (int, float))
+                    or isinstance(number, bool)
+                    or not math.isfinite(number)
+                    for number in point
+                )
+            ):
+                raise ValueError("Coverage polygon points must be [longitude, latitude] pairs")
+            longitude, latitude = (float(number) for number in point)
+            if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
+                raise ValueError("Coverage polygon coordinates must be WGS84")
+            area_polygon.append([longitude, latitude])
+        polygon = Polygon(area_polygon)
+        if not polygon.is_valid or polygon.area <= 0:
+            raise ValueError("Coverage polygon must be a valid, non-self-intersecting area")
+        area_polygon = [[float(lon), float(lat)] for lon, lat in polygon.exterior.coords]
+    if area_mode == "drawn" and area_polygon is None:
+        raise ValueError("Draw and finish a coverage area polygon first")
 
     def positive_number(key: str, default: float, maximum: float) -> float:
         item = value.get(key, default)
@@ -343,6 +373,7 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
     return CoverageSettings(
         mode=mode,
         area_mode=area_mode,
+        area_polygon_wgs84=area_polygon,
         cell_size_m=positive_number("cell_size_m", defaults.cell_size_m, 100_000),
         area_buffer_m=positive_number("area_buffer_m", defaults.area_buffer_m, 500_000),
         profile_step_m=positive_number("profile_step_m", defaults.profile_step_m, 10_000),
@@ -583,6 +614,7 @@ def _route_plan_fingerprint(plan: dict[str, Any]) -> str:
 
 
 _COVERAGE_REUSE_FIELDS = (
+    "model_version",
     "project_id",
     "route_fingerprint",
     "terrain_fingerprint",
@@ -1001,6 +1033,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             workspace_directory = ws.directory
 
         requested_bounds = None
+        requested_area_geometry = None
         if coverage_settings.area_mode == "view":
             values = body.get("map_bounds")
             if not isinstance(values, list) or len(values) != 4:
@@ -1020,6 +1053,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     max(first[0], last[0]),
                     max(first[1], last[1]),
                 )
+        elif coverage_settings.area_mode == "drawn":
+            assert coverage_settings.area_polygon_wgs84 is not None
+            with RasterTerrain(dtm_paths) as terrain:
+                forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
+                requested_area_geometry = transform_geometry(
+                    forward.transform,
+                    Polygon(coverage_settings.area_polygon_wgs84),
+                )
+            if not requested_area_geometry.is_valid or requested_area_geometry.area <= 0:
+                raise ValueError("Drawn coverage area is invalid in the terrain coordinate system")
+            left, bottom, right, top = requested_area_geometry.bounds
+            requested_bounds = (
+                float(left),
+                float(bottom),
+                float(right),
+                float(top),
+            )
         return {
             "settings": coverage_settings,
             "sources": sources,
@@ -1029,6 +1079,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "dtm_paths": dtm_paths,
             "dom_paths": dom_paths,
             "requested_bounds": requested_bounds,
+            "requested_area_geometry": requested_area_geometry,
             "route_fingerprint": route_fingerprint,
             "terrain_fingerprint": terrain_fingerprint,
             "project_id": project_id,
@@ -1304,6 +1355,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     sources,
                     bounded_settings,
                     requested_bounds=context["requested_bounds"],
+                    requested_area_geometry=context["requested_area_geometry"],
                     evaluation_cache=coverage_rf_cache,
                     cache_namespace=f"coverage:{ws.directory.name}",
                 )
@@ -1314,6 +1366,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "source_count": len(sources),
                 "source_ids": [site.id for site in sources],
                 "requested_cells": grid.requested_cells,
+                "requested_area_cells": grid.inside_area_cells,
+                "outside_area_cells": grid.outside_area_cells,
                 "effective_cell_size_m": grid.effective_cell_size_m,
                 "area_bounds_wgs84": area_bounds,
                 "terrain_available_cells": grid.terrain_available_cells,
@@ -1344,18 +1398,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
                 grid, xs, ys, _latitudes, _longitudes = make_grid(
-                    sources, terrain, bounded_settings, context["requested_bounds"]
+                    sources,
+                    terrain,
+                    bounded_settings,
+                    context["requested_bounds"],
+                    requested_area_geometry=context["requested_area_geometry"],
                 )
-                terrain_cells = int(np.isfinite(terrain.sample(xs, ys)).sum())
+                area_mask = coverage_area_mask(
+                    xs,
+                    ys,
+                    context["requested_area_geometry"] or box(*grid.bounds),
+                )
+                terrain_cells = int(
+                    np.isfinite(terrain.sample(xs[area_mask], ys[area_mask])).sum()
+                )
                 area_bounds = _coverage_area_bounds_wgs84(grid.bounds, terrain.crs)
             return {
                 "source_count": len(sources),
                 "source_ids": [site.id for site in sources],
                 "requested_cells": grid.requested_cells,
+                "requested_area_cells": grid.inside_area_cells,
+                "outside_area_cells": grid.outside_area_cells,
                 "effective_cell_size_m": grid.effective_cell_size_m,
                 "terrain_available_cells": terrain_cells,
-                "unknown_cells": grid.requested_cells - terrain_cells,
-                "planned_evaluations": grid.requested_cells * len(sources),
+                "unknown_cells": grid.inside_area_cells - terrain_cells,
+                "planned_evaluations": grid.inside_area_cells * len(sources),
                 "mode": coverage_settings.mode.value,
                 "surface_available": grid.surface_available,
                 "area_bounds_wgs84": area_bounds,
@@ -1412,7 +1479,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
                 estimate_grid = make_grid(
-                    sources, terrain, bounded_settings, context["requested_bounds"]
+                    sources,
+                    terrain,
+                    bounded_settings,
+                    context["requested_bounds"],
+                    requested_area_geometry=context["requested_area_geometry"],
                 )[0]
                 terrain_crs = CRS(terrain.crs).to_string()
             radio_settings = {
@@ -1420,6 +1491,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "candidates": encode(context["candidates"]),
             }
             reuse_identity = {
+                "model_version": COVERAGE_MODEL_VERSION,
                 "project_id": context["project_id"],
                 "route_fingerprint": context["route_fingerprint"],
                 "terrain_fingerprint": context["terrain_fingerprint"],
@@ -1496,6 +1568,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "covered_cells": 0,
                     "unknown_cells": 0,
                     "evaluated_cells": 0,
+                    "outside_area_cells": 0,
                     "created_at": time.time(),
                     "result_file": result_name,
                     "route_fingerprint": context["route_fingerprint"],
@@ -1589,6 +1662,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         )
                     ws.coverage_job["covered_cells"] += states.count("covered")
                     ws.coverage_job["unknown_cells"] += states.count("unknown_terrain")
+                    ws.coverage_job["outside_area_cells"] += states.count("outside_area")
                     ws.coverage_job["evaluated_cells"] += states.count("covered") + states.count("uncovered")
                     ws.coverage_job["stage"] = "Calculating mesh coverage"
                     _save_coverage_manifest(ws, ws.coverage_job)
@@ -1670,10 +1744,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         terrain,
                         bounded_settings,
                         context["requested_bounds"],
+                        requested_area_geometry=context["requested_area_geometry"],
                     )[0]
                     update_job(
                         total=estimate_grid.requested_cells,
                         requested_cells=estimate_grid.requested_cells,
+                        requested_area_cells=estimate_grid.inside_area_cells,
+                        outside_area_cells=estimate_grid.outside_area_cells,
                         effective_cell_size_m=estimate_grid.effective_cell_size_m,
                         rows=estimate_grid.rows,
                         columns=estimate_grid.columns,
@@ -1690,6 +1767,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         sources,
                         coverage_settings,
                         requested_bounds=context["requested_bounds"],
+                        requested_area_geometry=context["requested_area_geometry"],
                         progress=lambda done, total: update_job(done=done, total=total),
                         cancelled=ws.coverage_cancel.is_set,
                         on_chunk=stream_chunk,
@@ -1715,6 +1793,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 unknown_cells=max(
                                     current_job["unknown_cells"], grid.unknown_cells
                                 ),
+                                outside_area_cells=grid.outside_area_cells,
                                 effective_cell_size_m=grid.effective_cell_size_m,
                                 rows=grid.rows,
                                 columns=grid.columns,

@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from pyproj import Transformer
-from shapely.geometry import Point, box, shape
+from shapely.geometry import Point, Polygon, box, shape
 from shapely.ops import transform as transform_geometry
 
 from rf_router_planner.coverage.target_evaluation import evaluate_client_point
@@ -71,6 +71,13 @@ def assess_targets(
 
     evaluator = LinkEvaluator(terrain, rf_settings)
     reverse = Transformer.from_crs(terrain_crs, 4326, always_xy=True)
+    analysis_area = box(*grid_bounds)
+    if coverage_settings.area_mode == "drawn" and coverage_settings.area_polygon_wgs84:
+        drawn_area = transform_geometry(
+            forward.transform,
+            Polygon(coverage_settings.area_polygon_wgs84),
+        )
+        analysis_area = analysis_area.intersection(drawn_area)
     all_sources = {item.id for item in sources}
     reports: list[dict[str, Any]] = []
     for feature in features:
@@ -95,6 +102,17 @@ def assess_targets(
 
         if geometry_type == "Point":
             longitude, latitude = feature["geometry"]["coordinates"][:2]
+            x, y = forward.transform(longitude, latitude)
+            if not analysis_area.covers(Point(x, y)):
+                report.update(
+                    state="outside_analysed_area",
+                    evaluated_samples=0,
+                    latitude=latitude,
+                    longitude=longitude,
+                    message="This point is outside the requested coverage analysis area.",
+                )
+                reports.append(report)
+                continue
             evaluated = evaluate_client_point(
                 terrain,
                 rf_settings,
@@ -140,10 +158,13 @@ def assess_targets(
             line = transform_geometry(forward.transform, shape(feature["geometry"]))
             road_samples = projected_line_samples(line, road_spacing_m)
             total_length = float(line.length)
-            covered_length = unknown_length = failed_length = 0.0
+            covered_length = unknown_length = failed_length = outside_length = 0.0
             road_margins: list[float] = []
             for x, y, represented_length in road_samples:
                 longitude, latitude = reverse.transform(x, y)
+                if not analysis_area.covers(Point(x, y)):
+                    outside_length += represented_length
+                    continue
                 evaluated = evaluate_client_point(
                     terrain,
                     rf_settings,
@@ -173,11 +194,14 @@ def assess_targets(
                 else:
                     failed_length += represented_length
             tolerance = max(1e-6, total_length * 1e-9)
+            unassessed_length = unknown_length + outside_length
             state = (
-                "pass"
-                if unknown_length <= tolerance and failed_length <= tolerance
+                "outside_analysed_area"
+                if outside_length >= total_length - tolerance
+                else "pass"
+                if unassessed_length <= tolerance and failed_length <= tolerance
                 else "unknown"
-                if unknown_length > tolerance
+                if unassessed_length > tolerance
                 else "fail"
             )
             report.update(
@@ -186,13 +210,16 @@ def assess_targets(
                 covered_length_m=covered_length,
                 failed_length_m=failed_length,
                 unknown_length_m=unknown_length,
+                outside_analysed_area_length_m=outside_length,
                 sample_spacing_m=road_spacing_m,
                 sample_count=len(road_samples),
                 worst_passing_margin_db=min(road_margins) if road_margins else None,
                 message=(
-                    "Every sampled road segment meets the two-way target margin."
+                    "Every sampled road segment lies outside the requested analysis area."
+                    if state == "outside_analysed_area"
+                    else "Every sampled road segment meets the two-way target margin."
                     if state == "pass"
-                    else "Some road length has missing terrain or an unknown source link."
+                    else "Some road length lies outside the analysis area or has unknown terrain/source links."
                     if state == "unknown"
                     else "Some sampled road length does not meet the two-way target margin."
                 ),
@@ -201,7 +228,9 @@ def assess_targets(
             geometry = shape(feature["geometry"])
             projected = transform_geometry(forward.transform, geometry)
             requested_area = float(projected.area)
-            grid_polygon = box(*grid_bounds)
+            analysed_target = projected.intersection(analysis_area)
+            analysed_area = float(analysed_target.area)
+            outside_area = max(0.0, requested_area - analysed_area)
             evaluated_area = covered_area = failed_area = unknown_area = 0.0
             area_sample_count = 0
             min_x, min_y, max_x, max_y = grid_bounds
@@ -214,7 +243,7 @@ def assess_targets(
                     min(max_x, x + half),
                     min(max_y, y + half),
                 )
-                overlap = projected.intersection(cell_bounds)
+                overlap = analysed_target.intersection(cell_bounds)
                 area = float(overlap.area)
                 if area <= 0:
                     continue
@@ -234,7 +263,11 @@ def assess_targets(
                     and row.get("two_way_margin_db") is not None
                     and row["two_way_margin_db"] >= minimum_margin
                 ]
-                unknown = cell.get("state") in {"unknown_terrain", "not_evaluated"} or any(
+                unknown = cell.get("state") in {
+                    "unknown_terrain",
+                    "not_evaluated",
+                    "outside_area",
+                } or any(
                     row.get("rejection") == "unknown_terrain" for row in rows
                 )
                 if passing:
@@ -246,23 +279,27 @@ def assess_targets(
                     evaluated_area += area
                     failed_area += area
             represented_area = evaluated_area + unknown_area
-            remainder = max(0.0, requested_area - represented_area)
+            remainder = max(0.0, analysed_area - represented_area)
             unknown_area += remainder
             tolerance = max(1e-3, requested_area * 1e-9)
             state = (
                 "outside_analysed_area"
-                if not projected.intersects(grid_polygon)
+                if analysed_area <= tolerance
                 else "needs_finer_sampling"
                 if area_sample_count == 0
                 else "pass"
-                if unknown_area <= tolerance and failed_area <= tolerance
+                if unknown_area <= tolerance
+                and outside_area <= tolerance
+                and failed_area <= tolerance
                 else "unknown"
-                if unknown_area > tolerance
+                if unknown_area > tolerance or outside_area > tolerance
                 else "fail"
             )
             report.update(
                 state=state,
                 requested_area_m2=requested_area,
+                analysed_area_m2=analysed_area,
+                outside_analysed_area_m2=outside_area,
                 evaluated_area_m2=evaluated_area,
                 covered_area_m2=covered_area,
                 failed_area_m2=failed_area,
@@ -276,7 +313,7 @@ def assess_targets(
                     if state == "outside_analysed_area"
                     else "All represented area meets the two-way target margin at this grid resolution."
                     if state == "pass"
-                    else "Some target area is unsampled or has unknown terrain/source links."
+                    else "Some target area lies outside the requested analysis area or has unknown terrain/source links."
                     if state == "unknown"
                     else "Some sampled target area does not meet the two-way target margin."
                 ),

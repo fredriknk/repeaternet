@@ -80,6 +80,7 @@ def analyze_node_failures(
     lost_connected = 0
     newly_uncovered = 0
     unknown = 0
+    outside_area = 0
     for cell in cells:
         source_rows = cell.get("sources", [])
         usable = {
@@ -94,7 +95,9 @@ def analyze_node_failures(
         local_after = bool(usable_after)
         connected = bool(connected_after)
         state = cell.get("state")
-        if state in {"unknown_terrain", "not_evaluated"}:
+        if state == "outside_area":
+            outside_area += 1
+        elif state in {"unknown_terrain", "not_evaluated"}:
             unknown += 1
         else:
             lost_local += int(baseline_local and not local_after)
@@ -126,6 +129,7 @@ def analyze_node_failures(
         "isolated_router_ids": isolated,
         "baseline_connected_source_ids": sorted(baseline_connected_sources),
         "unknown_cells": unknown,
+        "outside_area_cells": outside_area,
         "lost_local_cells": lost_local,
         "lost_reference_connected_cells": lost_connected,
         "newly_uncovered_cells": newly_uncovered,

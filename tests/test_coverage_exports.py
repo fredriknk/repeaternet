@@ -148,6 +148,42 @@ def test_partial_grid_exports_unknown_and_uncomputed_states_explicitly() -> None
     assert counts["unknown_cells"] == 1
 
 
+def test_drawn_area_exports_mark_outside_cells_and_include_the_area_outline() -> None:
+    job = export_job()
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    xy_ring = [
+        (500000, 6650000),
+        (500050, 6650000),
+        (500050, 6650100),
+        (500000, 6650100),
+        (500000, 6650000),
+    ]
+    job["settings"]["area_mode"] = "drawn"
+    job["settings"]["area_polygon_wgs84"] = [
+        list(reverse.transform(x, y)) for x, y in xy_ring
+    ]
+
+    rows = list(iter_complete_grid([], job))
+
+    assert [row["state"] for row in rows] == [
+        "not_evaluated",
+        "outside_area",
+        "not_evaluated",
+        "outside_area",
+    ]
+    counts = summarize_coverage_cells([], job)
+    assert counts["stored_cells"] == 0
+    assert counts["outside_area_cells"] == 2
+    exported = json.loads(
+        "".join(geojson_chunks([], job, coverage_export_metadata(
+            job, counts, job["terrain_fingerprint"], stale=False
+        )))
+    )
+    assert exported["features"][1]["geometry"] is None
+    assert exported["features"][1]["properties"]["state"] == "outside_area"
+    assert exported["features"][-1]["properties"]["feature_kind"] == "analysis_area"
+
+
 def test_geojson_and_json_exports_keep_radio_settings_targets_and_explicit_states() -> None:
     job, report = export_job(), target_report()
     metadata_value = metadata(job)

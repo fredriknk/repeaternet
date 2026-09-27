@@ -5,17 +5,23 @@ from __future__ import annotations
 import html
 import json
 import math
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import PurePosixPath
 from typing import Any
 
 from pyproj import Transformer
+from shapely import intersects_xy
+from shapely.geometry import Polygon, box
+from shapely.ops import transform as transform_geometry
 
-GRID_STATES = ("covered", "uncovered", "unknown_terrain", "not_evaluated")
+GRID_STATES = ("covered", "uncovered", "unknown_terrain", "not_evaluated", "outside_area")
 
 
 def iter_complete_grid(
-    cells: Iterable[dict[str, Any]], job: dict[str, Any]
+    cells: Iterable[dict[str, Any]],
+    job: dict[str, Any],
+    *,
+    on_stored_cell: Callable[[], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield every requested grid index, synthesizing explicit unsampled cells."""
     requested = int(job.get("requested_cells", job.get("total", 0)))
@@ -25,6 +31,18 @@ def iter_complete_grid(
     left, bottom, right, top = (float(value) for value in job["grid_bounds_projected"])
     cell_size = float(job["effective_cell_size_m"])
     reverse = Transformer.from_crs(job["terrain_crs"], 4326, always_xy=True)
+    settings = job.get("settings", {})
+    raw_polygon = (
+        settings.get("area_polygon_wgs84")
+        if isinstance(settings, dict) and settings.get("area_mode") == "drawn"
+        else None
+    )
+    area_geometry = box(left, bottom, right, top)
+    if isinstance(raw_polygon, list) and len(raw_polygon) >= 4:
+        forward = Transformer.from_crs(4326, job["terrain_crs"], always_xy=True)
+        area_geometry = transform_geometry(
+            forward.transform, Polygon(raw_polygon)
+        )
     iterator = iter(cells)
     current = next(iterator, None)
     previous_index = -1
@@ -37,6 +55,8 @@ def iter_complete_grid(
                 raise ValueError("Coverage result contains an out-of-grid index")
         if current is not None and current.get("index") == index:
             previous_index = index
+            if on_stored_cell:
+                on_stored_cell()
             yield current
             current = next(iterator, None)
             continue
@@ -44,13 +64,16 @@ def iter_complete_grid(
         x = left + (column + 0.5) * cell_size
         y = top - (row + 0.5) * cell_size
         longitude, latitude = reverse.transform(x, y)
+        outside_area = area_geometry is not None and not bool(
+            intersects_xy(area_geometry, x, y)
+        )
         yield {
             "index": index,
             "x": x,
             "y": y,
             "longitude": longitude,
             "latitude": latitude,
-            "state": "not_evaluated",
+            "state": "outside_area" if outside_area else "not_evaluated",
             "source_count": 0,
             "unknown_sources": 0,
             "best_margin_db": None,
@@ -67,12 +90,16 @@ def summarize_coverage_cells(
     counts = dict.fromkeys(GRID_STATES, 0)
     evaluated_cells = covered_cells = unknown_source_evaluations = 0
     stored_cells = 0
-    for cell in iter_complete_grid(cells, job):
+
+    def count_stored_cell() -> None:
+        nonlocal stored_cells
+        stored_cells += 1
+
+    for cell in iter_complete_grid(cells, job, on_stored_cell=count_stored_cell):
         state = cell.get("state")
         if state not in counts:
             raise ValueError(f"Unknown coverage cell state: {state}")
         counts[state] += 1
-        stored_cells += state != "not_evaluated"
         covered_cells += state == "covered"
         evaluated_cells += state in {"covered", "uncovered"}
         unknown_source_evaluations += int(cell.get("unknown_sources") or 0)
@@ -83,6 +110,7 @@ def summarize_coverage_cells(
         "covered_cells": covered_cells,
         "unknown_cells": counts["unknown_terrain"],
         "not_evaluated_cells": counts["not_evaluated"],
+        "outside_area_cells": counts["outside_area"],
         "unknown_source_evaluations": unknown_source_evaluations,
         "state_counts": counts,
     }
@@ -175,6 +203,16 @@ def geojson_chunks(
     yield _json({"type": "FeatureCollection", "name": f"coverage-{job['job_id']}", "metadata": metadata, "features": []})[:-2]
     first = True
     for cell in iter_complete_grid(cells, job):
+        if cell.get("state") == "outside_area":
+            feature = {
+                "type": "Feature",
+                "id": f"cell-{cell['index']}",
+                "geometry": None,
+                "properties": _cell_properties(cell),
+            }
+            yield ("" if first else ",") + _json(feature)
+            first = False
+            continue
         x, y = float(cell["x"]), float(cell["y"])
         corners = [
             (max(left, x - half), max(bottom, y - half)),
@@ -189,6 +227,24 @@ def geojson_chunks(
             "id": f"cell-{cell['index']}",
             "geometry": {"type": "Polygon", "coordinates": [coordinates]},
             "properties": _cell_properties(cell),
+        }
+        yield ("" if first else ",") + _json(feature)
+        first = False
+    export_settings = job.get("settings", {})
+    area_polygon = (
+        export_settings.get("area_polygon_wgs84")
+        if isinstance(export_settings, dict) and export_settings.get("area_mode") == "drawn"
+        else None
+    )
+    if isinstance(area_polygon, list) and len(area_polygon) >= 4:
+        feature = {
+            "type": "Feature",
+            "id": "coverage-analysis-area",
+            "geometry": {"type": "Polygon", "coordinates": [area_polygon]},
+            "properties": {
+                "feature_kind": "analysis_area",
+                "state": "requested_area",
+            },
         }
         yield ("" if first else ",") + _json(feature)
         first = False
@@ -230,6 +286,8 @@ def json_export_chunks(
 
 
 def _color(cell: dict[str, Any], mode: str) -> str:
+    if cell.get("state") == "outside_area":
+        return "#f7f8f7"
     if cell.get("state") == "unknown_terrain":
         return "#a7afb0"
     if cell.get("state") == "not_evaluated":
@@ -276,6 +334,7 @@ def printable_report_chunks(
     reverse = Transformer.from_crs(job["terrain_crs"], 4326, always_xy=True)
     report_state = "STALE" if metadata["stale"] else "PARTIAL" if metadata["partial"] else "COMPLETE"
     counts = metadata["counts"]
+    export_settings = job.get("settings", {})
     yield """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Predicted mesh coverage</title><style>
     :root{color-scheme:light;--ink:#19372d;--muted:#5d7168;--line:#d5dfda;--paper:#fff;--bg:#eef2ef}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Segoe UI,Arial,sans-serif}main{max-width:1120px;margin:28px auto;background:var(--paper);padding:36px 44px;box-shadow:0 8px 32px #142d2018}header{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid var(--ink);padding-bottom:18px}h1{font-size:30px;margin:0}h2{margin:30px 0 12px;font-size:20px}h3{font-size:16px}.sub,.muted{color:var(--muted)}.badge{align-self:flex-start;border:1px solid #537465;border-radius:999px;padding:5px 12px;font-weight:700;letter-spacing:.07em}.badge.PARTIAL,.badge.STALE{color:#8d441f;border-color:#bf8058}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.metric{padding:12px;border:1px solid var(--line);border-radius:8px}.metric strong{display:block;font-size:21px}.metric span{color:var(--muted);font-size:12px}svg{display:block;width:100%;height:auto;border:1px solid var(--line);background:#f6f8f7}.legend{display:flex;flex-wrap:wrap;gap:14px;margin:12px 0}.swatch{display:inline-block;width:13px;height:13px;vertical-align:-2px;margin-right:5px;border:1px solid #50645b}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f1f5f2}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f4;padding:14px;border-radius:6px;font-size:12px}.warning{background:#fff5e9;border-left:4px solid #bb7645;padding:12px}.print{position:fixed;right:20px;bottom:20px;border:0;border-radius:8px;background:#19372d;color:#fff;padding:12px 18px;font-weight:700;cursor:pointer}@media print{body{background:#fff}main{margin:0;max-width:none;box-shadow:none;padding:12mm}.print{display:none}h2{break-after:avoid}table,svg{break-inside:avoid}}@media(max-width:700px){main{margin:0;padding:22px}.metrics{grid-template-columns:repeat(2,1fr)}header{display:block}.badge{display:inline-block;margin-top:10px}}
     </style></head><body><button class="print" onclick="window.print()">Print report</button><main>"""
@@ -287,10 +346,13 @@ def printable_report_chunks(
         ("Evaluated cells", counts["evaluated_cells"]),
         ("Unknown terrain", counts["unknown_cells"]),
         ("Not evaluated", counts["not_evaluated_cells"]),
+        ("Outside requested area", counts["outside_area_cells"]),
     ):
         yield f"<div class='metric'><strong>{_html(value)}</strong><span>{_html(label)}</span></div>"
     yield "</section><h2>Coverage and selected network</h2><svg viewBox='0 0 1000 600' role='img' aria-label='Offline map of saved coverage grid, network links and target locations'>"
     for cell in iter_complete_grid(cells, job):
+        if cell.get("state") == "outside_area":
+            continue
         x, y = float(cell["x"]), float(cell["y"])
         half = float(job["effective_cell_size_m"]) / 2
         corners = [
@@ -304,6 +366,17 @@ def printable_report_chunks(
             for cx, cy in corners
         )
         yield f"<polygon points='{points}' fill='{_color(cell, str(job.get('mode', 'two_way')))}' stroke='#ffffff' stroke-width='.7'><title>Cell {cell['index']}: {_html(cell['state'])}</title></polygon>"
+    area_polygon = (
+        export_settings.get("area_polygon_wgs84")
+        if isinstance(export_settings, dict) and export_settings.get("area_mode") == "drawn"
+        else None
+    )
+    if isinstance(area_polygon, list) and len(area_polygon) >= 4:
+        points = " ".join(
+            f"{_map_point(float(point[0]), float(point[1]), bounds)[0]:.1f},{_map_point(float(point[0]), float(point[1]), bounds)[1]:.1f}"
+            for point in area_polygon
+        )
+        yield f"<polygon points='{points}' fill='none' stroke='#19372d' stroke-width='2' stroke-dasharray='8 5'><title>Requested analysis area</title></polygon>"
     sites = job.get("network_sites", job.get("source_sites", []))
     sites_by_id = {item.get("id"): item for item in sites}
     for link in job.get("report_links", []):
@@ -334,7 +407,7 @@ def printable_report_chunks(
                 points = " ".join(f"{_map_point(float(point[0]), float(point[1]), bounds)[0]:.1f},{_map_point(float(point[0]), float(point[1]), bounds)[1]:.1f}" for point in line)
                 tag = "polyline" if geometry_type == "LineString" else "polygon"
                 yield f"<{tag} points='{points}' fill='{color if geometry_type == 'Polygon' else 'none'}' fill-opacity='.18' stroke='{color}' stroke-width='3'><title>{_html(target.get('properties', {}).get('name'))}: {_html(state)}</title></{tag}>"
-    yield "</svg><div class='legend'><span><i class='swatch' style='background:#287b64'></i> ≥ 10 dB</span><span><i class='swatch' style='background:#61a88c'></i> 5–10 dB</span><span><i class='swatch' style='background:#f0ca62'></i> 0–5 dB</span><span><i class='swatch' style='background:#ce796d'></i> Not usable</span><span><i class='swatch' style='background:#a7afb0'></i> Unknown terrain</span><span><i class='swatch' style='background:#e2e5e3'></i> Not evaluated</span></div>"
+    yield "</svg><div class='legend'><span><i class='swatch' style='background:#287b64'></i> ≥ 10 dB</span><span><i class='swatch' style='background:#61a88c'></i> 5–10 dB</span><span><i class='swatch' style='background:#f0ca62'></i> 0–5 dB</span><span><i class='swatch' style='background:#ce796d'></i> Not usable</span><span><i class='swatch' style='background:#a7afb0'></i> Unknown terrain</span><span><i class='swatch' style='background:#e2e5e3'></i> Not evaluated</span><span><i class='swatch' style='background:#f7f8f7'></i> Outside requested area</span></div>"
     yield "<h2>Coverage states</h2><table><thead><tr><th>State</th><th>Cells</th></tr></thead><tbody>"
     for state, count in counts["state_counts"].items():
         yield f"<tr><td>{_html(state)}</td><td>{_html(count)}</td></tr>"

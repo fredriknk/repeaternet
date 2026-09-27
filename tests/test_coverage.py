@@ -4,6 +4,7 @@ import threading
 
 import numpy as np
 import pytest
+from shapely.geometry import box
 
 from rf_router_planner.coverage import engine
 from rf_router_planner.models.coverage import (
@@ -150,7 +151,7 @@ def test_two_way_coverage_never_combines_different_best_sources(monkeypatch) -> 
         CandidateSettings(),
         sources,
         settings,
-        requested_bounds=(400.0, 400.0, 600.0, 600.0),
+        requested_bounds=(400.0, 100.0, 900.0, 600.0),
     )
 
     assert result.cells[0].state is CoverageState.UNCOVERED
@@ -178,7 +179,7 @@ def test_coverage_marks_path_nodata_as_unknown_not_uncovered(
         CandidateSettings(),
         [source],
         settings,
-        requested_bounds=(1_400.0, 900.0, 1_600.0, 1_100.0),
+        requested_bounds=(1_250.0, 750.0, 1_750.0, 1_250.0),
     )
 
     assert result.cells[0].state is CoverageState.UNKNOWN_TERRAIN
@@ -199,12 +200,54 @@ def test_coverage_counts_cells_without_ground_data_as_unknown(
         CandidateSettings(),
         [source],
         settings,
-        requested_bounds=(900.0, 900.0, 1_100.0, 1_100.0),
+        requested_bounds=(850.0, 750.0, 1_350.0, 1_250.0),
     )
 
     assert result.cells[0].state is CoverageState.UNKNOWN_TERRAIN
     assert result.evaluated_cells == 0
     assert result.unknown_cells == 1
+
+
+def test_drawn_area_masks_outside_cell_centres_without_rf_or_unknown_counts(monkeypatch) -> None:
+    terrain = ArrayTerrain(np.zeros((21, 21)), resolution_m=100.0)
+    source = Site("router", 0.0, 0.0, kind=SiteKind.ROUTER, antenna_height_m=100.0)
+    settings = CoverageSettings(
+        cell_size_m=100.0,
+        maximum_cells=4,
+        area_buffer_m=0.0,
+        profile_step_m=100.0,
+    )
+    calls = []
+    original_evaluator = engine.LinkEvaluator
+
+    class CountingEvaluator(original_evaluator):
+        def evaluate(self, *args, **kwargs):
+            calls.append(1)
+            return super().evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "LinkEvaluator", CountingEvaluator)
+    result = engine.calculate_coverage(
+        terrain,
+        RFSettings(),
+        CandidateSettings(),
+        [source],
+        settings,
+        requested_bounds=(0.0, 0.0, 200.0, 200.0),
+        requested_area_geometry=box(0.0, 0.0, 100.0, 200.0),
+    )
+
+    assert result.requested_cells == 4
+    assert result.inside_area_cells == 2
+    assert result.outside_area_cells == 2
+    assert [cell.state for cell in result.cells] == [
+        CoverageState.COVERED,
+        CoverageState.OUTSIDE_AREA,
+        CoverageState.COVERED,
+        CoverageState.OUTSIDE_AREA,
+    ]
+    assert result.evaluated_cells == 2
+    assert result.unknown_cells == 0
+    assert len(calls) == 2
 
 
 def test_coverage_cache_reuses_scalar_metrics_and_keys_client_budget() -> None:
@@ -218,7 +261,7 @@ def test_coverage_cache_reuses_scalar_metrics_and_keys_client_budget() -> None:
     )
     cache = LinkMetricsCache(max_entries=4)
     args = (terrain, RFSettings(), CandidateSettings(), [source], settings)
-    bounds = {"requested_bounds": (1_400.0, 900.0, 1_600.0, 1_100.0)}
+    bounds = {"requested_bounds": (1_250.0, 750.0, 1_750.0, 1_250.0)}
 
     cold = engine.calculate_coverage(*args, evaluation_cache=cache, **bounds)
     warm = engine.calculate_coverage(*args, evaluation_cache=cache, **bounds)
@@ -332,7 +375,7 @@ def test_cancellation_does_not_publish_a_partially_evaluated_cell(monkeypatch) -
         CandidateSettings(),
         sources,
         settings,
-        requested_bounds=(400.0, 400.0, 600.0, 600.0),
+        requested_bounds=(400.0, 100.0, 900.0, 600.0),
         cancelled=lambda: started.is_set(),
     )
 

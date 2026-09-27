@@ -57,6 +57,9 @@ cell count, source evaluations, and terrain-known/unknown cells before calculati
 Use **Quick approximate preview** for an immediate coarse view (up to 256 cells and
 4,096 router evaluations); dashed cell outlines and tooltips mark it approximate,
 and cells are replaced as the saved full-resolution calculation streams in.
+Choose **Drawn polygon** to click an area boundary on the map. The polygon is saved
+with the project, estimates count only in-area sample centres, and outside-area
+cells are explicitly excluded rather than treated as unknown or uncovered.
 Results stream to a separate map layer with two-way, downlink, uplink, overlap, and
 best-serving-router views. Click **Inspect a map location** to inspect the exact
 point, per-router directional margins, selected network component, and terrain/

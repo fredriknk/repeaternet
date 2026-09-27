@@ -44,3 +44,13 @@ def test_unknown_cells_are_excluded_and_misaligned_grids_are_rejected() -> None:
     assert result["counts"]["baseline_coverage_percent"] is None
     with pytest.raises(ValueError, match="sample coordinates"):
         compare_coverage_cells([cell(0, 10.0)], [cell(0, 10.1)], set(), set())
+
+
+def test_outside_area_cells_are_separate_from_unknown_and_coverage_deltas() -> None:
+    outside = {**cell(0, 10.0, ("A", True, 12.0)), "state": "outside_area"}
+    result = compare_coverage_cells([outside], [outside], {"A"}, {"A"})
+    assert result["counts"]["outside_area"] == 1
+    assert result["counts"]["unknown"] == 0
+    assert result["counts"]["evaluated_cells"] == 0
+    assert result["counts"]["baseline_coverage_percent"] is None
+    assert result["cells"][0]["local_change"] == "outside_area"

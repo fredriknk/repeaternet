@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pyproj import Transformer
 from shapely.geometry import LineString
 
 from rf_router_planner.coverage.target_assessment import assess_targets
@@ -14,6 +15,7 @@ from rf_router_planner.coverage.targets import (
 from rf_router_planner.models.coverage import CoverageSettings
 from rf_router_planner.models.settings import CandidateSettings, RFSettings
 from rf_router_planner.models.site import Site
+from rf_router_planner.terrain.raster import ArrayTerrain
 
 
 def feature(geometry_type: str, coordinates, *, name: str = "Target", properties=None):
@@ -104,6 +106,87 @@ def test_target_assessment_rejects_excessive_exact_router_evaluations() -> None:
             effective_cell_size_m=100,
             requested_cells=1,
         )
+
+
+def test_drawn_analysis_area_reports_points_outside_without_rf_evaluation() -> None:
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    corners = [
+        reverse.transform(x, y)
+        for x, y in [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)]
+    ]
+    point = list(reverse.transform(150, 50))
+    settings = CoverageSettings(
+        area_mode="drawn",
+        area_polygon_wgs84=[[lon, lat] for lon, lat in corners],
+    )
+    targets = normalize_target_collection(collection(feature("Point", point)))
+
+    report = assess_targets(
+        ArrayTerrain([[0.0, 0.0], [0.0, 0.0]], resolution_m=100.0),
+        RFSettings(),
+        CandidateSettings(),
+        settings,
+        [],
+        targets,
+        lambda: (),
+        terrain_crs="EPSG:25833",
+        grid_bounds=(0, 0, 200, 100),
+        effective_cell_size_m=100,
+        requested_cells=2,
+    )
+
+    assert report["targets"][0]["state"] == "outside_analysed_area"
+    assert report["targets"][0]["evaluated_samples"] == 0
+
+
+def test_polygon_target_reports_area_beyond_drawn_analysis_boundary() -> None:
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+
+    def ring(points):
+        return [list(reverse.transform(x, y)) for x, y in points]
+
+    analysis_ring = ring([(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)])
+    target_ring = ring([(50, 25), (150, 25), (150, 75), (50, 75), (50, 25)])
+    settings = CoverageSettings(
+        area_mode="drawn",
+        area_polygon_wgs84=analysis_ring,
+    )
+    targets = normalize_target_collection(
+        collection(feature("Polygon", [target_ring]))
+    )
+    samples = [
+        {
+            "index": 0,
+            "x": 75.0,
+            "y": 50.0,
+            "state": "covered",
+            "sources": [
+                {
+                    "source_id": "R-1",
+                    "valid_two_way": True,
+                    "two_way_margin_db": 8.0,
+                }
+            ],
+        }
+    ]
+
+    report = assess_targets(
+        ArrayTerrain([[0.0, 0.0], [0.0, 0.0]], resolution_m=100.0),
+        RFSettings(),
+        CandidateSettings(),
+        settings,
+        [Site("R-1", 50.0, 50.0)],
+        targets,
+        lambda: samples,
+        terrain_crs="EPSG:25833",
+        grid_bounds=(0, 0, 200, 100),
+        effective_cell_size_m=50,
+        requested_cells=8,
+    )
+
+    result = report["targets"][0]
+    assert result["state"] == "unknown"
+    assert result["outside_analysed_area_m2"] == pytest.approx(2_500, rel=0.01)
 
 
 def test_polygon_target_assessment_rejects_excessive_grid_scans() -> None:

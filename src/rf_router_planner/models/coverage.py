@@ -21,6 +21,7 @@ class CoverageState(str, Enum):
     UNKNOWN_TERRAIN = "unknown_terrain"
     COVERED = "covered"
     UNCOVERED = "uncovered"
+    OUTSIDE_AREA = "outside_area"
 
 
 @dataclass(slots=True)
@@ -62,6 +63,7 @@ class RadioBudget:
 class CoverageSettings:
     mode: CoverageMode = CoverageMode.TWO_WAY
     area_mode: str = "mesh"
+    area_polygon_wgs84: list[list[float]] | None = None
     cell_size_m: float = 1_000.0
     area_buffer_m: float = 5_000.0
     profile_step_m: float = 200.0
@@ -112,6 +114,8 @@ class CoverageGrid:
     terrain_available_cells: int = 0
     evaluated_cells: int = 0
     unknown_cells: int = 0
+    inside_area_cells: int = 0
+    outside_area_cells: int = 0
     completed_cells: int = 0
     cells: list[CoverageCell] = field(default_factory=list)
     surface_available: bool = False
