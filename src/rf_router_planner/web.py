@@ -66,6 +66,8 @@ COVERAGE_MODEL_VERSION = "coverage-v1"
 MAX_TARGET_REPORTS_PER_JOB = 20
 MAX_TARGET_REPORT_BYTES = 5 * 1024 * 1024
 MAX_COVERAGE_EXPORT_BYTES = 100 * 1024 * 1024
+MAX_COVERAGE_PREVIEW_CELLS = 256
+MAX_COVERAGE_PREVIEW_EVALUATIONS = 4_096
 
 
 def encode(value: Any) -> Any:
@@ -1271,6 +1273,60 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ws.inputs = plan
             _write_json_atomic(ws.directory / "plan.json", plan)
         return {"ok": True, "count": len(targets["features"]), "targets": targets}
+
+    @app.post(
+        "/api/coverage/preview",
+        dependencies=[Depends(reserve_target_assessment_capacity)],
+    )
+    def preview_mesh_coverage(body: dict[str, Any], request: Request) -> Any:
+        """Run a synchronous, small, explicitly approximate map preview."""
+        ws = workspace(request)
+        try:
+            context = coverage_context(ws, body)
+            coverage_settings: CoverageSettings = context["settings"]
+            sources: list[Site] = context["sources"]
+            preview_cells = min(
+                MAX_COVERAGE_PREVIEW_CELLS,
+                coverage_settings.maximum_cells,
+                MAX_COVERAGE_PREVIEW_EVALUATIONS // len(sources),
+            )
+            bounded_settings = replace(
+                coverage_settings,
+                maximum_cells=max(1, preview_cells),
+                maximum_evaluations=MAX_COVERAGE_PREVIEW_EVALUATIONS,
+            )
+            started = time.perf_counter()
+            with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                grid = calculate_coverage(
+                    terrain,
+                    context["rf"],
+                    context["candidates"],
+                    sources,
+                    bounded_settings,
+                    requested_bounds=context["requested_bounds"],
+                    evaluation_cache=coverage_rf_cache,
+                    cache_namespace=f"coverage:{ws.directory.name}",
+                )
+                area_bounds = _coverage_area_bounds_wgs84(grid.bounds, terrain.crs)
+            return {
+                "preview": True,
+                "approximate": True,
+                "source_count": len(sources),
+                "source_ids": [site.id for site in sources],
+                "requested_cells": grid.requested_cells,
+                "effective_cell_size_m": grid.effective_cell_size_m,
+                "area_bounds_wgs84": area_bounds,
+                "terrain_available_cells": grid.terrain_available_cells,
+                "evaluated_cells": grid.evaluated_cells,
+                "covered_cells": sum(cell.state.value == "covered" for cell in grid.cells),
+                "unknown_cells": grid.unknown_cells,
+                "elapsed_seconds": time.perf_counter() - started,
+                "cells": encode(grid.cells),
+            }
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/coverage/estimate")
     def estimate_mesh_coverage(body: dict[str, Any], request: Request) -> Any:

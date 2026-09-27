@@ -54,6 +54,9 @@ repeaters in the selected alternative; choose a subset or include the endpoints 
 additional sources. Set the client antenna height, transmit power, gain, feed loss,
 receiver sensitivity, and other losses. An estimate shows the effective grid size,
 cell count, source evaluations, and terrain-known/unknown cells before calculation.
+Use **Quick approximate preview** for an immediate coarse view (up to 256 cells and
+4,096 router evaluations); dashed cell outlines and tooltips mark it approximate,
+and cells are replaced as the saved full-resolution calculation streams in.
 Results stream to a separate map layer with two-way, downlink, uplink, overlap, and
 best-serving-router views. Click **Inspect a map location** to inspect the exact
 point, per-router directional margins, selected network component, and terrain/

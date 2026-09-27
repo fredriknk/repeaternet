@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C9 implementation delivered; browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
+Created: 2026-09-27. Status: C0–C10 implementation delivered; drawn-area support and browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -28,6 +28,8 @@ of emitted energy or delivered packet reliability.
 | C7 | Coverage targets: places, areas and roads | C3, C4, C6 | Decisions |
 | C8 | Shareable report, exports and deployment verification | C3–C7 | Reporting |
 | C9 | Exact-result replay for unchanged large coverage runs | C2, C6, C8 | Performance hardening |
+| C10 | Bounded approximate preview and seamless refinement | C3, C9 | Usability |
+| C11 | User-drawn coverage areas and explicit outside-area cells | C3, C7, C10 | Coverage |
 
 First useful release: C0–C4. C5–C8 are subsequent releases, not prerequisites
 for using the basic map overlay. Implementation follows this order so each
@@ -287,8 +289,9 @@ automated coverage-job/API checks pass, but do not substitute for the required
 browser review. When browser access is available, walk through calculate,
 hide/show, mode switches, cancel, alternative change and project switch; verify
 desktop/narrow-screen layout, keyboard controls, accessible legend, nodata rendering,
-and responsiveness at the maximum grid. A distinct approximate preview and seamless
-preview replacement are not implemented.
+and responsiveness at the maximum grid. C10 adds a bounded approximate preview and
+keeps it visible until the first refined result cells arrive. User-drawn coverage
+areas and polygon clipping/outside-area semantics are deferred to C11.
 
 Areas: `web_assets/app.js`, `index.html`, `meshcore.css`, browser/API integration tests.
 Commit: `61a8fb6` (`feat: add predicted mesh coverage map and point inspection`).
@@ -527,7 +530,7 @@ Current defaults and remaining release gates:
 
 | Limit | Initial proposal | Behaviour at the limit |
 | --- | --- | --- |
-| Preview grid | Not implemented | A separate 256-cell approximate preview remains planned |
+| Preview grid | 256 cells / 4,096 source evaluations | Separate approximate endpoint reserves a shared planner slot; refined cells replace the preview when available |
 | Standard grid | 4,096 cells by default | Estimate resolves effective spacing against cell/evaluation caps |
 | Detailed grid | 16,384 cells maximum in saved settings | Still bounded by the cell/source evaluation cap |
 | Selected radio sources | 64 maximum | Return actionable validation error |
@@ -567,7 +570,7 @@ Ruff/mypy and JavaScript checks when relevant. Include human-visible browser che
 for C3/C4/C6/C8. Do not substitute synthetic tests for field measurements or mark
 unavailable browser/real-terrain checks as passed.
 
-For each C0–C8 entry append: status; commit; implemented scope; tests and commands;
+For each C0–C11 entry append: status; commit; implemented scope; tests and commands;
 timings/RSS and fixture identity; schema/default changes; visual review; unresolved
 acceptance criteria and their next action.
 
@@ -585,8 +588,10 @@ Current implementation record (2026-09-27):
 | C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
 | C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 157-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
 | C9 | Implemented · `5a9ee78` · performance checks open | Exact complete-grid reuse, integrity validation, height/terrain invalidation, same-snapshot comparisons; large synthetic benchmark documents cache churn and memory tradeoff. |
+| C10 | Implemented · pending commit | `POST /api/coverage/preview` is bounded to 256 cells and 4,096 router evaluations, participates in the shared scheduler, is labelled approximate in the UI, and yields to the full calculation on its first chunk. API test verifies the cap and that previews do not create saved jobs. The 2-source/256-cell flat synthetic core benchmark (3 fresh-process repetitions, Python 3.13.12, Windows 11) took 0.0847 s median (0.0842–0.0848), first chunk 0.0454 s median, and 98.23 MiB median peak working set. This is below the 5 s synthetic engineering target; it is not a live browser or real-raster measurement. Browser visual review remains open. |
+| C11 | Planned | Draw a polygonal area from map interaction, persist its WGS84 geometry with the coverage settings, mask samples at cell centres, distinguish outside-area cells from unknown/uncovered, and carry the semantics through estimate, exports, comparisons, target assessment and reports. |
 
-Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 157
+Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 158
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
 --check` pass. C8 tests verify GeoJSON/JSON/HTML content, explicit unknown and
 not-evaluated states, target escaping/identity, compatible scenario comparisons,

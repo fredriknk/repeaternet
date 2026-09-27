@@ -163,6 +163,40 @@ def start_coverage(client: TestClient, prepared: dict) -> dict:
     return response.json()
 
 
+def test_coverage_preview_is_bounded_approximate_and_not_saved_as_a_job(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    monkeypatch.setenv("RF_PLANNER_MAX_ACTIVE_JOBS", "1")
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        preview_settings = {
+            **prepared["coverage"]["settings"],
+            "maximum_cells": 4_096,
+            "maximum_evaluations": 250_000,
+            "area_mode": "view",
+        }
+        request = {
+            **prepared["coverage"],
+            "settings": preview_settings,
+            "map_bounds": [59.99, 9.99, 60.11, 10.11],
+        }
+
+        response = client.post("/api/coverage/preview", json=request)
+
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview["preview"] is True
+        assert preview["approximate"] is True
+        assert 0 < preview["requested_cells"] <= 256
+        assert len(preview["cells"]) == preview["requested_cells"]
+        assert preview["elapsed_seconds"] >= 0
+        state = client.get("/api/state").json()
+        assert state["coverage_job"] is None
+        assert client.get("/api/coverage/jobs").json()["jobs"] == []
+
+
 def test_coverage_job_estimate_paging_isolation_reconnect_and_recovery(
     tmp_path, monkeypatch
 ) -> None:
