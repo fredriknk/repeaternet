@@ -175,6 +175,28 @@
               <span><i class="diff-unknown"></i> Unknown in either run</span>
             </div>
           </details>
+          <details id="coverage-targets-controls">
+            <summary>Assess places, areas &amp; roads</summary>
+            <p class="hint">Save point, polygon or road targets in this project. Point and road links are evaluated at exact terrain coordinates; areas use coverage-grid samples and stay unknown where sampling is too coarse.</p>
+            <div class="coverage-actions">
+              <button id="coverage-add-target" class="wide-button">Place a point target on map</button>
+              <label class="upload secondary">＋ Import GeoJSON targets<small>FeatureCollection · points, polygons and roads · up to 5 MiB</small><input id="coverage-target-file" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden></label>
+            </div>
+            <label>Road sample spacing · m<input id="coverage-road-spacing" type="number" min="25" max="5000" step="25" value="100"></label>
+            <label>Use coverage run<select id="coverage-target-run"></select></label>
+            <div id="coverage-target-list" class="known-list"><p class="hint">No saved targets. Place a point or import GeoJSON.</p></div>
+            <button id="coverage-assess-targets" class="wide-button" disabled>Assess targets against latest coverage run</button>
+            <p id="coverage-target-summary" class="hint" role="status" aria-live="polite">Targets are project-specific and do not change the certified route.</p>
+            <div id="coverage-target-results" class="known-list"></div>
+            <details>
+              <summary>Compare target outcomes across runs</summary>
+              <label>Baseline target report<select id="coverage-target-baseline"></select></label>
+              <label>Scenario target report<select id="coverage-target-scenario"></select></label>
+              <button id="coverage-target-compare" class="wide-button" disabled>Compare target reports</button>
+              <p id="coverage-target-compare-summary" class="hint" role="status" aria-live="polite">Assess the same saved targets on two compatible coverage runs first.</p>
+              <div id="coverage-target-comparison-results" class="known-list"></div>
+            </details>
+          </details>
           <div class="coverage-legend" aria-label="Coverage estimate legend">
             <span><i class="cov-strong"></i> ≥ 10 dB</span>
             <span><i class="cov-good"></i> 5–10 dB</span>

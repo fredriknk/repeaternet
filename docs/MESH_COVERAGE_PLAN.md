@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C6 implemented; browser/accuracy validation remains open for C3–C6; C7–C8 planned; release validation open.
+Created: 2026-09-27. Status: C0–C7 implemented; browser/accuracy validation remains open for C3–C7; C8 reporting and release validation remain.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -404,26 +404,49 @@ certified bridge before reference-connected comparison. Full suite: 138 passed; 
 JavaScript syntax and diff checks pass. Synthetic rasters only; browser visual review
 and comparative real-terrain performance remain open.
 
-Commit: `feat: compare coverage and antenna-height planning scenarios`.
+Commit: `afd7db8` (`feat: compare coverage and antenna-height planning scenarios`).
 
-## C7 — Places and routes that need coverage [planned]
+## C7 — Places and routes that need coverage [implemented; visual/terrain validation open]
 
 Implementation:
 
 - Add named point targets, drawn polygons and polylines; support GeoJSON import
   with size, geometry, coordinate and vertex limits. Store targets with the project.
-- Inspect points exactly; estimate polygon area from clipped grid-cell areas in a
-  suitable metric/equal-area CRS; sample roads at a stated distance interval.
-  Report evaluated, covered, failed and unknown area/length separately, including
-  small targets that need finer sampling. Do not treat a road as a list of vertices.
+- Inspect points and distance-sampled road locations exactly with the same client
+  radio budget, profile cap and LOS/Fresnel policy as C4. Use distance-weighted
+  intervals so endpoints and short final segments are represented correctly.
+- Estimate polygon outcomes from clipped coverage-grid cell footprints in the
+  terrain's projected metre CRS. A clipped footprint without a sample centre inside
+  the target, area outside the grid, or nodata is unknown; a polygon with no centre
+  sample asks for a finer grid instead of passing.
 - Let targets specify minimum two-way margin and optional reference connectivity.
-  Summarise pass/fail/unknown and compare target outcomes across C6 scenarios.
+  Summarise pass/fail/unknown and compare saved outcomes across compatible C6 runs.
 - First version assesses plans; a new coverage-maximising routing objective is a
   separate future engine milestone with its own search guarantees.
 
-Acceptance: point targets agree with C4; area/length denominators match reference
-geometry cases; imports cannot create unbounded sampling work; nodata and partially
-evaluated targets cannot pass; saved targets round-trip without geometry changes.
+Progress: named point, polygon and line targets can be imported as bounded GeoJSON
+or placed on the map and saved in the project plan. Imports and autosaves validate
+geometry type, unique identifiers, coordinate ranges, polygon closure, minimum
+margin, 5 MiB file size, 500 features and 50,000 vertices. Exact point/road work is
+capped at 50,000 router evaluations and 20,000 samples per line; polygon assessment
+is capped at 32 areas and 250,000 cell scans. Target work reserves capacity from
+the same global planner slot counter and returns 429 when all worker capacity is
+occupied. Per-target reference routers restrict the eligible set to the certified
+connected component. Completed reports are project-local, bounded to 20 per
+coverage run and 5 MiB per report. Compatible reports from different alternatives
+or height scenarios can be compared for improved, regressed, unchanged and
+uncertain target outcomes.
+
+Verification: the exact point's best two-way margin matches C4 inspection at the
+same coordinate; a short road passes with represented lengths summing to its full
+projected length; an area with no in-area grid sample requests finer resolution.
+Tests also cover GeoJSON validation/byte, vertex, sample and grid-scan limits,
+project/workspace isolation, target persistence, reference connectivity, stale-run
+handling and compatible C6 report comparison. Full suite: 148 passed; Ruff, mypy
+and JavaScript syntax checks pass. No browser visual review or licensed real-raster
+accuracy/performance check was available; these remain explicit open checks.
+
+Commit: pending.
 
 Commit: `feat: assess coverage for target locations areas and roads`.
 
@@ -462,8 +485,12 @@ Current defaults and remaining release gates:
 | Cell/source evaluations | 250,000 per job maximum | Estimate includes all requested passes/scenarios |
 | Stream chunks | 128 cells per chunk | Write JSONL and release worker cell buffers |
 | Coverage scalar cache | 50,000 compact metrics by default | Separate from route metrics; configurable with `RF_PLANNER_COVERAGE_CACHE_ENTRIES` |
-| Persisted results | 100 MiB hard output limit | Fail visibly at the limit; no automatic eviction yet |
-| Concurrent work | Existing server-wide active/queued limits | One active compute job per workspace initially |
+| Persisted grid results | 100 MiB hard output limit | Fail visibly at the limit; no automatic eviction yet |
+| Target GeoJSON | 5 MiB / 500 features / 50,000 vertices | Reject with actionable validation error |
+| Exact point/road target RF work | 50,000 source evaluations / request; 20,000 samples / road | Reject; increase road spacing or assess fewer targets |
+| Polygon target work | 32 areas / 250,000 grid-cell scans / request | Assess fewer areas at once |
+| Saved target reports | 20 / coverage run; 5 MiB / report | Reject additional reports visibly |
+| Concurrent work | Existing server-wide active/queued limits | Target assessment reserves a global planner slot; one coverage job per workspace |
 
 Also bound samples per RF profile, chunk bytes, inspection profiles and total job
 runtime after C0 measurements. Over-limit profiles become unresolved with an
@@ -505,15 +532,16 @@ Current implementation record (2026-09-27):
 | C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
-| C6 | Implemented · commit pending | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
-| C7–C8 | Planned | No implementation started. |
+| C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
+| C7 | Implemented · commit pending | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
+| C8 | Planned | GeoJSON/JSON/printable report exports, container/two-workspace/restart release validation and user-visible review remain. |
 
-Validation recorded so far: full suite `python -m pytest` passes 126 tests;
-`python -m ruff check src tests tools` and `python -m mypy src/rf_router_planner
---ignore-missing-imports` pass. JavaScript syntax checks passed in the previous C3/C4
-implementation pass. No real-raster timing, concurrent-workspace RSS, field
-validation or browser visual review has been measured; these remain release gates,
-not implied successes.
+Latest validation: `uv run pytest` passes 148 tests; `uv run ruff check src tests`,
+`uv run mypy src/rf_router_planner --ignore-missing-imports` and
+`node --check src/rf_router_planner/web_assets/app.js` pass. An earlier browser
+attempt found no enabled browser surface; visual review is still open. No
+real-raster timing, concurrent-workspace RSS or field validation has been measured;
+these remain release gates, not implied successes.
 
 Deferred beyond this plan: live packet/RSSI ingestion and calibration, traffic or
 airtime simulation, automatic optimisation for area coverage, mobile GPS tracking,

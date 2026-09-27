@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
@@ -30,6 +30,8 @@ from .coordinates import norway_utm_epsg
 from .coverage.compare import compare_coverage_streams
 from .coverage.engine import calculate_coverage, make_grid
 from .coverage.scenarios import analyze_node_failures
+from .coverage.target_assessment import assess_targets
+from .coverage.targets import MAX_TARGET_IMPORT_BYTES, normalize_target_collection
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
 from .integrations.corescope import CoreScopeClient
@@ -41,7 +43,7 @@ from .models.settings import (
     TerrainSettings,
     ValidationMode,
 )
-from .models.site import Site, SiteKind, SiteOrigin
+from .models.site import HeightReference, Site, SiteKind, SiteOrigin
 from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .project_store import ProjectStore
@@ -53,6 +55,8 @@ ASSETS = Path(__file__).parent / "web_assets"
 MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
 MAX_COVERAGE_BACKBONE_REVALIDATION_LINKS = 4_096
 COVERAGE_MODEL_VERSION = "coverage-v1"
+MAX_TARGET_REPORTS_PER_JOB = 20
+MAX_TARGET_REPORT_BYTES = 5 * 1024 * 1024
 
 
 def encode(value: Any) -> Any:
@@ -505,6 +509,21 @@ def _iter_coverage_cells(
                 yield from chunk
 
 
+def _decode_coverage_sites(value: Any) -> list[Site]:
+    if not isinstance(value, list) or not value or len(value) > 64:
+        raise ValueError("Saved coverage source snapshot is unavailable")
+    sites = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError("Saved coverage source snapshot is malformed")
+        site = dict(raw)
+        site["kind"] = SiteKind(site["kind"])
+        site["origin"] = SiteOrigin(site["origin"])
+        site["height_reference"] = HeightReference(site["height_reference"])
+        sites.append(Site(**site))
+    return sites
+
+
 def _terrain_fingerprint(workspace: Workspace) -> list[list[str | int]]:
     return [
         list(item)
@@ -547,7 +566,7 @@ def _route_plan_fingerprint(plan: dict[str, Any]) -> str:
         {
             key: value
             for key, value in plan.items()
-            if key not in {"coverage", "resolved_search"}
+            if key not in {"coverage", "coverage_targets", "resolved_search"}
         }
     )
 
@@ -1005,6 +1024,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError):
             return False
 
+    def reserve_target_assessment_capacity() -> Iterator[None]:
+        """Use a shared compute slot while the bounded synchronous target pass runs."""
+        with scheduler_lock:
+            if job_slots["outstanding"] >= max_workers:
+                raise HTTPException(429, "All planner workers are busy; retry target assessment shortly")
+            job_slots["outstanding"] += 1
+        try:
+            yield
+        finally:
+            with scheduler_lock:
+                job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+
+    @app.post("/api/coverage/targets/import")
+    def import_coverage_targets(request: Request, file: UploadFile) -> Any:
+        workspace(request)
+        try:
+            payload = file.file.read(MAX_TARGET_IMPORT_BYTES + 1)
+            if len(payload) > MAX_TARGET_IMPORT_BYTES:
+                raise ValueError("GeoJSON import exceeds the 5 MiB limit")
+            collection = json.loads(payload)
+            return normalize_target_collection(collection)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.put("/api/coverage/targets")
+    def save_coverage_targets(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            targets = normalize_target_collection(body)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with ws.lock:
+            if ws.status["state"] in {"queued", "running", "preparing"} or (
+                ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
+            ):
+                raise HTTPException(409, "Wait for active calculations before editing coverage targets")
+            plan = dict(ws.inputs or {})
+            plan["coverage_targets"] = targets
+            if not project_store.autosave(ws.workspace_key, ws.project_id, plan):
+                raise HTTPException(404, "Active project is no longer available")
+            ws.inputs = plan
+            _write_json_atomic(ws.directory / "plan.json", plan)
+        return {"ok": True, "count": len(targets["features"]), "targets": targets}
+
     @app.post("/api/coverage/estimate")
     def estimate_mesh_coverage(body: dict[str, Any], request: Request) -> Any:
         ws = workspace(request)
@@ -1126,6 +1189,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "terrain_fingerprint": context["terrain_fingerprint"],
                     "settings_fingerprint": _plan_fingerprint(encode(coverage_settings)),
                     "settings": encode(coverage_settings),
+                    "radio_settings": {
+                        "rf": encode(context["rf"]),
+                        "candidates": encode(context["candidates"]),
+                    },
                     "radio_fingerprint": _plan_fingerprint(
                         {
                             "rf": encode(context["rf"]),
@@ -1294,6 +1361,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         area_bounds_wgs84=_coverage_area_bounds_wgs84(
                             estimate_grid.bounds, terrain.crs
                         ),
+                        terrain_crs=CRS(terrain.crs).to_string(),
+                        grid_bounds_projected=list(estimate_grid.bounds),
                     )
                     grid = calculate_coverage(
                         terrain,
@@ -1546,6 +1615,262 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "state": job["state"],
                 "stale": bool(job.get("stale")),
             }
+
+    @app.post(
+        "/api/coverage/jobs/{job_id}/targets",
+        dependencies=[Depends(reserve_target_assessment_capacity)],
+    )
+    def assess_saved_coverage_targets(
+        job_id: str, body: dict[str, Any], request: Request
+    ) -> Any:
+        ws = workspace(request)
+        road_spacing = body.get("road_spacing_m", 100.0)
+        if (
+            not isinstance(road_spacing, (int, float))
+            or isinstance(road_spacing, bool)
+            or not math.isfinite(road_spacing)
+            or not 25 <= road_spacing <= 5_000
+        ):
+            raise HTTPException(422, "Road sample spacing must be between 25 and 5,000 m")
+        with ws.lock:
+            job = _load_coverage_manifest(ws, job_id)
+            if job is None or job.get("project_id") != ws.project_id:
+                raise HTTPException(404, "Coverage run not found in this project workspace")
+            if job.get("state") != "complete":
+                raise HTTPException(409, "Complete the coverage calculation before assessing targets")
+            targets = normalize_target_collection((ws.inputs or {}).get("coverage_targets", {
+                "type": "FeatureCollection", "features": []
+            }))
+            if not targets["features"]:
+                raise HTTPException(422, "Add or import at least one saved coverage target first")
+            project_id = ws.project_id
+            terrain_fingerprint = _terrain_fingerprint(ws)
+            terrain_paths = _terrain_paths(ws, "dtm")
+            dom_paths = _terrain_paths(ws, "dom")
+            directory = ws.directory
+        if not coverage_current(ws, job) or terrain_fingerprint != job.get("terrain_fingerprint"):
+            raise HTTPException(409, "Coverage run is stale; recalculate before assessing targets")
+
+        reference_ids = {
+            item["properties"]["reference_id"]
+            for item in targets["features"]
+            if item["properties"].get("reference_id") is not None
+        }
+        connected_by_reference: dict[str, set[str]] = {}
+        routers = set(job.get("router_ids", []))
+        sources_selected = set(job.get("source_ids", []))
+        for reference_id in reference_ids:
+            if reference_id not in routers or reference_id not in sources_selected:
+                raise HTTPException(422, f"Target reference {reference_id!r} is not a selected router source")
+            try:
+                network = analyze_node_failures(
+                    [],
+                    list(routers),
+                    list(sources_selected),
+                    job.get("network_links", []),
+                    [],
+                    reference_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            connected_by_reference[reference_id] = set(network["connected_source_ids"])
+
+        try:
+            cells_path = (directory / str(job.get("result_file", ""))).resolve()
+            if directory.resolve() not in cells_path.parents or not cells_path.is_file():
+                raise FileNotFoundError("Coverage result pages are unavailable")
+            stored_count = sum(1 for _ in _iter_coverage_cells(directory, job))
+            expected_count = job.get("requested_cells", job.get("total"))
+            if stored_count != expected_count:
+                raise ValueError("Coverage results are incomplete; calculate again first")
+            radio = job.get("radio_settings")
+            if not isinstance(radio, dict):
+                raise ValueError("Coverage run predates saved radio assumptions; recalculate first")
+            rf_settings = settings(RFSettings, radio.get("rf", {}))
+            candidate_settings = settings(CandidateSettings, radio.get("candidates", {}))
+            coverage_settings = parse_coverage_settings(job.get("settings", {}))
+            sites = _decode_coverage_sites(job.get("source_sites"))
+            grid_bounds = tuple(float(item) for item in job["grid_bounds_projected"])
+            if len(grid_bounds) != 4:
+                raise ValueError("Saved coverage grid bounds are malformed")
+            with RasterTerrain(terrain_paths, dom_paths) as terrain:
+                if CRS(terrain.crs).to_string() != job.get("terrain_crs"):
+                    raise ValueError("Coverage terrain CRS changed; recalculate before assessing targets")
+                report = assess_targets(
+                    terrain,
+                    rf_settings,
+                    candidate_settings,
+                    coverage_settings,
+                    sites,
+                    targets,
+                    lambda: _iter_coverage_cells(directory, job),
+                    terrain_crs=job["terrain_crs"],
+                    grid_bounds=grid_bounds,
+                    effective_cell_size_m=float(job["effective_cell_size_m"]),
+                    requested_cells=int(expected_count),
+                    connected_sources_by_reference=connected_by_reference,
+                    road_spacing_m=float(road_spacing),
+                )
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if ws.project_id != project_id or not coverage_current(ws, job):
+            raise HTTPException(409, "Route, terrain, or radio settings changed during target assessment")
+
+        report_id = secrets.token_hex(16)
+        report.update(
+            report_id=report_id,
+            coverage_job_id=job_id,
+            project_id=project_id,
+            target_fingerprint=_plan_fingerprint(targets),
+            terrain_fingerprint=job["terrain_fingerprint"],
+            radio_fingerprint=job["radio_fingerprint"],
+            model_version=job["model_version"],
+            grid_compatibility={
+                key: job.get(key)
+                for key in ("rows", "columns", "effective_cell_size_m", "area_bounds_wgs84")
+            },
+            client_profile=job["settings"].get("client"),
+            profile_step_m=job["settings"].get("profile_step_m"),
+            assessed_at=time.time(),
+        )
+        report["assumptions"]["coverage_job_id"] = job_id
+        report_directory = directory / "coverage-target-reports"
+        report_directory.mkdir(parents=True, exist_ok=True)
+        if len(list(report_directory.glob(f"{job_id}-*.json"))) >= MAX_TARGET_REPORTS_PER_JOB:
+            raise HTTPException(429, "This coverage run already has 20 saved target reports")
+        report_text = json.dumps(report, separators=(",", ":"))
+        if len(report_text.encode("utf-8")) > MAX_TARGET_REPORT_BYTES:
+            raise HTTPException(413, "Target assessment report exceeded the 5 MiB limit")
+        report_path = report_directory / f"{job_id}-{report_id}.json"
+        _write_json_atomic(report_path, report)
+        return report
+
+    @app.get("/api/coverage/target-reports")
+    def list_coverage_target_reports(request: Request) -> Any:
+        ws = workspace(request)
+        report_directory = ws.directory / "coverage-target-reports"
+        reports = []
+        if report_directory.is_dir():
+            for path in report_directory.glob("*-*.json"):
+                try:
+                    report = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(report, dict) or report.get("project_id") != ws.project_id:
+                    continue
+                rows = report.get("targets", [])
+                reports.append(
+                    {
+                        "report_id": report.get("report_id"),
+                        "coverage_job_id": report.get("coverage_job_id"),
+                        "assessed_at": report.get("assessed_at"),
+                        "target_count": len(rows),
+                        "pass_count": sum(item.get("state") == "pass" for item in rows),
+                        "fail_count": sum(item.get("state") == "fail" for item in rows),
+                        "unknown_count": sum(
+                            item.get("state") not in {"pass", "fail"} for item in rows
+                        ),
+                    }
+                )
+        reports.sort(key=lambda item: item.get("assessed_at") or 0, reverse=True)
+        return {"reports": reports[:100]}
+
+    @app.post("/api/coverage/target-reports/compare")
+    def compare_coverage_target_reports(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        baseline_id, scenario_id = body.get("baseline_report_id"), body.get("scenario_report_id")
+        if (
+            not isinstance(baseline_id, str)
+            or not isinstance(scenario_id, str)
+            or baseline_id == scenario_id
+            or any(
+                len(item) != 32 or any(character not in "0123456789abcdef" for character in item)
+                for item in (baseline_id, scenario_id)
+            )
+        ):
+            raise HTTPException(422, "Choose two different saved target assessment reports")
+
+        def read_report(report_id: str) -> dict[str, Any] | None:
+            for path in (ws.directory / "coverage-target-reports").glob(f"*-{report_id}.json"):
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return None
+                if isinstance(value, dict) and value.get("project_id") == ws.project_id:
+                    return value
+            return None
+
+        baseline, scenario = read_report(baseline_id), read_report(scenario_id)
+        if baseline is None or scenario is None:
+            raise HTTPException(404, "Target report not found in this project workspace")
+        compatible = (
+            baseline.get("target_fingerprint") == scenario.get("target_fingerprint")
+            and baseline.get("terrain_fingerprint") == scenario.get("terrain_fingerprint")
+            and baseline.get("radio_fingerprint") == scenario.get("radio_fingerprint")
+            and baseline.get("model_version") == scenario.get("model_version")
+            and baseline.get("grid_compatibility") == scenario.get("grid_compatibility")
+            and baseline.get("client_profile") == scenario.get("client_profile")
+            and baseline.get("profile_step_m") == scenario.get("profile_step_m")
+            and baseline.get("assumptions", {}).get("road_sample_spacing_m")
+            == scenario.get("assumptions", {}).get("road_sample_spacing_m")
+        )
+        if not compatible:
+            raise HTTPException(
+                409,
+                "Target reports use different targets, terrain, client radio, resolution, or coverage model",
+            )
+        baseline_rows = {item["id"]: item for item in baseline.get("targets", [])}
+        scenario_rows = {item["id"]: item for item in scenario.get("targets", [])}
+        if baseline_rows.keys() != scenario_rows.keys():
+            raise HTTPException(409, "Target report contents do not align")
+        differences = []
+        counts = {key: 0 for key in ("improved", "regressed", "unchanged", "uncertain")}
+        for target_id, before in baseline_rows.items():
+            after = scenario_rows[target_id]
+            before_state, after_state = before.get("state"), after.get("state")
+            change = (
+                "improved"
+                if before_state != "pass" and after_state == "pass"
+                else "regressed"
+                if before_state == "pass" and after_state != "pass"
+                else "unchanged"
+                if before_state == after_state and before_state in {"pass", "fail"}
+                else "uncertain"
+            )
+            counts[change] += 1
+            differences.append(
+                {
+                    "id": target_id,
+                    "name": after.get("name"),
+                    "baseline_state": before_state,
+                    "scenario_state": after_state,
+                    "change": change,
+                    "baseline_margin_db": (
+                        before.get("best_two_way_margin_db")
+                        if before.get("best_two_way_margin_db") is not None
+                        else before.get("worst_passing_margin_db")
+                    ),
+                    "scenario_margin_db": (
+                        after.get("best_two_way_margin_db")
+                        if after.get("best_two_way_margin_db") is not None
+                        else after.get("worst_passing_margin_db")
+                    ),
+                    "baseline_covered_area_m2": before.get("covered_area_m2"),
+                    "scenario_covered_area_m2": after.get("covered_area_m2"),
+                    "baseline_covered_length_m": before.get("covered_length_m"),
+                    "scenario_covered_length_m": after.get("covered_length_m"),
+                }
+            )
+        return {
+            "baseline_report_id": baseline_id,
+            "scenario_report_id": scenario_id,
+            "baseline_coverage_job_id": baseline["coverage_job_id"],
+            "scenario_coverage_job_id": scenario["coverage_job_id"],
+            "counts": counts,
+            "targets": differences,
+        }
 
     @app.post("/api/coverage/jobs/{job_id}/cancel")
     def cancel_mesh_coverage(job_id: str, request: Request) -> Any:
@@ -2009,6 +2334,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         plan = body.get("plan")
         if not isinstance(plan, dict):
             raise HTTPException(422, "Plan must be a JSON object")
+        if "coverage_targets" in plan:
+            try:
+                plan = {**plan, "coverage_targets": normalize_target_collection(plan["coverage_targets"])}
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(422, str(exc)) from exc
         if body.get("project_id") is not None and body.get("project_id") != ws.project_id:
             raise HTTPException(409, "Autosave belongs to a project that is no longer active")
         with ws.lock:

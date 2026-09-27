@@ -94,6 +94,12 @@ def fake_two_router_optimizer(self, endpoint_a, endpoint_b, **kwargs):
 def wait_for(client: TestClient, job_id: str, terminal: set[str]) -> dict:
     for _ in range(500):
         response = client.get(f"/api/coverage/jobs/{job_id}")
+        if (
+            response.status_code == 200
+            and response.json()["state"] == "failed"
+            and "failed" not in terminal
+        ):
+            pytest.fail(f"Coverage job {job_id} failed: {response.json()['stage']}")
         if response.status_code == 200 and response.json()["state"] in terminal:
             return response.json()
         time.sleep(0.01)
@@ -359,6 +365,213 @@ def test_failure_scenarios_use_completed_workspace_snapshot_without_rf_work(
             json={"failed_ids": [], "reference_id": "R-coverage"},
         ).status_code == 404
         other_workspace.close()
+
+
+def test_saved_targets_are_project_scoped_and_assess_point_road_and_area_targets(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        job = start_coverage(client, prepared)
+        assert wait_for(client, job["job_id"], {"complete"})["state"] == "complete"
+
+        point_latitude, point_longitude = coordinates(500600.0, 6650500.0)
+        xform = Transformer.from_crs(25833, 4326, always_xy=True)
+        area_ring = [
+            list(xform.transform(x, y))
+            for x, y in (
+                (500475.0, 6650475.0),
+                (500525.0, 6650475.0),
+                (500525.0, 6650525.0),
+                (500475.0, 6650525.0),
+                (500475.0, 6650475.0),
+            )
+        ]
+        source = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [point_longitude, point_latitude]},
+                    "properties": {
+                        "name": "Point",
+                        "minimum_margin_db": -100,
+                        "reference_id": "R-coverage",
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [
+                            list(xform.transform(500600.0, 6650500.0)),
+                            list(xform.transform(500700.0, 6650500.0)),
+                        ],
+                    },
+                    "properties": {"name": "Road", "minimum_margin_db": -100},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [area_ring]},
+                    "properties": {"name": "Small area"},
+                },
+            ],
+        }
+        imported = client.post(
+            "/api/coverage/targets/import",
+            files={"file": ("targets.geojson", json.dumps(source), "application/geo+json")},
+        )
+        assert imported.status_code == 200, imported.text
+        saved = client.put("/api/coverage/targets", json=imported.json())
+        assert saved.status_code == 200, saved.text
+        assert client.get("/api/state").json()["plan"]["coverage_targets"] == saved.json()["targets"]
+        assert not client.get(f"/api/coverage/jobs/{job['job_id']}").json()["stale"]
+
+        inspection = client.post(
+            "/api/coverage/inspect",
+            json={
+                **prepared["coverage"],
+                "latitude": point_latitude,
+                "longitude": point_longitude,
+            },
+        )
+        assert inspection.status_code == 200, inspection.text
+        inspection_id = inspection.json()["job_id"]
+        for _ in range(500):
+            inspected = client.get(f"/api/coverage/inspect/{inspection_id}").json()
+            if inspected["state"] in {"complete", "failed"}:
+                break
+            time.sleep(0.01)
+        assert inspected["state"] == "complete", inspected
+
+        report = client.post(
+            f"/api/coverage/jobs/{job['job_id']}/targets",
+            json={"road_spacing_m": 25},
+        )
+        assert report.status_code == 200, report.text
+        targets = {item["name"]: item for item in report.json()["targets"]}
+        assert targets["Point"]["state"] == "pass"
+        inspect_margins = [
+            row["two_way_margin_db"]
+            for row in inspected["result"]["sources"]
+            if row["source_id"] == "R-coverage" and row["valid_two_way"]
+        ]
+        assert targets["Point"]["best_two_way_margin_db"] == pytest.approx(max(inspect_margins))
+        assert targets["Road"]["state"] == "pass"
+        assert targets["Road"]["covered_length_m"] == pytest.approx(
+            targets["Road"]["total_length_m"]
+        )
+        assert targets["Small area"]["state"] == "needs_finer_sampling"
+        assert targets["Small area"]["unknown_area_m2"] == pytest.approx(
+            targets["Small area"]["requested_area_m2"]
+        )
+        assert report.json()["assumptions"]["reference_connected_source_ids"]["R-coverage"] == [
+            "R-coverage"
+        ]
+
+        isolated = TestClient(client.app)
+        isolated.get("/")
+        assert isolated.get("/api/state").json()["plan"] is None
+        assert isolated.post(
+            f"/api/coverage/jobs/{job['job_id']}/targets", json={}
+        ).status_code == 404
+        isolated.close()
+
+
+def test_target_import_and_saved_collection_enforce_validation(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepare_workspace(client, monkeypatch)
+        invalid = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [181, 60]},
+                    "properties": {"name": "Invalid"},
+                }
+            ],
+        }
+        assert client.post(
+            "/api/coverage/targets/import",
+            files={"file": ("bad.geojson", json.dumps(invalid), "application/geo+json")},
+        ).status_code == 422
+        assert client.put("/api/coverage/targets", json=invalid).status_code == 422
+        oversized = client.post(
+            "/api/coverage/targets/import",
+            files={
+                "file": (
+                    "oversized.geojson",
+                    b" " * (5 * 1024 * 1024 + 1),
+                    "application/geo+json",
+                )
+            },
+        )
+        assert oversized.status_code == 422
+        assert "5 MiB" in oversized.json()["detail"]
+
+
+def test_saved_target_reports_compare_compatible_coverage_scenarios(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        point_latitude, point_longitude = coordinates(500600.0, 6650500.0)
+        target_collection = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "T-scenario",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [point_longitude, point_latitude],
+                    },
+                    "properties": {"name": "Scenario point", "minimum_margin_db": -100},
+                }
+            ],
+        }
+        assert client.put("/api/coverage/targets", json=target_collection).status_code == 200
+
+        baseline = start_coverage(client, prepared)
+        assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
+        baseline_report = client.post(
+            f"/api/coverage/jobs/{baseline['job_id']}/targets", json={"road_spacing_m": 100}
+        )
+        assert baseline_report.status_code == 200, baseline_report.text
+
+        scenario_request = {
+            **prepared["coverage"],
+            "source_height_overrides": {"R-coverage": 10.0},
+        }
+        scenario = client.post("/api/coverage/jobs", json=scenario_request)
+        assert scenario.status_code == 200, scenario.text
+        assert wait_for(client, scenario.json()["job_id"], {"complete"})["state"] == "complete"
+        scenario_report = client.post(
+            f"/api/coverage/jobs/{scenario.json()['job_id']}/targets",
+            json={"road_spacing_m": 100},
+        )
+        assert scenario_report.status_code == 200, scenario_report.text
+
+        compared = client.post(
+            "/api/coverage/target-reports/compare",
+            json={
+                "baseline_report_id": baseline_report.json()["report_id"],
+                "scenario_report_id": scenario_report.json()["report_id"],
+            },
+        )
+        assert compared.status_code == 200, compared.text
+        assert compared.json()["counts"] == {
+            "improved": 0,
+            "regressed": 0,
+            "unchanged": 1,
+            "uncertain": 0,
+        }
+        listed = client.get("/api/coverage/target-reports").json()["reports"]
+        assert {item["report_id"] for item in listed} >= {
+            baseline_report.json()["report_id"],
+            scenario_report.json()["report_id"],
+        }
 
 
 def test_compatible_coverage_runs_are_archived_and_compared_on_common_grid(
