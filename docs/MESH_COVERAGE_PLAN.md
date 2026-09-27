@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: proposed; implementation has not started.
+Created: 2026-09-27. Status: C0–C1 in progress.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -108,7 +108,7 @@ requested area, evaluated area, unknown area and estimated covered area separate
 Report coverage percentage over evaluated area alongside the evaluated fraction
 of the requested area. Partial jobs cannot silently acquire a complete denominator.
 
-## C0 — Contract, fixtures and baseline [planned]
+## C0 — Contract, fixtures and baseline [in progress]
 
 Implementation:
 
@@ -124,9 +124,14 @@ Implementation:
   licensed raster can be used without committing the raster; record its checksum,
   source, settings and availability. CI remains independent of provider downloads.
 
-Acceptance: expected coverage states and directional budgets have hand-checkable
-reference cases; benchmark output includes completion/cancellation and unknown
-counts. Record baseline evidence before optimizations.
+Progress: typed settings/results, explicit coverage states, and the default
+handheld radio profile are implemented. The offline fixtures and benchmark tool
+remain to be delivered alongside the engine in C1 because coverage did not have
+a callable implementation when this contract was committed.
+
+Acceptance still open: expected coverage states and directional budgets need
+hand-checkable reference cases; benchmark output needs completion/cancellation
+and unknown counts. Record baseline evidence before optimization.
 
 Areas: new `models/coverage.py`, `tests/test_coverage.py`,
 `tools/benchmark_mesh_coverage.py` and fixture documentation.
