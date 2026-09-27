@@ -96,7 +96,12 @@ def _parse_scenarios(value: str) -> list[str]:
     return scenarios
 
 
-def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str, Any]:
+def run_one(
+    source_count: int,
+    requested_cells: int,
+    scenario: str,
+    cache_entries: int = 50_000,
+) -> dict[str, Any]:
     from rf_router_planner.coverage.engine import calculate_coverage
     from rf_router_planner.models.coverage import CoverageSettings
     from rf_router_planner.models.settings import CandidateSettings, RFSettings
@@ -161,7 +166,7 @@ def run_one(source_count: int, requested_cells: int, scenario: str) -> dict[str,
     cancel_rf_calls = 0
     warm_rf_calls = 0
     measurement_phase = "cold"
-    cache = LinkMetricsCache(max_entries=50_000)
+    cache = LinkMetricsCache(max_entries=cache_entries)
 
     from rf_router_planner.rf.propagation import LinkEvaluator
 
@@ -358,14 +363,21 @@ def main() -> None:
     parser.add_argument("--cells", type=_parse_ints, default=[256])
     parser.add_argument("--scenarios", type=_parse_scenarios, default=["flat"])
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--cache-entries", type=int, default=50_000)
     parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--_case", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
+    if args.cache_entries < 1:
+        parser.error("--cache-entries must be positive")
     if args._case:
-        source_count, cells, scenario = json.loads(args._case)
-        print(json.dumps(run_one(source_count, cells, scenario), sort_keys=True))
+        source_count, cells, scenario, cache_entries = json.loads(args._case)
+        print(
+            json.dumps(
+                run_one(source_count, cells, scenario, cache_entries), sort_keys=True
+            )
+        )
         return
 
     reports: list[dict[str, Any]] = []
@@ -379,7 +391,9 @@ def main() -> None:
                             sys.executable,
                             str(Path(__file__).resolve()),
                             "--_case",
-                            json.dumps([source_count, requested_cells, scenario]),
+                            json.dumps(
+                                [source_count, requested_cells, scenario, args.cache_entries]
+                            ),
                         ],
                         check=True,
                         capture_output=True,

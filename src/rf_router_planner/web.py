@@ -580,6 +580,80 @@ def _route_plan_fingerprint(plan: dict[str, Any]) -> str:
     )
 
 
+_COVERAGE_REUSE_FIELDS = (
+    "project_id",
+    "route_fingerprint",
+    "terrain_fingerprint",
+    "terrain_crs",
+    "settings_fingerprint",
+    "radio_fingerprint",
+    "source_ids",
+    "source_sites",
+    "source_height_overrides",
+    "alternative_id",
+    "snapshot_version",
+    "grid_bounds_projected",
+    "rows",
+    "columns",
+    "requested_cells",
+    "effective_cell_size_m",
+)
+
+
+def _coverage_reuse_fingerprint(job: dict[str, Any]) -> str | None:
+    if any(field not in job for field in _COVERAGE_REUSE_FIELDS):
+        return None
+    return _plan_fingerprint({field: job[field] for field in _COVERAGE_REUSE_FIELDS})
+
+
+def _manifest_modified_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _find_completed_coverage_reuse(
+    directory: Path,
+    fingerprint: str,
+    current_job: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    archive = directory / "coverage-jobs"
+    def is_reusable(candidate: dict[str, Any]) -> bool:
+        try:
+            if candidate.get("state") != "complete":
+                return False
+            if _coverage_reuse_fingerprint(candidate) != fingerprint:
+                return False
+            summary = summarize_coverage_cells(_iter_coverage_cells(directory, candidate), candidate)
+        except (OSError, TypeError, ValueError, KeyError):
+            return False
+        return (
+            summary["stored_cells"] == summary["requested_cells"]
+            and summary["not_evaluated_cells"] == 0
+        )
+
+    if current_job is not None and is_reusable(current_job):
+        return current_job
+    if not archive.is_dir():
+        return None
+    manifests = sorted(
+        archive.glob("*.json"), key=_manifest_modified_ns, reverse=True
+    )[:50]
+    for path in manifests:
+        try:
+            candidate = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(candidate, dict) or candidate.get("job_id") == (
+            current_job or {}
+        ).get("job_id"):
+            continue
+        if is_reusable(candidate):
+            return candidate
+    return None
+
+
 def _refresh_recovery_summary(workspace: Workspace) -> None:
     summary = workspace.result_summary
     if summary is None:
@@ -922,6 +996,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             input_revision = ws.input_revision
             selected_snapshot = ws.snapshot_version
             selected_alternative = solution_id(result.active_solution)
+            workspace_directory = ws.directory
 
         requested_bounds = None
         if coverage_settings.area_mode == "view":
@@ -955,6 +1030,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "route_fingerprint": route_fingerprint,
             "terrain_fingerprint": terrain_fingerprint,
             "project_id": project_id,
+            "workspace_directory": workspace_directory,
             "input_revision": input_revision,
             "snapshot_version": selected_snapshot,
             "alternative_id": selected_alternative,
@@ -1271,6 +1347,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ]
             if coverage_settings.maximum_evaluations // len(sources) < 1:
                 raise ValueError("Coverage limits allow no source evaluations")
+            bounded_settings = replace(
+                coverage_settings,
+                maximum_cells=min(
+                    coverage_settings.maximum_cells,
+                    coverage_settings.maximum_evaluations // len(sources),
+                ),
+            )
+            with RasterTerrain(context["dtm_paths"], context["dom_paths"]) as terrain:
+                estimate_grid = make_grid(
+                    sources, terrain, bounded_settings, context["requested_bounds"]
+                )[0]
+                terrain_crs = CRS(terrain.crs).to_string()
+            radio_settings = {
+                "rf": encode(context["rf"]),
+                "candidates": encode(context["candidates"]),
+            }
+            reuse_identity = {
+                "project_id": context["project_id"],
+                "route_fingerprint": context["route_fingerprint"],
+                "terrain_fingerprint": context["terrain_fingerprint"],
+                "terrain_crs": terrain_crs,
+                "settings_fingerprint": _plan_fingerprint(encode(coverage_settings)),
+                "radio_fingerprint": _plan_fingerprint(radio_settings),
+                "source_ids": [site.id for site in sources],
+                "source_sites": encode(sources),
+                "source_height_overrides": height_overrides,
+                "alternative_id": context["alternative_id"],
+                "snapshot_version": context["snapshot_version"],
+                "grid_bounds_projected": list(estimate_grid.bounds),
+                "rows": estimate_grid.rows,
+                "columns": estimate_grid.columns,
+                "requested_cells": estimate_grid.requested_cells,
+                "effective_cell_size_m": estimate_grid.effective_cell_size_m,
+            }
+            reuse_fingerprint = _coverage_reuse_fingerprint(reuse_identity)
+            assert reuse_fingerprint is not None
+            with ws.lock:
+                current_coverage_job = (
+                    dict(ws.coverage_job) if ws.coverage_job is not None else None
+                )
+            reuse_validation_started = time.perf_counter()
+            reusable_job = _find_completed_coverage_reuse(
+                context["workspace_directory"], reuse_fingerprint, current_coverage_job
+            )
+            reuse_validation_seconds = time.perf_counter() - reuse_validation_started
             with ws.lock:
                 if (
                     ws.coverage_job
@@ -1291,6 +1412,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     != _plan_fingerprint(encode(coverage_settings))
                 ):
                     raise HTTPException(409, "Save coverage settings and refresh the route before calculating")
+                if reusable_job is not None:
+                    ws.coverage_job = dict(reusable_job)
+                    _write_json_atomic(ws.coverage_job_path, ws.coverage_job)
+                    return {
+                        **reusable_job,
+                        "reused": True,
+                        "reuse_validation_seconds": reuse_validation_seconds,
+                    }
                 with scheduler_lock:
                     if job_slots["outstanding"] >= max_outstanding_jobs:
                         raise HTTPException(429, "The planner queue is full; retry shortly")
@@ -1315,18 +1444,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "result_file": result_name,
                     "route_fingerprint": context["route_fingerprint"],
                     "terrain_fingerprint": context["terrain_fingerprint"],
+                    "terrain_crs": terrain_crs,
                     "settings_fingerprint": _plan_fingerprint(encode(coverage_settings)),
                     "settings": encode(coverage_settings),
-                    "radio_settings": {
-                        "rf": encode(context["rf"]),
-                        "candidates": encode(context["candidates"]),
-                    },
-                    "radio_fingerprint": _plan_fingerprint(
-                        {
-                            "rf": encode(context["rf"]),
-                            "candidates": encode(context["candidates"]),
-                        }
-                    ),
+                    "radio_settings": radio_settings,
+                    "radio_fingerprint": _plan_fingerprint(radio_settings),
                     "model_version": COVERAGE_MODEL_VERSION,
                     "source_ids": [site.id for site in sources],
                     "source_sites": encode(sources),
@@ -1609,9 +1731,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             not isinstance(baseline_id, str)
             or not isinstance(scenario_id, str)
             or not isinstance(reference_id, str)
-            or baseline_id == scenario_id
         ):
-            raise HTTPException(422, "Choose two different completed runs and a shared reference router")
+            raise HTTPException(422, "Choose completed runs and a shared reference router")
         with ws.lock:
             baseline = _load_coverage_manifest(ws, baseline_id)
             scenario = _load_coverage_manifest(ws, scenario_id)

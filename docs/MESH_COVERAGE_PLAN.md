@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C8 implementation delivered; browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
+Created: 2026-09-27. Status: C0–C9 implementation delivered; browser/accuracy and self-hosted runtime release validation remain open where this environment could not run them.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -27,6 +27,7 @@ of emitted energy or delivered packet reliability.
 | C6 | Compare alternatives and antenna-height scenarios | C2–C5 | Decisions |
 | C7 | Coverage targets: places, areas and roads | C3, C4, C6 | Decisions |
 | C8 | Shareable report, exports and deployment verification | C3–C7 | Reporting |
+| C9 | Exact-result replay for unchanged large coverage runs | C2, C6, C8 | Performance hardening |
 
 First useful release: C0–C4. C5–C8 are subsequent releases, not prerequisites
 for using the basic map overlay. Implementation follows this order so each
@@ -470,6 +471,56 @@ explicitly open with a corrective milestone.
 
 Commit: `cf2d6a3` (`feat: export mesh coverage reports`).
 
+## C9 — Large-run result reuse [implemented; runtime/large-file validation open]
+
+The C0–C8 benchmark matrix showed that an unchanged full-grid rerun could miss
+the entire 50,000-entry LRU when the scan itself was larger than capacity. The
+8-source/16,384-cell flat case made 131,072 misses on its warm pass; the
+32-source/evaluation-capped case made 247,808. Increasing the cache to 250,000
+entries produced 100% warm hits, but peaked at 569.94 MiB for that 32-source
+case, above the original 512 MiB engineering target. Prefer verified project-local
+snapshot replay for an exact repeated calculation; keep the scalar cache bounded
+for partial overlap across changed plans.
+
+Implementation:
+
+- Fingerprint project, certified route and alternative, terrain revision/CRS,
+  propagation/client settings, selected source geometry and heights, and the
+  resolved projected grid (bounds, dimensions and spacing).
+- Search a bounded recent manifest window for a matching complete run. Validate
+  all stored cell indexes/states before reuse. Return the existing immutable job
+  and result file without reserving a worker slot or running RF evaluations.
+- A stale, partial, malformed, differently sampled or different-project result
+  must never match. Same-snapshot comparisons are valid and produce zero deltas.
+  The UI must tell the user when saved results were reused.
+- Tests cover the exact-match path (same job ID, zero further `calculate_coverage`
+  calls), changed antenna-height invalidation, stale terrain rejection, malformed
+  JSONL rejection, every fingerprint field, and same-snapshot zero-delta comparison.
+  The POST response includes `reuse_validation_seconds`; the UI reports that no RF
+  recalculation was needed. Existing result retention remains capped by the prior
+  100 MiB per-run output limit and 50-manifest lookup window.
+
+Verification: all 157 tests pass; Ruff, mypy, JavaScript syntax, and `git diff
+--check` pass. The synthetic benchmark matrix used three fresh-process repetitions
+on Windows 11 build 26200, Python 3.13.12, 24 logical CPUs, 1 km cells, a 200 m
+terrain fixture, 200 m RF profile step, and 50,000 cache entries. The flat
+16,384-cell/eight-source case took 23.56 s median (0.179 s first chunk, 209.91 MiB
+peak) and had zero cache hits on its 131,072-evaluation warm scan. The
+16,384-cell/32-source request was evaluation-capped to 247,808 evaluations; flat
+terrain took 44.64 s median (0.684 s first chunk, 211.14 MiB peak, 54.89 MB
+serialized-result estimate) and also had zero warm hits. Nodata variants likewise
+had zero warm hits because failed paths are deliberately not cached.
+
+A one-repetition capacity check at 250,000 cache entries gave 100% warm hits for
+both large cases, but peak working set rose to 352.54 MiB for 8×16,384 and
+569.94 MiB for 32×16,384. Production cache capacity therefore remains 50,000;
+verified persisted-grid replay avoids this memory increase for exact reruns. The
+benchmark harness exposes `--cache-entries` for reproducing the tradeoff. The
+validation timer is exposed by the API, but a large persisted-file replay timing
+and retention/storage-pressure policy remain unmeasured.
+
+Commit: pending C9 milestone commit.
+
 ## Resource limits and benchmark gates
 
 Current defaults and remaining release gates:
@@ -532,9 +583,10 @@ Current implementation record (2026-09-27):
 | C5 | Implemented · `6b5f168` | Bridge/ring/disconnected graph analysis, same-matrix local/reference coverage deltas and workspace-scoped API tests pass; visual review remains open with C3. |
 | C6 | Implemented · `afd7db8` | Compatible snapshot comparisons, streaming deltas, difference overlay, separate height runs and backbone-edge revalidation pass; same-project synthetic tests, visual/real-raster review open. |
 | C7 | Implemented · `b75384b` | Project-scoped targets, exact points/roads, conservative area checks and saved-report comparisons pass synthetic API and hard-limit tests; browser/real-raster review open. |
-| C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 154-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
+| C8 | Implemented · `cf2d6a3` · release checks open | GeoJSON/JSON/printable offline SVG report and API/UI controls implemented; 157-test suite, Ruff, mypy, JS syntax and diff checks pass; Docker/browser visual checks remain unavailable. |
+| C9 | Implemented · commit pending · performance checks open | Exact complete-grid reuse, integrity validation, height/terrain invalidation, same-snapshot comparisons; large synthetic benchmark documents cache churn and memory tradeoff. |
 
-Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 154
+Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 157
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
 --check` pass. C8 tests verify GeoJSON/JSON/HTML content, explicit unknown and
 not-evaluated states, target escaping/identity, compatible scenario comparisons,

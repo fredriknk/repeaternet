@@ -724,7 +724,89 @@ def test_coverage_export_size_limit_cleans_up_temporary_file(tmp_path, monkeypat
         assert not list(export_directory.glob("*"))
 
 
-def test_compatible_coverage_runs_are_archived_and_compared_on_common_grid(
+def test_identical_completed_coverage_request_reuses_persisted_grid(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        calculations = 0
+        original_calculate = web_module.calculate_coverage
+
+        def counted_calculate(*args, **kwargs):
+            nonlocal calculations
+            calculations += 1
+            return original_calculate(*args, **kwargs)
+
+        monkeypatch.setattr(web_module, "calculate_coverage", counted_calculate)
+        first = start_coverage(client, prepared)
+        assert wait_for(client, first["job_id"], {"complete"})["state"] == "complete"
+        assert calculations == 1
+
+        repeated = client.post("/api/coverage/jobs", json=prepared["coverage"])
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["job_id"] == first["job_id"]
+        assert repeated.json()["reused"] is True
+        assert repeated.json()["reuse_validation_seconds"] >= 0
+        assert calculations == 1
+
+        page = client.get(f"/api/coverage/jobs/{first['job_id']}/cells?cursor=0&limit=10")
+        assert page.status_code == 200, page.text
+        assert len(page.json()["cells"]) == 4
+
+        height_changed = client.post(
+            "/api/coverage/jobs",
+            json={
+                **prepared["coverage"],
+                "source_height_overrides": {"R-coverage": 10.0},
+            },
+        )
+        assert height_changed.status_code == 200, height_changed.text
+        assert height_changed.json()["job_id"] != first["job_id"]
+        assert height_changed.json().get("reused") is not True
+        assert wait_for(client, height_changed.json()["job_id"], {"complete"})["state"] == "complete"
+        assert calculations == 2
+
+        uploaded = client.post(
+            "/api/terrain/dtm", files={"file": ("new-tile.tif", terrain_tile())}
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        changed = client.post("/api/coverage/jobs", json=prepared["coverage"])
+        assert changed.status_code == 409
+        assert "Finish a route search" in changed.json()["detail"]
+        assert calculations == 2
+
+
+def test_coverage_reuse_fingerprint_covers_every_rf_and_grid_input() -> None:
+    fields = web_module._COVERAGE_REUSE_FIELDS
+    identity = {field: f"baseline-{field}" for field in fields}
+    original = web_module._coverage_reuse_fingerprint(identity)
+    assert original is not None
+    assert web_module._coverage_reuse_fingerprint({}) is None
+
+    for field in fields:
+        changed = dict(identity)
+        changed[field] = f"changed-{field}"
+        assert web_module._coverage_reuse_fingerprint(changed) != original, field
+
+
+def test_corrupt_completed_coverage_pages_are_not_reused(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        first = start_coverage(client, prepared)
+        assert wait_for(client, first["job_id"], {"complete"})["state"] == "complete"
+        archive = next(tmp_path.rglob("coverage-jobs"))
+        manifest = json.loads((archive / f"{first['job_id']}.json").read_text())
+        result_path = archive.parent / manifest["result_file"]
+        result_path.write_text("not a JSON coverage chunk\n")
+
+        replacement = client.post("/api/coverage/jobs", json=prepared["coverage"])
+        assert replacement.status_code == 200, replacement.text
+        assert replacement.json()["job_id"] != first["job_id"]
+        assert replacement.json().get("reused") is not True
+        assert wait_for(client, replacement.json()["job_id"], {"complete"})["state"] == "complete"
+
+
+def test_identical_coverage_snapshot_reuse_compares_to_zero_delta(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
@@ -733,7 +815,8 @@ def test_compatible_coverage_runs_are_archived_and_compared_on_common_grid(
         baseline = start_coverage(client, prepared)
         assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
         scenario = start_coverage(client, prepared)
-        assert wait_for(client, scenario["job_id"], {"complete"})["state"] == "complete"
+        assert scenario["reused"] is True
+        assert scenario["job_id"] == baseline["job_id"]
 
         available = client.get("/api/coverage/jobs").json()["jobs"]
         assert {item["job_id"] for item in available} >= {
@@ -839,8 +922,17 @@ def test_comparison_rejects_terrain_changed_after_snapshot(tmp_path, monkeypatch
         prepared = prepare_workspace(client, monkeypatch)
         baseline = start_coverage(client, prepared)
         assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
-        scenario = start_coverage(client, prepared)
-        assert wait_for(client, scenario["job_id"], {"complete"})["state"] == "complete"
+        scenario = client.post(
+            "/api/coverage/jobs",
+            json={
+                **prepared["coverage"],
+                "source_height_overrides": {"R-coverage": 10.0},
+            },
+        )
+        assert scenario.status_code == 200, scenario.text
+        scenario_id = scenario.json()["job_id"]
+        assert scenario_id != baseline["job_id"]
+        assert wait_for(client, scenario_id, {"complete"})["state"] == "complete"
         assert client.post(
             "/api/terrain/dtm", files={"file": ("extra-ground.tif", terrain_tile())}
         ).status_code == 200
@@ -848,7 +940,7 @@ def test_comparison_rejects_terrain_changed_after_snapshot(tmp_path, monkeypatch
             "/api/coverage/compare",
             json={
                 "baseline_job_id": baseline["job_id"],
-                "scenario_job_id": scenario["job_id"],
+                "scenario_job_id": scenario_id,
                 "reference_id": "R-coverage",
             },
         )

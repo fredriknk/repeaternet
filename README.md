@@ -72,6 +72,11 @@ historical runs require their respective opt-in before download, and exports are
 bounded to 100 MiB. The report is a planning snapshot, not a field-coverage
 guarantee.
 
+Repeating a completed coverage calculation with identical route, terrain, radio,
+source, antenna-height and grid inputs reuses the verified saved cell results
+instead of repeating RF evaluation. A changed or stale input cannot reuse that
+snapshot; it must be recalculated.
+
 Coverage grids default to at most 4,096 cells and 250,000 cell/source evaluations;
 the estimate reports when spacing is coarsened to fit. One coverage or point
 inspection job runs per workspace at a time, using the shared planner scheduler.
