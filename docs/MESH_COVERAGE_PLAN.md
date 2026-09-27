@@ -194,7 +194,8 @@ available in this workspace.
 
 Areas: `rf/propagation.py`, `optimization/cache.py`, new
 `coverage/engine.py`, `coverage/grid.py`, and engine regression tests.
-Commit: `feat: calculate bounded two-way mesh coverage grids`.
+Commits: `ef91b2c` (`feat: calculate bounded two-way mesh coverage grids`) and
+`d13e77f` (`perf: cache bounded coverage link metrics`).
 
 ## C2 — Background jobs, stale results and saved settings [implemented; validation open]
 
@@ -453,7 +454,7 @@ Current implementation record (2026-09-27):
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
 | C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
-| C1 | Implemented · follow-up commit pending | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
+| C1 | Implemented · `ef91b2c`, `d13e77f` | Directional budgets, bounded separate cache, streamed/retained reference and 4,096×8 benchmark pass; real-raster/concurrent validation open. |
 | C2 | Implemented · `1ae3ba6` | Shared scheduler, revision checks and streamed project-local results; API isolation/restart/quota/cancellation scenarios not run. |
 | C3 | Implemented · `61a8fb6` | Ruff and JavaScript syntax checks pass; no browser walkthrough or max-grid responsiveness measurement. |
 | C4 | Implemented · `61a8fb6` | Mypy (ignoring missing third-party stubs) passes; no terrain-reference, click-race or profile visual check. |
