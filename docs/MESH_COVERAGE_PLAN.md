@@ -737,7 +737,7 @@ For each C0–C12 entry append: status; commit; implemented scope; tests and com
 timings/RSS and fixture identity; schema/default changes; visual review; unresolved
 acceptance criteria and their next action.
 
-Current implementation record (2026-09-27):
+Current implementation record (2026-09-28):
 
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
@@ -777,13 +777,15 @@ combined server/worker memory and cancellation checks under concurrent load; and
 field validation against measured links. These remain open and must be completed
 before claiming the full roadmap complete.
 
-Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -o addopts='' -q`
+C12b validation (2026-09-27): `.venv/Scripts/pytest.exe -o addopts='' -q`
 passes 187 tests (77 deprecation/pending-deprecation warnings); targeted C12b
 coverage/job/export/scenario tests pass 41 tests; Ruff and mypy (`--ignore-missing-imports`)
 pass; `node --check` passes for both coverage scripts, all six Node inspection
-tests pass, and `git diff --check` passes. A visible browser review remains
-unavailable (the available computer-use inventory returned no apps or browser
-surfaces), so the unresolved-pattern legend, inspector messages, compare/target
+tests pass, and `git diff --check` passes. Browser visual attempt (2026-09-28):
+the available computer-use inventory returned no apps or browser surfaces. A
+temporary loopback Uvicorn server started, but opening the local page failed with
+`Browser is not available: iab`; the server was then stopped. No screenshot was
+available, so the unresolved-pattern legend, inspector messages, compare/target
 views and print export have not been visually signed off. C12b did not alter the
 sampler, so its C12a real-raster benchmark remains applicable; concurrent service
 RSS, cancellation under concurrent load, and field accuracy remain unmeasured.
