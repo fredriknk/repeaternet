@@ -4,7 +4,10 @@
   --text: #243b3a;
   --muted: #64776d;
   --surface: #ffffff;
+  --surface-raised: #ffffff;
   --surface-subtle: #f5f8f5;
+  --surface-accent: #edf4e9;
+  --text-muted: #64776d;
   --border: #d7e0da;
   --accent: #176750;
   --focus: #1763a5;
@@ -167,6 +170,25 @@ input:not([type="checkbox"]), select { font-size: 14px; }
 .router-policy-badge.policy-optional { color: #4b3c79; background: #ece7f7; }
 .router-policy-badge.policy-excluded { color: #52615a; background: #e8ece9; }
 .router-focus { flex: 0 0 auto; }
+.job-card { margin: 14px 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+.job-card[data-state="queued"], .job-card[data-state="running"], .job-card[data-state="preparing"] { border-inline-start: 4px solid var(--accent); }
+.job-card[data-state="disconnected"], .job-card[data-state="failed"] { border-inline-start: 4px solid var(--state-error); }
+.job-card[data-state="complete"], .job-card[data-state="terrain_ready"] { border-inline-start: 4px solid var(--state-success); }
+.job-card-heading, .job-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.job-card-heading strong { font-size: 14px; }
+.job-card-heading span { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.job-card .hint { margin: 6px 0; }
+.job-card progress { width: 100%; accent-color: var(--accent); }
+.job-card-actions { flex-wrap: wrap; justify-content: flex-start; margin-top: 8px; }
+.alternative-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.alternative-card { display: grid; gap: 6px; min-height: 105px; text-align: left; white-space: normal; }
+.alternative-card strong { color: var(--text); font-size: 14px; }
+.alternative-card span, .alternative-card small { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+.alternative-card.selected { border-color: var(--accent); background: var(--surface-accent); box-shadow: inset 0 0 0 1px var(--accent); }
+#budget-table { min-width: 620px; }
+#budget-table td, #budget-table th { font-variant-numeric: tabular-nums; }
+#profile-details { margin-top: 12px; }
+.visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;

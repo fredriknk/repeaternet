@@ -1,6 +1,6 @@
 # RepeaterNet UI and workflow improvement plan
 
-Created: 2026-09-28. Status: implementation in progress (U0 implemented; U1 underway).
+Created: 2026-09-28. Status: implementation in progress (U0–U4 implemented; U5 next).
 Review baseline: `228e770`. Scope: the self-hosted web interface.
 
 This plan builds on [the usability/performance work](USABILITY_PERFORMANCE_PLAN.md)
@@ -445,7 +445,8 @@ frontend framework, tile provider or analytics service is required by this plan.
 | U1 | Implemented; acceptance pending | Added Plan/Coverage/Compare views with a pinned action per workspace, a persistent Leaflet map/results workspace, collapsible results, project-action menu, autosave/export labels, workspace preference persistence, and a visual token/layout layer. U6 will make the Compare action scenario-aware; live browser review and viewport/keyboard evidence remain unavailable. Commit `57c4c1b`. |
 | U2 | Implemented; acceptance evidence pending | Added endpoint validation and terrain readiness links, visible infrastructure/objective controls, grouped advanced settings, explicit import/export actions, truthful save/retry state, and project-transition guards that flush edits and reject invalid coordinates. No automated or browser tests were run; implementation is committed as `feat: guide project setup and route readiness`. |
 | U3 | Implemented; acceptance evidence pending | Added coordinate-based router/target creation and router movement, name/ID plus activity/policy filters, scoped bulk-action counts, policy badges, and bidirectional router map/list focus. Map mode, keyboard and browser behavior remain unverified; commit subject `feat: improve router selection and coordinate editing`. |
-| U4–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
+| U4 | Implemented; acceptance evidence pending | Added a shared job card, reconnect-to-same-job behavior, alternative comparison cards, and a directional RF inspector using the result snapshot. Matching result identity/revision is required before final render. No automated tests or browser review were run. |
+| U5–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
 | U7 | Browser-gated | Browser access is needed for visual/accessibility/performance sign-off. |
 
 Implementation is active. Do not call the redesign complete until each milestone
@@ -486,3 +487,14 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   mutually exclusive modes, Escape cancellation, and polygon finish/cancel
   controls remain the mode owner. No automated tests or live browser review were
   run; acceptance evidence remains pending.
+- U4 (implementation ready for commit): added the persistent job card with
+  elapsed/phase/indeterminate-or-known progress, cancellation and eligible
+  stop/keep actions; reconnect resumes polling the same server job and retains
+  the busy state after a network error. Final route snapshots must match both
+  job ID and input revision before rendering, and the project summary no longer
+  overwrites a restored result's status. Alternative cards compare router
+  counts, distance, bottleneck margin and independent-path outcome. Map lines
+  and keyboard-operable table rows share selection; the inspector explains
+  LOS/Fresnel/directional-budget checks and presents forward/reverse budgets
+  plus the saved RF assumptions. Diff review only; automated tests and live
+  browser review were not run, so U4 acceptance evidence is still pending.
