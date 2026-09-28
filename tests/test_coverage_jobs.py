@@ -1038,6 +1038,16 @@ def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypa
         completed = wait_for(client, started.json()["job_id"], {"complete"})
         assert completed["backbone_revalidated_edges"] == 1
         assert completed["backbone_invalidated_edges"] == 1
+        archived_page = client.get(
+            f"/api/coverage/jobs/{baseline['job_id']}/cells",
+            params={"cursor": 0, "limit": 16},
+        )
+        assert archived_page.status_code == 200, archived_page.text
+        assert len(archived_page.json()["cells"]) == 4
+        assert all(
+            len(cell["footprint_latlng"]) == 5
+            for cell in archived_page.json()["cells"]
+        )
         assert completed["network_links"] == [
             {
                 "source_id": "R-1",

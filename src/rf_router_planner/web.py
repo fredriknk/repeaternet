@@ -605,6 +605,43 @@ def _coverage_area_bounds_wgs84(
     return [min(latitudes), min(longitudes), max(latitudes), max(longitudes)]
 
 
+def _coverage_cell_footprints(
+    cells: list[dict[str, Any]],
+    terrain_crs: str,
+    grid_bounds: list[float] | tuple[float, ...],
+    cell_size_m: float,
+) -> list[dict[str, Any]]:
+    """Attach projected-grid cell corners transformed to Leaflet lat/lon order."""
+    if len(grid_bounds) != 4 or not math.isfinite(cell_size_m) or cell_size_m <= 0:
+        return cells
+    left, bottom, right, top = (float(value) for value in grid_bounds)
+    reverse = Transformer.from_crs(terrain_crs, 4326, always_xy=True)
+    half = cell_size_m / 2
+    for cell in cells:
+        if cell.get("state") == "outside_area":
+            continue
+        try:
+            x, y = float(cell["x"]), float(cell["y"])
+            west, east = max(left, x - half), min(right, x + half)
+            south, north = max(bottom, y - half), min(top, y + half)
+            if not all(math.isfinite(value) for value in (west, east, south, north)):
+                continue
+            corners = [
+                (west, south),
+                (east, south),
+                (east, north),
+                (west, north),
+                (west, south),
+            ]
+            cell["footprint_latlng"] = [
+                [latitude, longitude]
+                for longitude, latitude in (reverse.transform(px, py) for px, py in corners)
+            ]
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return cells
+
+
 def _plan_fingerprint(plan: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1375,6 +1412,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     cache_namespace=f"coverage:{ws.directory.name}",
                 )
                 area_bounds = _coverage_area_bounds_wgs84(grid.bounds, terrain.crs)
+                terrain_crs = CRS(terrain.crs).to_string()
+            preview_cells = _coverage_cell_footprints(
+                encode(grid.cells), terrain_crs, grid.bounds, grid.effective_cell_size_m
+            )
             return {
                 "preview": True,
                 "approximate": True,
@@ -1385,6 +1426,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "outside_area_cells": grid.outside_area_cells,
                 "effective_cell_size_m": grid.effective_cell_size_m,
                 "area_bounds_wgs84": area_bounds,
+                "terrain_crs": terrain_crs,
+                "grid_bounds_projected": list(grid.bounds),
+                "settings": encode(coverage_settings),
+                "snapshot_version": context["snapshot_version"],
+                "alternative_id": context["alternative_id"],
                 "terrain_available_cells": grid.terrain_available_cells,
                 "evaluated_cells": grid.evaluated_cells,
                 "covered_cells": sum(cell.state.value == "covered" for cell in grid.cells),
@@ -1392,7 +1438,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "unresolved_cells": grid.unresolved_cells,
                 "unresolved_source_evaluations": grid.unresolved_source_evaluations,
                 "elapsed_seconds": time.perf_counter() - started,
-                "cells": encode(grid.cells),
+                "cells": preview_cells,
             }
         except HTTPException:
             raise
@@ -1943,6 +1989,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "router_ids": item.get("router_ids", []),
                     "settings": item.get("settings", {}),
                     "requested_cells": item.get("requested_cells", item.get("total", 0)),
+                    "effective_cell_size_m": item.get("effective_cell_size_m"),
+                    "stale": bool(item.get("stale")) or not coverage_current(ws, item),
                     "done": item.get("done", 0),
                 }
                 for item in recent
@@ -2189,9 +2237,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_mesh_coverage_job(job_id: str, request: Request) -> Any:
         ws = workspace(request)
         with ws.lock:
-            if not ws.coverage_job or ws.coverage_job.get("job_id") != job_id:
+            job = _load_coverage_manifest(ws, job_id)
+            if job is None or job.get("project_id") != ws.project_id:
                 raise HTTPException(404, "Coverage job not found in this workspace")
-            job = dict(ws.coverage_job)
         if not coverage_current(ws, job) and job["state"] in {
             "queued",
             "running",
@@ -2210,10 +2258,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if cursor < 0 or not 1 <= limit <= 256:
             raise HTTPException(422, "Cursor must be nonnegative and page size between 1 and 256")
         with ws.lock:
-            job = ws.coverage_job
-            if not job or job.get("job_id") != job_id:
+            job = _load_coverage_manifest(ws, job_id)
+            if job is None or job.get("project_id") != ws.project_id:
                 raise HTTPException(404, "Coverage job not found in this workspace")
-            result_path = (ws.directory / job["result_file"]).resolve()
+            result_file = job.get("result_file")
+            if not isinstance(result_file, str):
+                raise HTTPException(404, "Coverage results are unavailable")
+            result_path = (ws.directory / result_file).resolve()
             if ws.directory.resolve() not in result_path.parents:
                 raise HTTPException(404, "Coverage results are unavailable")
             rows: list[Any] = []
@@ -2228,17 +2279,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             high = min(len(chunk), cursor + limit - chunk_start)
                             rows.extend(chunk[low:high])
                         total = chunk_end
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 raise HTTPException(404, "Coverage results are unavailable") from exc
-            return {
-                "cells": rows,
-                "cursor": cursor,
-                "next_cursor": cursor + len(rows) if cursor + len(rows) < total else None,
-                "stored_cells": total,
-                "requested_cells": job.get("requested_cells", job.get("total", 0)),
-                "state": job["state"],
-                "stale": bool(job.get("stale")),
-            }
+            requested_cells = job.get("requested_cells", job.get("total", 0))
+            state = job["state"]
+            terrain_crs = job.get("terrain_crs")
+            grid_bounds = job.get("grid_bounds_projected")
+            cell_size = job.get("effective_cell_size_m")
+        if isinstance(terrain_crs, str) and isinstance(grid_bounds, list) and isinstance(
+            cell_size, (int, float)
+        ):
+            _coverage_cell_footprints(rows, terrain_crs, grid_bounds, float(cell_size))
+        stale = bool(job.get("stale")) or not coverage_current(ws, job)
+        return {
+            "cells": rows,
+            "cursor": cursor,
+            "next_cursor": cursor + len(rows) if cursor + len(rows) < total else None,
+            "stored_cells": total,
+            "requested_cells": requested_cells,
+            "state": state,
+            "stale": stale,
+        }
 
     @app.post(
         "/api/coverage/jobs/{job_id}/targets",

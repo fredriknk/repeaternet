@@ -26,6 +26,21 @@ function cancelActiveInspection(){
 
 function enterCoverageInspect(){
   if(!result||resultStale||!result.search_complete){setCoverageStatus('Finish a route search before inspecting locations.',true);return;}
+  const display=coverageDisplayInfo||coverageJob;
+  if(display&&(display.stale||display.snapshot_version!==result.snapshot_version||display.alternative_id!==result.active_alternative_id)){
+    setCoverageStatus('The displayed coverage belongs to a stale or different route snapshot. Load coverage for the current route before inspecting locations.',true);return;
+  }
+  if(Object.keys(display?.source_height_overrides||{}).length){
+    setCoverageStatus('Exact-point inspection uses plan antenna heights; it cannot be compared directly with this run’s temporary height scenario.',true);return;
+  }
+  if(display?.settings){
+    const shown=display.settings,active=coverageSettings;
+    const sameInspectionInputs=JSON.stringify(shown.client)===JSON.stringify(active.client)
+      &&shown.include_endpoints===active.include_endpoints
+      &&JSON.stringify(shown.source_ids||[])===JSON.stringify(active.source_ids||[])
+      &&shown.maximum_profile_samples===active.maximum_profile_samples;
+    if(!sameInspectionInputs){setCoverageStatus('Exact-point inspection uses the current client and selected sources, which differ from the displayed run. Load a matching run or calculate with the current settings first.',true);return;}
+  }
   setInteractionMode(interactionMode==='inspect-coverage'?'browse':'inspect-coverage');
 }
 

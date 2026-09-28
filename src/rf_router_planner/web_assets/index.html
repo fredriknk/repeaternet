@@ -156,6 +156,15 @@
         <section class="coverage-panel">
           <h2><span>05</span> Predicted mesh coverage</h2>
           <p class="hint">Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p>
+          <section class="coverage-context" aria-labelledby="coverage-context-title">
+            <h3 id="coverage-context-title">Analysis context</h3>
+            <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
+            <p id="coverage-context-radio" class="hint">Client radio assumptions will appear here.</p>
+            <label>Saved coverage run<select id="coverage-active-run"><option value="">No saved runs</option></select></label>
+            <button id="coverage-load-run" type="button" class="wide-button" disabled>Show saved run on map</button>
+            <progress id="coverage-load-progress" aria-label="Loading saved coverage cells" hidden></progress>
+          <p id="coverage-load-status" class="hint" role="status" aria-live="polite">Saved runs load incrementally; no RF calculation is started.</p>
+          </section>
           <label>Coverage view<select id="coverage-mode" data-display-only>
             <option value="two_way">Two-way margin</option>
             <option value="downlink">Router → handheld</option>
@@ -175,13 +184,18 @@
           </div>
           <p id="coverage-area-hint" class="hint" role="status" aria-live="polite" hidden></p>
           <label>Layer opacity<input id="coverage-opacity" data-display-only type="range" min="10" max="90" value="55"></label>
-          <div class="fields">
+          <details id="coverage-sampling-controls">
+            <summary>Advanced sampling and limits</summary>
+            <p class="hint">Grid spacing controls map detail; profile spacing controls terrain detail along each radio path. Limits bound memory and compute.</p>
+            <div class="fields">
             <label>Cell spacing · m<input id="coverage-cell-size" type="number" min="100" max="100000" step="100" value="1000"></label>
             <label>Mesh buffer · m<input id="coverage-buffer" type="number" min="0" max="100000" step="500" value="5000"></label>
             <label>Profile step · m<input id="coverage-profile-step" type="number" min="10" max="10000" step="10" value="200"></label>
             <label>Maximum profile samples<input id="coverage-profile-limit" type="number" min="3" max="16384" step="1" value="4096"></label>
-            <label class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
-          </div>
+            </div>
+          </details>
+          <label id="coverage-endpoints-control" class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
+          <p id="coverage-endpoints-note" class="hint">For a direct route with no repeaters, enable endpoints to evaluate access from the two selected sites.</p>
           <p class="hint">The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p>
           <details>
             <summary>Router sources <span id="coverage-source-count" class="hint">All routers in selected route</span></summary>
@@ -200,10 +214,16 @@
             </div>
           </details>
           <div class="coverage-actions">
-            <button id="coverage-estimate" class="wide-button">Estimate calculation</button>
-            <button id="coverage-preview" class="wide-button">Quick approximate preview</button>
+            <button id="coverage-estimate" class="wide-button">Review calculation estimate</button>
+            <button id="coverage-preview" class="wide-button" disabled>Quick approximate preview</button>
             <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
           </div>
+          <section id="coverage-estimate-card" class="coverage-estimate-card" hidden aria-labelledby="coverage-estimate-title">
+            <h3 id="coverage-estimate-title">Calculation estimate</h3>
+            <p id="coverage-estimate-copy" class="hint"></p>
+            <label class="check-line"><input id="coverage-estimate-reviewed" type="checkbox"> I reviewed this estimate and these coverage settings</label>
+            <p class="hint">Any calculation setting, selected route, or map extent change invalidates this review. The preview and full calculation use the reviewed inputs.</p>
+          </section>
           <div id="coverage-inspection" hidden>
             <h3 id="inspection-title">Location inspection</h3>
             <p id="inspection-summary" class="hint"></p>
@@ -296,21 +316,17 @@
             </div>
             <p id="coverage-export-status" class="hint" role="status" aria-live="polite">Choose a saved coverage run to export.</p>
           </details>
-          <div class="coverage-legend" aria-label="Coverage estimate legend">
-            <span><i class="cov-strong"></i> ≥ 10 dB</span>
-            <span><i class="cov-good"></i> 5–10 dB</span>
-            <span><i class="cov-marginal"></i> 0–5 dB</span>
-            <span><i class="cov-none"></i> Not usable</span>
-            <span><i class="cov-unknown"></i> Unknown terrain</span>
-            <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
-          </div>
           <p class="hint">Bands are planning margins, not reliability classes. Overlap means multiple usable RF links, not independent mesh paths. Hide or show the layer using the map’s layer control.</p>
         </section>
         </div>
         <div class="workspace-action-bar" data-workspace-action="workspace-coverage" hidden>
-          <p id="coverage-job-status" class="hint" role="status" aria-live="polite">Complete a route search to calculate coverage.</p>
-          <button id="coverage-start" class="wide-button primary">Calculate coverage</button>
+          <p id="coverage-job-status" class="hint" aria-live="off">Complete a route search to calculate coverage.</p>
+          <p id="coverage-announcement" class="visually-hidden" role="status" aria-live="polite"></p>
+          <p id="coverage-result-progress-copy" class="hint" hidden></p>
+          <progress id="coverage-result-progress" aria-label="Coverage cells loaded from the saved result" hidden></progress>
+          <button id="coverage-start" class="wide-button primary" disabled>Calculate reviewed coverage</button>
           <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
+          <button id="coverage-reconnect" class="wide-button" hidden>Reconnect to coverage run</button>
         </div>
         <div class="workspace-action-bar compare-action-bar" data-workspace-action="workspace-compare" hidden>
           <p id="compare-workspace-status" class="hint">Choose or import targets and select a saved coverage run to assess them.</p>
@@ -320,6 +336,18 @@
       <div class="workspace" id="workspace">
         <div class="map-wrap">
           <div id="map"></div>
+          <section id="coverage-map-legend" class="coverage-map-legend" aria-label="Coverage estimate legend" hidden>
+            <h3>Coverage legend</h3>
+            <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search" placeholder="Router name or ID"></label>
+            <div id="coverage-legend-items" class="coverage-legend-items" aria-label="Coverage states">
+              <span><i class="cov-strong"></i> ≥ 10 dB</span>
+              <span><i class="cov-good"></i> 5–10 dB</span>
+              <span><i class="cov-marginal"></i> 0–5 dB</span>
+              <span><i class="cov-none"></i> Not usable</span>
+              <span><i class="cov-unknown"></i> Unknown terrain</span>
+              <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
+            </div>
+          </section>
           <div class="map-tools">
             <button id="fit">Fit endpoints</button>
             <button id="cancel-map-mode" hidden>Cancel map action</button>

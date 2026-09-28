@@ -1,6 +1,6 @@
 # RepeaterNet UI and workflow improvement plan
 
-Created: 2026-09-28. Status: implementation in progress (U0–U4 implemented; U5 next).
+Created: 2026-09-28. Status: implementation in progress (U0–U5 implemented; U6 next).
 Review baseline: `228e770`. Scope: the self-hosted web interface.
 
 This plan builds on [the usability/performance work](USABILITY_PERFORMANCE_PLAN.md)
@@ -345,7 +345,10 @@ Live edits cannot change the displayed geometry of a historical profile.
 Acceptance: mode/opacity changes do not trigger RF work; a completed/replayed run
 larger than 192 cells loads entirely once; aborted/obsolete previews do not replace
 the active run; source selection survives valid context changes; unknown/unresolved
-remain distinguishable without color. Saved-run assumptions drive charts/tooltips.
+remain distinguishable without color. Saved-run client assumptions drive map
+tooltips and route context. Exact-point inspection refuses stale/different route
+contexts, temporary height scenarios, and mismatched client/source assumptions;
+inspection of an explicitly selected historical scenario remains U6 work.
 
 ### U6 — Scenarios, targets and exports
 
@@ -446,7 +449,8 @@ frontend framework, tile provider or analytics service is required by this plan.
 | U2 | Implemented; acceptance evidence pending | Added endpoint validation and terrain readiness links, visible infrastructure/objective controls, grouped advanced settings, explicit import/export actions, truthful save/retry state, and project-transition guards that flush edits and reject invalid coordinates. No automated or browser tests were run; implementation is committed as `feat: guide project setup and route readiness`. |
 | U3 | Implemented; acceptance evidence pending | Added coordinate-based router/target creation and router movement, name/ID plus activity/policy filters, scoped bulk-action counts, policy badges, and bidirectional router map/list focus. Map mode, keyboard and browser behavior remain unverified; commit subject `feat: improve router selection and coordinate editing`. |
 | U4 | Implemented; acceptance evidence pending | Added a shared job card, reconnect-to-same-job behavior, alternative comparison cards, and a directional RF inspector using the result snapshot. Matching result identity/revision is required before final render. No automated tests or browser review were run. |
-| U5–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
+| U5 | Implemented; acceptance evidence pending | Added reviewed estimate gating for preview/full runs, paged saved-run loading and status/progress, a searchable map legend, projected cell footprints, and explicit guards against interpreting current exact-point inspection as a stale or scenario run. Syntax/whitespace checks passed; regression test added but not run; browser review remains pending. |
+| U6 | Planned | Unify the selected run across inspection, target assessment, scenario comparison and export; document compatibility and report context. |
 | U7 | Browser-gated | Browser access is needed for visual/accessibility/performance sign-off. |
 
 Implementation is active. Do not call the redesign complete until each milestone
@@ -498,3 +502,16 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   LOS/Fresnel/directional-budget checks and presents forward/reverse budgets
   plus the saved RF assumptions. Diff review only; automated tests and live
   browser review were not run, so U4 acceptance evidence is still pending.
+- U5 (implementation ready for commit): coverage now starts with an inline,
+  input-bound estimate review; Preview and Calculate submit the exact reviewed
+  payload. Saved runs can be loaded without recalculation through all stored
+  pages, with loading separated from compute progress and explicit stale/partial
+  states. The map legend is searchable for all serving routers, unknown and
+  unresolved cells retain distinct patterns when opacity changes, and cell
+  polygons use projected grid corners transformed to WGS84. Preview responses
+  carry route identity. Exact-point inspection is blocked when the displayed
+  context is stale/different, uses temporary source-height overrides, or has
+  mismatched client/source assumptions. Added an archived-run footprint
+  regression assertion; it was not run. `git diff --check`, `node --check` and
+  `python -m py_compile` passed. Browser/accessibility review is unavailable;
+  U6 will complete scenario-aware inspection and report context.
