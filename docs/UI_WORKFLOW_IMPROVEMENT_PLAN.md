@@ -444,7 +444,8 @@ frontend framework, tile provider or analytics service is required by this plan.
 | U0 | Implemented; acceptance evidence pending | Consolidated the map tool into one mode, added Escape/cancel, removed the coverage-area handler overwrite and lifecycle wrappers, kept display-only coverage controls usable during jobs, and attached the RF snapshot to route results. Automated tests were not run; live browser review is unavailable. Commit recorded after staging. |
 | U1 | Implemented; acceptance pending | Added Plan/Coverage/Compare views with a pinned action per workspace, a persistent Leaflet map/results workspace, collapsible results, project-action menu, autosave/export labels, workspace preference persistence, and a visual token/layout layer. U6 will make the Compare action scenario-aware; live browser review and viewport/keyboard evidence remain unavailable. Commit `57c4c1b`. |
 | U2 | Implemented; acceptance evidence pending | Added endpoint validation and terrain readiness links, visible infrastructure/objective controls, grouped advanced settings, explicit import/export actions, truthful save/retry state, and project-transition guards that flush edits and reject invalid coordinates. No automated or browser tests were run; implementation is committed as `feat: guide project setup and route readiness`. |
-| U3–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
+| U3 | Implemented; acceptance evidence pending | Added coordinate-based router/target creation and router movement, name/ID plus activity/policy filters, scoped bulk-action counts, policy badges, and bidirectional router map/list focus. Map mode, keyboard and browser behavior remain unverified; commit subject `feat: improve router selection and coordinate editing`. |
+| U4–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
 | U7 | Browser-gated | Browser access is needed for visual/accessibility/performance sign-off. |
 
 Implementation is active. Do not call the redesign complete until each milestone
@@ -457,7 +458,7 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   available during jobs. Route API results now include the RF settings snapshot
   used to calculate their profiles. Tests were not run; browser behavior remains
   unverified.
-- U1 is implemented in the working tree: three task workspaces reuse the same
+- U1 commit `57c4c1b`: three task workspaces reuse the same
   map and results DOM, keep Plan/Coverage actions reachable, collapse the result
   tray, and store workspace/display preferences outside the plan. Plan, Coverage
   and target assessment in Compare each have a pinned action. No new RF
@@ -474,3 +475,14 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   handlers so the extracted inspection module remains the sole owner. Automated
   and browser validation remain pending; the accepted browser inventory was
   empty during this session.
+- U3 commit `feat: improve router selection and coordinate editing`: added
+  keyboard-operable coordinate entry for proposed routers and point targets,
+  coordinate editing for proposed sites, and visible map/list focus in both
+  directions for saved and proposed routers. Existing router search now combines
+  name/ID, activity and policy filters; visible/included/required counts and
+  bulk-action labels make the affected scope explicit. Map clicks select the
+  matching router rather than silently changing its policy; policy badges and
+  map styles distinguish excluded, optional and required choices. The existing
+  mutually exclusive modes, Escape cancellation, and polygon finish/cancel
+  controls remain the mode owner. No automated tests or live browser review were
+  run; acceptance evidence remains pending.

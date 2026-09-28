@@ -108,15 +108,30 @@
           <p class="hint">Feed activity is context, not proof of a usable RF link. Missing antenna data uses the configured repeater antenna assumptions shown below. Excluded and stale entries stay in saved plans.</p>
           <button id="load-meshcore" class="wide-button">Find nearby MeshCore routers</button>
           <div class="file-row known-count"><span id="meshcore-count">No routers loaded</span></div>
-          <label>Show routers<select id="meshcore-filter"><option value="all">All saved routers</option><option value="active">Relay active</option><option value="recent">Heard within 7 days</option><option value="active_recent">Active and heard within 7 days</option></select></label>
+          <label>Find by name or ID<input id="meshcore-search" type="search" placeholder="Search saved routers" autocomplete="off"></label>
+          <div class="router-filters">
+            <label>Activity<select id="meshcore-filter"><option value="all">Any activity</option><option value="active">Relay active</option><option value="recent">Heard within 7 days</option><option value="active_recent">Active and heard within 7 days</option></select></label>
+            <label>Search policy<select id="meshcore-policy-filter"><option value="all">Any policy</option><option value="optional">Optional</option><option value="required">Required</option><option value="excluded">Excluded</option></select></label>
+          </div>
+          <p id="meshcore-scope" class="hint" role="status" aria-live="polite">Bulk actions apply to all visible matching routers.</p>
           <div class="known-controls">
-            <button id="include-all" class="text-button" disabled>Mark visible optional</button>
-            <button id="include-none" class="text-button" disabled>Exclude visible</button>
+            <button id="include-all" class="text-button" disabled>Mark matches optional</button>
+            <button id="include-none" class="text-button" disabled>Exclude matches</button>
           </div>
           <div id="meshcore-list" class="known-list"><p class="hint">Routers within the search corridor will appear here.</p></div>
           <h3>Proposed routers</h3>
           <p class="hint">Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site.</p>
-          <button id="add-router" class="wide-button">Place proposed router</button>
+          <button id="add-router" class="wide-button">Place proposed router on map</button>
+          <details class="coordinate-entry">
+            <summary>Add a proposed router by coordinates</summary>
+            <p class="hint">Enter WGS84 latitude and longitude, or place the site on the map.</p>
+            <div class="coordinate-grid">
+              <label>Latitude<input id="router-latitude" type="number" min="-90" max="90" step="any" placeholder="59.91"></label>
+              <label>Longitude<input id="router-longitude" type="number" min="-180" max="180" step="any" placeholder="10.75"></label>
+            </div>
+            <label>Antenna height · m<input id="router-height" type="number" min="0.1" max="1000" step="any" value="10"></label>
+            <button id="add-router-coordinate" type="button" class="wide-button">Add router at coordinates</button>
+          </details>
           <div id="manual-list" class="known-list"><p class="hint">No manually placed sites yet.</p></div>
         </section>
         <section>
@@ -245,6 +260,15 @@
               <button id="coverage-add-target" class="wide-button">Place a point target on map</button>
               <label class="upload secondary">＋ Import GeoJSON targets<small>FeatureCollection · points, polygons and roads · up to 5 MiB</small><input id="coverage-target-file" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden></label>
             </div>
+            <details class="coordinate-entry">
+              <summary>Add a point by coordinates</summary>
+              <div class="coordinate-grid">
+                <label>Latitude<input id="target-latitude" type="number" min="-90" max="90" step="any" placeholder="59.91"></label>
+                <label>Longitude<input id="target-longitude" type="number" min="-180" max="180" step="any" placeholder="10.75"></label>
+              </div>
+              <label>Target name<input id="target-name" maxlength="120" value="Coverage target"></label>
+              <button id="add-target-coordinate" type="button" class="wide-button">Add target at coordinates</button>
+            </details>
             <label>Road sample spacing · m<input id="coverage-road-spacing" type="number" min="25" max="5000" step="25" value="100"></label>
             <label>Use coverage run<select id="coverage-target-run"></select></label>
             <div id="coverage-target-list" class="known-list"><p class="hint">No saved targets. Place a point or import GeoJSON.</p></div>
