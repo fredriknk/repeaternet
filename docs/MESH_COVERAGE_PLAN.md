@@ -1,6 +1,6 @@
 # Mesh coverage and planning tools implementation plan
 
-Created: 2026-09-27. Status: C0–C11 feature set delivered; completion audit and remaining accuracy, performance and runtime release validation are in progress. The open profile-limit finding below must be fixed before completion.
+Created: 2026-09-27. Status: C0–C11 feature set delivered; C12 implementation corrections are delivered, with browser, deployment/concurrency, and field-accuracy release validation still open.
 
 This is the next phase after [the usability and performance plan](USABILITY_PERFORMANCE_PLAN.md).
 Deliver and commit each milestone independently. Update its status, actual commit,
@@ -575,23 +575,25 @@ existing API regression separately proves identical requests do not rerun RF.
 
 Commit: `5a9ee78` (`perf: reuse verified coverage snapshots`).
 
-## C12 — Acceptance-audit corrections [in progress]
+## C12 — Acceptance-audit corrections [implementation delivered; release validation open]
 
 The audit found two concrete issues behind previously open acceptance criteria.
-The raster-sampling part is implemented; final-profile cap semantics remain open.
+Both implementation corrections are delivered as C12a and C12b. C12 remains
+open for browser, deployment/concurrency, and field-accuracy release validation.
 
-1. Grid, exact inspection, target and changed-backbone evaluation silently enlarge
-   profile spacing at the sample cap. Preserve the requested final resolution;
-   report over-limit links as unresolved with an actionable reason; propagate this
-   state through scenarios, targets, exports and UI; invalidate old reusable results.
-   Verify that a long link never passes because a narrow obstruction was skipped.
-2. The new real-raster baseline spends most of its cold time in point-at-a-time
+1. Grid, exact inspection, target and changed-backbone evaluation had silently
+   enlarged profile spacing at the sample cap. C12b preserves the requested final
+   resolution, reports over-limit links as unresolved with an actionable reason,
+   propagates that state through scenarios, targets, exports and UI, and invalidates
+   old reusable results. Long-link cap regressions now verify that capped links do
+   not pass because a narrow obstruction may have been skipped.
+2. The real-raster baseline spent most of its cold time in point-at-a-time
    sampling. A profiled 256-cell/two-source cold/warm/cancel probe spent 8.85 s of
    9.81 s in `RasterTerrain.sample`, including 85,925 Rasterio sampling-generator
    calls (profiling adds overhead; use the unprofiled timings above for performance).
-   Batch bounded raster windows while preserving nearest-pixel sampling, nodata,
-   mosaic precedence, DOM behavior and edge semantics. Compare against independent
-   Rasterio samples, then repeat the same checksum/settings benchmark.
+   C12a batches bounded raster windows while preserving nearest-pixel sampling,
+   nodata, mosaic precedence, DOM behavior and edge semantics. Independent Rasterio
+   sample comparisons and the same-checksum/settings benchmark pass; see C12a below.
 
 Targets set **before tuning**: standard 4,096×8 real-raster cold completion at most
 60 s, first 128-cell chunk at most 5 s, below 512 MiB engine peak working set;
@@ -620,6 +622,34 @@ and peak 125.06 MiB. Full per-run data is in the
 [standard real-raster benchmark](benchmarks/coverage-raster-standard-windowed.json)
 and [preview benchmark](benchmarks/coverage-raster-preview-windowed.json).
 These are local-raster timings, not server/browser latency or field accuracy.
+
+### C12b — Preserve final-profile sample limits [implemented · `5fa4b55`]
+
+Grid, exact-point inspection, road/polygon targets and changed-backbone
+revalidation now use the requested profile spacing (subject to terrain-resolution
+floor) without automatically coarsening it to fit the sample cap. A link over the
+configured maximum is not sent to the RF evaluator and carries an explicit
+`profile_sample_limit` rejection with its required sample count and remediation.
+Coverage and target assessment distinguish unresolved from covered, uncovered,
+terrain-unknown and outside-area states. If a cell has a valid source as well as a
+capped source, it remains proven covered while retaining the unresolved-source
+count. Comparisons exclude unresolved cells from gained/lost counts and their
+denominator; height scenarios report unresolved cells/links; backbone reachability
+is conservative for unresolved links. JSON/GeoJSON/printable exports retain the
+state and details, identify capped reports as partial, and require explicit
+partial-export opt-in. The map exposes a 3–16,384 maximum-samples control and a
+separate unresolved legend/pattern. Coverage model identity is now coverage-v3 so
+prior v2 snapshots are not reused under the corrected semantics.
+
+Regression tests cover the exact cap boundary and rejection, grid/inspection
+short- and long-distance behavior, target assessment, comparisons, scenario and
+backbone analysis, saved jobs and exports. The default maximum remains 4,096
+samples per path; users may set the cap from 3 through 16,384 or explicitly raise
+profile spacing. The full suite passed 187 tests; Ruff and mypy passed; JavaScript
+syntax checks and all six inspection interaction tests passed. No fresh real-raster
+benchmark was required because this milestone changes correctness and does not
+change the C12a sampler. Human-visible map/print review remains open because no
+browser surface was available.
 
 ## Resource limits and benchmark gates
 
@@ -667,7 +697,7 @@ Ruff/mypy and JavaScript checks when relevant. Include human-visible browser che
 for C3/C4/C6/C8. Do not substitute synthetic tests for field measurements or mark
 unavailable browser/real-terrain checks as passed.
 
-For each C0–C11 entry append: status; commit; implemented scope; tests and commands;
+For each C0–C12 entry append: status; commit; implemented scope; tests and commands;
 timings/RSS and fixture identity; schema/default changes; visual review; unresolved
 acceptance criteria and their next action.
 
@@ -676,7 +706,7 @@ Current implementation record (2026-09-27):
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
 | C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
-| C1 | Implemented · `ef91b2c`, `d13e77f`; C12 corrections open | Directional budgets, bounded cache and real-raster cold/warm measurements recorded above; sampler performance and final-profile caps need C12. Concurrent-workspace verification remains open. |
+| C1 | Implemented · `ef91b2c`, `d13e77f`; C12 corrections delivered | Directional budgets, bounded cache and real-raster cold/warm measurements recorded above; sampler performance and final-profile cap semantics are corrected in C12. Concurrent-workspace verification remains open. |
 | C2 | Implemented · `1ae3ba6`, `1a1b905` | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
 | C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
 | C4 | Implemented · `61a8fb6`; race correction recorded above | Five JavaScript race regressions and a delayed-worker API regression pass. Terrain-reference and profile visual review remain open. |
@@ -687,7 +717,8 @@ Current implementation record (2026-09-27):
 | C9 | Implemented · `5a9ee78`; large-file measurements recorded above | Production validator measured against 28/48 MB generated JSONL fixtures with 50-manifest lookup and EOF corruption rejection. Browser/HTTP replay latency and storage-pressure policy remain open. |
 | C10 | Implemented · `8ae53bd` | `POST /api/coverage/preview` is bounded to 256 cells and 4,096 router evaluations, participates in the shared scheduler, is labelled approximate in the UI, and yields to the full calculation on its first chunk. API test verifies the cap and that previews do not create saved jobs. The 2-source/256-cell flat synthetic core benchmark (3 fresh-process repetitions, Python 3.13.12, Windows 11) took 0.0847 s median (0.0842–0.0848), first chunk 0.0454 s median, and 98.23 MiB median peak working set. This is below the 5 s synthetic engineering target; it is not a live browser or real-raster measurement. Browser visual review remains open. |
 | C11 | Implemented · `3446d91` | Draw polygon in the map and persist its WGS84 ring in plan settings; validate finite, non-self-intersecting polygons; mask projected sample centres without RF/terrain reads outside scope; report in-area/outside counts; persist `outside_area` cells; preserve the state in incomplete-grid reconstruction, GeoJSON/JSON/printable report, scenario comparisons, node-failure analysis and exact/area target assessments. Bump model identity to coverage-v2 and reject prior-version result reuse. Tests cover sample/evaluation masking, estimate and saved-job counts, corrupt/missing polygons, exports, comparisons, failures and target points outside the analysis area. Full 166-test suite, Ruff, mypy, JavaScript syntax and diff checks pass. Browser interaction and visual review remain open. |
-| C12a | Implemented · `8720a29` | Window-batched raster reads; Rasterio equivalence and nodata/mosaic/edge/window tests pass. Same Kartverket 50 m DTM fixture as baseline: 4,096×8 cold median 12.3352 s (22.04× faster), first chunk 0.3436 s, peak 188.54 MiB; checksum unchanged. Preview 256×2 cold median 0.1885 s. Artifacts linked above; final-profile cap semantics remain open. |
+| C12a | Implemented · `8720a29` | Window-batched raster reads; Rasterio equivalence and nodata/mosaic/edge/window tests pass. Same Kartverket 50 m DTM fixture as baseline: 4,096×8 cold median 12.3352 s (22.04× faster), first chunk 0.3436 s, peak 188.54 MiB; checksum unchanged. Preview 256×2 cold median 0.1885 s. Artifacts linked above. |
+| C12b | Implemented · `5fa4b55` | Final-profile caps now produce unresolved results rather than hidden coarsening across grids, inspection, targets, height scenarios and backbone validation; model identity bumped to coverage-v3; partial exports/UI semantics updated. Full 187-test suite, Ruff, mypy, JS syntax and six Node inspection checks pass. Browser review remains open. |
 
 Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -q` passes all 166
 tests; Ruff, mypy (`--ignore-missing-imports`), `node --check` and `git diff
@@ -700,16 +731,26 @@ GPU initialization before producing a screenshot. Therefore container-based
 two-workspace/restart and visual-print review are still open. No real-raster
 timing, concurrent-workspace RSS or field validation has been measured; these
 remain release gates, not implied successes. This paragraph records the earlier
-166-test release boundary; the subsequent C1/C4/C9 continuation evidence above
-supersedes its absence-of-raster and click-race statements.
+166-test release boundary; the subsequent C1/C4/C9/C12 continuation evidence
+above supersedes its absence-of-raster, click-race and sample-cap findings.
 
-Open implementation finding from the continuation audit: coverage grids, exact
-inspection and changed-backbone validation currently increase profile spacing
-when the sample cap would be exceeded. This violates the resource-limit contract
-above (over-limit final profiles must stay unresolved with an actionable reason,
-not silently use a coarser profile). Correct this across grid/inspection/targets/
-height scenarios, add long-distance regression checks, and invalidate reusable
-results produced under the old semantics before claiming roadmap completion.
+The continuation audit's sample-cap finding is resolved by C12b. Remaining
+release gates are human-visible browser review for the map, inspection, comparison,
+target and export flows; deployment/restart and concurrent-workspace verification;
+combined server/worker memory and cancellation checks under concurrent load; and
+field validation against measured links. These remain open and must be completed
+before claiming the full roadmap complete.
+
+Latest validation (2026-09-27): `.venv/Scripts/pytest.exe -o addopts='' -q`
+passes 187 tests (77 deprecation/pending-deprecation warnings); targeted C12b
+coverage/job/export/scenario tests pass 41 tests; Ruff and mypy (`--ignore-missing-imports`)
+pass; `node --check` passes for both coverage scripts, all six Node inspection
+tests pass, and `git diff --check` passes. A visible browser review remains
+unavailable (the available computer-use inventory returned no apps or browser
+surfaces), so the unresolved-pattern legend, inspector messages, compare/target
+views and print export have not been visually signed off. C12b did not alter the
+sampler, so its C12a real-raster benchmark remains applicable; concurrent service
+RSS, cancellation under concurrent load, and field accuracy remain unmeasured.
 
 Deferred beyond this plan: live packet/RSSI ingestion and calibration, traffic or
 airtime simulation, automatic optimisation for area coverage, mobile GPS tracking,
