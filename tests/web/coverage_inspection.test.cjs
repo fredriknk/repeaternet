@@ -110,3 +110,44 @@ test('an aborted older poll cannot replace the newer point even if its response 
   assert.deepEqual(h.rendered, ['2']);
   assert.ok(h.events.includes('cancel:1'));
 });
+
+test('profile-limit inspection renders unresolved paths without formatting missing margins', () => {
+  const elements = new Map();
+  const renderedMarkers = [];
+  const statuses = [];
+  const context = vm.createContext({
+    AbortController, DOMException, setTimeout, clearTimeout,
+    inspectionLayer: {},
+    coverageSettings: { client: { height_agl_m: 1.5 } },
+    $: id => {
+      if (!elements.has(id)) elements.set(id, {});
+      return elements.get(id);
+    },
+    readCoverageInputs() {}, coveragePayload: () => ({}), autosaveNow: async () => {},
+    invalidate() {}, coverageSettingsChanged() {}, coverageBusyState() {},
+    async installProject() {},
+    setCoverageStatus(message) { statuses.push(message); },
+    async api() { throw new Error('Unexpected API request'); },
+    L: { circleMarker(point, options) { return { addTo() { renderedMarkers.push({ point, options }); } }; } },
+  });
+  vm.runInContext(source, context);
+
+  context.renderCoverageInspection({
+    state: 'unresolved',
+    client: { height_agl_m: 1.5 },
+    message: 'No candidate profile fits the sample limit.',
+    sources: [{
+      source_id: 'R-1',
+      rejection: 'profile_sample_limit',
+      rejection_detail: 'Requires 100 samples; the configured maximum is 3.',
+      two_way_margin_db: null,
+    }],
+  }, 60, 10);
+
+  assert.match(elements.get('inspection-summary').textContent, /No candidate profile fits/);
+  assert.match(elements.get('inspection-detail').textContent, /Requires 100 samples/);
+  assert.equal(elements.get('inspection-chart').hidden, true);
+  assert.match(statuses.at(-1), /unresolved/i);
+  assert.equal(renderedMarkers.length, 1);
+  assert.equal(renderedMarkers[0].options.color, '#765497');
+});

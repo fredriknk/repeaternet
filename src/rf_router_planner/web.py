@@ -32,6 +32,7 @@ from starlette.background import BackgroundTask
 from .coordinates import norway_utm_epsg
 from .coverage.compare import compare_coverage_streams
 from .coverage.engine import calculate_coverage, coverage_area_mask, make_grid
+from .coverage.profiles import bounded_profile_step
 from .coverage.scenarios import analyze_node_failures
 from .coverage.target_assessment import assess_targets
 from .coverage.targets import MAX_TARGET_IMPORT_BYTES, normalize_target_collection
@@ -64,7 +65,7 @@ from .terrain.raster import RasterTerrain
 ASSETS = Path(__file__).parent / "web_assets"
 MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
 MAX_COVERAGE_BACKBONE_REVALIDATION_LINKS = 4_096
-COVERAGE_MODEL_VERSION = "coverage-v2"
+COVERAGE_MODEL_VERSION = "coverage-v3"
 MAX_TARGET_REPORTS_PER_JOB = 20
 MAX_TARGET_REPORT_BYTES = 5 * 1024 * 1024
 MAX_COVERAGE_EXPORT_BYTES = 100 * 1024 * 1024
@@ -370,6 +371,11 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
         or len(source_ids) != len(set(source_ids))
     ):
         raise ValueError("Coverage source_ids must be a unique list of source IDs")
+    maximum_profile_samples = positive_int(
+        "maximum_profile_samples", defaults.maximum_profile_samples, 16_384
+    )
+    if maximum_profile_samples < 3:
+        raise ValueError("Coverage maximum_profile_samples must be at least 3")
     return CoverageSettings(
         mode=mode,
         area_mode=area_mode,
@@ -377,9 +383,7 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
         cell_size_m=positive_number("cell_size_m", defaults.cell_size_m, 100_000),
         area_buffer_m=positive_number("area_buffer_m", defaults.area_buffer_m, 500_000),
         profile_step_m=positive_number("profile_step_m", defaults.profile_step_m, 10_000),
-        maximum_profile_samples=positive_int(
-            "maximum_profile_samples", defaults.maximum_profile_samples, 16_384
-        ),
+        maximum_profile_samples=maximum_profile_samples,
         maximum_cells=positive_int("maximum_cells", defaults.maximum_cells, 16_384),
         maximum_sources=positive_int("maximum_sources", defaults.maximum_sources, 64),
         maximum_evaluations=positive_int(
@@ -1209,6 +1213,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             summary = summarize_coverage_cells(_iter_coverage_cells(directory, job), job)
         except (ValueError, TypeError, OSError) as exc:
             raise HTTPException(409, f"Coverage result pages cannot be exported: {exc}") from exc
+        partial = (
+            partial
+            or summary["not_evaluated_cells"] > 0
+            or summary["unresolved_cells"] > 0
+        )
+        if partial and not include_partial:
+            raise HTTPException(409, "This run contains unresolved or partial cells; set include_partial=true to export it explicitly")
         if not partial and summary["stored_cells"] != summary["requested_cells"]:
             raise HTTPException(409, "Coverage result is incomplete; recalculate before exporting")
         terrain_fingerprint = job.get("terrain_fingerprint", [])
@@ -1374,6 +1385,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "evaluated_cells": grid.evaluated_cells,
                 "covered_cells": sum(cell.state.value == "covered" for cell in grid.cells),
                 "unknown_cells": grid.unknown_cells,
+                "unresolved_cells": grid.unresolved_cells,
+                "unresolved_source_evaluations": grid.unresolved_source_evaluations,
                 "elapsed_seconds": time.perf_counter() - started,
                 "cells": encode(grid.cells),
             }
@@ -1567,6 +1580,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "total": 0,
                     "covered_cells": 0,
                     "unknown_cells": 0,
+                    "unresolved_cells": 0,
+                    "unresolved_source_evaluations": 0,
                     "evaluated_cells": 0,
                     "outside_area_cells": 0,
                     "created_at": time.time(),
@@ -1662,6 +1677,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         )
                     ws.coverage_job["covered_cells"] += states.count("covered")
                     ws.coverage_job["unknown_cells"] += states.count("unknown_terrain")
+                    ws.coverage_job["unresolved_cells"] += states.count("unresolved")
+                    ws.coverage_job["unresolved_source_evaluations"] += sum(
+                        cell.unresolved_sources for cell in cells
+                    )
                     ws.coverage_job["outside_area_cells"] += states.count("outside_area")
                     ws.coverage_job["evaluated_cells"] += states.count("covered") + states.count("uncovered")
                     ws.coverage_job["stage"] = "Calculating mesh coverage"
@@ -1694,7 +1713,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             cache=coverage_rf_cache,
                             cache_namespace=f"coverage-height:{ws.directory.name}",
                         )
-                        validity: dict[tuple[str, str], bool] = {}
+                        validity: dict[tuple[str, str], bool | None] = {}
+                        unresolved_reasons: dict[tuple[str, str], str] = {}
+                        unresolved_details: dict[tuple[str, str], str] = {}
                         for link in affected:
                             left = adjusted_sites.get(
                                 link.source_id, original_sites[link.source_id]
@@ -1703,11 +1724,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 link.target_id, original_sites[link.target_id]
                             )
                             distance = left.distance_to(right)
-                            step = max(
-                                coverage_settings.profile_step_m,
-                                distance
-                                / max(1, coverage_settings.maximum_profile_samples - 1),
+                            step, _sample_count, profile_error = bounded_profile_step(
+                                distance, coverage_settings.profile_step_m,
+                                terrain.resolution_m, coverage_settings.maximum_profile_samples,
                             )
+                            if profile_error:
+                                validity[(link.source_id, link.target_id)] = None
+                                unresolved_reasons[(link.source_id, link.target_id)] = (
+                                    "profile_sample_limit"
+                                )
+                                unresolved_details[(link.source_id, link.target_id)] = (
+                                    profile_error
+                                )
+                                continue
                             try:
                                 validity[(link.source_id, link.target_id)] = evaluator.evaluate(
                                     left, right, step, include_profile=False
@@ -1721,6 +1750,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 "valid": validity.get(
                                     (link.source_id, link.target_id), bool(link.valid)
                                 ),
+                                "unresolved": validity.get(
+                                    (link.source_id, link.target_id), bool(link.valid)
+                                ) is None,
+                                "rejection": unresolved_reasons.get(
+                                    (link.source_id, link.target_id)
+                                ),
+                                "rejection_detail": unresolved_details.get(
+                                    (link.source_id, link.target_id)
+                                ),
                             }
                             for link in context["solution"].links
                         ]
@@ -1728,8 +1766,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             network_links=network_links,
                             backbone_revalidated_edges=len(affected),
                             backbone_invalidated_edges=sum(
-                                not valid for valid in validity.values()
+                                valid is False for valid in validity.values()
                             ),
+                            backbone_unresolved_edges=sum(
+                                valid is None for valid in validity.values()
+                            ),
+                            report_links=[
+                                {
+                                    **{
+                                        "source_id": link.source_id,
+                                        "target_id": link.target_id,
+                                        "distance_m": link.distance_m,
+                                        "worst_margin_db": (
+                                            None
+                                            if validity.get(
+                                                (link.source_id, link.target_id), bool(link.valid)
+                                            ) is None
+                                            else link.worst_margin_db
+                                        ),
+                                        "los_clear": (
+                                            None
+                                            if validity.get(
+                                                (link.source_id, link.target_id), bool(link.valid)
+                                            ) is None
+                                            else bool(link.los_clear)
+                                        ),
+                                        "fresnel_clear": (
+                                            None
+                                            if validity.get(
+                                                (link.source_id, link.target_id), bool(link.valid)
+                                            ) is None
+                                            else bool(link.fresnel_clear)
+                                        ),
+                                    },
+                                    "valid": validity.get(
+                                        (link.source_id, link.target_id), bool(link.valid)
+                                    ),
+                                    "unresolved": validity.get(
+                                        (link.source_id, link.target_id), bool(link.valid)
+                                    ) is None,
+                                    "rejection": unresolved_reasons.get(
+                                        (link.source_id, link.target_id)
+                                    ),
+                                    "rejection_detail": unresolved_details.get(
+                                        (link.source_id, link.target_id)
+                                    ),
+                                }
+                                for link in context["solution"].links
+                            ],
                             stage="Revalidated affected certified mesh links",
                         )
                     bounded_settings = replace(
@@ -1792,6 +1876,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 terrain_available_cells=grid.terrain_available_cells,
                                 unknown_cells=max(
                                     current_job["unknown_cells"], grid.unknown_cells
+                                ),
+                                unresolved_cells=grid.unresolved_cells,
+                                unresolved_source_evaluations=(
+                                    grid.unresolved_source_evaluations
                                 ),
                                 outside_area_cells=grid.outside_area_cells,
                                 effective_cell_size_m=grid.effective_cell_size_m,
@@ -1948,6 +2036,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "scenario_reference_available": scenario_network["reference_available"],
             "baseline_connected_source_ids": baseline_network["connected_source_ids"],
             "scenario_connected_source_ids": scenario_network["connected_source_ids"],
+            "baseline_unresolved_backbone_edges": baseline_network["unresolved_links"],
+            "scenario_unresolved_backbone_edges": scenario_network["unresolved_links"],
             "effective_cell_size_m": scenario["effective_cell_size_m"],
             "area_bounds_wgs84": scenario["area_bounds_wgs84"],
             "approximate_sampled_area_km2": (
@@ -2300,8 +2390,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         "target_count": len(rows),
                         "pass_count": sum(item.get("state") == "pass" for item in rows),
                         "fail_count": sum(item.get("state") == "fail" for item in rows),
+                        "unresolved_count": sum(
+                            item.get("state") == "unresolved" for item in rows
+                        ),
                         "unknown_count": sum(
-                            item.get("state") not in {"pass", "fail"} for item in rows
+                            item.get("state") not in {"pass", "fail", "unresolved"}
+                            for item in rows
                         ),
                     }
                 )
@@ -2361,15 +2455,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         for target_id, before in baseline_rows.items():
             after = scenario_rows[target_id]
             before_state, after_state = before.get("state"), after.get("state")
-            change = (
-                "improved"
-                if before_state != "pass" and after_state == "pass"
-                else "regressed"
-                if before_state == "pass" and after_state != "pass"
-                else "unchanged"
-                if before_state == after_state and before_state in {"pass", "fail"}
-                else "uncertain"
-            )
+            if before_state not in {"pass", "fail"} or after_state not in {"pass", "fail"}:
+                change = "uncertain"
+            elif before_state == after_state:
+                change = "unchanged"
+            elif before_state == "pass":
+                change = "regressed"
+            else:
+                change = "improved"
             counts[change] += 1
             differences.append(
                 {
@@ -2539,11 +2632,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if cancelled.is_set():
                         raise InterruptedError("Location inspection superseded")
                     distance = source.distance_to(target)
-                    profile_step = max(
+                    profile_step, _sample_count, profile_error = bounded_profile_step(
+                        distance,
                         profile_floor,
-                        distance / max(1, settings_for_client.maximum_profile_samples - 1),
+                        terrain.resolution_m,
+                        settings_for_client.maximum_profile_samples,
                     )
                     profile_steps[source.id] = profile_step
+                    if profile_error:
+                        source_results.append(
+                            {
+                                "source_id": source.id,
+                                "distance_m": distance,
+                                "downlink_margin_db": None,
+                                "uplink_margin_db": None,
+                                "two_way_margin_db": None,
+                                "valid_downlink": False,
+                                "valid_uplink": False,
+                                "valid_two_way": False,
+                                "rejection": "profile_sample_limit",
+                                "rejection_detail": profile_error,
+                            }
+                        )
+                        continue
                     try:
                         link = evaluator.evaluate(
                             source,
@@ -2653,7 +2764,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
                 inspection = {
                     "state": (
-                        "unknown_links"
+                        "unresolved"
+                        if source_results
+                        and all(
+                            item["rejection"] == "profile_sample_limit"
+                            for item in source_results
+                        )
+                        else "unknown_links"
                         if source_results
                         and all(item["rejection"] == "unknown_terrain" for item in source_results)
                         else "evaluated"
@@ -2672,6 +2789,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "sources": encode(source_results),
                     "profile_link": encode(profile_link),
                     "message": (
+                        "No candidate router profile fits the configured terrain-sample limit. Increase the profile step explicitly or raise the cap."
+                        if source_results
+                        and all(
+                            item["rejection"] == "profile_sample_limit"
+                            for item in source_results
+                        )
+                        else "Some candidate paths exceed the configured terrain-profile sample limit; those links are unresolved."
+                        if any(
+                            item["rejection"] == "profile_sample_limit"
+                            for item in source_results
+                        )
+                        else
                         "Ground is known here, but terrain data is missing along every candidate path; RF coverage is unknown."
                         if source_results
                         and all(item["rejection"] == "unknown_terrain" for item in source_results)

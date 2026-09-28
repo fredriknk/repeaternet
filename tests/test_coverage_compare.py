@@ -54,3 +54,15 @@ def test_outside_area_cells_are_separate_from_unknown_and_coverage_deltas() -> N
     assert result["counts"]["evaluated_cells"] == 0
     assert result["counts"]["baseline_coverage_percent"] is None
     assert result["cells"][0]["local_change"] == "outside_area"
+
+
+def test_unresolved_cells_do_not_become_coverage_gains_or_losses() -> None:
+    unresolved = {**cell(0, 10.0), "state": "unresolved"}
+
+    result = compare_coverage_cells([unresolved], [cell(0, 10.0, ("A", True, 8.0))], set(), {"A"})
+
+    assert result["counts"]["unresolved"] == 1
+    assert result["counts"]["gained_local"] == 0
+    assert result["counts"]["lost_local"] == 0
+    assert result["counts"]["evaluated_cells"] == 0
+    assert result["cells"][0]["local_change"] == "unresolved"

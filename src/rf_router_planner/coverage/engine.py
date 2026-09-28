@@ -12,6 +12,7 @@ from shapely import intersects_xy
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
+from rf_router_planner.coverage.profiles import bounded_profile_step
 from rf_router_planner.models.coverage import (
     ClientRadioProfile,
     CoverageCell,
@@ -207,10 +208,28 @@ def calculate_coverage(
                     break
                 try:
                     distance = source.distance_to(target)
-                    profile_step = max(
+                    profile_step, _sample_count, profile_error = bounded_profile_step(
+                        distance,
                         coverage_settings.profile_step_m,
-                        distance / max(1, coverage_settings.maximum_profile_samples - 1),
+                        terrain.resolution_m,
+                        coverage_settings.maximum_profile_samples,
                     )
+                    if profile_error:
+                        cell.unresolved_sources += 1
+                        cell.sources.append(
+                            CoverageSourceResult(
+                                source.id,
+                                None,
+                                None,
+                                None,
+                                False,
+                                False,
+                                False,
+                                "profile_sample_limit",
+                                profile_error,
+                            )
+                        )
+                        continue
                     link = evaluator.evaluate(
                         source,
                         target,
@@ -272,12 +291,16 @@ def calculate_coverage(
                 cell.best_margin_db = best_margin
                 cell.state = CoverageState.COVERED
                 grid.evaluated_cells += 1
+            elif cell.unresolved_sources:
+                cell.state = CoverageState.UNRESOLVED
+                grid.unresolved_cells += 1
             elif terrain_profile_failed:
                 cell.state = CoverageState.UNKNOWN_TERRAIN
                 grid.unknown_cells += 1
             else:
                 cell.state = CoverageState.UNCOVERED
                 grid.evaluated_cells += 1
+            grid.unresolved_source_evaluations += cell.unresolved_sources
         grid.completed_cells += 1
         pending.append(cell)
         if len(pending) >= chunk_size:

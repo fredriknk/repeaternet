@@ -115,8 +115,10 @@
             <label>Cell spacing · m<input id="coverage-cell-size" type="number" min="100" max="100000" step="100" value="1000"></label>
             <label>Mesh buffer · m<input id="coverage-buffer" type="number" min="0" max="100000" step="500" value="5000"></label>
             <label>Profile step · m<input id="coverage-profile-step" type="number" min="10" max="10000" step="10" value="200"></label>
+            <label>Maximum profile samples<input id="coverage-profile-limit" type="number" min="3" max="16384" step="1" value="4096"></label>
             <label class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
           </div>
+          <p class="hint">The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p>
           <details>
             <summary>Router sources <span id="coverage-source-count" class="hint">All routers in selected route</span></summary>
             <div id="coverage-sources" class="coverage-source-list"><p class="hint">Run a route search to choose sources.</p></div>
@@ -181,6 +183,7 @@
               <span><i class="diff-lost"></i> Lost connection</span>
               <span><i class="diff-retained"></i> Still connected</span>
               <span><i class="diff-unknown"></i> Unknown in either run</span>
+              <span><i class="diff-unresolved"></i> Unresolved profile limit</span>
             </div>
           </details>
           <details id="coverage-targets-controls">
@@ -226,6 +229,7 @@
             <span><i class="cov-marginal"></i> 0–5 dB</span>
             <span><i class="cov-none"></i> Not usable</span>
             <span><i class="cov-unknown"></i> Unknown terrain</span>
+            <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
           </div>
           <p class="hint">Bands are planning margins, not reliability classes. Overlap means multiple usable RF links, not independent mesh paths. Hide or show the layer using the map’s layer control.</p>
         </section>

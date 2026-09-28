@@ -80,6 +80,7 @@ def analyze_node_failures(
     lost_connected = 0
     newly_uncovered = 0
     unknown = 0
+    unresolved = 0
     outside_area = 0
     for cell in cells:
         source_rows = cell.get("sources", [])
@@ -97,6 +98,8 @@ def analyze_node_failures(
         state = cell.get("state")
         if state == "outside_area":
             outside_area += 1
+        elif state == "unresolved":
+            unresolved += 1
         elif state in {"unknown_terrain", "not_evaluated"}:
             unknown += 1
         else:
@@ -118,6 +121,9 @@ def analyze_node_failures(
         router_id for router_id in graph if not graph[router_id] and len(graph) > 1
     )
     disconnected = sorted(sources - connected_sources - failed)
+    unresolved_links = sum(
+        bool(link.get("unresolved")) or link.get("valid") is None for link in links
+    )
     return {
         "reference_id": reference_id,
         "reference_available": reference_component is not None,
@@ -127,8 +133,10 @@ def analyze_node_failures(
         "disconnected_source_ids": disconnected,
         "components": components,
         "isolated_router_ids": isolated,
+        "unresolved_links": unresolved_links,
         "baseline_connected_source_ids": sorted(baseline_connected_sources),
         "unknown_cells": unknown,
+        "unresolved_cells": unresolved,
         "outside_area_cells": outside_area,
         "lost_local_cells": lost_local,
         "lost_reference_connected_cells": lost_connected,

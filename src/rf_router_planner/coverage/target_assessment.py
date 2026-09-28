@@ -134,14 +134,33 @@ def assess_targets(
             unknown = evaluated["state"] == "unknown_terrain" or any(
                 row.get("rejection") == "unknown_terrain" for row in rows
             )
+            unresolved = evaluated["state"] == "unresolved" or any(
+                row.get("rejection") == "profile_sample_limit" for row in rows
+            )
             point_margins = [
                 float(row["two_way_margin_db"])
                 for row in rows
                 if row["valid_two_way"] and row["two_way_margin_db"] is not None
             ]
             report.update(
-                state="pass" if passing else "unknown" if unknown else "fail",
+                state=(
+                    "pass" if passing
+                    else "unresolved" if unresolved
+                    else "unknown" if unknown
+                    else "fail"
+                ),
                 evaluated_samples=int(evaluated["state"] != "unknown_terrain"),
+                unresolved_sources=sum(
+                    row.get("rejection") == "profile_sample_limit" for row in rows
+                ),
+                unresolved_source_details=[
+                    {
+                        "source_id": row["source_id"],
+                        "detail": row.get("rejection_detail"),
+                    }
+                    for row in rows
+                    if row.get("rejection") == "profile_sample_limit"
+                ],
                 passing_sources=[row["source_id"] for row in passing],
                 best_two_way_margin_db=max(point_margins) if point_margins else None,
                 latitude=latitude,
@@ -149,16 +168,30 @@ def assess_targets(
                 message=(
                     "At least one selected source meets the two-way target margin."
                     if passing
+                    else "No selected router fits the configured terrain-profile sample limit; increase the profile step explicitly or raise the cap."
+                    if unresolved
                     else "Terrain or a selected source link is unknown at this location."
                     if unknown
                     else "No selected source meets the two-way target margin."
                 ),
             )
+            if unresolved and not passing:
+                first_detail = next(
+                    (
+                        row.get("rejection_detail")
+                        for row in rows
+                        if row.get("rejection") == "profile_sample_limit"
+                    ),
+                    None,
+                )
+                if first_detail:
+                    report["message"] = f"{report['message']} {first_detail}"
         elif geometry_type == "LineString":
             line = transform_geometry(forward.transform, shape(feature["geometry"]))
             road_samples = projected_line_samples(line, road_spacing_m)
             total_length = float(line.length)
-            covered_length = unknown_length = failed_length = outside_length = 0.0
+            covered_length = unknown_length = unresolved_length = 0.0
+            failed_length = outside_length = 0.0
             road_margins: list[float] = []
             for x, y, represented_length in road_samples:
                 longitude, latitude = reverse.transform(x, y)
@@ -186,22 +219,30 @@ def assess_targets(
                 unknown = evaluated["state"] == "unknown_terrain" or any(
                     row.get("rejection") == "unknown_terrain" for row in rows
                 )
+                unresolved = evaluated["state"] == "unresolved" or any(
+                    row.get("rejection") == "profile_sample_limit" for row in rows
+                )
                 if passing:
                     covered_length += represented_length
                     road_margins.extend(float(row["two_way_margin_db"]) for row in passing)
+                elif unresolved:
+                    unresolved_length += represented_length
                 elif unknown:
                     unknown_length += represented_length
                 else:
                     failed_length += represented_length
             tolerance = max(1e-6, total_length * 1e-9)
-            unassessed_length = unknown_length + outside_length
+            unassessed_length = unknown_length + unresolved_length + outside_length
+            genuinely_unknown_length = unknown_length + outside_length
             state = (
                 "outside_analysed_area"
                 if outside_length >= total_length - tolerance
                 else "pass"
                 if unassessed_length <= tolerance and failed_length <= tolerance
                 else "unknown"
-                if unassessed_length > tolerance
+                if genuinely_unknown_length > tolerance
+                else "unresolved"
+                if unresolved_length > tolerance
                 else "fail"
             )
             report.update(
@@ -210,6 +251,7 @@ def assess_targets(
                 covered_length_m=covered_length,
                 failed_length_m=failed_length,
                 unknown_length_m=unknown_length,
+                unresolved_length_m=unresolved_length,
                 outside_analysed_area_length_m=outside_length,
                 sample_spacing_m=road_spacing_m,
                 sample_count=len(road_samples),
@@ -219,6 +261,8 @@ def assess_targets(
                     if state == "outside_analysed_area"
                     else "Every sampled road segment meets the two-way target margin."
                     if state == "pass"
+                    else "Some road segments exceed the configured terrain-profile sample limit; increase the profile step explicitly or raise the cap."
+                    if state == "unresolved"
                     else "Some road length lies outside the analysis area or has unknown terrain/source links."
                     if state == "unknown"
                     else "Some sampled road length does not meet the two-way target margin."
@@ -232,6 +276,7 @@ def assess_targets(
             analysed_area = float(analysed_target.area)
             outside_area = max(0.0, requested_area - analysed_area)
             evaluated_area = covered_area = failed_area = unknown_area = 0.0
+            unresolved_area = 0.0
             area_sample_count = 0
             min_x, min_y, max_x, max_y = grid_bounds
             half = effective_cell_size_m / 2
@@ -270,15 +315,20 @@ def assess_targets(
                 } or any(
                     row.get("rejection") == "unknown_terrain" for row in rows
                 )
+                unresolved = cell.get("state") == "unresolved" or any(
+                    row.get("rejection") == "profile_sample_limit" for row in rows
+                )
                 if passing:
                     evaluated_area += area
                     covered_area += area
+                elif unresolved:
+                    unresolved_area += area
                 elif unknown:
                     unknown_area += area
                 else:
                     evaluated_area += area
                     failed_area += area
-            represented_area = evaluated_area + unknown_area
+            represented_area = evaluated_area + unknown_area + unresolved_area
             remainder = max(0.0, analysed_area - represented_area)
             unknown_area += remainder
             tolerance = max(1e-3, requested_area * 1e-9)
@@ -289,10 +339,13 @@ def assess_targets(
                 if area_sample_count == 0
                 else "pass"
                 if unknown_area <= tolerance
+                and unresolved_area <= tolerance
                 and outside_area <= tolerance
                 and failed_area <= tolerance
                 else "unknown"
                 if unknown_area > tolerance or outside_area > tolerance
+                else "unresolved"
+                if unresolved_area > tolerance
                 else "fail"
             )
             report.update(
@@ -304,6 +357,7 @@ def assess_targets(
                 covered_area_m2=covered_area,
                 failed_area_m2=failed_area,
                 unknown_area_m2=unknown_area,
+                unresolved_area_m2=unresolved_area,
                 grid_cell_size_m=effective_cell_size_m,
                 sampled_cells=area_sample_count,
                 message=(
@@ -313,6 +367,8 @@ def assess_targets(
                     if state == "outside_analysed_area"
                     else "All represented area meets the two-way target margin at this grid resolution."
                     if state == "pass"
+                    else "Some target area has no result because router paths exceed the configured profile sample limit; increase the profile step explicitly or raise the cap."
+                    if state == "unresolved"
                     else "Some target area lies outside the requested analysis area or has unknown terrain/source links."
                     if state == "unknown"
                     else "Some sampled target area does not meet the two-way target margin."

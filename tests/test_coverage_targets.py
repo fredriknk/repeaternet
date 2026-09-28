@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from pyproj import Transformer
 from shapely.geometry import LineString
@@ -14,7 +15,7 @@ from rf_router_planner.coverage.targets import (
 )
 from rf_router_planner.models.coverage import CoverageSettings
 from rf_router_planner.models.settings import CandidateSettings, RFSettings
-from rf_router_planner.models.site import Site
+from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.terrain.raster import ArrayTerrain
 
 
@@ -137,6 +138,77 @@ def test_drawn_analysis_area_reports_points_outside_without_rf_evaluation() -> N
 
     assert report["targets"][0]["state"] == "outside_analysed_area"
     assert report["targets"][0]["evaluated_samples"] == 0
+
+
+def test_exact_point_target_reports_profile_cap_as_unresolved() -> None:
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    longitude, latitude = reverse.transform(4_000.0, 2_500.0)
+    targets = normalize_target_collection(
+        collection(feature("Point", [longitude, latitude]))
+    )
+    settings = CoverageSettings(maximum_profile_samples=8)
+
+    report = assess_targets(
+        ArrayTerrain(np.zeros((51, 51)), resolution_m=100.0),
+        RFSettings(),
+        CandidateSettings(final_sample_step_m=100.0),
+        settings,
+        [Site("R-1", 0.0, 2_500.0, kind=SiteKind.ROUTER, antenna_height_m=50.0)],
+        targets,
+        lambda: (),
+        terrain_crs="EPSG:25833",
+        grid_bounds=(0, 0, 5_000, 5_000),
+        effective_cell_size_m=100,
+        requested_cells=1,
+    )
+
+    result = report["targets"][0]
+    assert result["state"] == "unresolved"
+    assert result["unresolved_sources"] == 1
+    assert "profile step" in result["message"]
+
+
+def test_polygon_target_keeps_unresolved_area_separate_from_failed_area() -> None:
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    ring = [
+        list(reverse.transform(x, y))
+        for x, y in [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)]
+    ]
+    targets = normalize_target_collection(
+        collection(feature("Polygon", [ring], name="Capped area"))
+    )
+    grid_cell = {
+        "index": 0,
+        "x": 50.0,
+        "y": 50.0,
+        "state": "unresolved",
+        "sources": [
+            {
+                "source_id": "R-1",
+                "valid_two_way": False,
+                "rejection": "profile_sample_limit",
+            }
+        ],
+    }
+
+    report = assess_targets(
+        ArrayTerrain([[0.0, 0.0], [0.0, 0.0]], resolution_m=100.0),
+        RFSettings(),
+        CandidateSettings(),
+        CoverageSettings(),
+        [Site("R-1", 0, 0, kind=SiteKind.ROUTER)],
+        targets,
+        lambda: [grid_cell],
+        terrain_crs="EPSG:25833",
+        grid_bounds=(0, 0, 100, 100),
+        effective_cell_size_m=100,
+        requested_cells=1,
+    )
+
+    result = report["targets"][0]
+    assert result["state"] == "unresolved"
+    assert result["unresolved_area_m2"] == pytest.approx(10_000)
+    assert result["failed_area_m2"] == 0
 
 
 def test_polygon_target_reports_area_beyond_drawn_analysis_boundary() -> None:

@@ -19,6 +19,7 @@ class CoverageMode(str, Enum):
 class CoverageState(str, Enum):
     NOT_EVALUATED = "not_evaluated"
     UNKNOWN_TERRAIN = "unknown_terrain"
+    UNRESOLVED = "unresolved"
     COVERED = "covered"
     UNCOVERED = "uncovered"
     OUTSIDE_AREA = "outside_area"
@@ -86,6 +87,7 @@ class CoverageSourceResult:
     valid_uplink: bool
     valid_two_way: bool
     rejection: str | None = None
+    rejection_detail: str | None = None
 
 
 @dataclass(slots=True)
@@ -101,6 +103,7 @@ class CoverageCell:
     best_margin_db: float | None = None
     best_source_id: str | None = None
     sources: list[CoverageSourceResult] = field(default_factory=list)
+    unresolved_sources: int = 0
 
 
 @dataclass(slots=True)
@@ -114,8 +117,10 @@ class CoverageGrid:
     terrain_available_cells: int = 0
     evaluated_cells: int = 0
     unknown_cells: int = 0
+    unresolved_cells: int = 0
     inside_area_cells: int = 0
     outside_area_cells: int = 0
     completed_cells: int = 0
     cells: list[CoverageCell] = field(default_factory=list)
     surface_available: bool = False
+    unresolved_source_evaluations: int = 0

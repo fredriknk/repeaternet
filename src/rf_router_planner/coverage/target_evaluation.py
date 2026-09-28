@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from pyproj import Transformer
 
+from rf_router_planner.coverage.profiles import bounded_profile_step
 from rf_router_planner.models.coverage import CoverageSettings
 from rf_router_planner.models.settings import CandidateSettings, RFSettings, ValidationMode
 from rf_router_planner.models.site import Site, SiteKind
@@ -57,10 +58,28 @@ def evaluate_client_point(
     source_results: list[dict[str, Any]] = []
     for source in sources:
         distance = source.distance_to(target)
-        sample_step = max(
+        sample_step, _sample_count, profile_error = bounded_profile_step(
+            distance,
             candidate_settings.final_sample_step_m,
-            distance / max(1, coverage_settings.maximum_profile_samples - 1),
+            terrain.resolution_m,
+            coverage_settings.maximum_profile_samples,
         )
+        if profile_error:
+            source_results.append(
+                {
+                    "source_id": source.id,
+                    "distance_m": distance,
+                    "downlink_margin_db": None,
+                    "uplink_margin_db": None,
+                    "two_way_margin_db": None,
+                    "valid_downlink": False,
+                    "valid_uplink": False,
+                    "valid_two_way": False,
+                    "rejection": "profile_sample_limit",
+                    "rejection_detail": profile_error,
+                }
+            )
+            continue
         try:
             link = evaluator.evaluate(
                 source,
@@ -119,6 +138,10 @@ def evaluate_client_point(
     )
     if source_results and all(row["rejection"] == "unknown_terrain" for row in source_results):
         state = "unknown_terrain"
+    elif source_results and all(
+        row["rejection"] == "profile_sample_limit" for row in source_results
+    ):
+        state = "unresolved"
     else:
         state = "evaluated"
     return {

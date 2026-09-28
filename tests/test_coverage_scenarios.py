@@ -92,3 +92,19 @@ def test_outside_area_cells_are_not_counted_as_unknown_or_lost_coverage() -> Non
     assert result["outside_area_cells"] == 1
     assert result["unknown_cells"] == 0
     assert result["lost_local_cells"] == 0
+
+
+def test_unresolved_profile_cells_are_neither_unknown_nor_confirmed_losses() -> None:
+    result = analyze_node_failures(
+        [cell(0, state="unresolved")],
+        ["A"],
+        ["A"],
+        [],
+        [],
+        "A",
+    )
+
+    assert result["unresolved_cells"] == 1
+    assert result["unknown_cells"] == 0
+    assert result["lost_local_cells"] == 0
+    assert result["cells"][0]["state"] == "unresolved"

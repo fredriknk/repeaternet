@@ -188,6 +188,45 @@ def test_coverage_marks_path_nodata_as_unknown_not_uncovered(
     assert result.unknown_cells == 1
 
 
+def test_coverage_sample_cap_marks_links_unresolved_without_rf_evaluation(monkeypatch) -> None:
+    class MustNotEvaluate:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def evaluate(self, *_args, **_kwargs):
+            pytest.fail("An over-limit path must not be evaluated at coarser spacing")
+
+    monkeypatch.setattr(engine, "LinkEvaluator", MustNotEvaluate)
+    terrain = ArrayTerrain(np.zeros((21, 21)), resolution_m=100.0)
+    source = Site(
+        "router", 100.0, 1_000.0, kind=SiteKind.ROUTER, antenna_height_m=100.0
+    )
+    settings = CoverageSettings(
+        cell_size_m=100.0,
+        maximum_cells=1,
+        maximum_profile_samples=8,
+        profile_step_m=100.0,
+    )
+
+    result = engine.calculate_coverage(
+        terrain,
+        RFSettings(),
+        CandidateSettings(),
+        [source],
+        settings,
+        requested_bounds=(1_700.0, 950.0, 1_800.0, 1_050.0),
+    )
+
+    cell = result.cells[0]
+    assert cell.state is CoverageState.UNRESOLVED
+    assert cell.unresolved_sources == 1
+    assert cell.sources[0].rejection == "profile_sample_limit"
+    assert "configured maximum is 8" in cell.sources[0].rejection_detail
+    assert result.unresolved_cells == 1
+    assert result.unresolved_source_evaluations == 1
+    assert result.evaluated_cells == 0
+
+
 def test_coverage_counts_cells_without_ground_data_as_unknown(
     terrain_cases: dict[str, ArrayTerrain],
 ) -> None:

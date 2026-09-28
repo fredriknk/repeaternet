@@ -11,6 +11,7 @@
 .cov-marginal{background:#f0ca62}
 .cov-none{background:#ce796d}
 .cov-unknown{background:repeating-linear-gradient(135deg,#a7afb0 0 3px,#d8dddc 3px 6px)}
+.cov-unresolved{background:repeating-linear-gradient(135deg,#9476b7 0 3px,#ddd5e7 3px 6px)}
 #coverage-job-status.error{color:#b44735}
 #coverage-job-status.stale{color:#a46f33}
 .coverage-panel details{margin-top:12px}
@@ -33,5 +34,5 @@
 .coverage-diff-legend{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;margin:10px 0;font-size:10px;color:#63766d}
 .coverage-diff-legend span{display:flex;align-items:center;gap:7px}
 .coverage-diff-legend i{display:inline-block;width:14px;height:14px;border:1px solid #68776f55;border-radius:3px}
-.diff-gained{background:#24946d}.diff-lost{background:#c95158}.diff-retained{background:#628bb8}.diff-unknown{background:repeating-linear-gradient(135deg,#a7afb0 0 3px,#d8dddc 3px 6px)}
+.diff-gained{background:#24946d}.diff-lost{background:#c95158}.diff-retained{background:#628bb8}.diff-unknown{background:repeating-linear-gradient(135deg,#a7afb0 0 3px,#d8dddc 3px 6px)}.diff-unresolved{background:repeating-linear-gradient(135deg,#9476b7 0 3px,#ddd5e7 3px 6px)}
 @media(max-width:650px){.coverage-actions{grid-template-columns:1fr 1fr}}

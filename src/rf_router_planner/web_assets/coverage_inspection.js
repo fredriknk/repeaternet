@@ -96,11 +96,20 @@ function renderCoverageInspection(response,latitude,longitude){
     setCoverageStatus('Unknown terrain along all candidate router paths.');
     return;
   }
+  const unresolved=response.sources.filter(source=>source.rejection==='profile_sample_limit');
+  if(response.state==='unresolved'){
+    $('inspection-summary').textContent=response.message||'No candidate path fits the configured terrain-profile sample limit.';
+    $('inspection-detail').textContent=response.sources.map(source=>`${source.source_id}: ${source.rejection_detail||'profile sample limit exceeded'}`).join('\n');
+    $('inspection-chart').hidden=true;
+    L.circleMarker(point,{radius:7,color:'#765497',fillColor:'#b8a4d1',fillOpacity:.85}).addTo(inspectionLayer);
+    setCoverageStatus('Inspection unresolved: raise the profile step or sample limit to evaluate these paths.');
+    return;
+  }
   const chosen=response.sources.find(source=>source.source_id===response.selected_source_id);
   const summary=chosen?`${chosen.source_id} · ${(chosen.distance_m/1000).toFixed(2)} km · downlink ${chosen.downlink_margin_db.toFixed(1)} dB · uplink ${chosen.uplink_margin_db.toFixed(1)} dB · ${chosen.valid_two_way?'two-way usable':'not usable in both directions'}`:'No candidate mesh router is available for this location.';
-  $('inspection-summary').textContent=summary+(response.selected_source_component?` · selected mesh component ${response.selected_source_component} (${response.selected_source_component_size} node(s))`:'');
+  $('inspection-summary').textContent=summary+(response.selected_source_component?` · selected mesh component ${response.selected_source_component} (${response.selected_source_component_size} node(s))`:'')+(unresolved.length?` · ${unresolved.length} other router path(s) unresolved by the profile sample limit`:response.message?` · ${response.message}`:'');
   $('inspection-chart').hidden=!response.profile_link?.profile;
-  $('inspection-detail').textContent=`Ground ${response.ground_elevation_m.toFixed(1)} m · ${response.surface_sample_available?`surface ${response.surface_elevation_m.toFixed(1)} m`:'surface terrain unavailable here'}\n${response.sources.map(source=>source.rejection==='unknown_terrain'?`${source.source_id}: path terrain unknown`:`${source.source_id}: down ${source.downlink_margin_db.toFixed(1)} dB, up ${source.uplink_margin_db.toFixed(1)} dB · ${source.rejection||'usable'}`).join('\n')}`;
+  $('inspection-detail').textContent=`Ground ${response.ground_elevation_m.toFixed(1)} m · ${response.surface_sample_available?`surface ${response.surface_elevation_m.toFixed(1)} m`:'surface terrain unavailable here'}\n${response.sources.map(source=>source.rejection==='unknown_terrain'?`${source.source_id}: path terrain unknown`:source.rejection==='profile_sample_limit'?`${source.source_id}: ${source.rejection_detail||'profile sample limit exceeded'}`:`${source.source_id}: down ${source.downlink_margin_db.toFixed(1)} dB, up ${source.uplink_margin_db.toFixed(1)} dB · ${source.rejection||'usable'}`).join('\n')}`;
   L.circleMarker(point,{radius:7,color:'#193e72',fillColor:'#6da3df',fillOpacity:.9}).addTo(inspectionLayer);
   if(response.selected_source){const source=response.selected_source;L.polyline([[source.latitude,source.longitude],point],{color:chosen?.valid_two_way?'#176750':'#b44735',dashArray:'5 5',weight:3}).addTo(inspectionLayer);}
   if(response.profile_link?.profile)drawCoverageInspectionProfile(response.profile_link);
@@ -108,7 +117,7 @@ function renderCoverageInspection(response,latitude,longitude){
   heading.textContent=chosen?chosen.source_id:'No usable mesh link';
   copy.textContent=chosen?`Downlink ${chosen.downlink_margin_db.toFixed(1)} dB · uplink ${chosen.uplink_margin_db.toFixed(1)} dB`:'Terrain was evaluated for some links, but no source link is usable.';
   popup.append(heading,copy);L.popup().setLatLng(point).setContent(popup).openOn(map);
-  setCoverageStatus(response.selected_source_id?`Inspection complete. Best same-router two-way margin: ${chosen.two_way_margin_db.toFixed(1)} dB.`:'Inspection complete; no serving router found.');
+  setCoverageStatus(response.selected_source_id?`Inspection complete. Best same-router two-way margin: ${chosen.two_way_margin_db.toFixed(1)} dB.${unresolved.length?` ${unresolved.length} other path(s) remain unresolved.`:''}`:unresolved.length?'Inspection incomplete: candidate paths exceed the configured profile sample limit.':'Inspection complete; no serving router found.');
 }
 
 function drawCoverageInspectionProfile(link){
@@ -132,4 +141,4 @@ coverageBusyState=value=>{if(value)cancelActiveInspection();previousCoverageBusy
 const previousInstallProjectForInspection=installProject;
 installProject=async response=>{cancelActiveInspection();return previousInstallProjectForInspection(response);};
 $('coverage-inspect').onclick=enterCoverageInspect;
-for(const id of ['coverage-mode','coverage-area','coverage-cell-size','coverage-buffer','coverage-profile-step','coverage-endpoints','client-height','client-tx','client-gain','client-feed','client-sensitivity','client-loss'])$(id).onchange=coverageSettingsChanged;
+for(const id of ['coverage-mode','coverage-area','coverage-cell-size','coverage-buffer','coverage-profile-step','coverage-profile-limit','coverage-endpoints','client-height','client-tx','client-gain','client-feed','client-sensitivity','client-loss'])$(id).onchange=coverageSettingsChanged;

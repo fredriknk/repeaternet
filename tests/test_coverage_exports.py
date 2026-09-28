@@ -148,6 +148,40 @@ def test_partial_grid_exports_unknown_and_uncomputed_states_explicitly() -> None
     assert counts["unknown_cells"] == 1
 
 
+def test_unresolved_profile_cells_are_counted_and_exported_as_partial() -> None:
+    job = export_job()
+    rows = cells()
+    rows[1]["state"] = "unresolved"
+    rows[1]["unknown_sources"] = 0
+    rows[1]["unresolved_sources"] = 1
+    rows[1]["sources"] = [
+        {
+            "source_id": "R-1",
+            "valid_two_way": False,
+            "rejection": "profile_sample_limit",
+            "rejection_detail": "raise the cap",
+        }
+    ]
+
+    summary = summarize_coverage_cells(rows, job)
+    export_metadata = coverage_export_metadata(
+        {**job, "state": "complete"}, summary, job["terrain_fingerprint"], stale=False
+    )
+    feature_collection = json.loads(
+        "".join(geojson_chunks(rows, job, export_metadata))
+    )
+    document = "".join(printable_report_chunks(rows, job, export_metadata))
+
+    assert summary["unresolved_cells"] == 1
+    assert summary["unresolved_source_evaluations"] == 1
+    assert export_metadata["partial"] is True
+    assert export_metadata["complete"] is False
+    assert feature_collection["features"][2]["properties"]["state"] == "unresolved"
+    assert feature_collection["features"][2]["properties"]["unresolved_sources"] == 1
+    assert "Unresolved profile limit" in document
+    assert "unresolved" in document
+
+
 def test_drawn_area_exports_mark_outside_cells_and_include_the_area_outline() -> None:
     job = export_job()
     reverse = Transformer.from_crs(25833, 4326, always_xy=True)

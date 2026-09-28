@@ -14,7 +14,14 @@ from shapely import intersects_xy
 from shapely.geometry import Polygon, box
 from shapely.ops import transform as transform_geometry
 
-GRID_STATES = ("covered", "uncovered", "unknown_terrain", "not_evaluated", "outside_area")
+GRID_STATES = (
+    "covered",
+    "uncovered",
+    "unknown_terrain",
+    "unresolved",
+    "not_evaluated",
+    "outside_area",
+)
 
 
 def iter_complete_grid(
@@ -76,6 +83,7 @@ def iter_complete_grid(
             "state": "outside_area" if outside_area else "not_evaluated",
             "source_count": 0,
             "unknown_sources": 0,
+            "unresolved_sources": 0,
             "best_margin_db": None,
             "best_source_id": None,
             "sources": [],
@@ -89,6 +97,7 @@ def summarize_coverage_cells(
 ) -> dict[str, Any]:
     counts = dict.fromkeys(GRID_STATES, 0)
     evaluated_cells = covered_cells = unknown_source_evaluations = 0
+    unresolved_source_evaluations = 0
     stored_cells = 0
 
     def count_stored_cell() -> None:
@@ -103,15 +112,18 @@ def summarize_coverage_cells(
         covered_cells += state == "covered"
         evaluated_cells += state in {"covered", "uncovered"}
         unknown_source_evaluations += int(cell.get("unknown_sources") or 0)
+        unresolved_source_evaluations += int(cell.get("unresolved_sources") or 0)
     return {
         "requested_cells": int(job.get("requested_cells", job.get("total", 0))),
         "stored_cells": stored_cells,
         "evaluated_cells": evaluated_cells,
         "covered_cells": covered_cells,
         "unknown_cells": counts["unknown_terrain"],
+        "unresolved_cells": counts["unresolved"],
         "not_evaluated_cells": counts["not_evaluated"],
         "outside_area_cells": counts["outside_area"],
         "unknown_source_evaluations": unknown_source_evaluations,
+        "unresolved_source_evaluations": unresolved_source_evaluations,
         "state_counts": counts,
     }
 
@@ -140,8 +152,17 @@ def coverage_export_metadata(
         "snapshot_version": job.get("snapshot_version"),
         "input_revision": job.get("input_revision"),
         "job_state": job.get("state"),
-        "complete": job.get("state") == "complete" and not stale,
-        "partial": job.get("state") != "complete" or summary["not_evaluated_cells"] > 0,
+        "complete": (
+            job.get("state") == "complete"
+            and not stale
+            and summary["not_evaluated_cells"] == 0
+            and summary["unresolved_cells"] == 0
+        ),
+        "partial": (
+            job.get("state") != "complete"
+            or summary["not_evaluated_cells"] > 0
+            or summary["unresolved_cells"] > 0
+        ),
         "stale": stale,
         "created_at": job.get("created_at"),
         "finished_at": job.get("finished_at"),
@@ -184,6 +205,7 @@ def _cell_properties(cell: dict[str, Any]) -> dict[str, Any]:
         "state": cell["state"],
         "source_count": cell.get("source_count", 0),
         "unknown_sources": cell.get("unknown_sources", 0),
+        "unresolved_sources": cell.get("unresolved_sources", 0),
         "best_margin_db": cell.get("best_margin_db"),
         "best_source_id": cell.get("best_source_id"),
         "sources": cell.get("sources", []),
@@ -290,6 +312,8 @@ def _color(cell: dict[str, Any], mode: str) -> str:
         return "#f7f8f7"
     if cell.get("state") == "unknown_terrain":
         return "#a7afb0"
+    if cell.get("state") == "unresolved":
+        return "#9476b7"
     if cell.get("state") == "not_evaluated":
         return "#e2e5e3"
     sources = cell.get("sources", [])
@@ -339,12 +363,13 @@ def printable_report_chunks(
     :root{color-scheme:light;--ink:#19372d;--muted:#5d7168;--line:#d5dfda;--paper:#fff;--bg:#eef2ef}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Segoe UI,Arial,sans-serif}main{max-width:1120px;margin:28px auto;background:var(--paper);padding:36px 44px;box-shadow:0 8px 32px #142d2018}header{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid var(--ink);padding-bottom:18px}h1{font-size:30px;margin:0}h2{margin:30px 0 12px;font-size:20px}h3{font-size:16px}.sub,.muted{color:var(--muted)}.badge{align-self:flex-start;border:1px solid #537465;border-radius:999px;padding:5px 12px;font-weight:700;letter-spacing:.07em}.badge.PARTIAL,.badge.STALE{color:#8d441f;border-color:#bf8058}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.metric{padding:12px;border:1px solid var(--line);border-radius:8px}.metric strong{display:block;font-size:21px}.metric span{color:var(--muted);font-size:12px}svg{display:block;width:100%;height:auto;border:1px solid var(--line);background:#f6f8f7}.legend{display:flex;flex-wrap:wrap;gap:14px;margin:12px 0}.swatch{display:inline-block;width:13px;height:13px;vertical-align:-2px;margin-right:5px;border:1px solid #50645b}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f1f5f2}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f4;padding:14px;border-radius:6px;font-size:12px}.warning{background:#fff5e9;border-left:4px solid #bb7645;padding:12px}.print{position:fixed;right:20px;bottom:20px;border:0;border-radius:8px;background:#19372d;color:#fff;padding:12px 18px;font-weight:700;cursor:pointer}@media print{body{background:#fff}main{margin:0;max-width:none;box-shadow:none;padding:12mm}.print{display:none}h2{break-after:avoid}table,svg{break-inside:avoid}}@media(max-width:700px){main{margin:0;padding:22px}.metrics{grid-template-columns:repeat(2,1fr)}header{display:block}.badge{display:inline-block;margin-top:10px}}
     </style></head><body><button class="print" onclick="window.print()">Print report</button><main>"""
     yield f"<header><div><h1>Predicted mesh coverage</h1><div class='sub'>Project { _html(metadata.get('project_id')) } · alternative { _html(metadata.get('alternative_id')) } · job { _html(job['job_id']) }</div></div><span class='badge {report_state}'>{report_state}</span></header>"
-    yield f"<p class='warning'>{_html(metadata['prediction_warning'])} {('This export is explicitly partial; unsampled cells are shown as not evaluated.' if metadata['partial'] else '')} {('Inputs changed since this run; treat it as a historical snapshot.' if metadata['stale'] else '')}</p>"
+    yield f"<p class='warning'>{_html(metadata['prediction_warning'])} {('This export includes partial or unresolved cells; inspect the state counts and profile-limit settings.' if metadata['partial'] else '')} {('Inputs changed since this run; treat it as a historical snapshot.' if metadata['stale'] else '')}</p>"
     yield "<section class='metrics'>"
     for label, value in (
         ("Covered cells", counts["covered_cells"]),
         ("Evaluated cells", counts["evaluated_cells"]),
         ("Unknown terrain", counts["unknown_cells"]),
+        ("Unresolved profile limits", counts["unresolved_cells"]),
         ("Not evaluated", counts["not_evaluated_cells"]),
         ("Outside requested area", counts["outside_area_cells"]),
     ):
@@ -385,8 +410,15 @@ def printable_report_chunks(
             continue
         x1, y1 = _map_point(float(left_site["longitude"]), float(left_site["latitude"]), bounds)
         x2, y2 = _map_point(float(right_site["longitude"]), float(right_site["latitude"]), bounds)
-        color = "#1b4f73" if link.get("valid") else "#b44735"
-        yield f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' stroke='{color}' stroke-width='3' stroke-dasharray='{'' if link.get('valid') else '7 5'}'/>"
+        color = (
+            "#9476b7"
+            if link.get("unresolved") or link.get("valid") is None
+            else "#1b4f73"
+            if link.get("valid")
+            else "#b44735"
+        )
+        label = "unresolved profile limit" if color == "#9476b7" else "valid" if link.get("valid") else "invalid"
+        yield f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' stroke='{color}' stroke-width='3' stroke-dasharray='{'' if link.get('valid') is True else '7 5'}'><title>{_html(link.get('source_id'))} to {_html(link.get('target_id'))}: {label}</title></line>"
     for site in sites:
         if site.get("latitude") is None or site.get("longitude") is None:
             continue
@@ -407,7 +439,7 @@ def printable_report_chunks(
                 points = " ".join(f"{_map_point(float(point[0]), float(point[1]), bounds)[0]:.1f},{_map_point(float(point[0]), float(point[1]), bounds)[1]:.1f}" for point in line)
                 tag = "polyline" if geometry_type == "LineString" else "polygon"
                 yield f"<{tag} points='{points}' fill='{color if geometry_type == 'Polygon' else 'none'}' fill-opacity='.18' stroke='{color}' stroke-width='3'><title>{_html(target.get('properties', {}).get('name'))}: {_html(state)}</title></{tag}>"
-    yield "</svg><div class='legend'><span><i class='swatch' style='background:#287b64'></i> ≥ 10 dB</span><span><i class='swatch' style='background:#61a88c'></i> 5–10 dB</span><span><i class='swatch' style='background:#f0ca62'></i> 0–5 dB</span><span><i class='swatch' style='background:#ce796d'></i> Not usable</span><span><i class='swatch' style='background:#a7afb0'></i> Unknown terrain</span><span><i class='swatch' style='background:#e2e5e3'></i> Not evaluated</span><span><i class='swatch' style='background:#f7f8f7'></i> Outside requested area</span></div>"
+    yield "</svg><div class='legend'><span><i class='swatch' style='background:#287b64'></i> ≥ 10 dB</span><span><i class='swatch' style='background:#61a88c'></i> 5–10 dB</span><span><i class='swatch' style='background:#f0ca62'></i> 0–5 dB</span><span><i class='swatch' style='background:#ce796d'></i> Not usable</span><span><i class='swatch' style='background:#a7afb0'></i> Unknown terrain</span><span><i class='swatch' style='background:#9476b7'></i> Unresolved profile limit</span><span><i class='swatch' style='background:#e2e5e3'></i> Not evaluated</span><span><i class='swatch' style='background:#f7f8f7'></i> Outside requested area</span></div>"
     yield "<h2>Coverage states</h2><table><thead><tr><th>State</th><th>Cells</th></tr></thead><tbody>"
     for state, count in counts["state_counts"].items():
         yield f"<tr><td>{_html(state)}</td><td>{_html(count)}</td></tr>"
@@ -428,7 +460,13 @@ def printable_report_chunks(
     yield "<h2>Selected network and weakest links</h2><table><thead><tr><th>Link</th><th>Distance</th><th>Worst margin</th><th>Validity</th></tr></thead><tbody>"
     links = sorted(job.get("report_links", []), key=lambda item: item.get("worst_margin_db", math.inf))[:10]
     for link in links:
-        yield f"<tr><td>{_html(link.get('source_id'))} → {_html(link.get('target_id'))}</td><td>{_html(round(link.get('distance_m', 0)))} m</td><td>{_html(link.get('worst_margin_db'))} dB</td><td>{_html('valid' if link.get('valid') else 'invalid')}</td></tr>"
+        unresolved = bool(link.get("unresolved")) or link.get("valid") is None
+        margin = link.get("worst_margin_db")
+        validity = "unresolved: profile sample limit" if unresolved else "valid" if link.get("valid") else "invalid"
+        if link.get("rejection_detail"):
+            validity += f" · {link['rejection_detail']}"
+        margin_text = f"{_html(margin)} dB" if margin is not None else "—"
+        yield f"<tr><td>{_html(link.get('source_id'))} → {_html(link.get('target_id'))}</td><td>{_html(round(link.get('distance_m', 0)))} m</td><td>{margin_text}</td><td>{_html(validity)}</td></tr>"
     if not links:
         yield "<tr><td colspan='4'>Certified link metrics were not retained in this historical coverage snapshot.</td></tr>"
     yield "</tbody></table><h2>Terrain provenance and model assumptions</h2>"

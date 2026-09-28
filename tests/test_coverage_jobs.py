@@ -687,8 +687,15 @@ def test_saved_target_reports_compare_compatible_coverage_scenarios(tmp_path, mo
         )
         assert baseline_report.status_code == 200, baseline_report.text
 
+        limited = json.loads(json.dumps(prepared["coverage"]["settings"]))
+        limited["maximum_profile_samples"] = 3
+        plan = json.loads(json.dumps(prepared["plan"]))
+        plan["coverage"] = limited
+        plan["coverage_targets"] = target_collection
+        assert client.post("/api/projects/autosave", json={"plan": plan}).status_code == 200
         scenario_request = {
             **prepared["coverage"],
+            "settings": limited,
             "source_height_overrides": {"R-coverage": 10.0},
         }
         scenario = client.post("/api/coverage/jobs", json=scenario_request)
@@ -699,6 +706,7 @@ def test_saved_target_reports_compare_compatible_coverage_scenarios(tmp_path, mo
             json={"road_spacing_m": 100},
         )
         assert scenario_report.status_code == 200, scenario_report.text
+        assert scenario_report.json()["targets"][0]["state"] == "unresolved"
 
         compared = client.post(
             "/api/coverage/target-reports/compare",
@@ -711,10 +719,15 @@ def test_saved_target_reports_compare_compatible_coverage_scenarios(tmp_path, mo
         assert compared.json()["counts"] == {
             "improved": 0,
             "regressed": 0,
-            "unchanged": 1,
-            "uncertain": 0,
+            "unchanged": 0,
+            "uncertain": 1,
         }
         listed = client.get("/api/coverage/target-reports").json()["reports"]
+        assert any(
+            item["report_id"] == scenario_report.json()["report_id"]
+            and item["unresolved_count"] == 1
+            for item in listed
+        )
         assert {item["report_id"] for item in listed} >= {
             baseline_report.json()["report_id"],
             scenario_report.json()["report_id"],
@@ -1008,10 +1021,16 @@ def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypa
     monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
     with TestClient(create_app(tmp_path)) as client:
         prepared = prepare_workspace(client, monkeypatch, fake_two_router_optimizer)
-        baseline = start_coverage(client, prepared)
+        settings = json.loads(json.dumps(prepared["coverage"]["settings"]))
+        settings["maximum_profile_samples"] = 512
+        plan = json.loads(json.dumps(prepared["plan"]))
+        plan["coverage"] = settings
+        assert client.post("/api/projects/autosave", json={"plan": plan}).status_code == 200
+        coverage = {**prepared["coverage"], "settings": settings}
+        baseline = start_coverage(client, {**prepared, "coverage": coverage})
         assert wait_for(client, baseline["job_id"], {"complete"})["state"] == "complete"
         request = {
-            **prepared["coverage"],
+            **coverage,
             "source_height_overrides": {"R-1": 10.0},
         }
         started = client.post("/api/coverage/jobs", json=request)
@@ -1020,7 +1039,14 @@ def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypa
         assert completed["backbone_revalidated_edges"] == 1
         assert completed["backbone_invalidated_edges"] == 1
         assert completed["network_links"] == [
-            {"source_id": "R-1", "target_id": "R-2", "valid": False}
+            {
+                "source_id": "R-1",
+                "target_id": "R-2",
+                "valid": False,
+                "unresolved": False,
+                "rejection": None,
+                "rejection_detail": None,
+            }
         ]
         comparison = client.post(
             "/api/coverage/compare",
@@ -1033,6 +1059,113 @@ def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypa
         assert comparison.status_code == 200, comparison.text
         assert comparison.json()["baseline_connected_source_ids"] == ["R-1", "R-2"]
         assert comparison.json()["scenario_connected_source_ids"] == ["R-1"]
+
+
+def test_profile_sample_cap_persists_unresolved_grid_and_inspection_states(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        limited = json.loads(json.dumps(prepared["coverage"]["settings"]))
+        limited["maximum_profile_samples"] = 3
+        plan = json.loads(json.dumps(prepared["plan"]))
+        plan["coverage"] = limited
+        saved = client.post("/api/projects/autosave", json={"plan": plan})
+        assert saved.status_code == 200, saved.text
+
+        request = {**prepared["coverage"], "settings": limited}
+        started = client.post("/api/coverage/jobs", json=request)
+        assert started.status_code == 200, started.text
+        completed = wait_for(client, started.json()["job_id"], {"complete"})
+        assert completed["unresolved_cells"] == completed["requested_cells"]
+        assert completed["unresolved_source_evaluations"] == completed["requested_cells"]
+        assert completed["evaluated_cells"] == 0
+
+        cells = client.get(
+            f"/api/coverage/jobs/{completed['job_id']}/cells",
+            params={"cursor": 0, "limit": 16},
+        )
+        assert cells.status_code == 200, cells.text
+        assert all(row["state"] == "unresolved" for row in cells.json()["cells"])
+        assert cells.json()["cells"][0]["sources"][0]["rejection"] == "profile_sample_limit"
+        export_url = f"/api/coverage/jobs/{completed['job_id']}/export.json"
+        assert client.get(export_url).status_code == 409
+        exported = client.get(export_url, params={"include_partial": "true"})
+        assert exported.status_code == 200, exported.text
+        assert exported.json()["metadata"]["complete"] is False
+        assert exported.json()["metadata"]["counts"]["unresolved_cells"] == completed["requested_cells"]
+
+        latitude, longitude = coordinates(500200.0, 6650500.0)
+        inspection = client.post(
+            "/api/coverage/inspect",
+            json={**request, "latitude": latitude, "longitude": longitude},
+        )
+        assert inspection.status_code == 200, inspection.text
+        inspection_id = inspection.json()["job_id"]
+        for _ in range(500):
+            checked = client.get(f"/api/coverage/inspect/{inspection_id}")
+            if checked.status_code == 200 and checked.json()["state"] == "complete":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("Location inspection did not finish")
+        result = checked.json()["result"]
+        assert result["state"] == "unresolved"
+        assert result["sources"][0]["rejection"] == "profile_sample_limit"
+        assert "configured maximum is 3" in result["sources"][0]["rejection_detail"]
+
+
+def test_height_scenario_keeps_capped_backbone_link_unresolved(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch, fake_two_router_optimizer)
+        limited = json.loads(json.dumps(prepared["coverage"]["settings"]))
+        limited["maximum_profile_samples"] = 3
+        plan = json.loads(json.dumps(prepared["plan"]))
+        plan["coverage"] = limited
+        assert client.post("/api/projects/autosave", json={"plan": plan}).status_code == 200
+
+        request = {
+            **prepared["coverage"],
+            "settings": limited,
+        }
+        baseline = client.post("/api/coverage/jobs", json=request)
+        assert baseline.status_code == 200, baseline.text
+        assert wait_for(client, baseline.json()["job_id"], {"complete"})["state"] == "complete"
+        request["source_height_overrides"] = {"R-1": 10.0}
+        started = client.post("/api/coverage/jobs", json=request)
+        assert started.status_code == 200, started.text
+        completed = wait_for(client, started.json()["job_id"], {"complete"})
+
+        assert completed["backbone_revalidated_edges"] == 1
+        assert completed["backbone_invalidated_edges"] == 0
+        assert completed["backbone_unresolved_edges"] == 1
+        assert {
+            key: value
+            for key, value in completed["network_links"][0].items()
+            if key != "rejection_detail"
+        } == {
+                "source_id": "R-1",
+                "target_id": "R-2",
+                "valid": None,
+                "unresolved": True,
+                "rejection": "profile_sample_limit",
+            }
+        assert "configured maximum is 3" in completed["network_links"][0]["rejection_detail"]
+        assert completed["report_links"][0]["unresolved"] is True
+        comparison = client.post(
+            "/api/coverage/compare",
+            json={
+                "baseline_job_id": baseline.json()["job_id"],
+                "scenario_job_id": completed["job_id"],
+                "reference_id": "R-1",
+            },
+        )
+        assert comparison.status_code == 200, comparison.text
+        assert comparison.json()["baseline_connected_source_ids"] == ["R-1", "R-2"]
+        assert comparison.json()["scenario_connected_source_ids"] == ["R-1"]
+        assert comparison.json()["scenario_unresolved_backbone_edges"] == 1
 
 
 def test_comparison_rejects_different_client_profile_resolution(tmp_path, monkeypatch) -> None:

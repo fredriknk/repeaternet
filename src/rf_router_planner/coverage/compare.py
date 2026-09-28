@@ -51,6 +51,7 @@ def compare_coverage_streams(
         "retained_reference_connected": 0,
         "unchanged_disconnected": 0,
         "unknown": 0,
+        "unresolved": 0,
         "outside_area": 0,
         "margin_comparable": 0,
     }
@@ -100,7 +101,12 @@ def compare_coverage_streams(
             "unknown_terrain",
             "not_evaluated",
         }
-        if unknown:
+        unresolved = left_state == "unresolved" or right_state == "unresolved"
+        if unresolved:
+            counts["unresolved"] += 1
+            local_change, connected_change = "unresolved", "unresolved"
+            margin_delta = None
+        elif unknown:
             counts["unknown"] += 1
             local_change, connected_change = "unknown", "unknown"
             margin_delta = None
@@ -147,7 +153,7 @@ def compare_coverage_streams(
         raise ValueError("Coverage grids contain different cell counts")
     except StopIteration:
         pass
-    known = len(rows) - counts["unknown"] - counts["outside_area"]
+    known = len(rows) - counts["unknown"] - counts["unresolved"] - counts["outside_area"]
     baseline_covered = counts["gained_local"] + counts["retained_local"]
     scenario_covered = counts["lost_local"] + counts["retained_local"]
     counts.update(
