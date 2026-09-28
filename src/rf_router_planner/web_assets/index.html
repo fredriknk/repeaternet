@@ -92,7 +92,7 @@
         <section class="coverage-panel">
           <h2><span>05</span> Predicted mesh coverage</h2>
           <p class="hint">Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p>
-          <label>Coverage view<select id="coverage-mode">
+          <label>Coverage view<select id="coverage-mode" data-display-only>
             <option value="two_way">Two-way margin</option>
             <option value="downlink">Router → handheld</option>
             <option value="uplink">Handheld → router</option>
@@ -110,7 +110,7 @@
             <button id="coverage-clear-area" class="wide-button">Clear drawn area</button>
           </div>
           <p id="coverage-area-hint" class="hint" role="status" aria-live="polite" hidden></p>
-          <label>Layer opacity<input id="coverage-opacity" type="range" min="10" max="90" value="55"></label>
+          <label>Layer opacity<input id="coverage-opacity" data-display-only type="range" min="10" max="90" value="55"></label>
           <div class="fields">
             <label>Cell spacing · m<input id="coverage-cell-size" type="number" min="100" max="100000" step="100" value="1000"></label>
             <label>Mesh buffer · m<input id="coverage-buffer" type="number" min="0" max="100000" step="500" value="5000"></label>
@@ -254,11 +254,12 @@
           <div id="map"></div>
           <div class="map-tools">
             <button id="fit">Fit endpoints</button>
+            <button id="cancel-map-mode" hidden>Cancel map action</button>
             <button id="undo" disabled>Undo</button>
             <button id="redo" disabled>Redo</button>
             <label><input type="checkbox" id="show-candidates"> Candidates</label>
           </div>
-          <div id="map-hint">Set your endpoints to start planning</div>
+          <div id="map-hint" role="status" aria-live="polite">Set your endpoints to start planning</div>
         </div>
         <div class="results">
           <div class="result-heading">

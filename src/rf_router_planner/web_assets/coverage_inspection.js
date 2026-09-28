@@ -26,10 +26,7 @@ function cancelActiveInspection(){
 
 function enterCoverageInspect(){
   if(!result||resultStale||!result.search_complete){setCoverageStatus('Finish a route search before inspecting locations.',true);return;}
-  inspectCoverage=!inspectCoverage;
-  $('coverage-inspect').textContent=inspectCoverage?'Stop inspecting locations':'Inspect a map location';
-  $('map-hint').textContent=inspectCoverage?'Click any location to inspect predicted handheld access':'Map inspection stopped';
-  if(!inspectCoverage){inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;}
+  setInteractionMode(interactionMode==='inspect-coverage'?'browse':'inspect-coverage');
 }
 
 async function waitForInspection(jobId,requestId,signal){
@@ -55,7 +52,7 @@ async function inspectAt(latlng){
   cancelActiveInspection();
   const controller=new AbortController();
   inspectionController=controller;
-  const isCurrent=()=>requestId===inspectionRequest&&inspectCoverage&&!controller.signal.aborted;
+  const isCurrent=()=>requestId===inspectionRequest&&interactionMode==='inspect-coverage'&&!controller.signal.aborted;
   inspectionLayer.clearLayers();
   const latitude=Number(latlng.lat.toFixed(6)),longitude=Number(latlng.lng.toFixed(6));
   setCoverageStatus(`Inspecting ${latitude.toFixed(5)}, ${longitude.toFixed(5)}…`);
@@ -132,13 +129,4 @@ function drawCoverageInspectionProfile(link){
   ctx.fillStyle='#88968c';ctx.fillText('0 km',42,height-4);ctx.fillText(`${(link.distance_m/1000).toFixed(2)} km`,width-54,height-4);
 }
 
-const previousInvalidateForInspection=invalidate;
-invalidate=()=>{cancelActiveInspection();previousInvalidateForInspection();};
-const previousCoverageSettingsChanged=coverageSettingsChanged;
-coverageSettingsChanged=event=>{cancelActiveInspection();previousCoverageSettingsChanged(event);};
-const previousCoverageBusyState=coverageBusyState;
-coverageBusyState=value=>{if(value)cancelActiveInspection();previousCoverageBusyState(value);};
-const previousInstallProjectForInspection=installProject;
-installProject=async response=>{cancelActiveInspection();return previousInstallProjectForInspection(response);};
 $('coverage-inspect').onclick=enterCoverageInspect;
-for(const id of ['coverage-mode','coverage-area','coverage-cell-size','coverage-buffer','coverage-profile-step','coverage-profile-limit','coverage-endpoints','client-height','client-tx','client-gain','client-feed','client-sensitivity','client-loss'])$(id).onchange=coverageSettingsChanged;

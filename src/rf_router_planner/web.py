@@ -113,6 +113,7 @@ def result_payload(
     job_id: str | None,
     input_revision: int,
     snapshot_version: int,
+    rf_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     solution = result.active_solution
     sites = solution.sites if solution else result.route
@@ -175,6 +176,7 @@ def result_payload(
         "job_id": job_id,
         "input_revision": input_revision,
         "snapshot_version": snapshot_version,
+        "rf_settings": rf_settings,
         "candidates": encode(result.candidates),
         "active_alternative_id": solution_id(solution) if solution else None,
         "alternatives": alternatives,
@@ -441,6 +443,7 @@ class Workspace:
             "total": 1,
         }
         self.result: Any = None
+        self.result_rf_settings: dict[str, Any] | None = None
         self.result_plan_fingerprint: str | None = None
         self.coverage_job: dict[str, Any] | None = None
         self.restore_coverage_job()
@@ -476,6 +479,7 @@ class Workspace:
         self.inputs = project["plan"]
         self.result_summary = project["result_summary"]
         self.result = None
+        self.result_rf_settings = None
         self.result_plan_fingerprint = None
         self.job_id = None
         self.coverage_cancel = threading.Event()
@@ -3603,6 +3607,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 job_slots["outstanding"] += 1
             ws.cancel.clear()
             ws.result = None
+            ws.result_rf_settings = dict(body.get("rf", {}))
             ws.result_plan_fingerprint = _route_plan_fingerprint(body)
             ws.result_summary = None
             ws.inputs = body
@@ -3878,9 +3883,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     final_result = ws.result
                     final_revision = ws.input_revision
                     final_snapshot = ws.snapshot_version
+                    final_rf_settings = ws.result_rf_settings
                 if final_state in {"complete", "stopped"} and final_result is not None:
                     payload = result_payload(
-                        final_result, job_id, final_revision, final_snapshot
+                        final_result, job_id, final_revision, final_snapshot,
+                        final_rf_settings,
                     )
                     summary = {
                         "found": payload["found"],
@@ -3938,7 +3945,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if ws.result is None:
                 raise HTTPException(404, "No certified route is available yet")
             return result_payload(
-                ws.result, ws.job_id, ws.input_revision, ws.snapshot_version
+                ws.result, ws.job_id, ws.input_revision, ws.snapshot_version,
+                ws.result_rf_settings,
             )
 
     @app.post("/api/alternatives/{alternative_id}/select")
@@ -3967,7 +3975,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ws.snapshot_version += 1
             ws.status = {**ws.status, "snapshot_version": ws.snapshot_version}
             payload = result_payload(
-                ws.result, ws.job_id, ws.input_revision, ws.snapshot_version
+                ws.result, ws.job_id, ws.input_revision, ws.snapshot_version,
+                ws.result_rf_settings,
             )
             summary = ws.result_summary or {
                 "found": payload["found"],
