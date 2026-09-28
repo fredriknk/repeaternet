@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/assets/style.css">
     <link rel="stylesheet" href="/assets/meshcore.css">
     <link rel="stylesheet" href="/assets/coverage.css">
+    <link rel="stylesheet" href="/assets/workspace.css">
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
@@ -19,23 +20,34 @@
         <div>RepeaterNet<small>TERRAIN-AWARE RF PLANNING</small></div>
       </div>
       <div class="header-actions">
-        <label class="button">Open plan<input id="open" type="file" accept=".json" hidden></label>
-        <button id="save">Save plan</button>
+        <label class="button">Import plan JSON<input id="open" type="file" accept=".json" hidden></label>
+        <button id="save">Export plan JSON</button>
         <span class="badge">SELF HOSTED</span>
       </div>
     </header>
     <div class="project-bar">
       <label for="project-select">Project<select id="project-select"></select></label>
-      <button id="new-project">New</button>
-      <button id="rename-project">Rename</button>
-      <button id="recover-project" hidden>Recover previous</button>
-      <button id="duplicate-project">Duplicate</button>
-      <button id="archive-project">Archive</button>
-      <button id="delete-project">Delete</button>
       <span id="project-storage" class="hint">Autosave ready</span>
+      <details class="project-menu">
+        <summary>Project actions</summary>
+        <div class="project-menu-actions">
+          <button id="new-project">New project</button>
+          <button id="rename-project">Rename</button>
+          <button id="recover-project" hidden>Recover previous</button>
+          <button id="duplicate-project">Duplicate</button>
+          <button id="archive-project">Archive</button>
+          <button id="delete-project">Delete</button>
+        </div>
+      </details>
     </div>
     <main>
       <aside>
+        <nav class="workspace-nav" aria-label="Planning workspace">
+          <button type="button" data-workspace-target="workspace-plan" aria-pressed="true">Plan</button>
+          <button type="button" data-workspace-target="workspace-coverage" aria-pressed="false">Coverage</button>
+          <button type="button" data-workspace-target="workspace-compare" aria-pressed="false">Compare</button>
+        </nav>
+        <div class="workspace-view" id="workspace-plan" aria-label="Plan route">
         <div class="intro">
           <span class="eyebrow">YOUR NEXT CONNECTION</span>
           <h1>Plan the path.</h1>
@@ -89,6 +101,23 @@
           <h2><span>04</span> Radio & search</h2>
           <div id="settings"></div>
         </section>
+        <div class="run-panel">
+          <label for="search-effort">Search effort</label>
+          <select id="search-effort">
+            <option value="quick">Quick · up to 200 candidate sites</option>
+            <option value="balanced" selected>Balanced · up to 800 candidate sites</option>
+            <option value="thorough">Thorough · configured candidate limit</option>
+          </select>
+          <p class="hint">Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p>
+          <button id="optimize" class="primary">Find repeater route <span>↗</span></button>
+          <button id="cancel" hidden>Cancel optimization</button>
+          <button id="stop-keep" hidden disabled>Stop and keep this route</button>
+          <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
+          <button id="clear-cache" class="text-button">Clear saved RF calculations</button>
+          <p class="hint">RF estimates require field validation.</p>
+        </div>
+        </div>
+        <div class="workspace-view" id="workspace-coverage" aria-label="Coverage analysis" hidden>
         <section class="coverage-panel">
           <h2><span>05</span> Predicted mesh coverage</h2>
           <p class="hint">Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p>
@@ -138,11 +167,8 @@
           <div class="coverage-actions">
             <button id="coverage-estimate" class="wide-button">Estimate calculation</button>
             <button id="coverage-preview" class="wide-button">Quick approximate preview</button>
-            <button id="coverage-start" class="wide-button primary">Calculate coverage</button>
-            <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
             <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
           </div>
-          <p id="coverage-job-status" class="hint" role="status" aria-live="polite">Complete a route search to calculate coverage.</p>
           <div id="coverage-inspection" hidden>
             <h3 id="inspection-title">Location inspection</h3>
             <p id="inspection-summary" class="hint"></p>
@@ -150,6 +176,10 @@
             <p class="hint">Profile: brown = ground + curvature · green = surface + curvature · blue = line of sight · orange = Fresnel clearance boundary.</p>
             <pre id="inspection-detail"></pre>
           </div>
+        </section>
+        </div>
+        <div class="workspace-view" id="workspace-compare" aria-label="Compare scenarios" hidden>
+        <section class="compare-panel">
           <details id="coverage-failure-scenarios">
             <summary>Router failure scenario</summary>
             <p class="hint">Temporarily remove selected routers from the certified mesh graph. Coverage that is still locally reachable is separate from coverage connected to your reference router.</p>
@@ -196,7 +226,6 @@
             <label>Road sample spacing · m<input id="coverage-road-spacing" type="number" min="25" max="5000" step="25" value="100"></label>
             <label>Use coverage run<select id="coverage-target-run"></select></label>
             <div id="coverage-target-list" class="known-list"><p class="hint">No saved targets. Place a point or import GeoJSON.</p></div>
-            <button id="coverage-assess-targets" class="wide-button" disabled>Assess targets against latest coverage run</button>
             <p id="coverage-target-summary" class="hint" role="status" aria-live="polite">Targets are project-specific and do not change the certified route.</p>
             <div id="coverage-target-results" class="known-list"></div>
             <details>
@@ -233,23 +262,18 @@
           </div>
           <p class="hint">Bands are planning margins, not reliability classes. Overlap means multiple usable RF links, not independent mesh paths. Hide or show the layer using the map’s layer control.</p>
         </section>
-        <div class="run-panel">
-          <label for="search-effort">Search effort</label>
-          <select id="search-effort">
-            <option value="quick">Quick · up to 200 candidate sites</option>
-            <option value="balanced" selected>Balanced · up to 800 candidate sites</option>
-            <option value="thorough">Thorough · configured candidate limit</option>
-          </select>
-          <p class="hint">Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p>
-          <button id="optimize" class="primary">Find repeater route <span>↗</span></button>
-          <button id="cancel" hidden>Cancel optimization</button>
-          <button id="stop-keep" hidden disabled>Stop and keep this route</button>
-          <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
-          <button id="clear-cache" class="text-button">Clear saved RF calculations</button>
-          <p class="hint">RF estimates require field validation.</p>
+        </div>
+        <div class="workspace-action-bar" data-workspace-action="workspace-coverage" hidden>
+          <p id="coverage-job-status" class="hint" role="status" aria-live="polite">Complete a route search to calculate coverage.</p>
+          <button id="coverage-start" class="wide-button primary">Calculate coverage</button>
+          <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
+        </div>
+        <div class="workspace-action-bar compare-action-bar" data-workspace-action="workspace-compare" hidden>
+          <p id="compare-workspace-status" class="hint">Choose or import targets and select a saved coverage run to assess them.</p>
+          <button id="coverage-assess-targets" class="wide-button primary" disabled>Assess targets against selected run</button>
         </div>
       </aside>
-      <div class="workspace">
+      <div class="workspace" id="workspace">
         <div class="map-wrap">
           <div id="map"></div>
           <div class="map-tools">
@@ -264,8 +288,9 @@
         <div class="results">
           <div class="result-heading">
             <div><span class="eyebrow">ROUTE ANALYSIS</span><h2 id="result-title">A clear view of your connection.</h2></div>
-            <div id="exports" hidden><a class="button" href="/api/export/csv">CSV ↓</a><a class="button" href="/api/export/geojson">GeoJSON ↓</a></div>
+            <div class="result-actions"><button id="toggle-results" type="button" aria-expanded="true">Hide details</button><div id="exports" hidden><a class="button" href="/api/export/csv">CSV ↓</a><a class="button" href="/api/export/geojson">GeoJSON ↓</a></div></div>
           </div>
+          <div id="result-details">
           <div id="status" role="status" aria-live="polite">Load terrain and choose your endpoints to find a route.</div>
           <div id="alternatives" hidden>
             <label for="alternative-select">Route alternative</label>
@@ -285,6 +310,7 @@
             <canvas id="chart" height="230" aria-label="Terrain, direct line of sight and Fresnel profile" role="img"></canvas>
             <p class="hint">Brown: terrain + curvature · Green: surface · Blue: line of sight · Orange: required Fresnel boundary</p>
             <pre id="budget"></pre>
+          </div>
           </div>
         </div>
       </div>

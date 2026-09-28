@@ -442,9 +442,24 @@ frontend framework, tile provider or analytics service is required by this plan.
 | --- | --- | --- |
 | Source/workflow audit | Complete | Findings F01–F17 above, reviewed at `228e770`; no live visual claim. |
 | U0 | Implemented; acceptance evidence pending | Consolidated the map tool into one mode, added Escape/cancel, removed the coverage-area handler overwrite and lifecycle wrappers, kept display-only coverage controls usable during jobs, and attached the RF snapshot to route results. Automated tests were not run; live browser review is unavailable. Commit recorded after staging. |
-| U1 | In progress | Added Plan/Coverage/Compare views, a persistent Leaflet map/results workspace, workspace preference persistence and a visual token/layout layer. Wire interaction review and responsive browser evidence remain. |
+| U1 | Implemented; acceptance pending | Added Plan/Coverage/Compare views with a pinned action per workspace, a persistent Leaflet map/results workspace, collapsible results, project-action menu, autosave/export labels, workspace preference persistence, and a visual token/layout layer. U6 will make the Compare action scenario-aware; live browser review and viewport/keyboard evidence remain unavailable. |
 | U2–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
 | U7 | Browser-gated | Browser access is needed for visual/accessibility/performance sign-off. |
 
 Implementation is active. Do not call the redesign complete until each milestone
 acceptance is met and the outstanding browser-only evidence is explicitly recorded.
+
+### Implementation log
+
+- U0 commit `2e64ada`: removed overlapping map-mode booleans and handler
+  overwrites; added Escape/cancel cleanup and left display-only coverage controls
+  available during jobs. Route API results now include the RF settings snapshot
+  used to calculate their profiles. Tests were not run; browser behavior remains
+  unverified.
+- U1 is implemented in the working tree: three task workspaces reuse the same
+  map and results DOM, keep Plan/Coverage actions reachable, collapse the result
+  tray, and store workspace/display preferences outside the plan. Plan, Coverage
+  and target assessment in Compare each have a pinned action. No new RF
+  calculation is triggered by navigation or result-tray layout. U6 will make
+  Compare's action follow the selected scenario; no visual/browser validation is
+  claimed.

@@ -60,6 +60,7 @@ function setWorkspace(id){
   const valid=['workspace-plan','workspace-coverage','workspace-compare'];
   if(!valid.includes(id))id='workspace-plan';
   for(const view of valid)$(view).hidden=view!==id;
+  document.querySelectorAll('[data-workspace-action]').forEach(action=>action.hidden=action.dataset.workspaceAction!==id);
   document.querySelectorAll('[data-workspace-target]').forEach(button=>{
     const active=button.dataset.workspaceTarget===id;
     button.setAttribute('aria-pressed',String(active));
@@ -69,6 +70,16 @@ function setWorkspace(id){
 }
 document.querySelectorAll('[data-workspace-target]').forEach(button=>button.addEventListener('click',()=>setWorkspace(button.dataset.workspaceTarget)));
 try{setWorkspace(localStorage.getItem('repeaternet.active-workspace')||'workspace-plan');}catch{setWorkspace('workspace-plan');}
+function setResultsCollapsed(collapsed,persist=true){
+  $('result-details').hidden=collapsed;
+  $('workspace').classList.toggle('results-collapsed',collapsed);
+  $('toggle-results').setAttribute('aria-expanded',String(!collapsed));
+  $('toggle-results').textContent=collapsed?'Show details':'Hide details';
+  if(persist)try{localStorage.setItem('repeaternet.results-collapsed',String(collapsed));}catch{}
+  requestAnimationFrame(()=>map.invalidateSize({pan:false}));
+}
+$('toggle-results').addEventListener('click',()=>setResultsCollapsed(!$('result-details').hidden));
+try{setResultsCollapsed(localStorage.getItem('repeaternet.results-collapsed')==='true',false);}catch{setResultsCollapsed(false,false);}
 window.addEventListener('keydown',event=>{if(event.key==='Escape'&&interactionMode!=='browse'){setInteractionMode('browse');if($('coverage-area'))$('coverage-area').value=coverageSettings.area_mode;event.preventDefault();}});
 document.querySelectorAll('[data-place]').forEach(button=>button.onclick=()=>setInteractionMode(`place-${button.dataset.place}`));
 map.on('click',e=>{
