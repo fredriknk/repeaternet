@@ -1,0 +1,954 @@
+{
+  "benchmark": "local raster mesh coverage",
+  "cache_warm_rerun": "measured against a separate bounded coverage cache per child process",
+  "host": {
+    "cpu_count": 24,
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.12"
+  },
+  "measurement_notes": [
+    "Cold means a fresh application cache, not flushed OS or storage caches.",
+    "terrain_reads counts sampling calls; terrain_bytes_returned is sampled array bytes, not disk I/O.",
+    "Peak memory is the child process high-water working set, including setup and all passes.",
+    "Cancellation acknowledgement starts after the requested RF evaluation returns; no server scheduler is measured."
+  ],
+  "results": [
+    {
+      "cancellation_acknowledgement_seconds": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0
+      },
+      "cold_peak_working_set_mib": {
+        "max": 232.5469,
+        "median": 232.0469,
+        "min": 231.9414
+      },
+      "cold_warm_results_identical": true,
+      "elapsed_seconds": {
+        "max": 98.1734,
+        "median": 96.5602,
+        "min": 96.5193
+      },
+      "first_chunk_seconds": {
+        "max": 1.4477,
+        "median": 1.3621,
+        "min": 1.346
+      },
+      "fixture": {
+        "crs": "EPSG:25832",
+        "file_bytes": 4195950,
+        "kind": "local_geotiff",
+        "path": "cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+        "raster_bounds_m": [
+          550000.0,
+          6620000.0,
+          650000.0,
+          6640000.0
+        ],
+        "resolution_m": 50.0,
+        "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+        "surface_available": false
+      },
+      "grid_cells": 7744,
+      "peak_working_set_mib": {
+        "max": 232.5859,
+        "median": 232.082,
+        "min": 232.0039
+      },
+      "profile_step_m": 50.0,
+      "radio_profile": {
+        "client_height_agl_m": 1.5,
+        "client_sensitivity_dbm": -130.0,
+        "client_tx_power_dbm": 20.0,
+        "fade_margin_db": 0.0,
+        "frequency_mhz": 869.5,
+        "router_height_agl_m": 50.0,
+        "validation_mode": "rf_propagation"
+      },
+      "repetition_count": 3,
+      "repetitions": [
+        {
+          "cache_capacity": 50000,
+          "cancellation_probe": {
+            "acknowledgement_seconds": 1.550000160932541e-05,
+            "completed_cells_before_observed": 2,
+            "probe_total_seconds": 0.028166700154542923,
+            "requested_after_rf_calls": 64,
+            "rf_evaluations_before_observed": 64,
+            "terrain_bytes_returned": 210696,
+            "terrain_nodata_points": 0,
+            "terrain_reads": 65,
+            "terrain_sample_points": 26337
+          },
+          "cold_cache_hits": 0,
+          "cold_cache_misses": 247808,
+          "cold_peak_working_set_mib": 232.546875,
+          "cold_warm_results_identical": true,
+          "completed_cells": 7744,
+          "effective_cell_size_m": 226.13636363636363,
+          "elapsed_seconds": 96.51932989992201,
+          "evaluated_cells": 7744,
+          "first_chunk_seconds": 1.4476536000147462,
+          "fixture": {
+            "crs": "EPSG:25832",
+            "file_bytes": 4195950,
+            "kind": "local_geotiff",
+            "path": "cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+            "raster_bounds_m": [
+              550000.0,
+              6620000.0,
+              650000.0,
+              6640000.0
+            ],
+            "resolution_m": 50.0,
+            "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+            "surface_available": false
+          },
+          "grid_cells": 7744,
+          "maximum_profile_samples": 4096,
+          "peak_working_set_mib": 232.5859375,
+          "profile_step_m": 50.0,
+          "radio_profile": {
+            "client_height_agl_m": 1.5,
+            "client_sensitivity_dbm": -130.0,
+            "client_tx_power_dbm": 20.0,
+            "fade_margin_db": 0.0,
+            "frequency_mhz": 869.5,
+            "router_height_agl_m": 50.0,
+            "validation_mode": "rf_propagation"
+          },
+          "requested_area_km2": 396.01,
+          "requested_bounds_m": [
+            590050.0,
+            6620050.0,
+            609950.0,
+            6639950.0
+          ],
+          "requested_cells": 7744,
+          "result_sha256": "0e1785de64fdb17dc1de4a0cfe16ab73a4d60c34c7438bc7f6fdaa4ff61f8672",
+          "rf_evaluations": 247808,
+          "scenario": "local_raster",
+          "serialized_result_bytes_estimate": 62625475,
+          "source_count": 32,
+          "sources_projected": [
+            {
+              "height_agl_m": 50.0,
+              "id": "R00",
+              "x": 590653.0303030303,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R01",
+              "x": 591256.0606060605,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R02",
+              "x": 591859.0909090909,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R03",
+              "x": 592462.1212121212,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R04",
+              "x": 593065.1515151515,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R05",
+              "x": 593668.1818181818,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R06",
+              "x": 594271.2121212122,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R07",
+              "x": 594874.2424242424,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R08",
+              "x": 595477.2727272727,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R09",
+              "x": 596080.303030303,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R10",
+              "x": 596683.3333333334,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R11",
+              "x": 597286.3636363636,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R12",
+              "x": 597889.3939393939,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R13",
+              "x": 598492.4242424242,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R14",
+              "x": 599095.4545454546,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R15",
+              "x": 599698.4848484849,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R16",
+              "x": 600301.5151515151,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R17",
+              "x": 600904.5454545454,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R18",
+              "x": 601507.5757575758,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R19",
+              "x": 602110.6060606061,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R20",
+              "x": 602713.6363636364,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R21",
+              "x": 603316.6666666666,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R22",
+              "x": 603919.696969697,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R23",
+              "x": 604522.7272727273,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R24",
+              "x": 605125.7575757576,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R25",
+              "x": 605728.7878787878,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R26",
+              "x": 606331.8181818182,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R27",
+              "x": 606934.8484848485,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R28",
+              "x": 607537.8787878788,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R29",
+              "x": 608140.9090909091,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R30",
+              "x": 608743.9393939395,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R31",
+              "x": 609346.9696969697,
+              "y": 6630000.0
+            }
+          ],
+          "state_counts": {
+            "covered": 6963,
+            "uncovered": 781
+          },
+          "terrain_bytes_returned": 358108064,
+          "terrain_fixture_sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+          "terrain_nodata_points": 0,
+          "terrain_reads": 247809,
+          "terrain_sample_points": 44763508,
+          "unknown_cells": 0,
+          "unknown_source_evaluations": 0,
+          "warm_run": {
+            "cache_hits": 0,
+            "cache_misses": 247808,
+            "completed_cells": 7744,
+            "elapsed_seconds": 96.59814559994265,
+            "first_chunk_seconds": 1.48542599985376,
+            "pair_requests": 247808
+          }
+        },
+        {
+          "cache_capacity": 50000,
+          "cancellation_probe": {
+            "acknowledgement_seconds": 1.3699987903237343e-05,
+            "completed_cells_before_observed": 2,
+            "probe_total_seconds": 0.028552799951285124,
+            "requested_after_rf_calls": 64,
+            "rf_evaluations_before_observed": 64,
+            "terrain_bytes_returned": 210696,
+            "terrain_nodata_points": 0,
+            "terrain_reads": 65,
+            "terrain_sample_points": 26337
+          },
+          "cold_cache_hits": 0,
+          "cold_cache_misses": 247808,
+          "cold_peak_working_set_mib": 231.94140625,
+          "cold_warm_results_identical": true,
+          "completed_cells": 7744,
+          "effective_cell_size_m": 226.13636363636363,
+          "elapsed_seconds": 96.56022830004804,
+          "evaluated_cells": 7744,
+          "first_chunk_seconds": 1.3459534000139683,
+          "fixture": {
+            "crs": "EPSG:25832",
+            "file_bytes": 4195950,
+            "kind": "local_geotiff",
+            "path": "cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+            "raster_bounds_m": [
+              550000.0,
+              6620000.0,
+              650000.0,
+              6640000.0
+            ],
+            "resolution_m": 50.0,
+            "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+            "surface_available": false
+          },
+          "grid_cells": 7744,
+          "maximum_profile_samples": 4096,
+          "peak_working_set_mib": 232.00390625,
+          "profile_step_m": 50.0,
+          "radio_profile": {
+            "client_height_agl_m": 1.5,
+            "client_sensitivity_dbm": -130.0,
+            "client_tx_power_dbm": 20.0,
+            "fade_margin_db": 0.0,
+            "frequency_mhz": 869.5,
+            "router_height_agl_m": 50.0,
+            "validation_mode": "rf_propagation"
+          },
+          "requested_area_km2": 396.01,
+          "requested_bounds_m": [
+            590050.0,
+            6620050.0,
+            609950.0,
+            6639950.0
+          ],
+          "requested_cells": 7744,
+          "result_sha256": "0e1785de64fdb17dc1de4a0cfe16ab73a4d60c34c7438bc7f6fdaa4ff61f8672",
+          "rf_evaluations": 247808,
+          "scenario": "local_raster",
+          "serialized_result_bytes_estimate": 62625475,
+          "source_count": 32,
+          "sources_projected": [
+            {
+              "height_agl_m": 50.0,
+              "id": "R00",
+              "x": 590653.0303030303,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R01",
+              "x": 591256.0606060605,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R02",
+              "x": 591859.0909090909,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R03",
+              "x": 592462.1212121212,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R04",
+              "x": 593065.1515151515,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R05",
+              "x": 593668.1818181818,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R06",
+              "x": 594271.2121212122,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R07",
+              "x": 594874.2424242424,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R08",
+              "x": 595477.2727272727,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R09",
+              "x": 596080.303030303,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R10",
+              "x": 596683.3333333334,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R11",
+              "x": 597286.3636363636,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R12",
+              "x": 597889.3939393939,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R13",
+              "x": 598492.4242424242,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R14",
+              "x": 599095.4545454546,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R15",
+              "x": 599698.4848484849,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R16",
+              "x": 600301.5151515151,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R17",
+              "x": 600904.5454545454,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R18",
+              "x": 601507.5757575758,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R19",
+              "x": 602110.6060606061,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R20",
+              "x": 602713.6363636364,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R21",
+              "x": 603316.6666666666,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R22",
+              "x": 603919.696969697,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R23",
+              "x": 604522.7272727273,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R24",
+              "x": 605125.7575757576,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R25",
+              "x": 605728.7878787878,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R26",
+              "x": 606331.8181818182,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R27",
+              "x": 606934.8484848485,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R28",
+              "x": 607537.8787878788,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R29",
+              "x": 608140.9090909091,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R30",
+              "x": 608743.9393939395,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R31",
+              "x": 609346.9696969697,
+              "y": 6630000.0
+            }
+          ],
+          "state_counts": {
+            "covered": 6963,
+            "uncovered": 781
+          },
+          "terrain_bytes_returned": 358108064,
+          "terrain_fixture_sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+          "terrain_nodata_points": 0,
+          "terrain_reads": 247809,
+          "terrain_sample_points": 44763508,
+          "unknown_cells": 0,
+          "unknown_source_evaluations": 0,
+          "warm_run": {
+            "cache_hits": 0,
+            "cache_misses": 247808,
+            "completed_cells": 7744,
+            "elapsed_seconds": 96.19012739998288,
+            "first_chunk_seconds": 1.4936347999610007,
+            "pair_requests": 247808
+          }
+        },
+        {
+          "cache_capacity": 50000,
+          "cancellation_probe": {
+            "acknowledgement_seconds": 1.300009898841381e-05,
+            "completed_cells_before_observed": 2,
+            "probe_total_seconds": 0.02798670018091798,
+            "requested_after_rf_calls": 64,
+            "rf_evaluations_before_observed": 64,
+            "terrain_bytes_returned": 210696,
+            "terrain_nodata_points": 0,
+            "terrain_reads": 65,
+            "terrain_sample_points": 26337
+          },
+          "cold_cache_hits": 0,
+          "cold_cache_misses": 247808,
+          "cold_peak_working_set_mib": 232.046875,
+          "cold_warm_results_identical": true,
+          "completed_cells": 7744,
+          "effective_cell_size_m": 226.13636363636363,
+          "elapsed_seconds": 98.17338699987158,
+          "evaluated_cells": 7744,
+          "first_chunk_seconds": 1.362120500067249,
+          "fixture": {
+            "crs": "EPSG:25832",
+            "file_bytes": 4195950,
+            "kind": "local_geotiff",
+            "path": "cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif",
+            "raster_bounds_m": [
+              550000.0,
+              6620000.0,
+              650000.0,
+              6640000.0
+            ],
+            "resolution_m": 50.0,
+            "sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+            "surface_available": false
+          },
+          "grid_cells": 7744,
+          "maximum_profile_samples": 4096,
+          "peak_working_set_mib": 232.08203125,
+          "profile_step_m": 50.0,
+          "radio_profile": {
+            "client_height_agl_m": 1.5,
+            "client_sensitivity_dbm": -130.0,
+            "client_tx_power_dbm": 20.0,
+            "fade_margin_db": 0.0,
+            "frequency_mhz": 869.5,
+            "router_height_agl_m": 50.0,
+            "validation_mode": "rf_propagation"
+          },
+          "requested_area_km2": 396.01,
+          "requested_bounds_m": [
+            590050.0,
+            6620050.0,
+            609950.0,
+            6639950.0
+          ],
+          "requested_cells": 7744,
+          "result_sha256": "0e1785de64fdb17dc1de4a0cfe16ab73a4d60c34c7438bc7f6fdaa4ff61f8672",
+          "rf_evaluations": 247808,
+          "scenario": "local_raster",
+          "serialized_result_bytes_estimate": 62625475,
+          "source_count": 32,
+          "sources_projected": [
+            {
+              "height_agl_m": 50.0,
+              "id": "R00",
+              "x": 590653.0303030303,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R01",
+              "x": 591256.0606060605,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R02",
+              "x": 591859.0909090909,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R03",
+              "x": 592462.1212121212,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R04",
+              "x": 593065.1515151515,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R05",
+              "x": 593668.1818181818,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R06",
+              "x": 594271.2121212122,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R07",
+              "x": 594874.2424242424,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R08",
+              "x": 595477.2727272727,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R09",
+              "x": 596080.303030303,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R10",
+              "x": 596683.3333333334,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R11",
+              "x": 597286.3636363636,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R12",
+              "x": 597889.3939393939,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R13",
+              "x": 598492.4242424242,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R14",
+              "x": 599095.4545454546,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R15",
+              "x": 599698.4848484849,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R16",
+              "x": 600301.5151515151,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R17",
+              "x": 600904.5454545454,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R18",
+              "x": 601507.5757575758,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R19",
+              "x": 602110.6060606061,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R20",
+              "x": 602713.6363636364,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R21",
+              "x": 603316.6666666666,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R22",
+              "x": 603919.696969697,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R23",
+              "x": 604522.7272727273,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R24",
+              "x": 605125.7575757576,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R25",
+              "x": 605728.7878787878,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R26",
+              "x": 606331.8181818182,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R27",
+              "x": 606934.8484848485,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R28",
+              "x": 607537.8787878788,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R29",
+              "x": 608140.9090909091,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R30",
+              "x": 608743.9393939395,
+              "y": 6630000.0
+            },
+            {
+              "height_agl_m": 50.0,
+              "id": "R31",
+              "x": 609346.9696969697,
+              "y": 6630000.0
+            }
+          ],
+          "state_counts": {
+            "covered": 6963,
+            "uncovered": 781
+          },
+          "terrain_bytes_returned": 358108064,
+          "terrain_fixture_sha256": "a597652dbd0959083616eda264beb081ed5c00c2f82bf995c4d28a19dd2d6e04",
+          "terrain_nodata_points": 0,
+          "terrain_reads": 247809,
+          "terrain_sample_points": 44763508,
+          "unknown_cells": 0,
+          "unknown_source_evaluations": 0,
+          "warm_run": {
+            "cache_hits": 0,
+            "cache_misses": 247808,
+            "completed_cells": 7744,
+            "elapsed_seconds": 96.9580466998741,
+            "first_chunk_seconds": 1.5277394999284297,
+            "pair_requests": 247808
+          }
+        }
+      ],
+      "requested_bounds_m": [
+        590050.0,
+        6620050.0,
+        609950.0,
+        6639950.0
+      ],
+      "requested_cells": 7744,
+      "result_sha256": "0e1785de64fdb17dc1de4a0cfe16ab73a4d60c34c7438bc7f6fdaa4ff61f8672",
+      "rf_evaluations": {
+        "max": 247808,
+        "median": 247808,
+        "min": 247808
+      },
+      "scenario": "local_raster",
+      "serialized_result_bytes_estimate": {
+        "max": 62625475,
+        "median": 62625475,
+        "min": 62625475
+      },
+      "source_count": 32,
+      "state_counts": {
+        "covered": 6963,
+        "uncovered": 781
+      },
+      "unknown_cells": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "unknown_source_evaluations": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "warm_cache_hits": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "warm_cache_misses": {
+        "max": 247808,
+        "median": 247808,
+        "min": 247808
+      },
+      "warm_elapsed_seconds": {
+        "max": 96.958,
+        "median": 96.5981,
+        "min": 96.1901
+      }
+    }
+  ]
+}

@@ -77,6 +77,7 @@ Reproduce from the repository root (the exact local raster must be present):
 ```powershell
 python tools/benchmark_mesh_coverage.py --dtm cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif --sources 2 --cells 256 --repeats 3 --output docs/benchmarks/coverage-raster-preview.json
 python tools/benchmark_mesh_coverage.py --dtm cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif --sources 8 --cells 4096 --repeats 3 --output docs/benchmarks/coverage-raster-standard.json
+python tools/benchmark_mesh_coverage.py --dtm cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif --sources 32 --cells 7744 --repeats 3 --output docs/benchmarks/coverage-raster-large-32x7744-c12.json
 ```
 
 The commands hash and open the file before timing. They spawn one fresh child per

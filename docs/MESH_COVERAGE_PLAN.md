@@ -192,9 +192,10 @@ publish a partially evaluated cell; and repeated 4,096-cell/eight-source coverag
 reuses 32,768/32,768 scalar evaluations. That reference run completed in 5.17 s,
 produced its first chunk in 0.169 s, and peaked at 162.54 MiB, below the 512 MiB
 synthetic target. The default 50,000-entry cache fits that reference workload.
-Real-raster I/O, concurrent workspaces, larger-than-cache repeated runs, and desktop
-worker migration remain unverified or deferred; no real-raster fixture was
-available in this workspace.
+At that initial implementation stage, real-raster I/O and larger-than-cache reuse
+were unverified because no local fixture was available. The continuation evidence
+below adds real-raster and cache-capacity measurements; aggregate web/worker
+concurrency and desktop worker migration remain unverified or deferred.
 
 Continuation evidence (2026-09-27): an existing local Kartverket DTM cache was
 subsequently identified and its request identity/checksum verified. The
@@ -215,7 +216,42 @@ are in [preview evidence](benchmarks/coverage-raster-preview.json) and
 is the engine child high-water working set, not concurrent web-server RSS. Cold
 means an empty application cache, not flushed filesystem/GDAL/storage caches.
 This closes the absence of real-raster core measurements; browser/concurrency,
-field accuracy and the wider source/grid matrix remain open.
+field accuracy and the wider source/grid matrix remain open. A C1 maximum-budget
+real-raster continuation measurement is recorded next.
+
+Full-budget scaling evidence (2026-09-28): the 32-source × 7,744-cell workload
+uses 247,808 source evaluations, just below the 250,000-per-job limit. Three fresh
+processes on the same Kartverket fixture, bounds and 50 m terrain profiles completed
+in a 96.5602 s median (96.5193–98.1734 s); the first chunk arrived in 1.3621 s
+(1.3460–1.4477 s). Peak engine-child working set was 232.082 MiB median (maximum
+232.586 MiB), below the 512 MiB single-job target. All 7,744 cells were evaluated
+(6,963 covered, 781 uncovered, no unknown cells); the estimated serialized grid
+was 62,625,475 bytes, below the 100 MiB persisted-result limit. Cold and warm
+serialized results were identical across repetitions with checksum
+`0e1785de64fdb17dc1de4a0cfe16ab73a4d60c34c7438bc7f6fdaa4ff61f8672`. The repeated
+engine run took 96.5981 s median and had 0/247,808 cache hits: the default 50,000
+scalar-metric cache cannot retain this full pair set, so the direct engine benchmark
+does not meet a 90% cache-reuse target at this size. Exact saved-result replay is
+implemented separately in C9; large-result HTTP replay and storage-pressure
+behavior remain open. Full measurements are in the
+[32-source maximum-budget artifact](benchmarks/coverage-raster-large-32x7744-c12.json).
+Reproduce with `python tools/benchmark_mesh_coverage.py --dtm
+cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif --sources 32
+--cells 7744 --repeats 3 --output
+docs/benchmarks/coverage-raster-large-32x7744-c12.json`.
+These are engine-child figures only, not combined Uvicorn/worker RSS, concurrent
+workspaces, browser latency or field-accuracy evidence. The harness cancellation
+probe measures cancellation after an RF call returns and does not verify server
+scheduler capacity release under concurrent load.
+
+Cache sizing probe (single run, same case): increasing capacity to 300,000 entries
+gave 247,808/247,808 warm hits and a 4.3422 s warm rerun, but peak child working
+set reached 594.6289 MiB (cold peak 592.5273 MiB), exceeding the 512 MiB target.
+The cold run took 99.2803 s and its first chunk arrived in 1.3502 s. This one-run
+diagnostic confirms that simply raising the default cache is not a safe fix; retain
+the bounded 50,000-entry default and use C9 exact saved-result replay for identical
+requests. The 300,000-entry result is a sizing probe, not a three-repetition
+acceptance benchmark.
 
 Areas: `rf/propagation.py`, `optimization/cache.py`, new
 `coverage/engine.py`, `coverage/grid.py`, and engine regression tests.
@@ -706,7 +742,7 @@ Current implementation record (2026-09-27):
 | Milestone | Status / commit | Verification and remaining work |
 | --- | --- | --- |
 | C0 | Implemented · `061f0df` | Eight coverage contract checks pass; flat/ridge/valley/nodata and cancellation benchmark captured; cold/warm comparison measured. |
-| C1 | Implemented · `ef91b2c`, `d13e77f`; C12 corrections delivered | Directional budgets, bounded cache and real-raster cold/warm measurements recorded above; sampler performance and final-profile cap semantics are corrected in C12. Concurrent-workspace verification remains open. |
+| C1 | Implemented · `ef91b2c`, `d13e77f`; C12 corrections delivered | Directional budgets, bounded cache and real-raster cold/warm measurements recorded above, including the 32 × 7,744 max-budget case. It takes 96.56 s median / 232.08 MiB median child peak and has no direct cache hits on replay because the 50,000-entry cache is smaller than the 247,808-pair workload; a 300,000-entry sizing probe reached 594.63 MiB, above target. Keep the bound and use C9 exact replay for identical requests. Sampler and sample-cap fixes are in C12. Aggregate concurrency and field verification remain open. |
 | C2 | Implemented · `1ae3ba6`, `1a1b905` | API tests cover workspace isolation, lifecycle locks, paging, reconnect/restart, running/queued cancellation, scheduler release, stale settings and quota failure. |
 | C3 | Implemented · `61a8fb6`; visual review open | Browser access unavailable in this session; calculate/hide/show/mode/cancel/project-switch, narrow-screen, keyboard, nodata and max-grid visual checks remain open. |
 | C4 | Implemented · `61a8fb6`; race correction recorded above | Five JavaScript race regressions and a delayed-worker API regression pass. Terrain-reference and profile visual review remain open. |
