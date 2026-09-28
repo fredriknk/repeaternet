@@ -20,14 +20,16 @@
         <div>RepeaterNet<small>TERRAIN-AWARE RF PLANNING</small></div>
       </div>
       <div class="header-actions">
-        <label class="button">Import plan JSON<input id="open" type="file" accept=".json" hidden></label>
+        <input id="open" type="file" accept=".json" aria-label="Select a RepeaterNet plan JSON file" hidden>
+        <button id="import-plan" type="button">Import plan JSON</button>
         <button id="save">Export plan JSON</button>
         <span class="badge">SELF HOSTED</span>
       </div>
     </header>
     <div class="project-bar">
       <label for="project-select">Project<select id="project-select"></select></label>
-      <span id="project-storage" class="hint">Autosave ready</span>
+      <span id="project-storage" class="hint" role="status" aria-live="polite" data-save-state="saved">Saved automatically</span>
+      <button id="retry-save" type="button" hidden>Retry save</button>
       <details class="project-menu">
         <summary>Project actions</summary>
         <div class="project-menu-actions">
@@ -40,6 +42,19 @@
         </div>
       </details>
     </div>
+    <dialog id="action-dialog" class="app-dialog" aria-labelledby="action-dialog-title">
+      <form id="action-dialog-form">
+        <h2 id="action-dialog-title">Confirm action</h2>
+        <p id="action-dialog-copy"></p>
+        <label id="action-dialog-field-label" for="action-dialog-value" hidden>
+          Project name<input id="action-dialog-value" maxlength="80" autocomplete="off">
+        </label>
+        <div class="dialog-actions">
+          <button id="action-dialog-cancel" type="button">Cancel</button>
+          <button id="action-dialog-confirm" type="submit">Continue</button>
+        </div>
+      </form>
+    </dialog>
     <main>
       <aside>
         <nav class="workspace-nav" aria-label="Planning workspace">
@@ -53,19 +68,26 @@
           <h1>Plan the path.</h1>
           <p>Place two endpoints. Find the repeaters that bring them together.</p>
         </div>
-        <section>
+        <div class="readiness-card" id="plan-readiness" data-readiness="needs-terrain" role="status" aria-live="polite">
+          <strong>Plan readiness</strong>
+          <p id="plan-readiness-copy">Example coordinates show a short Oslo route. Add ground terrain before searching.</p>
+          <button id="review-readiness" type="button">Review terrain</button>
+        </div>
+        <section id="endpoint-setup">
           <h2><span>01</span> Endpoints</h2>
           <div class="endpoint">
             <button data-place="a" class="pin">A</button>
-            <label>Start point<input id="a" value="59.9139, 10.7522" aria-label="Endpoint A latitude, longitude"></label>
+            <label>Start point<input id="a" value="59.9139, 10.7522" aria-label="Endpoint A latitude, longitude" aria-describedby="a-error"></label>
           </div>
+          <p id="a-error" class="field-error" hidden></p>
           <div class="endpoint">
             <button data-place="b" class="pin blue">B</button>
-            <label>Destination<input id="b" value="59.95, 10.85" aria-label="Endpoint B latitude, longitude"></label>
+            <label>Destination<input id="b" value="59.95, 10.85" aria-label="Endpoint B latitude, longitude" aria-describedby="b-error"></label>
           </div>
+          <p id="b-error" class="field-error" hidden></p>
           <p class="hint">Click A or B, then the map. Drag a marker to adjust.</p>
         </section>
-        <section>
+        <section id="terrain-setup">
           <h2><span>02</span> Terrain</h2>
           <label class="upload">＋ Add ground terrain<small>DTM · GeoTIFF · up to 512 MiB per tile</small><input id="dtm" type="file" multiple accept=".tif,.tiff" hidden></label>
           <div class="file-row"><span id="dtm-count">No ground tiles</span><button data-clear="dtm" class="text-button">Clear</button></div>

@@ -17,9 +17,14 @@ body { color: var(--text); background: #edf1ed; }
 header { height: 68px; padding-inline: clamp(14px, 2vw, 28px); }
 .brand { font-size: 21px; }
 .brand small { font-size: 10px; letter-spacing: 1.4px; }
-.project-bar { min-height: 52px; padding: 6px 16px; gap: 12px; }
+.project-bar { min-height: 52px; padding: 6px 16px; gap: 12px; flex-wrap: wrap; overflow: visible; }
+.project-bar { position: relative; z-index: 30; }
 .project-bar label { flex: 0 1 260px; }
 .project-bar .hint { margin: 0; }
+#project-storage[data-save-state="saved"] { color: var(--state-success); }
+#project-storage[data-save-state="saving"] { color: #52675c; }
+#project-storage[data-save-state="failed"] { color: var(--state-error); }
+#retry-save { min-height: 38px; padding: 6px 10px; }
 .project-menu { position: relative; margin-left: auto; }
 .project-menu summary { min-height: 40px; display: flex; align-items: center; }
 .project-menu-actions {
@@ -38,6 +43,23 @@ header { height: 68px; padding-inline: clamp(14px, 2vw, 28px); }
 }
 .project-menu-actions button { text-align: left; min-height: 40px; }
 .project-menu-actions #delete-project { color: var(--state-error); }
+.app-dialog {
+  width: min(440px, calc(100vw - 28px));
+  max-width: 440px;
+  padding: 22px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px #12251e44;
+}
+.app-dialog::backdrop { background: #14251dcc; }
+.app-dialog h2 { margin: 0 0 10px; font-size: 20px; }
+.app-dialog p { font-size: 14px; color: var(--muted); }
+.app-dialog label { margin-top: 18px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.dialog-actions button { min-height: 44px; }
+.danger-button { color: #fff !important; background: var(--state-error) !important; border-color: var(--state-error) !important; }
 main {
   height: calc(100vh - 120px);
   min-height: 520px;
@@ -70,6 +92,19 @@ aside { min-width: 0; min-height: 0; }
 .workspace-view[hidden] { display: none !important; }
 .intro { padding: 20px 24px 12px; }
 .intro h1 { font-size: 25px; }
+.readiness-card { margin: 12px 18px; padding: 14px; background: #f1f7f2; border: 1px solid #bfd4c4; border-radius: 10px; }
+.readiness-card strong { display: block; font-size: 14px; }
+.readiness-card p { margin: 5px 0 10px; font-size: 12px; }
+.readiness-card button { min-height: 40px; }
+.readiness-card[data-readiness="ready"] { background: #edf7f0; border-color: #8cbea0; }
+.readiness-card[data-readiness="blocked"], .readiness-card[data-readiness="invalid"] { background: #fff5ed; border-color: #e4b9a2; }
+.readiness-card[data-readiness="checking"] { background: #f4f6f6; border-color: var(--border); }
+.field-error { color: var(--state-error); font-size: 12px; margin: 5px 0; }
+input[aria-invalid="true"] { border-color: var(--state-error) !important; }
+.intent-controls { margin: 12px 0 16px; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 10px; }
+.intent-controls h3 { margin: 0; font-size: 15px; }
+.intent-controls .hint { margin-top: 4px; }
+.intent-controls label { margin-top: 10px; }
 section { padding: 18px 22px; }
 h2 { font-size: 17px; }
 h2 span { font-size: 12px; }

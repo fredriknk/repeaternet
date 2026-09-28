@@ -442,8 +442,9 @@ frontend framework, tile provider or analytics service is required by this plan.
 | --- | --- | --- |
 | Source/workflow audit | Complete | Findings F01–F17 above, reviewed at `228e770`; no live visual claim. |
 | U0 | Implemented; acceptance evidence pending | Consolidated the map tool into one mode, added Escape/cancel, removed the coverage-area handler overwrite and lifecycle wrappers, kept display-only coverage controls usable during jobs, and attached the RF snapshot to route results. Automated tests were not run; live browser review is unavailable. Commit recorded after staging. |
-| U1 | Implemented; acceptance pending | Added Plan/Coverage/Compare views with a pinned action per workspace, a persistent Leaflet map/results workspace, collapsible results, project-action menu, autosave/export labels, workspace preference persistence, and a visual token/layout layer. U6 will make the Compare action scenario-aware; live browser review and viewport/keyboard evidence remain unavailable. |
-| U2–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
+| U1 | Implemented; acceptance pending | Added Plan/Coverage/Compare views with a pinned action per workspace, a persistent Leaflet map/results workspace, collapsible results, project-action menu, autosave/export labels, workspace preference persistence, and a visual token/layout layer. U6 will make the Compare action scenario-aware; live browser review and viewport/keyboard evidence remain unavailable. Commit `57c4c1b`. |
+| U2 | Implemented; acceptance evidence pending | Added endpoint validation and terrain readiness links, visible infrastructure/objective controls, grouped advanced settings, explicit import/export actions, truthful save/retry state, and project-transition guards that flush edits and reject invalid coordinates. No automated or browser tests were run; implementation is committed as `feat: guide project setup and route readiness`. |
+| U3–U6 | Planned | Continue in dependency order; preserve existing plan and coverage schemas. |
 | U7 | Browser-gated | Browser access is needed for visual/accessibility/performance sign-off. |
 
 Implementation is active. Do not call the redesign complete until each milestone
@@ -463,3 +464,13 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   calculation is triggered by navigation or result-tray layout. U6 will make
   Compare's action follow the selected scenario; no visual/browser validation is
   claimed.
+- U2 commit `feat: guide project setup and route readiness`: added a live
+  readiness card with field-level endpoint errors and links to terrain setup;
+  surfaced route intent and collapsed solver/propagation controls; clarified
+  import/export labels; and added truthful queued/saved/failed autosave feedback
+  with retry. Project changes now flush pending saves, reject malformed endpoint
+  values without discarding edits, and apply a replacement project before
+  archiving/deleting the previous one. Removed dead duplicate coverage-inspection
+  handlers so the extracted inspection module remains the sole owner. Automated
+  and browser validation remain pending; the accepted browser inventory was
+  empty during this session.
