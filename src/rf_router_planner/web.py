@@ -1207,6 +1207,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError):
             return False
 
+    def coverage_route_current(ws: Workspace, job: dict[str, Any]) -> bool:
+        """Whether a saved run still belongs to the active route and terrain."""
+        try:
+            with ws.lock:
+                result = ws.result
+                current = bool(
+                    ws.project_id == job["project_id"]
+                    and result is not None
+                    and result.active_solution is not None
+                    and ws.snapshot_version == job["snapshot_version"]
+                    and ws.result_plan_fingerprint == job["route_fingerprint"]
+                    and _route_plan_fingerprint(ws.inputs) == job["route_fingerprint"]
+                    and solution_id(result.active_solution) == job["alternative_id"]
+                )
+            return current and _terrain_fingerprint(ws) == job["terrain_fingerprint"]
+        except (ValueError, TypeError, KeyError):
+            return False
+
     def reserve_target_assessment_capacity() -> Iterator[None]:
         """Use a shared compute slot while the bounded synchronous target pass runs."""
         with scheduler_lock:
@@ -1977,6 +1995,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recent = sorted(
             manifests.values(), key=lambda value: value.get("created_at", 0), reverse=True
         )[:50]
+        current_terrain_fingerprint = _terrain_fingerprint(ws)
         return {
             "jobs": [
                 {
@@ -1987,10 +2006,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "alternative_id": item.get("alternative_id"),
                     "source_ids": item.get("source_ids", []),
                     "router_ids": item.get("router_ids", []),
+                    "source_height_overrides": item.get("source_height_overrides", {}),
                     "settings": item.get("settings", {}),
                     "requested_cells": item.get("requested_cells", item.get("total", 0)),
+                    "covered_cells": item.get("covered_cells", 0),
+                    "evaluated_cells": item.get("evaluated_cells", 0),
+                    "unknown_cells": item.get("unknown_cells", 0),
+                    "unresolved_cells": item.get("unresolved_cells", 0),
+                    "outside_area_cells": item.get("outside_area_cells", 0),
                     "effective_cell_size_m": item.get("effective_cell_size_m"),
+                    "rows": item.get("rows"),
+                    "columns": item.get("columns"),
+                    "area_bounds_wgs84": item.get("area_bounds_wgs84"),
+                    "terrain_fingerprint": item.get("terrain_fingerprint"),
+                    "terrain_current": item.get("terrain_fingerprint") == current_terrain_fingerprint,
+                    "radio_fingerprint": item.get("radio_fingerprint"),
+                    "model_version": item.get("model_version"),
                     "stale": bool(item.get("stale")) or not coverage_current(ws, item),
+                    "route_current": coverage_route_current(ws, item),
                     "done": item.get("done", 0),
                 }
                 for item in recent
@@ -2080,6 +2113,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(404, "Coverage result pages are unavailable") from exc
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
+        terrain_crs = scenario.get("terrain_crs")
+        grid_bounds = scenario.get("grid_bounds_projected")
+        cell_size = scenario.get("effective_cell_size_m")
+        if isinstance(terrain_crs, str) and isinstance(grid_bounds, list) and isinstance(
+            cell_size, (int, float)
+        ):
+            _coverage_cell_footprints(
+                report["cells"], terrain_crs, grid_bounds, float(cell_size)
+            )
         return {
             "baseline_job_id": baseline_id,
             "scenario_job_id": scenario_id,
@@ -2248,6 +2290,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "interrupted",
         }:
             job["stale"] = True
+        job["route_current"] = coverage_route_current(ws, job)
         return job
 
     @app.get("/api/coverage/jobs/{job_id}/cells")
@@ -2462,6 +2505,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             item.get("state") not in {"pass", "fail", "unresolved"}
                             for item in rows
                         ),
+                        "target_fingerprint": report.get("target_fingerprint"),
+                        "terrain_fingerprint": report.get("terrain_fingerprint"),
+                        "radio_fingerprint": report.get("radio_fingerprint"),
+                        "model_version": report.get("model_version"),
+                        "grid_compatibility": report.get("grid_compatibility"),
+                        "client_profile": report.get("client_profile"),
+                        "profile_step_m": report.get("profile_step_m"),
+                        "road_sample_spacing_m": report.get("assumptions", {}).get(
+                            "road_sample_spacing_m"
+                        ),
                     }
                 )
         reports.sort(key=lambda item: item.get("assessed_at") or 0, reverse=True)
@@ -2642,7 +2695,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cancelled: threading.Event,
     ) -> dict[str, Any]:
         try:
-            context = coverage_context(ws, body)
+            context = coverage_inspection_context(ws, body)
             latitude, longitude = coordinate_pair(
                 {"point": [body.get("latitude"), body.get("longitude")]}, "point"
             )
@@ -2880,7 +2933,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "snapshot_version": context["snapshot_version"],
                     "alternative_id": context["alternative_id"],
                 }
-                if not coverage_current(ws, guard):
+                inspection_run = context.get("inspection_run")
+                current = (
+                    coverage_route_current(ws, inspection_run)
+                    if inspection_run is not None
+                    else coverage_current(ws, guard)
+                )
+                if not current:
                     raise HTTPException(409, "Route, terrain, project, or coverage settings changed during inspection")
                 return inspection
         except HTTPException:
@@ -2888,11 +2947,63 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    def coverage_inspection_context(ws: Workspace, body: dict[str, Any]) -> dict[str, Any]:
+        """Resolve inspection assumptions from a selected saved run when supplied."""
+        run_id = body.get("coverage_job_id")
+        if run_id is None:
+            return coverage_context(ws, body)
+        if not isinstance(run_id, str):
+            raise HTTPException(422, "Selected coverage run ID is invalid")
+        with ws.lock:
+            run = _load_coverage_manifest(ws, run_id)
+            if run is None or run.get("project_id") != ws.project_id:
+                raise HTTPException(404, "Selected coverage run was not found in this project")
+            if run.get("state") != "complete":
+                raise HTTPException(409, "Select a completed coverage run for exact-point inspection")
+        selected_body = {
+            **body,
+            "settings": run.get("settings", {}),
+            "snapshot_version": run.get("snapshot_version"),
+            "alternative_id": run.get("alternative_id"),
+        }
+        context = coverage_context(ws, selected_body)
+        if (
+            run.get("route_fingerprint") != context["route_fingerprint"]
+            or run.get("terrain_fingerprint") != context["terrain_fingerprint"]
+        ):
+            raise HTTPException(409, "Selected coverage run belongs to a different route or terrain snapshot")
+        try:
+            saved_sources = _decode_coverage_sites(run.get("source_sites"))
+        except ValueError as exc:
+            raise HTTPException(409, "Selected coverage run does not contain its source snapshot") from exc
+        if [site.id for site in saved_sources] != [site.id for site in context["sources"]]:
+            raise HTTPException(409, "Selected coverage run source list no longer matches its route settings")
+        context["sources"] = saved_sources
+        context["inspection_run"] = run
+        return context
+
+    def coverage_inspection_job_current(ws: Workspace, job: dict[str, Any]) -> bool:
+        run_id = job.get("coverage_job_id")
+        if not isinstance(run_id, str):
+            return coverage_current(ws, job)
+        with ws.lock:
+            run = _load_coverage_manifest(ws, run_id)
+            if run is None or run.get("project_id") != ws.project_id:
+                return False
+        return (
+            run.get("snapshot_version") == job.get("snapshot_version")
+            and run.get("alternative_id") == job.get("alternative_id")
+            and run.get("route_fingerprint") == job.get("route_fingerprint")
+            and run.get("terrain_fingerprint") == job.get("terrain_fingerprint")
+            and coverage_route_current(ws, run)
+        )
+
     @app.post("/api/coverage/inspect")
     def start_coverage_inspection(body: dict[str, Any], request: Request) -> Any:
         ws = workspace(request)
         try:
-            context = coverage_context(ws, body)
+            context = coverage_inspection_context(ws, body)
+            inspection_run = context.get("inspection_run")
             latitude, longitude = coordinate_pair(
                 {"point": [body.get("latitude"), body.get("longitude")]}, "point"
             )
@@ -2904,12 +3015,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     or ws.snapshot_version != context["snapshot_version"]
                     or ws.result_plan_fingerprint != context["route_fingerprint"]
                     or _terrain_fingerprint(ws) != context["terrain_fingerprint"]
-                    or _plan_fingerprint(
-                        encode(parse_coverage_settings((ws.inputs or {}).get("coverage", {})))
+                    or (
+                        inspection_run is None
+                        and _plan_fingerprint(
+                            encode(parse_coverage_settings((ws.inputs or {}).get("coverage", {})))
+                        )
+                        != _plan_fingerprint(encode(context["settings"]))
                     )
-                    != _plan_fingerprint(encode(context["settings"]))
                 ):
-                    raise HTTPException(409, "The selected route, terrain, or saved coverage settings changed; refresh before inspecting")
+                    raise HTTPException(409, "The selected route, terrain, or coverage run context changed; refresh before inspecting")
                 with scheduler_lock:
                     if job_slots["outstanding"] >= max_outstanding_jobs:
                         raise HTTPException(429, "The planner queue is full; retry shortly")
@@ -2935,6 +3049,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "settings_fingerprint": _plan_fingerprint(encode(context["settings"])),
                     "snapshot_version": context["snapshot_version"],
                     "alternative_id": context["alternative_id"],
+                    "coverage_job_id": inspection_run.get("job_id") if inspection_run else None,
                     "latitude": latitude,
                     "longitude": longitude,
                     "source_count": len(context["sources"]),
@@ -2961,7 +3076,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "longitude": longitude,
                 }
                 result = _compute_mesh_coverage_inspection(ws, inspection_body, cancel_event)
-                if not coverage_current(ws, job):
+                if not coverage_inspection_job_current(ws, job):
                     raise HTTPException(409, "Route, terrain, project, or coverage settings changed during inspection")
                 with ws.lock:
                     if ws.inspection_job and ws.inspection_job.get("job_id") == job_id:
@@ -3016,7 +3131,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(404, "Location inspection was superseded or is unavailable")
             response = dict(job)
             result = ws.inspection_result if job.get("state") == "complete" else None
-        if job.get("state") == "complete" and not coverage_current(ws, job):
+        if job.get("state") == "complete" and not coverage_inspection_job_current(ws, job):
             response["stale"] = True
         if result is not None:
             response["result"] = encode(result)

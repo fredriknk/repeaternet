@@ -1071,6 +1071,49 @@ def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypa
         assert comparison.json()["scenario_connected_source_ids"] == ["R-1"]
 
 
+def test_selected_saved_run_inspection_uses_its_client_and_height_scenario(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        request = {**prepared["coverage"], "source_height_overrides": {"R-coverage": 10.0}}
+        started = client.post("/api/coverage/jobs", json=request)
+        assert started.status_code == 200, started.text
+        run = wait_for(client, started.json()["job_id"], {"complete"})
+
+        changed_plan = json.loads(json.dumps(prepared["plan"]))
+        changed_plan["coverage"]["client"]["height_agl_m"] = 3.0
+        saved = client.post("/api/projects/autosave", json={"plan": changed_plan})
+        assert saved.status_code == 200, saved.text
+        metadata = client.get(f"/api/coverage/jobs/{run['job_id']}").json()
+        assert metadata["stale"] is True
+        assert metadata["route_current"] is True
+        assert metadata["source_height_overrides"] == {"R-coverage": 10.0}
+
+        latitude, longitude = coordinates(500600.0, 6650500.0)
+        inspection = client.post(
+            "/api/coverage/inspect",
+            json={
+                **prepared["coverage"],
+                "coverage_job_id": run["job_id"],
+                "latitude": latitude,
+                "longitude": longitude,
+            },
+        )
+        assert inspection.status_code == 200, inspection.text
+        inspection_id = inspection.json()["job_id"]
+        assert inspection.json()["coverage_job_id"] == run["job_id"]
+        for _ in range(500):
+            checked = client.get(f"/api/coverage/inspect/{inspection_id}")
+            if checked.status_code == 200 and checked.json()["state"] in {"complete", "failed"}:
+                break
+            time.sleep(0.01)
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["state"] == "complete", checked.json()
+        assert checked.json()["result"]["client"]["height_agl_m"] == 1.5
+
+
 def test_profile_sample_cap_persists_unresolved_grid_and_inspection_states(
     tmp_path, monkeypatch
 ) -> None:

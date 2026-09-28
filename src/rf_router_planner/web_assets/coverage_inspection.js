@@ -27,19 +27,12 @@ function cancelActiveInspection(){
 function enterCoverageInspect(){
   if(!result||resultStale||!result.search_complete){setCoverageStatus('Finish a route search before inspecting locations.',true);return;}
   const display=coverageDisplayInfo||coverageJob;
-  if(display&&(display.stale||display.snapshot_version!==result.snapshot_version||display.alternative_id!==result.active_alternative_id)){
+  if(display&&(display.snapshot_version!==result.snapshot_version||display.alternative_id!==result.active_alternative_id||(display.stale&&!display.route_current)||display.route_current===false)){
     setCoverageStatus('The displayed coverage belongs to a stale or different route snapshot. Load coverage for the current route before inspecting locations.',true);return;
   }
-  if(Object.keys(display?.source_height_overrides||{}).length){
-    setCoverageStatus('Exact-point inspection uses plan antenna heights; it cannot be compared directly with this run’s temporary height scenario.',true);return;
-  }
-  if(display?.settings){
-    const shown=display.settings,active=coverageSettings;
-    const sameInspectionInputs=JSON.stringify(shown.client)===JSON.stringify(active.client)
-      &&shown.include_endpoints===active.include_endpoints
-      &&JSON.stringify(shown.source_ids||[])===JSON.stringify(active.source_ids||[])
-      &&shown.maximum_profile_samples===active.maximum_profile_samples;
-    if(!sameInspectionInputs){setCoverageStatus('Exact-point inspection uses the current client and selected sources, which differ from the displayed run. Load a matching run or calculate with the current settings first.',true);return;}
+  const selectedRunId=$('coverage-active-run').value;
+  if(selectedRunId&&!display?.preview&&display?.job_id!==selectedRunId){
+    setCoverageStatus('Load the selected saved run on the map before inspecting a location, so its client and router-height assumptions are used.',true);return;
   }
   setInteractionMode(interactionMode==='inspect-coverage'?'browse':'inspect-coverage');
 }
@@ -55,7 +48,8 @@ async function waitForInspection(jobId,requestId,signal){
     }
     if(job.state==='failed')throw Error(job.stage);
     if(['cancelled','superseded'].includes(job.state)){activeInspectionId=null;return null;}
-    setCoverageStatus(`${job.stage} · ${job.source_count} router link(s) · client height ${coverageSettings.client.height_agl_m} m`);
+    const client=(coverageDisplayInfo||coverageJob)?.settings?.client||coverageSettings.client;
+    setCoverageStatus(`${job.stage} · ${job.source_count} router link(s) · client height ${client.height_agl_m} m${(coverageDisplayInfo||coverageJob)?.stale?' · saved historical run assumptions':''}`);
     await new Promise((resolve,reject)=>{const done=()=>{signal.removeEventListener('abort',abort);resolve();},abort=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);reject(new DOMException('Aborted','AbortError'));},timer=setTimeout(done,250);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();});
   }
   return null;
@@ -75,7 +69,11 @@ async function inspectAt(latlng){
     readCoverageInputs();
     await autosaveNow();
     if(!isCurrent())return;
-    const job=await startCurrentInspection({...coveragePayload(),latitude,longitude},isCurrent);
+    const display=coverageDisplayInfo||coverageJob,selectedRunId=$('coverage-active-run').value;
+    const savedRun=display?.job_id&&display.job_id===selectedRunId?display:null;
+    const payload=coveragePayload(savedRun?.settings||coverageSettings,savedRun?.source_height_overrides||coverageHeightOverrides);
+    if(savedRun)payload.coverage_job_id=savedRun.job_id;
+    const job=await startCurrentInspection({...payload,latitude,longitude},isCurrent);
     if(!job)return;
     if(!isCurrent()){
       await api(`/api/coverage/inspect/${encodeURIComponent(job.job_id)}/cancel`,{method:'POST'}).catch(()=>{});

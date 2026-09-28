@@ -1,6 +1,6 @@
 # RepeaterNet UI and workflow improvement plan
 
-Created: 2026-09-28. Status: implementation in progress (U0–U5 implemented; U6 next).
+Created: 2026-09-28. Status: implementation in progress (U0–U6 implemented; U7 validation remains).
 Review baseline: `228e770`. Scope: the self-hosted web interface.
 
 This plan builds on [the usability/performance work](USABILITY_PERFORMANCE_PLAN.md)
@@ -450,7 +450,7 @@ frontend framework, tile provider or analytics service is required by this plan.
 | U3 | Implemented; acceptance evidence pending | Added coordinate-based router/target creation and router movement, name/ID plus activity/policy filters, scoped bulk-action counts, policy badges, and bidirectional router map/list focus. Map mode, keyboard and browser behavior remain unverified; commit subject `feat: improve router selection and coordinate editing`. |
 | U4 | Implemented; acceptance evidence pending | Added a shared job card, reconnect-to-same-job behavior, alternative comparison cards, and a directional RF inspector using the result snapshot. Matching result identity/revision is required before final render. No automated tests or browser review were run. |
 | U5 | Implemented; acceptance evidence pending | Added reviewed estimate gating for preview/full runs, paged saved-run loading and status/progress, a searchable map legend, projected cell footprints, and explicit guards against interpreting current exact-point inspection as a stale or scenario run. Syntax/whitespace checks passed; regression test added but not run; browser review remains pending. |
-| U6 | Planned | Unify the selected run across inspection, target assessment, scenario comparison and export; document compatibility and report context. |
+| U6 | Implemented; acceptance evidence pending | Unified inspection, target assessment, router-failure analysis and exports around the Coverage workspace's selected run. Exact inspection resolves saved client/source-height assumptions. Comparison choices surface incompatibility reasons; target points can be renamed/re-criterioned and focused; exports can include a saved target report. Added regression test but did not run it. Static syntax/whitespace checks passed; browser review remains open. |
 | U7 | Browser-gated | Browser access is needed for visual/accessibility/performance sign-off. |
 
 Implementation is active. Do not call the redesign complete until each milestone
@@ -515,3 +515,17 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   regression assertion; it was not run. `git diff --check`, `node --check` and
   `python -m py_compile` passed. Browser/accessibility review is unavailable;
   U6 will complete scenario-aware inspection and report context.
+- U6 (implementation ready for commit): a single selected saved run now drives
+  exact-point inspection, target assessment, router-failure analysis and all
+  export formats; inspection uses the selected run's saved client and source
+  heights when its route and terrain remain current, even if it is historical
+  relative to the edited Coverage form. Baseline/scenario selectors remain
+  separately explicit, with client/radio/grid/terrain/model/shared-reference
+  compatibility reasons in their choices and a side-by-side run summary plus
+  changed source/height assumptions after comparison. Exports can include a
+  saved target report. Point target name and margin criteria are editable
+  in-app, and Focus actions synchronize list selection with map geometry. Added
+  a backend regression test for saved-run inspection after a client-setting
+  change; tests were not run. `git diff --check`, JavaScript syntax checks and
+  `python -m py_compile` passed. Browser/accessibility and measured rendering
+  evidence remain U7 gates.

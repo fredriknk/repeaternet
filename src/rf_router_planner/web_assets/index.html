@@ -161,6 +161,7 @@
             <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
             <p id="coverage-context-radio" class="hint">Client radio assumptions will appear here.</p>
             <label>Saved coverage run<select id="coverage-active-run"><option value="">No saved runs</option></select></label>
+            <p id="coverage-active-run-context" class="hint" role="status" aria-live="polite">Select a saved run to use it for inspection, targets and exports.</p>
             <button id="coverage-load-run" type="button" class="wide-button" disabled>Show saved run on map</button>
             <progress id="coverage-load-progress" aria-label="Loading saved coverage cells" hidden></progress>
           <p id="coverage-load-status" class="hint" role="status" aria-live="polite">Saved runs load incrementally; no RF calculation is started.</p>
@@ -261,8 +262,10 @@
             <label>Baseline run<select id="coverage-baseline-run"></select></label>
             <label>Scenario run<select id="coverage-scenario-run"></select></label>
             <label>Reference router<select id="coverage-compare-reference"></select></label>
+            <p id="coverage-compare-compatibility" class="hint" role="status" aria-live="polite">Choose two compatible completed runs and a shared selected router.</p>
             <button id="coverage-compare-run" class="wide-button" disabled>Compare runs on map</button>
             <p id="coverage-compare-summary" class="hint" role="status" aria-live="polite">Run compatible coverage snapshots to compare coverage changes.</p>
+            <div id="coverage-compare-run-metrics" class="coverage-run-metrics" hidden aria-label="Selected baseline and scenario assumptions"></div>
             <div id="coverage-diff-legend" class="coverage-diff-legend" aria-label="Coverage difference legend">
               <span><i class="diff-gained"></i> Newly connected</span>
               <span><i class="diff-lost"></i> Lost connection</span>
@@ -288,8 +291,14 @@
               <button id="add-target-coordinate" type="button" class="wide-button">Add target at coordinates</button>
             </details>
             <label>Road sample spacing · m<input id="coverage-road-spacing" type="number" min="25" max="5000" step="25" value="100"></label>
-            <label>Use coverage run<select id="coverage-target-run"></select></label>
+            <p id="coverage-target-run-summary" class="hint">Target assessment uses the selected saved run in the Coverage workspace.</p>
             <div id="coverage-target-list" class="known-list"><p class="hint">No saved targets. Place a point or import GeoJSON.</p></div>
+            <section id="coverage-target-editor" class="coverage-target-editor" hidden aria-labelledby="coverage-target-editor-title">
+              <h3 id="coverage-target-editor-title">Edit selected point target</h3>
+              <label>Name<input id="coverage-target-edit-name" maxlength="120"></label>
+              <label>Minimum margin · dB<input id="coverage-target-edit-margin" type="number" min="-100" max="100" step="any"></label>
+              <div class="coverage-actions"><button id="coverage-target-save-edit" type="button">Save target</button><button id="coverage-target-cancel-edit" type="button">Cancel</button></div>
+            </section>
             <p id="coverage-target-summary" class="hint" role="status" aria-live="polite">Targets are project-specific and do not change the certified route.</p>
             <div id="coverage-target-results" class="known-list"></div>
             <details>
@@ -304,9 +313,10 @@
           <details id="coverage-export-controls">
             <summary>Export coverage &amp; print report</summary>
             <p class="hint">Exports use the saved grid and include terrain/model assumptions. Partial or stale snapshots require an explicit checkbox and are marked in the output.</p>
-            <label>Coverage run<select id="coverage-export-run"></select></label>
+            <p id="coverage-export-run-summary" class="hint">Exports use the selected saved run in the Coverage workspace.</p>
             <label class="check-line"><input id="coverage-export-partial" type="checkbox"> Allow partial/cancelled results</label>
             <label class="check-line"><input id="coverage-export-stale" type="checkbox"> Allow stale historical results</label>
+            <label>Optional saved target report<select id="coverage-export-target-report"><option value="">No target report</option></select></label>
             <label>Optional comparison run<select id="coverage-export-scenario"></select></label>
             <label>Reference router for comparison<select id="coverage-export-reference"></select></label>
             <div class="coverage-actions">
