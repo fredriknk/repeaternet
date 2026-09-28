@@ -89,9 +89,9 @@
         </section>
         <section id="terrain-setup">
           <h2><span>02</span> Terrain</h2>
-          <label class="upload">＋ Add ground terrain<small>DTM · GeoTIFF · up to 512 MiB per tile</small><input id="dtm" type="file" multiple accept=".tif,.tiff" hidden></label>
+          <label class="upload">＋ Add ground terrain<small>DTM · GeoTIFF · up to 512 MiB per tile</small><input id="dtm" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
           <div class="file-row"><span id="dtm-count">No ground tiles</span><button data-clear="dtm" class="text-button">Clear</button></div>
-          <label class="upload secondary">＋ Add surface terrain<small>Optional DOM · trees and buildings</small><input id="dom" type="file" multiple accept=".tif,.tiff" hidden></label>
+          <label class="upload secondary">＋ Add surface terrain<small>Optional DOM · trees and buildings</small><input id="dom" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
           <div class="file-row"><span id="dom-count">No surface tiles</span><button data-clear="dom" class="text-button">Clear</button></div>
           <p id="surface-note" class="hint">Surface obstruction data unavailable — terrain only.</p>
           <div class="terrain-tools">

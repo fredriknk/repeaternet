@@ -588,12 +588,13 @@ async function activateProject(id){if(!id||id===projectInfo?.active_id)return;tr
 $('project-select').onchange=event=>activateProject(event.target.value);
 function askActionDialog({title,copy,label='',value='',confirm='Continue',danger=false}){
   const dialog=$('action-dialog'),form=$('action-dialog-form'),fieldLabel=$('action-dialog-field-label'),field=$('action-dialog-value'),confirmButton=$('action-dialog-confirm'),cancelButton=$('action-dialog-cancel');
+  const returnFocus=document.activeElement instanceof HTMLElement?document.activeElement:null;
   $('action-dialog-title').textContent=title;$('action-dialog-copy').textContent=copy;fieldLabel.hidden=!label;fieldLabel.firstChild.textContent=label;field.value=value;field.required=!!label;field.setCustomValidity('');confirmButton.textContent=confirm;confirmButton.classList.toggle('danger-button',danger);
   return new Promise(resolve=>{
     const onSubmit=event=>{event.preventDefault();if(label&&!field.value.trim()){field.setCustomValidity(`${label} is required.`);field.reportValidity();return;}dialog.close('confirm');};
     const onInput=()=>field.setCustomValidity('');
     const onCancel=()=>dialog.close('cancel');
-    const onClose=()=>{form.removeEventListener('submit',onSubmit);field.removeEventListener('input',onInput);cancelButton.removeEventListener('click',onCancel);resolve(dialog.returnValue==='confirm'?(label?field.value.trim():true):null);};
+    const onClose=()=>{form.removeEventListener('submit',onSubmit);field.removeEventListener('input',onInput);cancelButton.removeEventListener('click',onCancel);if(returnFocus?.isConnected&&!returnFocus.matches(':disabled')&&!returnFocus.closest('[hidden]'))returnFocus.focus({preventScroll:true});resolve(dialog.returnValue==='confirm'?(label?field.value.trim():true):null);};
     form.addEventListener('submit',onSubmit);field.addEventListener('input',onInput);cancelButton.addEventListener('click',onCancel);dialog.addEventListener('close',onClose,{once:true});dialog.showModal();if(label)field.focus();else cancelButton.focus();
   });
 }

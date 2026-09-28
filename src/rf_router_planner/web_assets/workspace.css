@@ -116,6 +116,7 @@ input:not([type="checkbox"]), select { font-size: 14px; }
 .hint, .intro p { color: #5f7167; font-size: 12px; line-height: 1.5; }
 .upload { font-size: 13px; }
 .upload small { font-size: 11px; }
+.upload:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
 .run-panel {
   position: sticky;
   bottom: 0;
