@@ -1,6 +1,6 @@
 # Browser findings: fix implementation plan
 
-Date: 2026-09-29. Status: planned; no application fixes implemented by this document.
+Date: 2026-09-29. Status: F0–F6 implemented; F7 real-browser acceptance is in progress.
 
 Evidence: [real-map browser usage report](UI_USAGE_REPORT_2026-09-29.md). This is the acceptance follow-up to [the UI simplification plan](UI_SIMPLIFICATION_PLAN.md), not a replacement roadmap.
 
@@ -8,8 +8,9 @@ Evidence: [real-map browser usage report](UI_USAGE_REPORT_2026-09-29.md). This i
 
 - Fix blocked interaction and incorrect state before visual polish. Preserve saved projects, terrain, results, and existing RF rules.
 - Report item 5 is **expected behavior**, not a defect: ready-terrain route search starts with one click; missing terrain gets one combined download-and-search confirmation, then continues automatically. Coverage gets one estimate/confirmation. Do not add a second route confirmation.
-- Analysis pointer failure was observed, but its cause is unconfirmed. Reproduce with overlays closed and fresh DOM targets before changing event handling; distinguish an application defect from automation targeting problems.
-- Height validation is confirmed in source: `min=0.1`, `step=0.5` rejects the whole-number presets. Disabled alternative cards and terrain comparison have strong source-level leads, but still need regression reproductions.
+- Analysis navigation failure was confirmed as an application defect: mobile-destination listeners were attached through an unscoped selector that also matched the `<main>` layout marker, allowing bubbled clicks to reset the selected pane. This is isolated in a small navigation module and regression-tested.
+- Height validation used `min=0.1`, `step=0.5`, rejecting the 3, 6, and 10 m presets. It now uses `step=0.1`; an invalid, unapplied height draft no longer blocks project actions.
+- Completed searches now keep unselected route alternatives available; coverage compatibility compares nested metadata by value, not object identity.
 - “Recover previous” restores a previous plan revision, not an archived project. Treat archive discovery/restoration as a separate workflow.
 - Export success messages do not prove file correctness. The file-upload permission failure is a test-environment limitation, not an application defect. Initial delayed map tiles and summary-only project restoration do not establish data loss or a persistent rendering bug.
 
@@ -19,23 +20,23 @@ Execute F0–F7 in order. Each milestone should end with its own focused commit,
 
 | Milestone | Priority | Status | Commit / evidence |
 | --- | --- | --- | --- |
-| F0: Reproduce and establish regression cases | P0 | Complete | Browser baseline and repeatable procedures are recorded in the usage report; pointer tab activation was also rechecked against the live app. |
-| F1: Restore dependable result navigation | P0 | In progress | Clicks to Analysis/View results did not change the selected pane; workspace navigation by click did work. Alternative cards were observed disabled after completion while the native selector remained available. |
-| F2: Correct height validation and error visibility | P0 | Planned | — |
-| F3: Fix compatible-run comparison | P0 | Planned | — |
-| F4: Make archive recovery discoverable | P1 | Planned | — |
-| F5: Reduce Analysis scrolling | P1 | Planned | — |
-| F6: Clarify RF results and transient status | P1 | Planned | — |
-| F7: Complete real-browser acceptance and usage report | Release gate | Planned | — |
+| F0: Reproduce and establish regression cases | P0 | Complete | Rebuilt Docker against this checkout while preserving the data volume. `.\.venv\Scripts\python.exe -m pytest`: 190 passed (19.75 s; 79 dependency deprecation warnings); Node navigation tests: 2 passed; `node --check` passed for `app.js` and `main_view_navigation.js`. Browser evidence and gaps are in the usage report. |
+| F1: Restore dependable result navigation | P0 | Complete | d46279a: rebuilt-browser pointer navigation, keyboard switching, all six alternatives and route selection verified; no additional route search on selection. Failure/cancel recovery remains in F7. |
+| F2: Correct height validation and error visibility | P0 | Complete | 7a13421: native 3/6/10 m presets accepted; invalid 0 m unapplied draft did not block project creation/switch. Boundary/backend-invalid values remain in F7. |
+| F3: Fix compatible-run comparison | P0 | Complete | 2353f28: fresh same-terrain 6 m and 10 m runs compared in the UI: 100 common samples, 87→88 covered (+1, 0 lost); difference layer/report displayed. |
+| F4: Make archive recovery discoverable | P1 | Complete | fb4f996: QA copy restored with the same project identity and four DTM tiles, then re-archived; app selected the existing QA project. |
+| F5: Reduce Analysis scrolling | P1 | Complete | 3965fe0: compact route summary and link/profile controls checked at 1280×720; 390×844 layout had no page-wide horizontal overflow and destination switching worked. 200% zoom remains in F7. |
+| F6: Clarify RF results and transient status | P1 | Complete | `220dab8 fix: clarify RF feasibility labels`. Real-browser wording check complete: obstructed links say “Passes configured validation criteria · LOS obstructed, Fresnel clearance not met,” keeping RF validation distinct from geometry. No thresholds changed; broader status/toast lifecycle acceptance remains in F7. |
+| F7: Complete real-browser acceptance and usage report | Release gate | In progress | Not declared complete: export/import file contents, deletion/cache clearing, cancel/failure/reconnect paths, broad function inventory, and 200% zoom remain unverified. See the report's explicit limitations. |
 
 ### F0 — Reproduce against the current build
 
-- [ ] Check the running Docker build against the checkout; rebuild/restart if stale, preserving the data volume.
-- [ ] Use an isolated QA project and the Oslo endpoints from the report. Record build revision, viewport, terrain inputs, route settings, and saved-run IDs. Never alter the user's existing project for testing.
+- [x] Check the running Docker build against the checkout; rebuild/restart if stale, preserving the data volume.
+- [x] Use an isolated QA project and the Oslo endpoints from the report. Record the viewport, terrain inputs, route settings, and saved-run IDs. Never alter the user's existing project for testing.
 - [ ] Capture pointer and keyboard navigation with menus/dialogs closed, then with each relevant overlay open. Record the actual pointer target, active pane, focus, and console errors.
 - [ ] Capture alternative-card disabled states before, during, and after a route job, including failure/cancel paths.
-- [ ] Capture native validity for 3, 6, and 10 m presets and inspect the actual comparison payloads for the saved height runs.
-- [ ] Add minimal regression fixtures/tests using the repository's existing test conventions. If browser-event tests are missing, add a small browser test harness rather than relying only on string/source assertions.
+- [x] Capture native validity for 3, 6, and 10 m presets and inspect the actual comparison payloads for the saved height runs.
+- [x] Add minimal regression fixtures/tests using the repository's existing test conventions. Added a Node event-bubbling regression test and recorded backend/frontend suite results.
 
 Acceptance: each confirmed defect has a failing test or repeatable browser procedure; hypotheses remain labeled as hypotheses. Suggested commit: `test: reproduce browser workflow regressions`.
 
@@ -43,9 +44,9 @@ Acceptance: each confirmed defect has a failing test or repeatable browser proce
 
 Primary files: `web_assets/app.js`, `web_assets/index.html`, `web_assets/workspace.css` under `src/rf_router_planner/`.
 
-- [ ] Trace `setMainView`, tab click handlers, View results, and overlay hit testing. Fix the demonstrated cause without layering duplicate click handlers or arbitrary z-index overrides.
-- [ ] Centralize/reuse alternative availability rules across cards and the native selector. Investigate cards rendered while busy that are never unlocked by `setBusy(false)` or coverage/project transitions.
-- [ ] Keep stale results and genuinely locked operations protected; leave other valid alternatives selectable after completion. Represent the selected alternative clearly without disabling all choices.
+- [x] Scope mobile destination handlers/state synchronization to `.mobile-destination-nav`; the `<main>` layout marker must never be registered as an interactive control. Keep one click handler per real tab and avoid arbitrary z-index overrides.
+- [x] Centralize/reuse alternative availability rules across cards and the native selector. Investigate cards rendered while busy that are never unlocked by `setBusy(false)` or coverage/project transitions.
+- [x] Keep stale results and genuinely locked operations protected; leave other valid alternatives selectable after completion. Represent the selected alternative clearly without disabling all choices.
 - [ ] Keep alternative, map, link table, profile, and coverage-source selection synchronized. Changing a selection must not launch a new route search.
 
 Acceptance: pointer, touch, and keyboard can switch Map/Analysis and use View results/Show route on map repeatedly. Every available alternative can be selected after a completed search; cancel/error/project-switch paths restore correct states. Verify with the six real Oslo alternatives and event-driven tests. Suggested commit: `fix: restore analysis navigation and route alternative selection`.
@@ -54,9 +55,9 @@ Acceptance: pointer, touch, and keyboard can switch Map/Analysis and use View re
 
 Primary files: `web_assets/app.js` (`renderHeightScenarioControls`, project transition validation), associated HTML/styles, backend height schema/tests.
 
-- [ ] Align height input precision with the supported schema, using `step=0.1` if tenths are supported; keep exact 3, 6, and 10 m presets. Do not silently round a user's height to bypass validation.
+- [x] Align height input precision with the supported schema, using `step=0.1` if tenths are supported; keep exact 3, 6, and 10 m presets. Do not silently round a user's height to bypass validation.
 - [ ] Test minimum, maximum, blank, negative, non-finite, and unsupported-precision values in both UI and backend.
-- [ ] Separate transient scenario-form validation from saved-plan validation. An unapplied invalid scenario must not block unrelated project actions; invalid saved plan edits must not be silently discarded or saved.
+- [x] Separate transient scenario-form validation from saved-plan validation. An unapplied invalid scenario must not block unrelated project actions; invalid saved plan edits must not be silently discarded or saved.
 - [ ] When an operation genuinely requires an invalid field, show a visible action-level error, reveal its section, and focus/scroll to the field. Error text must not be hidden in optional help.
 
 Acceptance: all presets satisfy native validity and can run a scenario. Project create/switch/duplicate works with valid saved data regardless of an unrelated scenario draft. Required invalid fields are visible and actionable at desktop and mobile sizes. Suggested commit: `fix: align height presets and scope form validation`.
@@ -65,11 +66,11 @@ Acceptance: all presets satisfy native validity and can run a scenario. Project 
 
 Primary files: `web_assets/app.js` comparison helpers, `web.py` coverage listing/comparison endpoints and `_terrain_fingerprint`, coverage comparison tests.
 
-- [ ] Inspect the current frontend `baseline.terrain_fingerprint !== scenario.terrain_fingerprint` check: array/object reference inequality is not content inequality. Confirm the API payload shape and reproduce separately parsed equal fingerprints.
-- [ ] Use a shared, schema-aware value comparison for compatibility metadata. Normalize only ordering/representation that is explicitly non-semantic; preserve meaningful terrain differences.
+- [x] Inspect the frontend compatibility check: array/object reference inequality is not content inequality. Confirm the API payload shape and reproduce separately parsed equal fingerprints.
+- [x] Use a shared, schema-aware value comparison for compatibility metadata. Normalize only ordering/representation that is explicitly non-semantic; preserve meaningful terrain differences.
 - [ ] Keep the backend authoritative. Ensure UI reasons agree with backend requirements for terrain, grid, client, radio, and model compatibility while allowing supported height scenarios.
 - [ ] Add equal-value/different-object, changed terrain, stale terrain, incompatible grid, missing metadata, and reload tests. Preserve safeguards rather than enabling every comparison.
-- [ ] Exercise difference overlay, legend, target-report comparison, and selecting/reloading saved runs without starting RF work.
+- [x] Exercise the difference overlay and legend and compare saved runs without starting new RF work. Target-report comparison and reload compatibility remain in F7.
 
 Acceptance: same-terrain 6 m and 10 m runs compare successfully; genuinely incompatible runs remain blocked with accurate reasons. Reloading does not change compatibility. Suggested commit: `fix: compare saved coverage compatibility by value`.
 
@@ -77,9 +78,9 @@ Acceptance: same-terrain 6 m and 10 m runs compare successfully; genuinely incom
 
 Primary files: `project_store.py`, project endpoints in `web.py`, project controls in `web_assets/app.js` and `index.html`.
 
-- [ ] Audit archive/list/active-project semantics and retained files before adding restoration. Add workspace-scoped archived listing and restore operations if absent, with cross-workspace and busy-project safeguards.
-- [ ] Add an explicit Archived projects entry with name/date and Restore action. Label previous-revision recovery distinctly so it cannot be confused with archive restoration.
-- [ ] After archiving the active project, select another existing active project deterministically. If none remain, show a deliberate empty/new-project state; do not silently create timestamp-named clutter.
+- [x] Audit archive/list/active-project semantics and retained files before adding restoration. Add workspace-scoped archived listing and restore operations if absent, with cross-workspace and busy-project safeguards.
+- [x] Add an explicit Archived projects entry with name/date and Restore action. Label previous-revision recovery distinctly so it cannot be confused with archive restoration.
+- [x] After archiving the active project, select another existing active project deterministically. If none remain, show a deliberate empty/new-project state; do not silently create timestamp-named clutter.
 - [ ] Explain retained storage and distinguish archive, restore, cache clearing, and permanent deletion. Restoring must retain project identity and the data that archive promises to preserve.
 - [ ] Test active/non-active archive, restore, repeated requests, no remaining active projects, reload, and workspace isolation.
 
@@ -89,9 +90,9 @@ Acceptance: a QA copy can be archived, found, restored, and opened with saved pl
 
 Primary files: `web_assets/index.html`, `workspace.css`, `style.css`, `app.js`, and profile rendering/inspection code.
 
-- [ ] Replace the tall alternative-card stack with a compact alternative picker and selected-route summary. Make a fuller comparison an explicit disclosure rather than the initial wall of content.
-- [ ] Put route distance, bottleneck margin, repeater composition, and achieved/requested independent paths near the top. Keep shortfall warnings visible.
-- [ ] Provide a clear link selector and immediately accessible profile; move detailed directional budgets and secondary metadata into labeled disclosures or a compact details view.
+- [x] Replace the tall alternative-card stack with a compact alternative picker and selected-route summary. Make a fuller comparison an explicit disclosure rather than the initial wall of content.
+- [x] Put route distance, bottleneck margin, repeater composition, and achieved/requested independent paths near the top. Keep shortfall warnings visible.
+- [x] Provide a clear link selector and immediately accessible profile; move detailed directional budgets and secondary metadata into labeled disclosures or a compact details view.
 - [ ] Preserve selected route/link when switching to Map and back. Clearly distinguish a restored summary from a full inspectable result, with a direct rerun action when needed.
 - [ ] Fix panel overflow and action-row clipping without adding another large sticky block. Support touch targets, keyboard focus, screen readers, and 200% zoom.
 
@@ -99,7 +100,7 @@ Acceptance: at 1280 × 720 the selected-route summary and link/profile controls 
 
 ### F6 — Truthful labels and contextual feedback
 
-- [ ] Replace ambiguous standalone “Valid” labels with concise RF-feasibility wording distinct from geometric LOS/Fresnel obstruction. Explain the propagation model in optional help; do not change RF thresholds or hide negative clearance values.
+- [x] Replace ambiguous standalone “Valid” labels with concise RF-feasibility wording distinct from geometric LOS/Fresnel obstruction. Explain the propagation model in optional help; do not change RF thresholds or hide negative clearance values.
 - [ ] Keep terrain-only assumptions, stale/partial/unknown results, and redundancy shortfalls visible next to affected results. Never imply a prediction is measured coverage or a guarantee.
 - [ ] Audit status/toast ownership and clear obsolete operation messages after completion or project/view changes. Persistent errors must remain accessible until resolved/dismissed appropriately.
 - [ ] Keep normal help collapsed while action errors and essential scientific caveats remain visible. Preserve one-click ready route and single combined download confirmation.
