@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let rf, candidates, result, interactionMode = 'browse', busy = false, switchingProject = false, selected = 0, searchEffort = 'balanced';
 let activeJobId = null, activeJobKind = null, lastSnapshotVersion = 0, jobStartedAt = null;
 let pendingRouteContinuation=null,routePreflightBusy=false;
+let alternativeSelecting=false;
 function setRoutePreflightBusy(value){routePreflightBusy=value;syncCoverageLocks();$('optimize').disabled=busy||value;$('clear-cache').disabled=busy||value;}
 let meshcoreRouters = [], routerPolicies = new Map(), selectedKnownRouterId = null;
 let manualRouters = [], selectedManualRouterId = null, undoStack = [], redoStack = [], lastHistoryPlan = null, resultStale = false, resultStaleReason = '';
@@ -121,15 +122,12 @@ const mobileDestinationIds=['setup','map','analysis'];
 function setMobileDestination(id,persist=true){
   if(!mobileDestinationIds.includes(id))id='map';
   document.querySelector('main').dataset.mobileDestination=id;
-  document.querySelectorAll('[data-mobile-destination]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mobileDestination===id)));
+  document.querySelectorAll('.mobile-destination-nav [data-mobile-destination]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mobileDestination===id)));
   if(persist)try{localStorage.setItem('repeaternet.mobile-destination',id);}catch{}
   if(id==='map')requestAnimationFrame(()=>map.invalidateSize({pan:false}));
 }
 try{setMobileDestination(localStorage.getItem('repeaternet.mobile-destination')||'map',false);}catch{setMobileDestination('map',false);}
-document.querySelectorAll('[data-mobile-destination]').forEach(button=>button.addEventListener('click',()=>{
-  const destination=button.dataset.mobileDestination;
-  if(destination==='setup')setMobileDestination('setup');else setMainView(destination==='analysis'?'view-analysis':'view-map');
-}));
+installNavigationControls(document,{setMainView,setMobileDestination});
 function setWorkspace(id){
   const valid=['workspace-plan','workspace-coverage','workspace-compare'];
   if(!valid.includes(id))id='workspace-plan';
@@ -157,13 +155,15 @@ try{setCoverageSection(localStorage.getItem('repeaternet.coverage-section')||'ar
 const mainViewIds=['view-map','view-analysis'];
 function setMainView(id,persist=true){
   if(!mainViewIds.includes(id))id='view-map';
+  const unchanged=$('workspace').dataset.mainView===id;
   for(const viewId of mainViewIds){const active=viewId===id,pane=$(viewId),tab=document.querySelector(`[data-main-view-target="${viewId}"]`);pane.hidden=!active;tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;}
   $('workspace').dataset.mainView=id;
   if(persist)try{localStorage.setItem('repeaternet.main-view',id);}catch{}
   if(persist&&mobileViewport.matches)setMobileDestination(id==='view-map'?'map':'analysis');
+  if(unchanged)return;
   requestAnimationFrame(()=>{if(id==='view-map')map.invalidateSize({pan:false});else if(result?.links.length)profile(selected);});
 }
-document.querySelectorAll('[data-main-view-target]').forEach(tab=>tab.addEventListener('click',()=>setMainView(tab.dataset.mainViewTarget)));
+const mainViewNav=document.querySelector('.main-view-nav');
 document.querySelector('.main-view-nav').addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;const tabs=[...document.querySelectorAll('[data-main-view-target]')];let index=tabs.indexOf(document.activeElement);index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;event.preventDefault();tabs[index].focus();setMainView(tabs[index].dataset.mainViewTarget);});
 try{setMainView(localStorage.getItem('repeaternet.main-view')||'view-map',false);}catch{setMainView('view-map',false);}
 $('route-show-map').onclick=()=>setMainView('view-map');
@@ -535,10 +535,21 @@ async function previewCoverage(approved=coverageEstimate){
   }catch(error){setCoverageStatus(error.message,true);}finally{coverageBusyState(false);updateCoverageActions();}
 }
 function coverageBusyState(value){coverageBusy=value;if(value&&interactionMode==='inspect-coverage')setInteractionMode('browse');if(value)cancelActiveInspection();syncCoverageLocks();if(!value)void refreshCoverageTargetRuns(coverageJob?.job_id).catch(()=>{});}
+function syncAlternativeControls(){
+  const locked=busy||coverageBusy||coverageLoadingRun||switchingProject||alternativeSelecting||resultStale;
+  const selector=$('alternative-select');
+  for(const button of document.querySelectorAll('.alternative-card')){
+    const selected=button.dataset.alternativeId===selector.value;
+    button.disabled=locked||selected;
+    button.classList.toggle('selected',selected);
+    button.setAttribute('aria-pressed',String(selected));
+  }
+  selector.disabled=locked;
+}
 function syncCoverageLocks(){
   const locked=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject;
   for(const el of document.querySelectorAll('aside input:not([data-display-only]), aside select:not([data-display-only]), [data-place], [data-clear], [data-height-preset], #open, #import-plan, #load-meshcore, #include-all, #include-none, #estimate-terrain, #prepare-terrain, #add-router, #add-router-coordinate, #add-target-coordinate, #project-select, #new-project, #rename-project, #recover-project, #duplicate-project, #archive-project, #delete-project, #retry-save, #optimize, #coverage-preview, #coverage-start, #coverage-inspect, #coverage-draw-area, #coverage-finish-area, #coverage-clear-area, #coverage-height-run, #coverage-height-apply, #coverage-compare-run, #failure-run, #failure-reset, #coverage-add-target, #coverage-load-run'))el.disabled=locked;
-  $('coverage-cancel').disabled=busy;$('coverage-assess-targets').disabled=!coverageTargets.length||locked;$('alternative-select').disabled=locked||resultStale;$('coverage-mode').disabled=switchingProject;$('coverage-opacity').disabled=switchingProject;
+  $('coverage-cancel').disabled=busy;$('coverage-assess-targets').disabled=!coverageTargets.length||locked;$('coverage-mode').disabled=switchingProject;$('coverage-opacity').disabled=switchingProject;syncAlternativeControls();
   document.querySelectorAll('[data-workspace-target]').forEach(button=>button.disabled=switchingProject);Object.values(markers).forEach(marker=>locked?marker.dragging.disable():marker.dragging.enable());
   for(const layer of routeLayer.getLayers())if(layer.dragging){if(locked||resultStale||!layer._plannerDraggable)layer.dragging.disable();else layer.dragging.enable();}
   for(const layer of manualLayer.getLayers())if(layer.dragging)locked?layer.dragging.disable():layer.dragging.enable();
@@ -816,13 +827,13 @@ function renderAlternativeChoices(){
   selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;
   const objective={minimum_routers:'fewest routers',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'highest reliability'}[candidates.priority]||'configured objective';
   for(const [index,item] of alternatives.entries()){
-    const option=document.createElement('option');option.value=item.id;option.textContent=`${item.name||`Alternative ${index+1}`} · ${item.router_count} routers`;selector.append(option);
-    const button=document.createElement('button');button.type='button';button.className='alternative-card'+(item.id===selector.value?' selected':'');button.setAttribute('aria-pressed',String(item.id===selector.value));button.disabled=busy||coverageBusy||switchingProject||resultStale||item.id===selector.value;
+    const option=document.createElement('option');option.value=item.id;option.textContent=item.name||`Alternative ${index+1} · ${item.router_count} ${item.router_count===1?'router':'routers'}`;selector.append(option);
+    const button=document.createElement('button');button.type='button';button.className='alternative-card'+(item.id===selector.value?' selected':'');button.dataset.alternativeId=item.id;button.setAttribute('aria-pressed',String(item.id===selector.value));
     const title=document.createElement('strong'),meta=document.createElement('span'),summary=document.createElement('small');title.textContent=item.name||`Alternative ${index+1}`;meta.textContent=`${item.router_count} total · ${item.existing_router_count} existing · ${item.proposed_router_count} proposed · ${(item.primary_distance_m/1000).toFixed(2)} km · ${Number.isFinite(item.minimum_margin_db)?item.minimum_margin_db.toFixed(1)+' dB bottleneck':'no margin'}`;summary.textContent=`${item.achieved_path_count}/${item.requested_path_count} independent paths · ${item.resilient?'redundancy met':'redundancy not met'} · ${item.search_complete?'search complete':'search in progress'}`;button.append(title,meta,summary);button.onclick=()=>{selector.value=item.id;void chooseAlternative();};cards.append(button);
   }
-  selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;const active=alternatives.find(item=>item.id===selector.value);$('alternative-summary').textContent=active?`Ranked for ${objective}. Primary route ${(active.primary_distance_m/1000).toFixed(2)} km; full network links ${(active.total_link_distance_m/1000).toFixed(2)} km.`:'';selector.disabled=busy||resultStale;panel.hidden=false;
+  selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;selector.hidden=false;const active=alternatives.find(item=>item.id===selector.value);$('alternative-summary').textContent=active?`Ranked for ${objective} · ${(active.primary_distance_m/1000).toFixed(2)} km primary · ${active.achieved_path_count}/${active.requested_path_count} independent paths${active.resilient?' met':' · shortfall'}.`:'';$('alternative-comparison-summary').textContent=`Compare all ${alternatives.length} route alternatives`;panel.hidden=false;syncAlternativeControls();
 }
-async function chooseAlternative(){if(resultStale||busy||coverageBusy||coverageLoadingRun||switchingProject)return;const id=$('alternative-select').value;if(!id)return;$('alternative-select').disabled=true;try{result=await api(`/api/alternatives/${encodeURIComponent(id)}/select`,{method:'POST'});resultStale=false;resultStaleReason='';coverageHeightOverrides={};invalidateCoverageEstimate('Selected route alternative changed. Review a new coverage estimate for this mesh.');coverageCells=[];coverageCursor=0;coverageStale=true;predictedCoverageLayer.clearLayers();setCoverageStatus('Route alternative changed. Recalculate coverage to match the selected mesh.');render();}catch(e){status(e.message,true);}finally{$('alternative-select').disabled=busy||coverageBusy||resultStale;}}
+async function chooseAlternative(){if(resultStale||busy||coverageBusy||coverageLoadingRun||switchingProject||alternativeSelecting)return;const id=$('alternative-select').value;if(!id)return;alternativeSelecting=true;syncAlternativeControls();try{result=await api(`/api/alternatives/${encodeURIComponent(id)}/select`,{method:'POST'});resultStale=false;resultStaleReason='';coverageHeightOverrides={};invalidateCoverageEstimate('Selected route alternative changed. Review a new coverage estimate for this mesh.');coverageCells=[];coverageCursor=0;coverageStale=true;predictedCoverageLayer.clearLayers();setCoverageStatus('Route alternative changed. Recalculate coverage to match the selected mesh.');render();}catch(e){render();status(e.message,true);}finally{alternativeSelecting=false;syncAlternativeControls();}}
 function pinMovedRouter(site,point){let router=manualRouters.find(item=>item.id===site.id);if(!router){router={id:'M-'+crypto.randomUUID(),latitude:point.lat,longitude:point.lng,antenna_height_m:site.antenna_height_m,policy:'required'};manualRouters.push(router);}else{router.latitude=point.lat;router.longitude=point.lng;router.policy='required';}renderManualRouters();recordEdit();invalidate('proposed route site location');scheduleCoverageCheck();status(`${router.id} pinned as a required proposed site. Run a new search to certify the edited route.`);}
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?'Valid':issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
 function syncAnalysisBadge(){const badge=$('analysis-badge');badge.hidden=!result;badge.textContent=resultStale?'Stale':'Ready';badge.dataset.state=resultStale?'stale':'ready';}
