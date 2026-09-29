@@ -55,6 +55,7 @@ described as risks still need behavioral reproduction.
 | F15 | P1 | File upload controls use labels around hidden inputs; map-only target placement lacks a coordinate-entry counterpart. Link rows do support Enter. | Audit keyboard access, replace inaccessible upload triggers, add coordinate-based actions, preserve existing row activation. |
 | F16 | P2 | Native prompts/confirms handle project naming, target naming and calculation estimates; cache maintenance is next to the primary route action. | Accessible dialogs and contextual estimate cards; move maintenance into project/settings tools. |
 | F17 | P1 | `app.js` creates one Leaflet rectangle/tooltip per coverage cell and recreates layers when changing views; existing tests focus on inspection ordering. | Measure rendering and retained memory at maximum grids; add bounded rendering/lifecycle work and behavior tests where measurements justify them. |
+| F18 | P1 | Browser reproduction: `transitionProject` blocks creating a blank project when the current project's saved router settings are invalid; the generic warning did not reveal the collapsed field, and a rejected selector change could leave the dropdown showing a project that was not active. | Let blank-project creation autosave and preserve the current draft without validating it; for guarded switches, expand and scroll to the offending field, show inline feedback, and restore the selector to the active project. |
 
 ## Intended workflows
 
@@ -443,10 +444,10 @@ frontend framework, tile provider or analytics service is required by this plan.
 
 | Item | Status | Evidence / next action |
 | --- | --- | --- |
-| Source/workflow audit | Complete | Findings F01–F17 above, reviewed at `228e770`; no live visual claim. |
+| Source/workflow audit | Complete | Findings F01–F18 above, reviewed at `228e770` plus the 2026-09-29 project-validation browser reproduction; visual/accessibility acceptance remains tracked under U7. |
 | U0 | Implemented; acceptance evidence pending | Consolidated the map tool into one mode, added Escape/cancel, removed the coverage-area handler overwrite and lifecycle wrappers, kept display-only coverage controls usable during jobs, and attached the RF snapshot to route results. Automated tests were not run; live browser review is unavailable. Commit recorded after staging. |
 | U1 | Implemented; acceptance pending | Added Plan/Coverage/Compare views with a pinned action per workspace, a persistent Leaflet map/results workspace, collapsible results, project-action menu, autosave/export labels, workspace preference persistence, and a visual token/layout layer. U6 will make the Compare action scenario-aware; live browser review and viewport/keyboard evidence remain unavailable. Commit `57c4c1b`. |
-| U2 | Implemented; acceptance evidence pending | Added endpoint validation and terrain readiness links, visible infrastructure/objective controls, grouped advanced settings, explicit import/export actions, truthful save/retry state, and project-transition guards that flush edits and reject invalid coordinates. No automated or browser tests were run; implementation is committed as `feat: guide project setup and route readiness`. |
+| U2 | Implemented; acceptance evidence pending | Added endpoint validation and terrain readiness links, visible infrastructure/objective controls, grouped advanced settings, explicit import/export actions, truthful save/retry state, and project-transition guards that flush edits and reject invalid coordinates. Browser testing verified creating a clean project from an invalid saved repeater-height draft and field-focused feedback on a blocked switch; responsive/keyboard/accessibility acceptance remains open. |
 | U3 | Implemented; acceptance evidence pending | Added coordinate-based router/target creation and router movement, name/ID plus activity/policy filters, scoped bulk-action counts, policy badges, and bidirectional router map/list focus. Map mode, keyboard and browser behavior remain unverified; commit subject `feat: improve router selection and coordinate editing`. |
 | U4 | Implemented; acceptance evidence pending | Added a shared job card, reconnect-to-same-job behavior, alternative comparison cards, and a directional RF inspector using the result snapshot. Matching result identity/revision is required before final render. No automated tests or browser review were run. |
 | U5 | Implemented; acceptance evidence pending | Added reviewed estimate gating for preview/full runs, paged saved-run loading and status/progress, a searchable map legend, projected cell footprints, and explicit guards against interpreting current exact-point inspection as a stale or scenario run. Syntax/whitespace checks passed; regression test added but not run; browser review remains pending. |
@@ -560,3 +561,17 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   passed **47 tests**; `node --test tests/web/*.test.cjs` passed **6 tests**;
   Ruff passed for the changed Python files. No browser performance numbers are
   claimed by these checks.
+- 2026-09-29 project-validation recovery: reproduced that an invalid saved
+  repeater height blocked **New project** and that the generic warning could be
+  separated from the collapsed control. New-project creation now waits for the
+  current draft autosave but skips validation of that draft, so the new project
+  starts clean while the old project's values remain saved. Other guarded
+  transitions expand the containing settings section, focus/scroll to the
+  invalid control, associate an inline error for assistive technology, and show
+  a header-level warning; a rejected project-selector change restores the
+  current active name. Docker/browser verification created a clean project from
+  a saved 0 m repeater-height draft and reproduced the field focus and native
+  validation message. A screenshot confirmed the inline error appears beside
+  the field and the selector returns to the actual active project; corrected
+  the test draft back to its default 3 m height and saved it. Broad U7 viewport
+  and accessibility checks remain open.

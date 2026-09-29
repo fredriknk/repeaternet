@@ -24,6 +24,7 @@ header { height: 68px; padding-inline: clamp(14px, 2vw, 28px); }
 .project-bar { position: relative; z-index: 30; }
 .project-bar label { flex: 0 1 260px; }
 .project-bar .hint { margin: 0; }
+.project-transition-status { flex: 1 1 100%; color: var(--state-error); font-size: 13px; }
 #project-storage[data-save-state="saved"] { color: var(--state-success); }
 #project-storage[data-save-state="saving"] { color: #52675c; }
 #project-storage[data-save-state="failed"] { color: var(--state-error); }
@@ -103,6 +104,7 @@ aside { min-width: 0; min-height: 0; }
 .readiness-card[data-readiness="blocked"], .readiness-card[data-readiness="invalid"] { background: #fff5ed; border-color: #e4b9a2; }
 .readiness-card[data-readiness="checking"] { background: #f4f6f6; border-color: var(--border); }
 .field-error { color: var(--state-error); font-size: 12px; margin: 5px 0; }
+.project-transition-field-error { display: block; color: var(--state-error); font-size: 12px; font-weight: 600; margin-top: 5px; }
 input[aria-invalid="true"] { border-color: var(--state-error) !important; }
 .intent-controls { margin: 12px 0 16px; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 10px; }
 .intent-controls h3 { margin: 0; font-size: 15px; }

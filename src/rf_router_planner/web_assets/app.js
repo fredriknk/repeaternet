@@ -583,8 +583,42 @@ async function installProject(response){
   if(response.plan?.rf&&response.plan?.candidates)load(response.plan);else load(emptyProjectPlan());undoStack=[];redoStack=[];lastHistoryPlan=clone(plan());setHistoryButtons();
   const data=await refresh();if(terrainLoaded)await updateTerrainCoverage();showPlanSummary(data);renderCoverageContext();await refreshCoverageRunSelectors();await refreshCoverageTargetRuns();await refreshCoverageTargetReports();
 }
-async function transitionProject(operation){if(busy||coverageBusy||coverageLoadingRun||switchingProject)return false;coords('a');coords('b');const invalid=document.querySelector('aside input:invalid, aside select:invalid');if(invalid){invalid.reportValidity();throw Error('Correct the highlighted value before changing projects.');}switchingProject=true;syncCoverageLocks();setHistoryButtons();try{while(savedRevision<saveRevision)await autosaveNow(saveRevision);await operation();return true;}finally{switchingProject=false;syncCoverageLocks();setHistoryButtons();}}
-async function activateProject(id){if(!id||id===projectInfo?.active_id)return;try{await transitionProject(async()=>{const response=await api(`/api/projects/${encodeURIComponent(id)}/activate`,{method:'POST'});await installProject(response);});}catch(error){status(error.message,true);await refresh();}}
+let projectTransitionErrorSequence=0;
+const projectTransitionValidationListeners=new WeakMap();
+function clearProjectTransitionError(control){
+  const error=control?.labels?.[0]?.querySelector('.project-transition-field-error');
+  if(error){const errorId=error.id;error.remove();const describedBy=(control.getAttribute('aria-describedby')||'').split(/\s+/).filter(id=>id&&id!==errorId);if(describedBy.length)control.setAttribute('aria-describedby',describedBy.join(' '));else control.removeAttribute('aria-describedby');}
+  if(control?.dataset.projectTransitionInvalid){control.removeAttribute('aria-invalid');delete control.dataset.projectTransitionInvalid;}
+  const notice=$('project-transition-status');notice.textContent='';notice.hidden=true;
+}
+function focusProjectTransitionError(control,message){
+  const workspace=control?.closest('.workspace-view');
+  if(workspace?.hidden)setWorkspace(workspace.id);
+  for(let details=control?.closest('details');details;details=details.parentElement?.closest('details'))details.open=true;
+  if(control){
+    clearProjectTransitionError(control);
+    const label=control.labels?.[0];
+    if(label){const error=document.createElement('span');error.className='project-transition-field-error';error.id=`project-transition-error-${++projectTransitionErrorSequence}`;error.setAttribute('role','alert');error.textContent=message;label.insertBefore(error,control);control.dataset.projectTransitionInvalid='true';control.setAttribute('aria-invalid','true');const describedBy=new Set((control.getAttribute('aria-describedby')||'').split(/\s+/).filter(Boolean));describedBy.add(error.id);control.setAttribute('aria-describedby',[...describedBy].join(' '));}
+    const previousListener=projectTransitionValidationListeners.get(control);if(previousListener){control.removeEventListener('input',previousListener);control.removeEventListener('change',previousListener);}
+    const clearWhenValid=()=>{if(control.validity.valid)clearProjectTransitionError(control);};projectTransitionValidationListeners.set(control,clearWhenValid);
+    control.addEventListener('input',clearWhenValid);control.addEventListener('change',clearWhenValid);
+    control.scrollIntoView({behavior:'smooth',block:'center'});control.focus({preventScroll:true});if(control.matches(':invalid'))control.reportValidity();
+  }
+  const notice=$('project-transition-status');notice.textContent=message;notice.hidden=false;
+}
+async function transitionProject(operation,{allowInvalidCurrentPlan=false}={}){
+  if(busy||coverageBusy||coverageLoadingRun||switchingProject)return false;
+  if(!allowInvalidCurrentPlan){
+    for(const endpoint of ['a','b']){try{coords(endpoint);}catch{focusProjectTransitionError($(endpoint),`Correct Endpoint ${endpoint.toUpperCase()} before changing projects.`);return false;}}
+    const invalid=document.querySelector('aside input:invalid, aside select:invalid');
+    if(invalid){const labelElement=invalid.labels?.[0]?.cloneNode(true);labelElement?.querySelectorAll('.project-transition-field-error').forEach(error=>error.remove());const label=labelElement?.textContent?.trim()||invalid.getAttribute('aria-label')||invalid.dataset.key||'router setting';focusProjectTransitionError(invalid,`Correct ${label} before changing projects.`);return false;}
+  }
+  $('project-transition-status').hidden=true;
+  switchingProject=true;syncCoverageLocks();setHistoryButtons();
+  try{while(savedRevision<saveRevision)await autosaveNow(saveRevision);await operation();return true;}
+  finally{switchingProject=false;syncCoverageLocks();setHistoryButtons();}
+}
+async function activateProject(id){if(!id||id===projectInfo?.active_id)return;try{const switched=await transitionProject(async()=>{const response=await api(`/api/projects/${encodeURIComponent(id)}/activate`,{method:'POST'});await installProject(response);});if(!switched)$('project-select').value=projectInfo?.active_id||'';}catch(error){status(error.message,true);await refresh();}}
 $('project-select').onchange=event=>activateProject(event.target.value);
 function askActionDialog({title,copy,label='',value='',confirm='Continue',danger=false}){
   const dialog=$('action-dialog'),form=$('action-dialog-form'),fieldLabel=$('action-dialog-field-label'),field=$('action-dialog-value'),confirmButton=$('action-dialog-confirm'),cancelButton=$('action-dialog-cancel');
@@ -598,7 +632,7 @@ function askActionDialog({title,copy,label='',value='',confirm='Continue',danger
     form.addEventListener('submit',onSubmit);field.addEventListener('input',onInput);cancelButton.addEventListener('click',onCancel);dialog.addEventListener('close',onClose,{once:true});dialog.showModal();if(label)field.focus();else cancelButton.focus();
   });
 }
-$('new-project').onclick=async()=>{const name=await askActionDialog({title:'Create a project',copy:'Projects keep route settings, terrain and coverage work together.',label:'Project name',value:'New project',confirm:'Create'});if(!name)return;try{await transitionProject(async()=>{const response=await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,plan:emptyProjectPlan()})});await installProject(response);});}catch(error){status(error.message,true);}};
+$('new-project').onclick=async()=>{const name=await askActionDialog({title:'Create a project',copy:'Projects keep route settings, terrain and coverage work together.',label:'Project name',value:'New project',confirm:'Create'});if(!name)return;try{await transitionProject(async()=>{const response=await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,plan:emptyProjectPlan()})});await installProject(response);},{allowInvalidCurrentPlan:true});}catch(error){status(error.message,true);}};
 $('rename-project').onclick=async()=>{const name=await askActionDialog({title:'Rename project',copy:'This changes the project name, not its saved plan.',label:'Project name',value:projectInfo?.active_name||'',confirm:'Save name'});if(!name)return;try{await api(`/api/projects/${encodeURIComponent(projectInfo.active_id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await refresh();status('Project renamed.');}catch(error){status(error.message,true);}};
 $('duplicate-project').onclick=async()=>{const name=await askActionDialog({title:'Duplicate project',copy:'The copy starts with the current saved plan and settings.',label:'Copy name',value:`${projectInfo?.active_name||'Project'} copy`,confirm:'Duplicate'});if(!name)return;try{await transitionProject(async()=>{const response=await api(`/api/projects/${encodeURIComponent(projectInfo.active_id)}/duplicate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await installProject(response);});}catch(error){status(error.message,true);}};
 $('archive-project').onclick=async()=>{if(!await askActionDialog({title:'Archive project?',copy:'The project and its terrain remain recoverable from the project archive.',confirm:'Archive'}))return;const oldId=projectInfo.active_id;try{await transitionProject(async()=>{const response=await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:`Untitled ${Date.now()}`,plan:emptyProjectPlan()})});await installProject(response);await api(`/api/projects/${encodeURIComponent(oldId)}/archive`,{method:'POST'});await refresh();});}catch(error){status(error.message,true);}};
