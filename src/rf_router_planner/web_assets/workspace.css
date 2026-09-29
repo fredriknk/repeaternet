@@ -50,6 +50,8 @@ header { height: 68px; padding-inline: clamp(14px, 2vw, 28px); }
 .app-dialog {
   width: min(440px, calc(100vw - 28px));
   max-width: 440px;
+  max-height: calc(100dvh - 28px);
+  overflow: auto;
   padding: 22px;
   color: var(--text);
   background: var(--surface);

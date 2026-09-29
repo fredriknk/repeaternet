@@ -1,13 +1,14 @@
 .coverage-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}
 .coverage-actions button{font-size:11px;padding:9px 7px}
 .coverage-panel .fields{gap:9px}
-.coverage-context,.coverage-estimate-card{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:9px;background:var(--surface-subtle)}
-.coverage-context h3,.coverage-estimate-card h3{margin:0 0 7px;font-size:14px}
-.coverage-context .hint,.coverage-estimate-card .hint{margin:5px 0;line-height:1.45}
+.coverage-context{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:9px;background:var(--surface-subtle)}
+.coverage-context h3{margin:0 0 7px;font-size:14px}
+.coverage-context .hint{margin:5px 0;line-height:1.45}
 .coverage-context progress{width:100%;margin-top:6px;accent-color:var(--accent)}
 #coverage-result-progress{width:100%;margin:0 0 6px;accent-color:var(--accent)}
-.coverage-estimate-card{border-inline-start:4px solid var(--accent)}
-.coverage-estimate-card label{margin:9px 0}
+.coverage-empty-state{margin:12px 0;padding:12px;border:1px solid #e4c697;border-radius:9px;background:#fff8e9}
+.coverage-empty-state p{margin:0 0 8px;font-size:13px}
+.coverage-empty-state button{min-height:44px}
 .coverage-check{display:flex;align-items:center;gap:7px;padding-top:20px}
 .coverage-check input{margin:0}
 .coverage-legend{margin:14px 0 6px;font-size:11px;color:#63766d}

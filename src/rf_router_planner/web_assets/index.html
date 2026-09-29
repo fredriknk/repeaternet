@@ -167,6 +167,10 @@
         <section class="coverage-panel">
           <h2><span>05</span> Predicted mesh coverage</h2>
           <details class="help-disclosure"><summary>Help: predicted coverage</summary><p>Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p></details>
+          <div id="coverage-no-route" class="coverage-empty-state">
+            <p>Find a completed route first to enable coverage calculations and location inspection.</p>
+            <button id="coverage-find-route" type="button">Open route setup</button>
+          </div>
           <section class="coverage-context" aria-labelledby="coverage-context-title">
             <h3 id="coverage-context-title">Analysis context</h3>
             <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
@@ -226,16 +230,9 @@
             </div>
           </details>
           <div class="coverage-actions">
-            <button id="coverage-estimate" class="wide-button">Review calculation estimate</button>
             <button id="coverage-preview" class="wide-button" disabled>Quick approximate preview</button>
             <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
           </div>
-          <section id="coverage-estimate-card" class="coverage-estimate-card" hidden aria-labelledby="coverage-estimate-title">
-            <h3 id="coverage-estimate-title">Calculation estimate</h3>
-            <p id="coverage-estimate-copy" class="hint"></p>
-            <label class="check-line"><input id="coverage-estimate-reviewed" type="checkbox"> I reviewed this estimate and these coverage settings</label>
-            <p class="hint">Any calculation setting, selected route, or map extent change invalidates this review. The preview and full calculation use the reviewed inputs.</p>
-          </section>
         </section>
         </div>
         <div class="workspace-view" id="workspace-compare" aria-label="Compare scenarios" hidden>
