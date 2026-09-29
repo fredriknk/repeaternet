@@ -419,27 +419,34 @@
           </div>
           <div id="result-details">
           <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>
+          <p id="rf-validation-note" class="hint" hidden>A passing link meets the configured RF validation criteria; LOS obstruction and Fresnel clearance are shown separately.</p>
           <div id="alternatives" hidden>
-            <h3>Route alternatives</h3>
-            <div id="alternative-cards" class="alternative-cards"></div>
-            <label class="visually-hidden" for="alternative-select">Route alternative</label>
-            <select id="alternative-select" hidden></select>
-            <p id="alternative-summary" class="hint"></p>
+            <div class="analysis-alternative-controls">
+              <label for="alternative-select">Route alternative<select id="alternative-select"></select></label>
+              <p id="alternative-summary" class="hint"></p>
+            </div>
+            <details id="alternative-comparison">
+              <summary id="alternative-comparison-summary">Compare route alternatives</summary>
+              <div id="alternative-cards" class="alternative-cards"></div>
+            </details>
           </div>
           <div id="metrics"></div>
+          <label id="analysis-link-picker" for="analysis-link-select" hidden>Link terrain profile<select id="analysis-link-select"></select></label>
           <div class="analysis-detail-grid">
-          <div class="table-scroll">
-            <table id="hops" hidden aria-label="Route links; select a link to inspect its terrain and radio profile">
+          <details id="hops-disclosure" hidden>
+            <summary>Route links and checks</summary>
+            <p class="hint">“Passes configured validation criteria” reflects the selected RF validation mode. LOS and Fresnel columns show geometric obstruction separately.</p>
+            <div class="table-scroll"><table id="hops" hidden aria-label="Route links and radio checks">
               <thead><tr><th>Link</th><th>Distance</th><th>Margin ↔</th><th>Fresnel</th><th>LOS</th><th>Result</th></tr></thead>
               <tbody></tbody>
-            </table>
-          </div>
+            </table></div>
+          </details>
           <div id="profile" hidden>
             <h3 id="profile-title"></h3>
             <canvas id="chart" height="230" aria-label="Terrain, direct line of sight and Fresnel profile" role="img"></canvas>
             <p class="hint">Brown: terrain + curvature · Green: surface · Blue: line of sight · Orange: required Fresnel boundary</p>
             <p id="profile-description" class="hint" role="status"></p>
-            <div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th>Direction</th><th>TX power</th><th>Path loss</th><th>Received</th><th>Sensitivity</th><th>Usable margin</th></tr></thead><tbody></tbody></table></div>
+            <details id="directional-budget"><summary>Forward and reverse link budget</summary><div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th>Direction</th><th>TX power</th><th>Path loss</th><th>Received</th><th>Sensitivity</th><th>Usable margin</th></tr></thead><tbody></tbody></table></div></details>
             <details id="profile-details"><summary>Detailed radio budget and assumptions</summary><pre id="budget"></pre></details>
           </div>
           </div>

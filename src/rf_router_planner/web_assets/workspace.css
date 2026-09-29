@@ -323,10 +323,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .analysis-pane { overflow: auto; background: #f7f9f6; }
 .analysis-pane .results { min-height: 100%; overflow: visible; padding: 20px 24px; }
 .result-actions { align-items: center; }
-.analysis-detail-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr); align-items: start; gap: 16px; }
-.analysis-detail-grid > .table-scroll, .analysis-detail-grid > #profile { min-width: 0; }
+.analysis-alternative-controls { display: grid; grid-template-columns: minmax(210px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 12px; }
+.analysis-alternative-controls .hint { margin: 0; }
+#alternative-select, #analysis-link-select { max-width: 100%; }
+#alternative-comparison { margin-top: 7px; }
+#alternative-comparison > summary, #hops-disclosure > summary, #directional-budget > summary { padding: 6px 0; }
+#alternative-cards { margin-top: 8px; }
+#metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+#metrics .metric { min-width: 0; padding: 9px 12px; }
+#metrics .metric strong { font-size: 19px; }
+#metrics .metric small { font-size: 10px; }
+#analysis-link-picker { max-width: 420px; margin: 12px 0; }
+#hops-disclosure { margin: 12px 0; }
+#hops-disclosure p { margin: 4px 0 8px; }
+.analysis-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 12px; }
+.analysis-detail-grid > #profile { min-width: 0; }
 .analysis-detail-grid #profile { margin-top: 0; overflow: hidden; }
-.analysis-detail-grid #budget-table { min-width: 550px; }
+.analysis-detail-grid #budget-table { min-width: 0; }
 .analysis-inspection { margin-top: 22px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .inspection-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .inspection-heading h3 { margin: 0 0 5px; }
@@ -345,6 +358,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .analysis-pane { max-height: 60vh; }
   .inspection-heading { flex-wrap: wrap; }
   .analysis-pane .results { padding: 16px; }
+  #alternatives { display: block; }
+  .analysis-alternative-controls { grid-template-columns: minmax(0, 1fr); }
+  #alternative-comparison > summary { overflow-wrap: anywhere; }
+  #alternative-cards { grid-template-columns: minmax(0, 1fr); }
+  #metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .shared-job-card { margin: 5px 8px; }
 }
 @media (max-width: 650px) {
