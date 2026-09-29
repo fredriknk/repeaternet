@@ -537,3 +537,14 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   source checks only; tests and browser interaction were not run. Viewport,
   assistive-technology, and performance measurements remain unverified, so U7
   is still open.
+- 2026-09-29 Docker/browser verification: browser access became available after
+  the local Docker app was started. Terrain preparation initially failed because
+  Rasterio's GDAL dependency could not load `libexpat.so.1` in `python:3.12-slim`.
+  The Dockerfile now installs `libexpat1` and imports Rasterio during image build,
+  so this dependency failure stops the build instead of appearing during a user
+  download. Rebuilt and restarted the planner with its existing data volume;
+  confirmed Rasterio 1.5.1 loads in the running container. Retried the existing
+  four-tile, 10 m terrain request through the browser: all four DTM tiles loaded,
+  the job reached **Terrain ready**, and readiness changed to **Ready to search**
+  (17 s). This verifies the terrain-download journey, not the full U7 viewport,
+  accessibility or performance matrix.
