@@ -1,6 +1,6 @@
 # RepeaterNet UI simplification and direct-action plan
 
-Status: planned; implementation has not started.
+Status: implementation in progress; source/API audit complete, implementation has not started.
 Baseline: `65f055e`. Scope: the existing self-hosted web app.
 
 This is the next revision of [the UI workflow plan](UI_WORKFLOW_IMPROVEMENT_PLAN.md),
@@ -28,6 +28,21 @@ No frontend framework migration or change to the RF model is required.
 This revision is based on the current source and the user's reported experience.
 The previous browser verification established project creation and validation
 recovery; it did not measure this proposed layout or these new workflows.
+
+Source inspection confirms that Kartverket preparation derives a bounded corridor
+from the plan's endpoints and included router sites. The API has no requested
+coverage polygon/map-bounds input, so it cannot safely promise to download terrain
+for a coverage area outside that route corridor. The direct coverage flow will
+proceed when its current area is supported by loaded terrain and otherwise give a
+clear upload/adjust action; coverage-area terrain service work remains a separate
+future extension. Route terrain preparation can use the existing estimate/prepare
+endpoints.
+
+Before this change, the source flow is: ready route = one primary click; route with
+missing terrain = estimate terrain, confirm/download, then click Find route; coverage
+= Review estimate, check the reviewed-input box, then Calculate (three interactions).
+The plan sidebar contains four long Plan sections and one tall run panel. The main
+view permanently splits map and results. No viewport measurements are claimed here.
 
 | Current implementation | Effect | Planned change |
 | --- | --- | --- |
@@ -289,5 +304,5 @@ not reasons to defer the help, compact layout or Map/Analysis work.
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
-| S0 | Pending | Source audit recorded above; new baseline measurements not yet captured |
+| S0 | Source/API audit complete; viewport metrics pending | Current handlers and terrain-area limitation recorded above. Before/after viewport, map-area and scroll measurements remain for S6. |
 | S1–S6 | Pending | Planned only; no UI or workflow implementation in this revision |

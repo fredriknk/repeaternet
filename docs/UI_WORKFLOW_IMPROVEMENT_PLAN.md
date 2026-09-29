@@ -7,7 +7,7 @@ Next revision: [UI simplification and direct-action plan](UI_SIMPLIFICATION_PLAN
 It addresses help on demand, reduced scrolling, compact action controls,
 single-confirmation calculation workflows, and separate Map/Analysis views.
 Its proposed interaction changes supersede the corresponding layout and review
-steps below; remaining U7 validation gates stay open.
+steps below; implementation is in progress. Remaining U7 validation gates stay open.
 
 This plan builds on [the usability/performance work](USABILITY_PERFORMANCE_PLAN.md)
 and [the mesh coverage roadmap](MESH_COVERAGE_PLAN.md). Those features already
