@@ -297,17 +297,24 @@ async function assessSavedTargets(){const button=$('coverage-assess-targets');bu
 async function runCoverageTargetComparison(){const button=$('coverage-target-compare');button.disabled=true;try{const comparison=await api('/api/coverage/target-reports/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseline_report_id:$('coverage-target-baseline').value,scenario_report_id:$('coverage-target-scenario').value})});$('coverage-target-compare-summary').textContent=`${comparison.counts.improved} improved · ${comparison.counts.regressed} regressed · ${comparison.counts.unchanged} unchanged · ${comparison.counts.uncertain} uncertain.`;const rows=$('coverage-target-comparison-results');rows.replaceChildren();for(const item of comparison.targets){const row=document.createElement('div'),title=document.createElement('strong'),details=document.createElement('small');row.className='known-router';title.textContent=`${item.name} · ${item.change}`;details.textContent=`${item.baseline_state} → ${item.scenario_state}`;row.append(title,details);rows.append(row);}}catch(error){$('coverage-target-compare-summary').textContent=error.message;}finally{updateTargetCompareButton();}}
 function updateCoverageTargetInputs(){$('coverage-add-target').onclick=()=>{if(busy||coverageBusy)return;setInteractionMode('place-target');};$('add-target-coordinate').onclick=async()=>{try{await savePointCoverageTarget($('target-latitude').value,$('target-longitude').value,$('target-name').value);$('target-latitude').value='';$('target-longitude').value='';setTargetStatus('Point target saved from entered coordinates.');}catch(error){setTargetStatus(error.message,true);}};$('coverage-target-file').onchange=importCoverageTargets;$('coverage-assess-targets').onclick=assessSavedTargets;$('coverage-target-compare').onclick=runCoverageTargetComparison;$('coverage-target-baseline').onchange=updateTargetCompareButton;$('coverage-target-scenario').onchange=updateTargetCompareButton;$('coverage-export-run').onchange=()=>void refreshCoverageTargetRuns();$('coverage-export-scenario').onchange=updateCoverageExportReferences;$('coverage-export-geojson').onclick=()=>downloadCoverageExport('geojson');$('coverage-export-json').onclick=()=>downloadCoverageExport('json');$('coverage-export-html').onclick=()=>downloadCoverageExport('html');void refreshCoverageTargetRuns();void refreshCoverageTargetReports();}
 function activeCoverageRun(){return cachedCoverageRuns.find(run=>run.job_id===$('coverage-active-run').value)||null;}
+function sameJsonValue(left,right){
+  if(Object.is(left,right))return true;
+  if(left===null||right===null||typeof left!=='object'||typeof right!=='object')return false;
+  if(Array.isArray(left)||Array.isArray(right))return Array.isArray(left)&&Array.isArray(right)&&left.length===right.length&&left.every((value,index)=>sameJsonValue(value,right[index]));
+  const leftKeys=Object.keys(left).sort(),rightKeys=Object.keys(right).sort();
+  return leftKeys.length===rightKeys.length&&leftKeys.every((key,index)=>key===rightKeys[index]&&sameJsonValue(left[key],right[key]));
+}
 function coverageRunCompatibility(baseline,scenario){
   if(!baseline||!scenario)return ['Select both a baseline and a scenario run.'];
   const reasons=[];
   if(baseline.job_id===scenario.job_id)reasons.push('Choose two different runs.');
   if(baseline.state!=='complete'||scenario.state!=='complete')reasons.push('Both runs must be complete.');
-  if(baseline.terrain_fingerprint!==scenario.terrain_fingerprint)reasons.push('Terrain differs.');
+  if(!sameJsonValue(baseline.terrain_fingerprint,scenario.terrain_fingerprint))reasons.push('Terrain differs.');
   if(baseline.terrain_current===false||scenario.terrain_current===false)reasons.push('Terrain changed since one of the runs.');
-  if(baseline.radio_fingerprint!==scenario.radio_fingerprint)reasons.push('RF or propagation settings differ.');
-  if(baseline.model_version!==scenario.model_version)reasons.push('Coverage model version differs.');
-  for(const key of ['profile_step_m','maximum_profile_samples','client'])if(JSON.stringify(baseline.settings?.[key])!==JSON.stringify(scenario.settings?.[key]))reasons.push('Client radio or profile resolution differs.');
-  for(const key of ['rows','columns','effective_cell_size_m','area_bounds_wgs84'])if(JSON.stringify(baseline[key])!==JSON.stringify(scenario[key]))reasons.push('Grid bounds or cell spacing differs.');
+  if(!sameJsonValue(baseline.radio_fingerprint,scenario.radio_fingerprint))reasons.push('RF or propagation settings differ.');
+  if(!sameJsonValue(baseline.model_version,scenario.model_version))reasons.push('Coverage model version differs.');
+  for(const key of ['profile_step_m','maximum_profile_samples','client'])if(!sameJsonValue(baseline.settings?.[key],scenario.settings?.[key]))reasons.push('Client radio or profile resolution differs.');
+  for(const key of ['rows','columns','effective_cell_size_m','area_bounds_wgs84'])if(!sameJsonValue(baseline[key],scenario[key]))reasons.push('Grid bounds or cell spacing differs.');
   const shared=(baseline.router_ids||[]).filter(id=>(scenario.router_ids||[]).includes(id)&&(baseline.source_ids||[]).includes(id)&&(scenario.source_ids||[]).includes(id));
   if(!shared.length)reasons.push('No shared selected router can serve as the reference.');
   return [...new Set(reasons)];
@@ -444,7 +451,7 @@ async function refreshCoverageTargetReports(){
 }
 function targetReportCompatibility(baseline,scenario){
   if(!baseline||!scenario)return ['Select two saved assessment reports.'];const reasons=[];
-  for(const key of ['target_fingerprint','terrain_fingerprint','radio_fingerprint','model_version','grid_compatibility','client_profile','profile_step_m','road_sample_spacing_m'])if(JSON.stringify(baseline[key])!==JSON.stringify(scenario[key]))reasons.push(key==='target_fingerprint'?'Saved target names or criteria differ.':key==='terrain_fingerprint'?'Terrain differs.':key==='radio_fingerprint'?'RF or propagation settings differ.':key==='model_version'?'Coverage model differs.':key==='road_sample_spacing_m'?'Road sampling spacing differs.':'Grid, client or profile assumptions differ.');
+  for(const key of ['target_fingerprint','terrain_fingerprint','radio_fingerprint','model_version','grid_compatibility','client_profile','profile_step_m','road_sample_spacing_m'])if(!sameJsonValue(baseline[key],scenario[key]))reasons.push(key==='target_fingerprint'?'Saved target names or criteria differ.':key==='terrain_fingerprint'?'Terrain differs.':key==='radio_fingerprint'?'RF or propagation settings differ.':key==='model_version'?'Coverage model differs.':key==='road_sample_spacing_m'?'Road sampling spacing differs.':'Grid, client or profile assumptions differ.');
   return [...new Set(reasons)];
 }
 function updateTargetCompareButton(){
