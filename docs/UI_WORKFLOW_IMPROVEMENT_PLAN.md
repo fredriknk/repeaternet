@@ -451,7 +451,7 @@ frontend framework, tile provider or analytics service is required by this plan.
 | U4 | Implemented; acceptance evidence pending | Added a shared job card, reconnect-to-same-job behavior, alternative comparison cards, and a directional RF inspector using the result snapshot. Matching result identity/revision is required before final render. No automated tests or browser review were run. |
 | U5 | Implemented; acceptance evidence pending | Added reviewed estimate gating for preview/full runs, paged saved-run loading and status/progress, a searchable map legend, projected cell footprints, and explicit guards against interpreting current exact-point inspection as a stale or scenario run. Syntax/whitespace checks passed; regression test added but not run; browser review remains pending. |
 | U6 | Implemented; acceptance evidence pending | Unified inspection, target assessment, router-failure analysis and exports around the Coverage workspace's selected run. Exact inspection resolves saved client/source-height assumptions. Comparison choices surface incompatibility reasons; target points can be renamed/re-criterioned and focused; exports can include a saved target report. Added regression test but did not run it. Static syntax/whitespace checks passed; browser review remains open. |
-| U7 | In progress; browser-gated | Source audit fixed keyboard access to ground/surface terrain file inputs and added explicit action-dialog focus restoration. Browser access is still required for viewport, keyboard-flow, screen-reader, and rendering/memory evidence. |
+| U7 | In progress; browser now connected | Keyboard upload access and dialog focus restoration implemented. Terrain-download journey verified in Docker/browser. 47 backend workflow tests and six Node inspection tests pass. Full viewport, keyboard-flow, screen-reader, and rendering/memory evidence remains outstanding. |
 
 Implementation is active. Do not call the redesign complete until each milestone
 acceptance is met and the outstanding browser-only evidence is explicitly recorded.
@@ -548,3 +548,15 @@ acceptance is met and the outstanding browser-only evidence is explicitly record
   the job reached **Terrain ready**, and readiness changed to **Ready to search**
   (17 s). This verifies the terrain-download journey, not the full U7 viewport,
   accessibility or performance matrix.
+- U7 workflow regression milestone, 2026-09-29: route completion is now published
+  after result persistence and worker-slot release. Previously the UI could see
+  **complete** and immediately receive HTTP 429 from coverage preview while that
+  route still held the only worker slot. Added a deterministic delayed-persistence
+  regression; persistence failures also release capacity. Updated the inspection
+  test harness to use the unified interaction mode. Corrected an overbroad
+  footprint assertion: outside-area cells intentionally have no polygon; added
+  a non-vacuous polygon check to the four evaluated-cell pagination test.
+  Validation: `python -m pytest tests/test_coverage_jobs.py tests/test_web.py`
+  passed **47 tests**; `node --test tests/web/*.test.cjs` passed **6 tests**;
+  Ruff passed for the changed Python files. No browser performance numbers are
+  claimed by these checks.

@@ -17,7 +17,8 @@ function harness({ autosaveNow = async () => {}, onStart, onPoll } = {}) {
   const events = [], rendered = [], errors = [];
   const context = vm.createContext({
     AbortController, DOMException, setTimeout, clearTimeout,
-    activeInspectionId: null, inspectCoverage: true, inspectionRequest: 0,
+    activeInspectionId: null, interactionMode: 'inspect-coverage', inspectionRequest: 0,
+    coverageDisplayInfo: null, coverageJob: null, coverageHeightOverrides: {},
     inspectionController: null, inspectionLayer: { clearLayers() {} },
     coverageSettings: { client: { height_agl_m: 1.5 } },
     $: () => ({}), readCoverageInputs() {}, coveragePayload: () => ({}),
@@ -78,7 +79,7 @@ test('leaving inspect mode cancels a job whose ID arrives after the mode change'
   const h = harness({ onStart: () => started.promise });
   const click = h.click(1);
   await flush();
-  h.context.inspectCoverage = false;
+  h.context.interactionMode = 'browse';
   h.context.inspectionController.abort();
   started.resolve({ job_id: '1' });
   await click;

@@ -3811,12 +3811,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
 
         def run() -> None:
+            terminal_status: dict[str, Any] | None = None
             try:
                 with ws.lock:
                     if ws.job_id != job_id:
                         return
                     if ws.cancel.is_set():
-                        ws.status = {
+                        terminal_status = {
                             **ws.status,
                             "state": "cancelled",
                             "stage": "Cancelled before starting",
@@ -4027,7 +4028,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             if not stopped:
                                 ws.result = None
                                 ws.snapshot_version = 0
-                            ws.status = {
+                            terminal_status = {
                                 **ws.status,
                                 "state": "stopped" if stopped else "cancelled",
                                 "stage": (
@@ -4042,7 +4043,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             if ws.job_id == job_id and ws.input_revision == input_revision:
                                 ws.result = result
                                 ws.snapshot_version += 1
-                                ws.status = {
+                                terminal_status = {
                                     **ws.status,
                                     "state": "complete",
                                     "stage": "Route found" if result.found else "No route found",
@@ -4052,40 +4053,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception as exc:
                 with ws.lock:
                     if ws.job_id == job_id:
-                        ws.status = {**ws.status, "state": "failed", "stage": str(exc)}
+                        terminal_status = {**ws.status, "state": "failed", "stage": str(exc)}
             finally:
                 with ws.lock:
-                    final_state = ws.status["state"]
+                    final_state = (terminal_status or ws.status)["state"]
                     final_result = ws.result
                     final_revision = ws.input_revision
                     final_snapshot = ws.snapshot_version
                     final_rf_settings = ws.result_rf_settings
-                if final_state in {"complete", "stopped"} and final_result is not None:
-                    payload = result_payload(
-                        final_result, job_id, final_revision, final_snapshot,
-                        final_rf_settings,
-                    )
-                    summary = {
-                        "found": payload["found"],
-                        "router_count": payload["router_count"],
-                        "existing_router_count": payload["existing_router_count"],
-                        "proposed_router_count": payload["proposed_router_count"],
-                        "elapsed_seconds": payload["elapsed_seconds"],
-                        "search_complete": payload["search_complete"],
-                        "active_alternative_id": payload["active_alternative_id"],
-                        "alternatives": [
-                            {key: value for key, value in item.items() if key != "route"}
-                            for item in payload["alternatives"]
-                        ],
-                        "plan_fingerprint": _route_plan_fingerprint(ws.inputs),
-                        "terrain_fingerprint": _terrain_fingerprint(ws),
-                        "saved_at": time.time(),
-                    }
-                    ws.result_summary = summary
-                    project_store.save_result_summary(ws.workspace_key, ws.project_id, summary)
-                project_store.set_run_state(ws.workspace_key, ws.project_id, final_state)
-                with scheduler_lock:
-                    job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+                    if terminal_status is not None and ws.job_id == job_id:
+                        ws.status = {**ws.status, "stage": "Saving route result"}
+                try:
+                    if final_state in {"complete", "stopped"} and final_result is not None:
+                        payload = result_payload(
+                            final_result, job_id, final_revision, final_snapshot,
+                            final_rf_settings,
+                        )
+                        summary = {
+                            "found": payload["found"],
+                            "router_count": payload["router_count"],
+                            "existing_router_count": payload["existing_router_count"],
+                            "proposed_router_count": payload["proposed_router_count"],
+                            "elapsed_seconds": payload["elapsed_seconds"],
+                            "search_complete": payload["search_complete"],
+                            "active_alternative_id": payload["active_alternative_id"],
+                            "alternatives": [
+                                {key: value for key, value in item.items() if key != "route"}
+                                for item in payload["alternatives"]
+                            ],
+                            "plan_fingerprint": _route_plan_fingerprint(ws.inputs),
+                            "terrain_fingerprint": _terrain_fingerprint(ws),
+                            "saved_at": time.time(),
+                        }
+                        ws.result_summary = summary
+                        project_store.save_result_summary(ws.workspace_key, ws.project_id, summary)
+                    project_store.set_run_state(ws.workspace_key, ws.project_id, final_state)
+                except Exception as exc:
+                    terminal_status = {**ws.status, "state": "failed", "stage": f"Could not save route result: {exc}"}
+                finally:
+                    # A terminal state enables follow-on work in the UI. Publish it
+                    # only after persistence and releasing this job's compute slot.
+                    with ws.lock:
+                        with scheduler_lock:
+                            job_slots["outstanding"] = max(0, job_slots["outstanding"] - 1)
+                        if terminal_status is not None and ws.job_id == job_id:
+                            ws.status = terminal_status
 
         scheduler.submit(run)
         return ws.status

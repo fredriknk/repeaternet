@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import numpy as np
@@ -161,6 +162,35 @@ def start_coverage(client: TestClient, prepared: dict) -> dict:
     response = client.post("/api/coverage/jobs", json=prepared["coverage"])
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_route_completion_waits_for_persistence_and_releases_preview_capacity(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    monkeypatch.setenv("RF_PLANNER_MAX_ACTIVE_JOBS", "1")
+    entered, release = Event(), Event()
+    original = web_module.ProjectStore.save_result_summary
+
+    def delayed_summary(self, workspace_key, project_id, summary):
+        if summary is not None:
+            entered.set()
+            assert release.wait(5)
+        return original(self, workspace_key, project_id, summary)
+
+    monkeypatch.setattr(web_module.ProjectStore, "save_result_summary", delayed_summary)
+    with TestClient(create_app(tmp_path)) as client, ThreadPoolExecutor(1) as pool:
+        prepared_future = pool.submit(prepare_workspace, client, monkeypatch)
+        try:
+            assert entered.wait(5)
+            state = client.get("/api/state").json()["job"]
+            assert state["state"] == "running"
+            assert state["stage"] == "Saving route result"
+        finally:
+            release.set()
+        prepared = prepared_future.result(timeout=5)
+        response = client.post("/api/coverage/preview", json=prepared["coverage"])
+        assert response.status_code == 200, response.text
 
 
 def test_delayed_inspection_worker_cannot_overwrite_newer_click(tmp_path, monkeypatch) -> None:
@@ -350,6 +380,7 @@ def test_coverage_job_estimate_paging_isolation_reconnect_and_recovery(
             if cursor is None:
                 break
         assert [cell["index"] for cell in pages] == [0, 1, 2, 3]
+        assert all(len(cell["footprint_latlng"]) == 5 for cell in pages)
         assert client.get(
             f"/api/coverage/jobs/{job['job_id']}/cells", params={"cursor": 0, "limit": 257}
         ).status_code == 422
@@ -1047,6 +1078,7 @@ def test_height_scenario_revalidates_certified_backbone_edges(tmp_path, monkeypa
         assert all(
             len(cell["footprint_latlng"]) == 5
             for cell in archived_page.json()["cells"]
+            if cell["state"] != "outside_area"
         )
         assert completed["network_links"] == [
             {
