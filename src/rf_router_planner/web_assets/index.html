@@ -62,7 +62,7 @@
       </form>
     </dialog>
     <main>
-      <aside>
+      <aside id="planner-setup">
         <nav class="workspace-nav" aria-label="Planning workspace">
           <button type="button" data-workspace-target="workspace-plan" aria-pressed="true">Plan</button>
           <button type="button" data-workspace-target="workspace-coverage" aria-pressed="false">Coverage</button>
@@ -171,16 +171,13 @@
             <p>Find a completed route first to enable coverage calculations and location inspection.</p>
             <button id="coverage-find-route" type="button">Open route setup</button>
           </div>
-          <section class="coverage-context" aria-labelledby="coverage-context-title">
-            <h3 id="coverage-context-title">Analysis context</h3>
-            <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
-            <p id="coverage-context-radio" class="hint">Client radio assumptions will appear here.</p>
-            <label>Saved coverage run<select id="coverage-active-run"><option value="">No saved runs</option></select></label>
-            <p id="coverage-active-run-context" class="hint" role="status" aria-live="polite">Select a saved run to use it for inspection, targets and exports.</p>
-            <button id="coverage-load-run" type="button" class="wide-button" disabled>Show saved run on map</button>
-            <progress id="coverage-load-progress" aria-label="Loading saved coverage cells" hidden></progress>
-          <p id="coverage-load-status" class="hint" role="status" aria-live="polite">Saved runs load incrementally; no RF calculation is started.</p>
-          </section>
+          <nav class="coverage-section-nav" aria-label="Coverage settings sections">
+            <button type="button" data-coverage-section="area" aria-controls="coverage-section-area" aria-pressed="true">Area &amp; detail</button>
+            <button type="button" data-coverage-section="sources" aria-controls="coverage-section-sources" aria-pressed="false">Sources</button>
+            <button type="button" data-coverage-section="handheld" aria-controls="coverage-section-handheld" aria-pressed="false">Handheld</button>
+            <button type="button" data-coverage-section="runs" aria-controls="coverage-section-runs" aria-pressed="false">Saved runs</button>
+          </nav>
+          <div id="coverage-section-area" data-coverage-panel="area">
           <label>Coverage view<select id="coverage-mode" data-display-only>
             <option value="two_way">Two-way margin</option>
             <option value="downlink">Router → handheld</option>
@@ -213,10 +210,14 @@
           <label id="coverage-endpoints-control" class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
           <p id="coverage-endpoints-note" class="hint">For a direct route with no repeaters, enable endpoints to evaluate access from the two selected sites.</p>
           <details class="help-disclosure"><summary>Help: profile sample limit</summary><p>The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p></details>
+          </div>
+          <div id="coverage-section-sources" data-coverage-panel="sources" hidden>
           <details>
             <summary>Router sources <span id="coverage-source-count" class="hint">All routers in selected route</span></summary>
             <div id="coverage-sources" class="coverage-source-list"><p class="hint">Run a route search to choose sources.</p></div>
           </details>
+          </div>
+          <div id="coverage-section-handheld" data-coverage-panel="handheld" hidden>
           <details>
             <summary>Handheld radio assumptions</summary>
             <p class="hint">Example profile only; adjust to match the client radio you care about.</p>
@@ -229,6 +230,19 @@
               <label>Other losses · dB<input id="client-loss" type="number" min="0" max="200" step="any" value="0"></label>
             </div>
           </details>
+          </div>
+          <div id="coverage-section-runs" data-coverage-panel="runs" hidden>
+          <section class="coverage-context" aria-labelledby="coverage-context-title">
+            <h3 id="coverage-context-title">Analysis context</h3>
+            <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
+            <p id="coverage-context-radio" class="hint">Client radio assumptions will appear here.</p>
+            <label>Saved coverage run<select id="coverage-active-run"><option value="">No saved runs</option></select></label>
+            <p id="coverage-active-run-context" class="hint" role="status" aria-live="polite">Select a saved run to use it for inspection, targets and exports.</p>
+            <button id="coverage-load-run" type="button" class="wide-button" disabled>Show saved run on map</button>
+            <progress id="coverage-load-progress" aria-label="Loading saved coverage cells" hidden></progress>
+            <p id="coverage-load-status" class="hint" role="status" aria-live="polite">Saved runs load incrementally; no RF calculation is started.</p>
+          </section>
+          </div>
           <div class="coverage-actions">
             <button id="coverage-preview" class="wide-button" disabled>Quick approximate preview</button>
             <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
@@ -345,6 +359,11 @@
         </div>
       </aside>
       <div class="workspace" id="workspace">
+        <nav class="mobile-destination-nav" aria-label="Mobile workspace destination">
+          <button type="button" data-mobile-destination="setup" aria-controls="planner-setup" aria-pressed="false">Setup</button>
+          <button type="button" data-mobile-destination="map" aria-controls="view-map" aria-pressed="true">Map</button>
+          <button type="button" data-mobile-destination="analysis" aria-controls="view-analysis" aria-pressed="false">Analysis</button>
+        </nav>
         <nav class="main-view-nav" role="tablist" aria-label="Main view">
           <button id="view-map-tab" type="button" role="tab" aria-selected="true" aria-controls="view-map" data-main-view-target="view-map">Map</button>
           <button id="view-analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="view-analysis" data-main-view-target="view-analysis">Analysis <span id="analysis-badge" hidden></span></button>

@@ -285,6 +285,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   background: #f8faf8;
   border-bottom: 1px solid var(--border);
 }
+.mobile-destination-nav { display: none; }
+.coverage-section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 18;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0 -22px 14px;
+  padding: 7px 12px;
+  background: #f8faf8;
+  border-block: 1px solid var(--border);
+}
+.coverage-section-nav button { min-height: 40px; padding: 6px; font-size: 12px; }
+.coverage-section-nav button[aria-pressed="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
+[data-coverage-panel][hidden] { display: none !important; }
 .main-view-nav [role="tab"] { min-height: 38px; padding: 7px 16px; color: var(--muted); background: transparent; border-color: transparent; font-weight: 650; }
 .main-view-nav [role="tab"][aria-selected="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
 #analysis-badge { margin-left: 5px; padding: 2px 6px; color: var(--accent); background: #e1eee5; border-radius: 999px; font-size: 10px; }
@@ -326,4 +342,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .inspection-heading { flex-wrap: wrap; }
   .analysis-pane .results { padding: 16px; }
   .shared-job-card { margin: 5px 8px; }
+}
+@media (max-width: 650px) {
+  .mobile-destination-nav { position: sticky; top: 0; z-index: 30; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding: 7px; background: #f8faf8; border-bottom: 1px solid var(--border); }
+  .mobile-destination-nav button { min-height: 44px; color: var(--muted); background: transparent; border-color: transparent; font-weight: 650; }
+  .mobile-destination-nav button[aria-pressed="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
+  main[data-mobile-destination="setup"] .main-view-nav, main[data-mobile-destination="setup"] .main-view-pane { display: none !important; }
+  main[data-mobile-destination="map"] > aside, main[data-mobile-destination="analysis"] > aside { display: none !important; }
+  .coverage-section-nav { top: 0; margin-inline: -14px; grid-template-columns: repeat(4, minmax(72px, 1fr)); overflow-x: auto; }
+  .coverage-section-nav button { min-height: 44px; white-space: nowrap; }
 }

@@ -232,8 +232,8 @@ in both result summaries and full analysis.
 | S2 | Compact header/action rows, move effort and maintenance, bounded shell and narrow navigation | S1 | Viewport measurements, no control obscured by footer, readable touch targets | `feat: reclaim planner workspace space` |
 | S3 | Map/Analysis tabs, expanded results layout, shared inspection destination, preserve selections | S2 | Map fills panel; complete route/coverage analysis remains accessible; no RF work on view switches | `feat: separate map and analysis views` |
 | S4 | Operation coordinator, automatic terrain preflight, one-confirmation download-and-route continuation | S1, S2 | Ready route one click; missing-terrain route two clicks; cancellation/stale-response/recovery checks | `feat: prepare terrain and find routes in one flow` |
-| S5 | Automatic coverage estimates, single confirmation, preview alternative, coverage-area terrain support where needed | S4 | Calculate two clicks; approved payload preserved; actual area prepared; no review checkbox | `feat: simplify coverage calculation and preparation` |
-| S6 | Apply consistent action behavior to scenarios; full responsive/accessibility/workflow regression; update help/docs | S3, S5 | Acceptance matrix below completed with measured results and remaining limitations | `test: verify simplified planner workflows` |
+| S5 | Automatic coverage estimates, single confirmation, preview alternative, honest handling of unsupported coverage-area terrain | S4 | Calculate two clicks; approved payload preserved; unknown/out-of-route terrain clearly identified; no review checkbox | `feat: simplify coverage calculation and preparation` |
+| S6 | Mobile Setup/Map/Analysis destinations, Coverage section navigation, scenario action consistency, accessibility polish | S3, S5 | Responsive destination switching and focused Coverage settings work; acceptance matrix below completed with remaining limitations | `feat: improve responsive planner navigation` |
 
 Keep changes reviewable by milestone; update this document and the original plan's
 progress record with commit hashes and actual evidence after each milestone.
@@ -251,7 +251,7 @@ count the primary action and any confirmation, not data entry or route selection
 | Find route with ready terrain | One click; job starts |
 | Find route with supported missing terrain | Two clicks: Find route, Download and find route; no manual continuation |
 | Calculate coverage with valid sources/area | Two clicks: Calculate coverage, Calculate |
-| Calculate coverage requiring supported terrain preparation | Two clicks including combined confirmation; no second Start action |
+| Calculate coverage with terrain outside current route corridor | One estimate and one confirmation; unknown area cells are explicit, and the UI does not imply route-corridor terrain covers the requested area |
 | Cancel confirmation | No download/calculation starts; settings retained |
 | Cancel during preparation | Download cancelled; queued calculation never starts |
 | Double-click primary action | One operation and at most one server job per phase |
@@ -260,6 +260,8 @@ count the primary action and any confirmation, not data entry or route selection
 | Click a route link / Show on map | Correct profile opens / correct link is highlighted; no new RF calculation |
 | Invalid field inside a closed section | Section opens; field receives focus; visible actionable error |
 | Reload/disconnect/project transition | No duplicate submission, wrong-project repaint or silent continuation using changed inputs |
+| Mobile Setup, Map and Analysis | At narrow widths, each destination is directly reachable; map actions entered from Setup switch to the map; active jobs remain visible/cancellable |
+| Coverage section navigation | Area & detail, Sources, Handheld and Saved runs can be reached without scrolling through every other group; hidden fields are excluded from keyboard navigation |
 
 Measure at 1440×900, 1280×720, 1024×768, 768×1024, 390×844,
 360×640, short landscape 844×390, and 200% browser zoom.
@@ -268,6 +270,11 @@ must be visible without scrolling the overview. At 360×640, section entries and
 the action remain reachable without scrolling through explanatory paragraphs.
 Map view reserves no height for route-analysis content. Analysis view must show
 useful table/profile content without clipping controls or requiring a narrow tray.
+
+Coverage-area terrain remains a known product limitation: there is no API to prepare
+the requested coverage polygon or viewport. Unknown terrain is explained; the app must
+not offer Download and calculate until that API can prepare the exact requested bounds
+within the established pixel and storage limits.
 
 Record before/after action-row height, map area, scroll distance to common controls,
 click counts and task failures. Do not achieve density by shrinking text or touch targets.
@@ -309,5 +316,5 @@ not reasons to defer the help, compact layout or Map/Analysis work.
 | S2 | Implemented; responsive evidence pending | Commit `f61e538`. Reduced the Plan, Coverage and Compare pinned actions to compact rows; moved RF cache maintenance into Project actions; bounded the desktop shell to the available viewport height. CSS targets a 60 px row; actual dimensions and narrow-screen reflow remain unmeasured. |
 | S3 | Implemented; browser acceptance pending | Commit `33e62ca`. Added independent Map/Analysis tabs, a full-height single main pane, a shared job card with persistent cancellation/reconnect, an Analysis result badge and View results action, side-by-side route table/profile layout, and a shared coverage-inspection destination with Show on map. Route-link selection opens Analysis and view changes only redraw local charts; browser interaction remains unverified. |
 | S4 | Implemented; runtime acceptance pending | Commit `2d1b2a3`. Find route now checks terrain, starts immediately when ready, and otherwise estimates terrain and asks one combined Download and find route confirmation. The continuation is bound to project, saved revision and plan snapshot, survives reconnect in the open page, is cancelled with terrain, and is not resumed blindly after reload. Storage limits and remaining terrain gaps still fail with upload/adjust guidance. No runtime checks run. |
-| S5 | Implemented; runtime acceptance pending | Removed the separate estimate button, inline review checkbox and legacy reviewed-estimate path. Calculate and Quick preview automatically estimate the selected request, show source/cell/evaluation counts, applicable limits and unknown-terrain guidance, then require one confirmation before submitting that exact payload. A no-route state links back to Plan; arbitrary coverage-area terrain downloads are not promised. Preflight prevents duplicate submissions. No runtime checks run. |
-| S6 | Pending | Responsive destinations, keyboard/accessibility polish, and remaining acceptance evidence. |
+| S5 | Implemented; runtime acceptance pending | Commit `1e46293`. Removed the separate estimate button, inline review checkbox and legacy reviewed-estimate path. Calculate and Quick preview automatically estimate the selected request, show source/cell/evaluation counts, applicable limits and unknown-terrain guidance, then require one confirmation before submitting that exact payload. A no-route state links back to Plan; arbitrary coverage-area terrain downloads are not promised. Preflight prevents duplicate submissions. No runtime checks run. |
+| S6 | Implemented; viewport/interaction acceptance pending | Added a persistent narrow-screen Setup/Map/Analysis destination switch and Coverage Area & detail/Sources/Handheld/Saved runs navigation. Map-placement actions switch to Map on mobile; a missing-route Coverage action opens Search setup. Keyboard-operable buttons and hidden-panel semantics are in place. No viewport, screen-reader or end-to-end checks run. |
