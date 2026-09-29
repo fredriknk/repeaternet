@@ -45,6 +45,8 @@ function updatePlanReadiness(report=terrainReadiness){
   const copy=$('plan-readiness-copy');let invalid=null;
   for(const name of ['a','b']){const error=$(`${name}-error`),field=$(name);try{coords(name);field.setAttribute('aria-invalid','false');error.hidden=true;error.textContent='';}catch(exception){field.setAttribute('aria-invalid','true');error.textContent=exception.message;error.hidden=false;invalid=name;}}
   const action=$('review-readiness');
+  const endpointSummary=$('section-summary-endpoints');if(endpointSummary){const a=$('a').value.trim(),b=$('b').value.trim();endpointSummary.textContent=a&&b?`${a} → ${b}`:'Set start and destination';}
+  const terrainSummary=$('section-summary-terrain');if(terrainSummary)terrainSummary.textContent=`${$('dtm-count').textContent}${terrainLoaded?' · ready':' · required'}`;
   if(invalid){card.dataset.readiness='invalid';copy.textContent=`Endpoint ${invalid.toUpperCase()} needs a valid latitude, longitude pair before planning.`;action.textContent='Review endpoints';action.dataset.target='endpoint-setup';}
   else if(!terrainLoaded){card.dataset.readiness='needs-terrain';copy.textContent='Example coordinates show a short Oslo route. Add ground terrain before searching; surface terrain is optional.';action.textContent='Review terrain';action.dataset.target='terrain-setup';}
   else if(report?.uncovered_sites?.length){card.dataset.readiness='blocked';copy.textContent=`Ground terrain is missing at ${report.uncovered_sites.map(site=>site.name).join(', ')}. Extend or upload terrain before searching.`;action.textContent='Review terrain gaps';action.dataset.target='terrain-setup';}
@@ -52,7 +54,7 @@ function updatePlanReadiness(report=terrainReadiness){
   else{card.dataset.readiness='checking';copy.textContent='Ground terrain is loaded. Check endpoint and router coverage before starting the RF search.';action.textContent='Review terrain';action.dataset.target='terrain-setup';}
   action.hidden=false;
 }
-$('review-readiness').onclick=()=>document.getElementById($('review-readiness').dataset.target||'terrain-setup').scrollIntoView({behavior:'smooth',block:'start'});
+$('review-readiness').onclick=()=>{const target=$('review-readiness').dataset.target||'terrain-setup';setPlanSection(target);document.getElementById(target).scrollIntoView({behavior:'smooth',block:'start'});};
 function selectedKnownRouters(){return meshcoreRouters.map(router=>({...router,policy:routerPolicies.get(router.id)||router.policy||'excluded'}));}
 function renderManualRouters(){
   const list=$('manual-list');list.replaceChildren();manualLayer.clearLayers();
@@ -82,6 +84,7 @@ function renderMeshcoreRouters(){
   const list=$('meshcore-list'),visible=visibleKnownRouters(),included=meshcoreRouters.filter(router=>['optional','required'].includes(routerPolicies.get(router.id)||router.policy)).length,required=meshcoreRouters.filter(router=>(routerPolicies.get(router.id)||router.policy)==='required').length;
   list.replaceChildren();const overBudget=included>candidates.maximum_candidates,overRequired=required>candidates.maximum_solution_routers;
   $('meshcore-count').textContent=`${visible.length} visible of ${meshcoreRouters.length} saved · ${included} included · ${required} required${overBudget?' · over Max candidates':''}${overRequired?' · required exceeds Max total routers':''}`;$('meshcore-count').className=overBudget||overRequired?'error':'';
+  const routerSummary=$('section-summary-routers');if(routerSummary)routerSummary.textContent=`${included} included · ${required} required`;
   const includedVisible=visible.filter(router=>['optional','required'].includes(routerPolicies.get(router.id)||router.policy)).length;
   $('meshcore-scope').textContent=`Bulk actions use ${visible.length} visible matching router${visible.length===1?'':'s'} (search and activity/policy filters). ${includedVisible} currently included.`;
   $('include-all').textContent=`Mark ${visible.length} matches optional`;$('include-none').textContent=`Exclude ${includedVisible} included matches`;
@@ -125,6 +128,10 @@ function setWorkspace(id){
 }
 document.querySelectorAll('[data-workspace-target]').forEach(button=>button.addEventListener('click',()=>setWorkspace(button.dataset.workspaceTarget)));
 try{setWorkspace(localStorage.getItem('repeaternet.active-workspace')||'workspace-plan');}catch{setWorkspace('workspace-plan');}
+const planSectionIds=['endpoint-setup','terrain-setup','router-setup','radio-setup','search-setup'];
+function setPlanSection(id,persist=true){if(!planSectionIds.includes(id))id='endpoint-setup';for(const sectionId of planSectionIds){const section=$(sectionId),active=sectionId===id;if(section)section.hidden=!active;const button=document.querySelector(`[data-plan-section="${sectionId}"]`);if(button)button.setAttribute('aria-current',String(active));}if(persist)try{localStorage.setItem('repeaternet.plan-section',id);}catch{}}
+document.querySelectorAll('[data-plan-section]').forEach(button=>button.addEventListener('click',()=>setPlanSection(button.dataset.planSection)));
+try{setPlanSection(localStorage.getItem('repeaternet.plan-section')||'endpoint-setup',false);}catch{setPlanSection('endpoint-setup',false);}
 function setResultsCollapsed(collapsed,persist=true){
   $('result-details').hidden=collapsed;
   $('workspace').classList.toggle('results-collapsed',collapsed);
@@ -154,21 +161,21 @@ const definitions=[['frequency_mhz','Frequency · MHz'],['tx_power_dbm','TX powe
 function input(parent,obj,key,label){const l=document.createElement('label');l.textContent=label;const i=document.createElement('input');i.type='number';i.step='any';i.value=obj[key]??'';i.dataset.key=key;const bounds={frequency_mhz:[.1,null],k_factor:[.1,null],required_fresnel_clearance:[0,1],height_agl_m:[.1,1000],grid_spacing_m:[.1,null],cell_size_m:[.1,null],coarse_sample_step_m:[.1,null],medium_sample_step_m:[.1,null],final_sample_step_m:[.1,null],refine_step_m:[.1,null],corridor_width_m:[.1,null],maximum_candidates:[2,2000],maximum_neighbors_per_site:[1,200],refine_radius_m:[0,2000]}[key];if(bounds){if(bounds[0]!==null)i.min=String(bounds[0]);if(bounds[1]!==null)i.max=String(bounds[1]);}i.onchange=()=>{obj[key]=i.value===''?null:Number(i.value);recordEdit();invalidate(label.toLowerCase());};l.append(i);parent.append(l);}
 function group(parent,obj,defs){const box=document.createElement('div');box.className='fields';defs.forEach(([key,label])=>input(box,obj,key,label));parent.append(box);}
 function select(parent,obj,key,label,options){const l=document.createElement('label');l.textContent=label;const s=document.createElement('select');for(const [value,text] of options){const o=document.createElement('option');o.value=value;o.textContent=text;s.append(o);}s.value=obj[key];s.onchange=()=>{obj[key]=s.value;recordEdit();invalidate(label.toLowerCase());if(obj===candidates)scheduleCoverageCheck();};l.append(s);parent.append(l);}
-function details(title){const d=document.createElement('details'),s=document.createElement('summary');s.textContent=title;d.append(s);$('settings').append(d);return d;}
+function details(title,parent=$('settings')){const d=document.createElement('details'),s=document.createElement('summary');s.textContent=title;d.append(s);parent.append(d);return d;}
 function buildSettings(){
-  const box=$('settings');box.replaceChildren();
+  const box=$('settings'),searchBox=$('search-settings');box.replaceChildren();searchBox.replaceChildren();
   const intent=document.createElement('div');intent.className='intent-controls';
   const title=document.createElement('h3');title.textContent='Route intent';
-  const explanation=document.createElement('p');explanation.className='hint';explanation.textContent='Choose which infrastructure may be used and what the route should optimize.';intent.append(title,explanation);
+  intent.append(title);
   select(intent,candidates,'infrastructure_policy','Infrastructure',[['existing_and_proposed','Use existing + proposed'],['existing_only','Existing only'],['proposed_only','Proposed only']]);
   select(intent,candidates,'priority','Route objective',[['minimum_routers','Fewest total routers'],['fewest_new_installations','Fewest new installations'],['minimum_infrastructure','Minimum infrastructure cost'],['maximum_reliability','Maximum reliability']]);
-  const note=document.createElement('p');note.className='hint';note.textContent='Router feed activity is context only; every link is checked against terrain and radio assumptions.';intent.append(note);box.append(intent);
+  searchBox.append(intent);
   group(box,rf,definitions);
   select(box,rf,'validation_mode','Link validation',[['rf_propagation','RF propagation + diffraction'],['strict_los','Strict line of sight + Fresnel']]);
   let advanced=details('Antenna & propagation assumptions');
   for(const [key,label] of [['endpoint_a','Endpoint A'],['endpoint_b','Endpoint B'],['router','Repeaters']]){const subtitle=document.createElement('p');subtitle.textContent=label;advanced.append(subtitle);group(advanced,rf[key],[['height_agl_m','Height AGL · m'],['gain_dbi','Gain · dBi'],['feed_loss_db','Feed loss · dB']]);}
   group(advanced,rf,[['k_factor','Earth k-factor'],['required_fresnel_clearance','Fresnel clearance fraction · 0–1'],['miscellaneous_loss_db','Miscellaneous loss · dB']]);
-  advanced=details('Advanced search limits');
+  advanced=details('Advanced search limits',searchBox);
   const advancedNote=document.createElement('p');advancedNote.className='hint';advancedNote.textContent='Lower limits can speed up a search but may exclude useful paths. Units are metres unless stated.';advanced.append(advancedNote);
   group(advanced,candidates,[['corridor_width_m','Corridor width · m'],['grid_spacing_m','Candidate grid spacing · m'],['maximum_candidates','Maximum candidate sites'],['maximum_solution_routers','Maximum total routers'],['maximum_neighbors_per_site','Neighbors per site'],['maximum_link_distance_m','Maximum hop length · m (blank = auto)'],['refine_radius_m','Refinement radius · m'],['refine_step_m','Refinement step · m'],['final_sample_step_m','Final terrain sample step · m']]);
 }
@@ -594,6 +601,7 @@ function clearProjectTransitionError(control){
 function focusProjectTransitionError(control,message){
   const workspace=control?.closest('.workspace-view');
   if(workspace?.hidden)setWorkspace(workspace.id);
+  const planSection=control?.closest('#workspace-plan > section');if(planSection)setPlanSection(planSection.id);
   for(let details=control?.closest('details');details;details=details.parentElement?.closest('details'))details.open=true;
   if(control){
     clearProjectTransitionError(control);

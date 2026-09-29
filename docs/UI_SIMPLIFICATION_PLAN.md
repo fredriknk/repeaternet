@@ -1,6 +1,6 @@
 # RepeaterNet UI simplification and direct-action plan
 
-Status: implementation in progress; source/API audit complete, implementation has not started.
+Status: implementation in progress; S0 source/API audit complete and S1 source implementation complete.
 Baseline: `65f055e`. Scope: the existing self-hosted web app.
 
 This is the next revision of [the UI workflow plan](UI_WORKFLOW_IMPROVEMENT_PLAN.md),
@@ -305,4 +305,5 @@ not reasons to defer the help, compact layout or Map/Analysis work.
 | Milestone | Status | Evidence |
 | --- | --- | --- |
 | S0 | Source/API audit complete; viewport metrics pending | Current handlers and terrain-area limitation recorded above. Before/after viewport, map-area and scroll measurements remain for S6. |
-| S1–S6 | Pending | Planned only; no UI or workflow implementation in this revision |
+| S1 | Implemented; interactive evidence pending | Added a persistent, compact five-section setup index; section visibility/persistence; live endpoint/terrain/router summaries; separated Search settings from Radio; converted major instructional paragraphs into keyboard-operable Help disclosures. Project-transition validation opens the containing section. No browser or automated checks run. |
+| S2–S6 | Pending | Implementation and interaction acceptance remain. |

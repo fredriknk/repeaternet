@@ -64,16 +64,19 @@
           <button type="button" data-workspace-target="workspace-compare" aria-pressed="false">Compare</button>
         </nav>
         <div class="workspace-view" id="workspace-plan" aria-label="Plan route">
-        <div class="intro">
-          <span class="eyebrow">YOUR NEXT CONNECTION</span>
-          <h1>Plan the path.</h1>
-          <p>Place two endpoints. Find the repeaters that bring them together.</p>
-        </div>
+        <details class="intro-help help-disclosure"><summary>Planning help</summary><p>Place two endpoints, add terrain for the area, then find the repeaters that connect them.</p></details>
         <div class="readiness-card" id="plan-readiness" data-readiness="needs-terrain" role="status" aria-live="polite">
           <strong>Plan readiness</strong>
           <p id="plan-readiness-copy">Example coordinates show a short Oslo route. Add ground terrain before searching.</p>
           <button id="review-readiness" type="button">Review terrain</button>
         </div>
+        <nav class="plan-section-nav" aria-label="Plan setup sections">
+          <button type="button" data-plan-section="endpoint-setup" aria-current="true"><strong>Endpoints</strong><small id="section-summary-endpoints">Set start and destination</small></button>
+          <button type="button" data-plan-section="terrain-setup" aria-current="false"><strong>Terrain</strong><small id="section-summary-terrain">Ground tiles required</small></button>
+          <button type="button" data-plan-section="router-setup" aria-current="false"><strong>Routers</strong><small id="section-summary-routers">No routers loaded</small></button>
+          <button type="button" data-plan-section="radio-setup" aria-current="false"><strong>Radio</strong><small>Frequency and link model</small></button>
+          <button type="button" data-plan-section="search-setup" aria-current="false"><strong>Search</strong><small>Objective and effort</small></button>
+        </nav>
         <section id="endpoint-setup">
           <h2><span>01</span> Endpoints</h2>
           <div class="endpoint">
@@ -86,7 +89,7 @@
             <label>Destination<input id="b" value="59.95, 10.85" aria-label="Endpoint B latitude, longitude" aria-describedby="b-error"></label>
           </div>
           <p id="b-error" class="field-error" hidden></p>
-          <p class="hint">Click A or B, then the map. Drag a marker to adjust.</p>
+          <details class="help-disclosure"><summary>Help: placing endpoints</summary><p>Choose A or B, then click the map. Drag a marker to adjust its position, or enter coordinates directly.</p></details>
         </section>
         <section id="terrain-setup">
           <h2><span>02</span> Terrain</h2>
@@ -104,9 +107,9 @@
           </div>
           <p id="coverage-note" class="hint">Coverage outlines appear after terrain is loaded.</p>
         </section>
-        <section>
+        <section id="router-setup">
           <h2><span>03</span> Existing MeshCore routers</h2>
-          <p class="hint">Feed activity is context, not proof of a usable RF link. Missing antenna data uses the configured repeater antenna assumptions shown below. Excluded and stale entries stay in saved plans.</p>
+          <details class="help-disclosure"><summary>Help: existing and proposed routers</summary><p>Feed activity is context, not proof of a usable RF link. Missing antenna data uses the configured repeater antenna assumptions. Excluded and stale entries stay in saved plans.</p></details>
           <button id="load-meshcore" class="wide-button">Find nearby MeshCore routers</button>
           <div class="file-row known-count"><span id="meshcore-count">No routers loaded</span></div>
           <label>Find by name or ID<input id="meshcore-search" type="search" placeholder="Search saved routers" autocomplete="off"></label>
@@ -121,7 +124,7 @@
           </div>
           <div id="meshcore-list" class="known-list"><p class="hint">Routers within the search corridor will appear here.</p></div>
           <h3>Proposed routers</h3>
-          <p class="hint">Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site.</p>
+          <details class="help-disclosure"><summary>Help: proposed routers</summary><p>Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site.</p></details>
           <button id="add-router" class="wide-button">Place proposed router on map</button>
           <details class="coordinate-entry">
             <summary>Add a proposed router by coordinates</summary>
@@ -135,18 +138,22 @@
           </details>
           <div id="manual-list" class="known-list"><p class="hint">No manually placed sites yet.</p></div>
         </section>
-        <section>
-          <h2><span>04</span> Radio & search</h2>
+        <section id="radio-setup">
+          <h2><span>04</span> Radio</h2>
           <div id="settings"></div>
         </section>
-        <div class="run-panel">
+        <section id="search-setup">
+          <h2><span>05</span> Search</h2>
+          <div id="search-settings"></div>
           <label for="search-effort">Search effort</label>
           <select id="search-effort">
             <option value="quick">Quick · up to 200 candidate sites</option>
             <option value="balanced" selected>Balanced · up to 800 candidate sites</option>
             <option value="thorough">Thorough · configured candidate limit</option>
           </select>
-          <p class="hint">Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p>
+          <details class="help-disclosure"><summary>Help: search effort</summary><p>Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p></details>
+        </section>
+        <div class="run-panel">
           <button id="optimize" class="primary">Find repeater route <span>↗</span></button>
           <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
           <button id="clear-cache" class="text-button">Clear saved RF calculations</button>
@@ -156,7 +163,7 @@
         <div class="workspace-view" id="workspace-coverage" aria-label="Coverage analysis" hidden>
         <section class="coverage-panel">
           <h2><span>05</span> Predicted mesh coverage</h2>
-          <p class="hint">Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p>
+          <details class="help-disclosure"><summary>Help: predicted coverage</summary><p>Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p></details>
           <section class="coverage-context" aria-labelledby="coverage-context-title">
             <h3 id="coverage-context-title">Analysis context</h3>
             <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
@@ -198,7 +205,7 @@
           </details>
           <label id="coverage-endpoints-control" class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
           <p id="coverage-endpoints-note" class="hint">For a direct route with no repeaters, enable endpoints to evaluate access from the two selected sites.</p>
-          <p class="hint">The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p>
+          <details class="help-disclosure"><summary>Help: profile sample limit</summary><p>The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p></details>
           <details>
             <summary>Router sources <span id="coverage-source-count" class="hint">All routers in selected route</span></summary>
             <div id="coverage-sources" class="coverage-source-list"><p class="hint">Run a route search to choose sources.</p></div>
