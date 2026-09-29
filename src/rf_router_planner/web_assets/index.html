@@ -40,6 +40,11 @@
           <button id="duplicate-project">Duplicate</button>
           <button id="archive-project">Archive</button>
           <button id="delete-project">Delete</button>
+          <div class="project-tool-status">
+            <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
+            <button id="clear-cache" type="button">Clear saved RF calculations</button>
+            <details class="help-disclosure"><summary>RF estimate limits</summary><p>RF estimates are predictions and require field validation.</p></details>
+          </div>
         </div>
       </details>
     </div>
@@ -154,10 +159,8 @@
           <details class="help-disclosure"><summary>Help: search effort</summary><p>Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p></details>
         </section>
         <div class="run-panel">
+          <span id="plan-action-status" class="action-status" aria-live="off"></span>
           <button id="optimize" class="primary">Find repeater route <span>↗</span></button>
-          <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
-          <button id="clear-cache" class="text-button">Clear saved RF calculations</button>
-          <p class="hint">RF estimates require field validation.</p>
         </div>
         </div>
         <div class="workspace-view" id="workspace-coverage" aria-label="Coverage analysis" hidden>
@@ -338,16 +341,16 @@
         </section>
         </div>
         <div class="workspace-action-bar" data-workspace-action="workspace-coverage" hidden>
-          <p id="coverage-job-status" class="hint" aria-live="off">Complete a route search to calculate coverage.</p>
+          <p id="coverage-job-status" class="action-status" aria-live="off">Complete a route search to calculate coverage.</p>
           <p id="coverage-announcement" class="visually-hidden" role="status" aria-live="polite"></p>
-          <p id="coverage-result-progress-copy" class="hint" hidden></p>
+          <p id="coverage-result-progress-copy" class="action-status" hidden></p>
           <progress id="coverage-result-progress" aria-label="Coverage cells loaded from the saved result" hidden></progress>
-          <button id="coverage-start" class="wide-button primary" disabled>Calculate reviewed coverage</button>
+          <button id="coverage-start" class="wide-button primary" disabled>Calculate coverage</button>
           <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
           <button id="coverage-reconnect" class="wide-button" hidden>Reconnect to coverage run</button>
         </div>
         <div class="workspace-action-bar compare-action-bar" data-workspace-action="workspace-compare" hidden>
-          <p id="compare-workspace-status" class="hint">Choose or import targets and select a saved coverage run to assess them.</p>
+          <p id="compare-workspace-status" class="action-status">Choose targets and a saved run to assess them.</p>
           <button id="coverage-assess-targets" class="wide-button primary" disabled>Assess targets against selected run</button>
         </div>
       </aside>

@@ -305,5 +305,6 @@ not reasons to defer the help, compact layout or Map/Analysis work.
 | Milestone | Status | Evidence |
 | --- | --- | --- |
 | S0 | Source/API audit complete; viewport metrics pending | Current handlers and terrain-area limitation recorded above. Before/after viewport, map-area and scroll measurements remain for S6. |
-| S1 | Implemented; interactive evidence pending | Added a persistent, compact five-section setup index; section visibility/persistence; live endpoint/terrain/router summaries; separated Search settings from Radio; converted major instructional paragraphs into keyboard-operable Help disclosures. Project-transition validation opens the containing section. No browser or automated checks run. |
-| S2–S6 | Pending | Implementation and interaction acceptance remain. |
+| S1 | Implemented; interactive evidence pending | Commit `d01c357`. Added a persistent, compact five-section setup index; section visibility/persistence; live endpoint/terrain/router summaries; separated Search settings from Radio; converted major instructional paragraphs into keyboard-operable Help disclosures. Project-transition validation opens the containing section. No browser or automated checks run. |
+| S2 | Implemented; responsive evidence pending | Reduced the Plan, Coverage and Compare pinned actions to compact rows; moved RF cache maintenance into Project actions; bounded the desktop shell to the available viewport height. CSS targets a 60 px row; actual dimensions and narrow-screen reflow remain unmeasured. |
+| S3–S6 | Pending | Implementation and interaction acceptance remain. |
