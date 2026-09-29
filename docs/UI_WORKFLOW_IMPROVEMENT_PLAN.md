@@ -461,6 +461,7 @@ frontend framework, tile provider or analytics service is required by this plan.
 | U7 | In progress; browser now connected | Keyboard upload access and dialog focus restoration implemented. Terrain-download journey verified in Docker/browser. 47 backend workflow tests and six Node inspection tests pass. Full viewport, keyboard-flow, screen-reader, and rendering/memory evidence remains outstanding. |
 | UI simplification S1 | Implemented; interaction acceptance pending | Commit `d01c357` adds a compact persistent Plan section index, section-specific content visibility, concise live summaries, split Radio/Search settings, and on-demand Help disclosures. Source changes only; browser/keyboard review not run. |
 | UI simplification S2 | Implemented; measurements pending | Replaced the tall multi-control pinned areas with compact action rows, moved cache maintenance into Project actions, and bounded the desktop planner to viewport height. CSS target is 60 px, not yet measured in a browser. |
+| UI simplification S3 | Implemented; browser acceptance pending | Added separate Map/Analysis tabs, moved full route analysis and coverage location inspection into Analysis, preserved a shared job/cancel card and map geometry, and added map/result navigation. View switches redraw local charts and make no direct RF API call; browser behavior remains unverified. |
 
 Implementation is active. Do not call the redesign complete until each milestone
 acceptance is met and the outstanding browser-only evidence is explicitly recorded.

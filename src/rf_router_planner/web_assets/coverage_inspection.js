@@ -82,13 +82,15 @@ async function inspectAt(latlng){
     activeInspectionId=job.job_id;
     const response=await waitForInspection(job.job_id,requestId,controller.signal);
     if(!response||!isCurrent())return;
+    setMainView('view-analysis');
     renderCoverageInspection(response,latitude,longitude);
   }catch(error){if(error.name!=='AbortError'&&requestId===inspectionRequest)setCoverageStatus(error.message,true);}
 }
 
 function renderCoverageInspection(response,latitude,longitude){
   $('coverage-inspection').hidden=false;
-  $('inspection-title').textContent=`${latitude.toFixed(5)}, ${longitude.toFixed(5)} · handheld at ${response.client.height_agl_m} m AGL`;
+  const selectedRun=$('coverage-active-run').selectedOptions[0]?.textContent;
+  $('inspection-title').textContent=`${selectedRun||'Current mesh'} · ${latitude.toFixed(5)}, ${longitude.toFixed(5)} · handheld at ${response.client.height_agl_m} m AGL`;
   const point=[latitude,longitude];
   if(response.state==='unknown_terrain'){
     $('inspection-summary').textContent=response.message;

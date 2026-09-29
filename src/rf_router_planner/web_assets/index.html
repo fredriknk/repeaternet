@@ -236,13 +236,6 @@
             <label class="check-line"><input id="coverage-estimate-reviewed" type="checkbox"> I reviewed this estimate and these coverage settings</label>
             <p class="hint">Any calculation setting, selected route, or map extent change invalidates this review. The preview and full calculation use the reviewed inputs.</p>
           </section>
-          <div id="coverage-inspection" hidden>
-            <h3 id="inspection-title">Location inspection</h3>
-            <p id="inspection-summary" class="hint"></p>
-            <canvas id="inspection-chart" height="190" aria-label="Terrain and radio profile to the best serving router" role="img"></canvas>
-            <p class="hint">Profile: brown = ground + curvature · green = surface + curvature · blue = line of sight · orange = Fresnel clearance boundary.</p>
-            <pre id="inspection-detail"></pre>
-          </div>
         </section>
         </div>
         <div class="workspace-view" id="workspace-compare" aria-label="Compare scenarios" hidden>
@@ -355,6 +348,23 @@
         </div>
       </aside>
       <div class="workspace" id="workspace">
+        <nav class="main-view-nav" role="tablist" aria-label="Main view">
+          <button id="view-map-tab" type="button" role="tab" aria-selected="true" aria-controls="view-map" data-main-view-target="view-map">Map</button>
+          <button id="view-analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="view-analysis" data-main-view-target="view-analysis">Analysis <span id="analysis-badge" hidden></span></button>
+        </nav>
+        <section id="route-job-card" class="job-card shared-job-card" data-state="idle" hidden aria-live="off">
+          <div class="job-card-heading"><strong id="job-phase">Route search</strong><span id="job-elapsed">Elapsed · 0 s</span></div>
+          <p id="job-message" class="hint" role="status" aria-live="polite"></p>
+          <p id="job-progress-copy" class="hint"></p>
+          <progress id="progress" aria-label="Current planner job progress" hidden></progress>
+          <div class="job-card-actions">
+            <button id="cancel" type="button" hidden>Cancel optimization</button>
+            <button id="stop-keep" type="button" hidden disabled>Stop and keep this route</button>
+            <button id="retry-job" type="button" hidden>Reconnect to job</button>
+            <button id="view-results" type="button" hidden>View results</button>
+          </div>
+        </section>
+        <div class="main-view-pane map-pane" id="view-map" role="tabpanel" aria-labelledby="view-map-tab" tabindex="0">
         <div class="map-wrap">
           <div id="map"></div>
           <section id="coverage-map-legend" class="coverage-map-legend" aria-label="Coverage estimate legend" hidden>
@@ -378,24 +388,15 @@
           </div>
           <div id="map-hint" role="status" aria-live="polite">Set your endpoints to start planning</div>
         </div>
+        </div>
+        <div class="main-view-pane analysis-pane" id="view-analysis" role="tabpanel" aria-labelledby="view-analysis-tab" tabindex="0" hidden>
         <div class="results">
           <div class="result-heading">
             <div><span class="eyebrow">ROUTE ANALYSIS</span><h2 id="result-title">A clear view of your connection.</h2></div>
-            <div class="result-actions"><button id="toggle-results" type="button" aria-expanded="true">Hide details</button><div id="exports" hidden><a class="button" href="/api/export/csv">CSV ↓</a><a class="button" href="/api/export/geojson">GeoJSON ↓</a></div></div>
+            <div class="result-actions"><button id="route-show-map" type="button" disabled>Show route on map</button><div id="exports" hidden><a class="button" href="/api/export/csv">CSV ↓</a><a class="button" href="/api/export/geojson">GeoJSON ↓</a></div></div>
           </div>
-          <section id="route-job-card" class="job-card" data-state="idle" hidden aria-live="off">
-            <div class="job-card-heading"><strong id="job-phase">Route search</strong><span id="job-elapsed">Elapsed · 0 s</span></div>
-            <p id="job-message" class="hint" role="status" aria-live="polite"></p>
-            <p id="job-progress-copy" class="hint"></p>
-            <progress id="progress" aria-label="Current planner job progress" hidden></progress>
-            <div class="job-card-actions">
-              <button id="cancel" type="button" hidden>Cancel optimization</button>
-              <button id="stop-keep" type="button" hidden disabled>Stop and keep this route</button>
-              <button id="retry-job" type="button" hidden>Reconnect to job</button>
-            </div>
-          </section>
           <div id="result-details">
-          <div id="status" role="status" aria-live="polite">Load terrain and choose your endpoints to find a route.</div>
+          <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>
           <div id="alternatives" hidden>
             <h3>Route alternatives</h3>
             <div id="alternative-cards" class="alternative-cards"></div>
@@ -404,6 +405,7 @@
             <p id="alternative-summary" class="hint"></p>
           </div>
           <div id="metrics"></div>
+          <div class="analysis-detail-grid">
           <div class="table-scroll">
             <table id="hops" hidden aria-label="Route links; select a link to inspect its terrain and radio profile">
               <thead><tr><th>Link</th><th>Distance</th><th>Margin ↔</th><th>Fresnel</th><th>LOS</th><th>Result</th></tr></thead>
@@ -419,6 +421,14 @@
             <details id="profile-details"><summary>Detailed radio budget and assumptions</summary><pre id="budget"></pre></details>
           </div>
           </div>
+          </div>
+          <section id="coverage-inspection" class="analysis-inspection" hidden aria-labelledby="inspection-title">
+            <div class="inspection-heading"><div><h3 id="inspection-title">Location inspection</h3><p id="inspection-summary" class="hint"></p></div><button id="inspection-show-map" type="button">Show location on map</button></div>
+            <canvas id="inspection-chart" height="190" aria-label="Terrain and radio profile to the best serving router" role="img"></canvas>
+            <details class="help-disclosure"><summary>Profile legend</summary><p>Brown: ground + curvature · Green: surface · Blue: line of sight · Orange: Fresnel clearance boundary.</p></details>
+            <pre id="inspection-detail"></pre>
+          </section>
+        </div>
         </div>
       </div>
     </main>
