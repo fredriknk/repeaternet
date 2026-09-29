@@ -1153,6 +1153,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def state(request: Request) -> Any:
         ws = workspace(request)
         projects = project_store.list(ws.workspace_key)
+        archived_projects = project_store.list_archived(ws.workspace_key)
         active_project = project_store.get(ws.workspace_key, ws.project_id) or ws.project
         if ws.storage_usage_bytes is None:
             ws.storage_usage_bytes = project_store.storage_usage(ws.workspace_key)
@@ -1180,6 +1181,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "items": [
                     {"id": item["id"], "name": item["name"], "updated_at": item["updated_at"]}
                     for item in projects
+                ],
+                "archived_items": [
+                    {"id": item["id"], "name": item["name"], "updated_at": item["updated_at"]}
+                    for item in archived_projects
                 ],
                 "storage_usage_bytes": ws.storage_usage_bytes,
                 "previous_result": ws.result_summary,
@@ -3287,6 +3292,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/projects/{project_id}/archive")
     def archive_project(project_id: str, request: Request) -> Any:
         ws = workspace(request)
+        ensure_projects_idle(ws)
         try:
             archived = project_store.archive(ws.workspace_key, project_id)
         except ValueError as exc:
@@ -3294,6 +3300,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not archived:
             raise HTTPException(404, "Project not found")
         return {"ok": True}
+
+    @app.post("/api/projects/{project_id}/restore")
+    def restore_project(project_id: str, body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        ensure_projects_idle(ws)
+        name = project_name(body.get("name"))
+        try:
+            project = project_store.restore(ws.workspace_key, project_id, name)
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "A project with that name already exists") from exc
+        if project is None:
+            raise HTTPException(404, "Archived project not found")
+        ws.activate_project(project)
+        ws.storage_usage_bytes = None
+        _refresh_recovery_summary(ws)
+        _write_json_atomic(ws.directory / "plan.json", ws.inputs)
+        return {"id": ws.project_id, "name": ws.project["name"], "plan": ws.inputs}
 
     @app.delete("/api/projects/{project_id}")
     def delete_project(project_id: str, request: Request) -> Any:

@@ -43,3 +43,27 @@ def test_active_project_cannot_be_archived_or_deleted(tmp_path):
         store.archive(key, project["id"])
     with pytest.raises(ValueError, match="Switch to another project"):
         store.delete(key, project["id"])
+
+
+def test_archived_projects_can_be_listed_and_restored_without_losing_files(tmp_path):
+    store = ProjectStore(tmp_path / "projects.sqlite3", tmp_path)
+    key = "e" * 48
+    original = store.active(key)
+    original_dir = store.project_path(key, original)
+    terrain = original_dir / "dtm" / "tile.tif"
+    terrain.parent.mkdir()
+    terrain.write_bytes(b"saved terrain")
+    active_copy = store.duplicate(key, original["id"], "Active copy")
+    assert active_copy is not None
+
+    assert store.archive(key, original["id"])
+    assert [item["id"] for item in store.list_archived(key)] == [original["id"]]
+    assert store.get("f" * 48, original["id"]) is None
+
+    restored = store.restore(key, original["id"], original["name"])
+    assert restored is not None
+    assert restored["id"] == original["id"]
+    assert restored["plan"] == original["plan"]
+    assert store.list_archived(key) == []
+    assert terrain.read_bytes() == b"saved terrain"
+    assert store.active(key)["id"] == original["id"]

@@ -41,6 +41,11 @@
           <button id="duplicate-project">Duplicate</button>
           <button id="archive-project">Archive</button>
           <button id="delete-project">Delete</button>
+          <details id="archived-projects">
+            <summary>Archived projects <span id="archived-project-count">0</span></summary>
+            <p class="hint">Archived projects keep their saved plan and terrain. Restore one to return it to the active project list.</p>
+            <div id="archived-project-list" class="archived-project-list"></div>
+          </details>
           <div class="project-tool-status">
             <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
             <button id="clear-cache" type="button">Clear saved RF calculations</button>

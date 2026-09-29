@@ -263,6 +263,17 @@ def test_named_projects_autosave_switch_and_duplicate_terrain(client, tmp_path):
     assert replacement.status_code == 200
     assert client.delete(f"/api/projects/{duplicate_id}").status_code == 200
     assert client.post(f"/api/projects/{source_id}/archive").status_code == 200
+    archived = client.get("/api/state").json()["projects"]["archived_items"]
+    assert any(item["id"] == source_id for item in archived)
+    restored = client.post(
+        f"/api/projects/{source_id}/restore", json={"name": "Untitled plan"}
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["id"] == source_id
+    restored_state = client.get("/api/state").json()
+    assert restored_state["projects"]["active_id"] == source_id
+    assert restored_state["terrain"]["dtm"]
+    assert all(item["id"] != source_id for item in restored_state["projects"]["archived_items"])
 
 
 def test_autosaved_plan_and_interrupted_state_recover_after_app_restart(tmp_path, monkeypatch):

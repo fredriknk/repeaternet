@@ -171,6 +171,15 @@ class ProjectStore:
             ).fetchall()
             return [self._project(row) or {} for row in rows]
 
+    def list_archived(self, key: str) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM projects WHERE workspace_key=? AND archived=1 "
+                "ORDER BY updated_at DESC",
+                (key,),
+            ).fetchall()
+            return [self._project(row) or {} for row in rows]
+
     def get(self, key: str, project_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
             return self._get(connection, key, project_id)
@@ -258,6 +267,22 @@ class ProjectStore:
                 (time.time(), key, project_id),
             )
             return cursor.rowcount == 1
+
+    def restore(self, key: str, project_id: str, name: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE projects SET name=?, archived=0, updated_at=? "
+                "WHERE workspace_key=? AND id=? AND archived=1",
+                (name, time.time(), key, project_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            connection.execute(
+                "INSERT INTO workspace_state(workspace_key, active_project_id) VALUES (?, ?) "
+                "ON CONFLICT(workspace_key) DO UPDATE SET active_project_id=excluded.active_project_id",
+                (key, project_id),
+            )
+            return self._get(connection, key, project_id)
 
     def delete(self, key: str, project_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
