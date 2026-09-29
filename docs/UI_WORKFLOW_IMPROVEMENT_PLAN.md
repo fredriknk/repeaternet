@@ -3,6 +3,12 @@
 Created: 2026-09-28. Status: implementation in progress (U0–U6 implemented; U7 validation remains).
 Review baseline: `228e770`. Scope: the self-hosted web interface.
 
+Next revision: [UI simplification and direct-action plan](UI_SIMPLIFICATION_PLAN.md).
+It addresses help on demand, reduced scrolling, compact action controls,
+single-confirmation calculation workflows, and separate Map/Analysis views.
+Its proposed interaction changes supersede the corresponding layout and review
+steps below; remaining U7 validation gates stay open.
+
 This plan builds on [the usability/performance work](USABILITY_PERFORMANCE_PLAN.md)
 and [the mesh coverage roadmap](MESH_COVERAGE_PLAN.md). Those features already
 exist; this work makes them easier to discover, understand and use together.
