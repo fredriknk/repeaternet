@@ -19,6 +19,34 @@ Its remaining gaps are tracked below. The old F7 release gate is still open.
 
 ## Release acceptance still required
 
+### Map regression verification — 2026-09-30
+
+Fixed the idle workspace collapsing the map to zero height when the optional
+job card is hidden. Navigation, job status, and the active pane now occupy
+explicit grid rows. Refreshed the workspace stylesheet URL so existing browser
+caches pick up the fix after a normal reload. Removed unused collapsed-results
+layout rules.
+
+Verified against the rebuilt Docker instance in Chrome:
+
+- **Pass:** original Kvislatest project, no terrain/job card: map height changed
+  from 0 to approximately 760 CSS pixels; 33 loaded map tiles, no console errors.
+- **Pass:** existing Oslo QA project, four real DTM tiles, 798 generated and two
+  existing candidates: search completed in about 11 seconds with six alternatives.
+  Map remained visible while running (598 px) and after completion (700 px).
+- **Pass:** switching Map/Analysis with results preserves a full-height pane;
+  returning to the original project keeps the idle map visible.
+- **Pass, geometry only:** mobile breakpoint in a fresh tab, effective viewport
+  487×1055 CSS pixels at the browser's current zoom: map height 486 px, no
+  horizontal document overflow. Screenshot capture timed out, so this does not
+  certify the exact 390×844 visual acceptance case below. Viewport override reset.
+- **Observed follow-up:** the Analysis Ready badge remained after switching from
+  the QA results project to an empty project; include this in result-consistency
+  acceptance below.
+
+This targeted browser regression check is not full release acceptance; no engine
+code changed and the complete automated suite was not rerun for this CSS fix.
+
 - **Files and reports:** verify browser plan JSON import/export round trips,
   route CSV/GeoJSON, coverage JSON/GeoJSON/printable HTML, and valid/malformed
   target imports. Inspect actual file contents, coordinates, assumptions,

@@ -189,8 +189,6 @@ input:not([type="checkbox"]), select { font-size: 14px; }
 }
 .map-wrap { height: auto; min-height: 0; }
 .results { min-height: 0; overflow: auto; padding: 20px 24px; }
-.workspace.results-collapsed { grid-template-rows: minmax(0, 1fr) auto; }
-.workspace.results-collapsed .results { padding-block: 8px; }
 .result-actions { display: flex; align-items: flex-start; gap: 8px; }
 .result-actions > button { white-space: nowrap; }
 .result-heading h2 { font-size: 21px; }
@@ -277,9 +275,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 
 .workspace {
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 0;
 }
+/* The optional job card must not move the active pane into its auto-sized row. */
+.workspace > .main-view-nav { grid-area: 1 / 1; }
+.workspace > .shared-job-card { grid-area: 2 / 1; }
+.workspace > .main-view-pane { grid-area: 3 / 1; }
 .main-view-nav {
   display: flex;
   align-items: center;
