@@ -34,6 +34,59 @@ def _inside_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> b
     return inside
 
 
+def _spatially_balanced_top_n(
+    indices: list[int],
+    xs: np.ndarray,
+    ys: np.ndarray,
+    quality: np.ndarray,
+    elevation: np.ndarray,
+    endpoint_a: Site,
+    endpoint_b: Site,
+    limit: int,
+) -> list[int]:
+    """Cap candidates without letting one high-quality stretch fill the pool."""
+    if len(indices) <= limit:
+        return indices
+    if limit <= 0:
+        return []
+
+    dx = endpoint_b.x - endpoint_a.x
+    dy = endpoint_b.y - endpoint_a.y
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return sorted(indices, key=lambda i: (-quality[i], -elevation[i], i))[:limit]
+
+    # Divide progress along the route into enough bands to retain broad coverage
+    # while still leaving a useful local choice of terrain in each band.
+    band_count = min(limit, max(1, math.ceil(math.sqrt(limit))))
+    progress = {
+        index: ((xs[index] - endpoint_a.x) * dx + (ys[index] - endpoint_a.y) * dy) / length
+        for index in indices
+    }
+    minimum = min(progress.values())
+    span = max(progress.values()) - minimum
+    if span <= 0:
+        return sorted(indices, key=lambda i: (-quality[i], -elevation[i], i))[:limit]
+
+    bands: list[list[int]] = [[] for _ in range(band_count)]
+    for index in indices:
+        band = min(band_count - 1, int((progress[index] - minimum) / span * band_count))
+        bands[band].append(index)
+    for band in bands:
+        band.sort(key=lambda i: (-quality[i], -elevation[i], i))
+
+    # Round-robin across route sections. Sparse or terrain-masked sections leave
+    # their unused slots available to the other sections.
+    selected: list[int] = []
+    for rank in range(max(map(len, bands), default=0)):
+        for band in bands:
+            if rank < len(band):
+                selected.append(band[rank])
+                if len(selected) == limit:
+                    return selected
+    return selected
+
+
 def generate_candidates(
     terrain: TerrainSource,
     endpoint_a: Site,
@@ -102,8 +155,16 @@ def generate_candidates(
     for indices in cells.values():
         indices.sort(key=lambda i: (float(quality[i]), float(dtm[i])), reverse=True)
         retained.extend(indices[: settings.candidates_per_cell])
-    retained.sort(key=lambda i: float(quality[i]), reverse=True)
-    retained = retained[: settings.maximum_candidates]
+    retained = _spatially_balanced_top_n(
+        retained,
+        xs,
+        ys,
+        quality,
+        dtm,
+        endpoint_a,
+        endpoint_b,
+        settings.maximum_candidates,
+    )
     candidates = [endpoint_a]
     for number, index in enumerate(retained, 1):
         candidates.append(
