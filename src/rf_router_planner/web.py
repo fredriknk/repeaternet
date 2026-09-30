@@ -1009,8 +1009,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if ws.status["state"] in {"queued", "running", "preparing"}:
                 raise HTTPException(409, "Wait until route search or terrain preparation finishes")
             result = ws.result
-            if result is None or result.active_solution is None or not result.search_complete:
-                raise HTTPException(409, "Finish a route search before calculating coverage")
+            if result is None or result.active_solution is None:
+                raise HTTPException(409, "Find a certified route before calculating coverage")
             if snapshot_version != ws.snapshot_version:
                 raise HTTPException(409, "The selected route changed; refresh before calculating coverage")
             if ws.result_plan_fingerprint != _route_plan_fingerprint(ws.inputs):
@@ -1069,6 +1069,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             input_revision = ws.input_revision
             selected_snapshot = ws.snapshot_version
             selected_alternative = solution_id(result.active_solution)
+            route_search_complete = result.search_complete
+            achieved_path_count = result.active_solution.achieved_path_count
+            requested_path_count = result.active_solution.requested_path_count
             workspace_directory = ws.directory
 
         requested_bounds = None
@@ -1126,6 +1129,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "input_revision": input_revision,
             "snapshot_version": selected_snapshot,
             "alternative_id": selected_alternative,
+            "route_search_complete": route_search_complete,
+            "achieved_path_count": achieved_path_count,
+            "requested_path_count": requested_path_count,
         }
 
     @app.get("/")
@@ -1448,6 +1454,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "settings": encode(coverage_settings),
                 "snapshot_version": context["snapshot_version"],
                 "alternative_id": context["alternative_id"],
+                "route_search_complete": context["route_search_complete"],
+                "achieved_path_count": context["achieved_path_count"],
+                "requested_path_count": context["requested_path_count"],
                 "terrain_available_cells": grid.terrain_available_cells,
                 "evaluated_cells": grid.evaluated_cells,
                 "covered_cells": sum(cell.state.value == "covered" for cell in grid.cells),
@@ -1506,6 +1515,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "mode": coverage_settings.mode.value,
                 "surface_available": grid.surface_available,
                 "area_bounds_wgs84": area_bounds,
+                "route_search_complete": context["route_search_complete"],
+                "achieved_path_count": context["achieved_path_count"],
+                "requested_path_count": context["requested_path_count"],
             }
         except HTTPException:
             raise
@@ -1689,6 +1701,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "alternative_id": context["alternative_id"],
                     "snapshot_version": context["snapshot_version"],
                     "input_revision": context["input_revision"],
+                    "route_search_complete": context["route_search_complete"],
+                    "achieved_path_count": context["achieved_path_count"],
+                    "requested_path_count": context["requested_path_count"],
                     "surface_available": bool(context["dom_paths"]),
                     "mode": coverage_settings.mode.value,
                     "stale": False,
@@ -2003,6 +2018,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "state": item.get("state"),
                     "created_at": item.get("created_at"),
                     "alternative_id": item.get("alternative_id"),
+                    "route_search_complete": item.get("route_search_complete"),
+                    "achieved_path_count": item.get("achieved_path_count"),
+                    "requested_path_count": item.get("requested_path_count"),
                     "source_ids": item.get("source_ids", []),
                     "router_ids": item.get("router_ids", []),
                     "source_height_overrides": item.get("source_height_overrides", {}),

@@ -174,7 +174,7 @@
           <h2><span>05</span> Predicted mesh coverage</h2>
           <details class="help-disclosure"><summary>Help: predicted coverage</summary><p>Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p></details>
           <div id="coverage-no-route" class="coverage-empty-state">
-            <p>Find a completed route first to enable coverage calculations and location inspection.</p>
+            <p>Find a certified route first to enable coverage calculations and location inspection. If you stop optimization, coverage uses the best certified route found so far.</p>
             <button id="coverage-find-route" type="button">Open route setup</button>
           </div>
           <nav class="coverage-section-nav" aria-label="Coverage settings sections">
@@ -240,7 +240,7 @@
           <div id="coverage-section-runs" data-coverage-panel="runs" hidden>
           <section class="coverage-context" aria-labelledby="coverage-context-title">
             <h3 id="coverage-context-title">Analysis context</h3>
-            <p id="coverage-context-route" class="hint">Complete a route search to see the selected mesh.</p>
+            <p id="coverage-context-route" class="hint">Find a certified route to see the selected mesh.</p>
             <p id="coverage-context-radio" class="hint">Client radio assumptions will appear here.</p>
             <label>Saved coverage run<select id="coverage-active-run"><option value="">No saved runs</option></select></label>
             <p id="coverage-active-run-context" class="hint" role="status" aria-live="polite">Select a saved run to use it for inspection, targets and exports.</p>
@@ -351,7 +351,7 @@
         </section>
         </div>
         <div class="workspace-action-bar" data-workspace-action="workspace-coverage" hidden>
-          <p id="coverage-job-status" class="action-status" aria-live="off">Complete a route search to calculate coverage.</p>
+          <p id="coverage-job-status" class="action-status" aria-live="off">Find a certified route to calculate coverage.</p>
           <p id="coverage-announcement" class="visually-hidden" role="status" aria-live="polite"></p>
           <p id="coverage-result-progress-copy" class="action-status" hidden></p>
           <progress id="coverage-result-progress" aria-label="Coverage cells loaded from the saved result" hidden></progress>

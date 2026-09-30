@@ -149,6 +149,9 @@ def coverage_export_metadata(
         "job_id": job["job_id"],
         "project_id": job.get("project_id"),
         "alternative_id": job.get("alternative_id"),
+        "route_search_complete": job.get("route_search_complete"),
+        "achieved_path_count": job.get("achieved_path_count"),
+        "requested_path_count": job.get("requested_path_count"),
         "snapshot_version": job.get("snapshot_version"),
         "input_revision": job.get("input_revision"),
         "job_state": job.get("state"),
@@ -357,13 +360,20 @@ def printable_report_chunks(
     bounds = (south, west, north, east)
     reverse = Transformer.from_crs(job["terrain_crs"], 4326, always_xy=True)
     report_state = "STALE" if metadata["stale"] else "PARTIAL" if metadata["partial"] else "COMPLETE"
+    route_search_warning = (
+        f"Coverage describes the selected certified route only. The route search stopped with "
+        f"{metadata.get('achieved_path_count', '?')}/{metadata.get('requested_path_count', '?')} "
+        "requested independent paths; unexplored alternatives are not included."
+        if metadata.get("route_search_complete") is False
+        else ""
+    )
     counts = metadata["counts"]
     export_settings = job.get("settings", {})
     yield """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Predicted mesh coverage</title><style>
     :root{color-scheme:light;--ink:#19372d;--muted:#5d7168;--line:#d5dfda;--paper:#fff;--bg:#eef2ef}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Segoe UI,Arial,sans-serif}main{max-width:1120px;margin:28px auto;background:var(--paper);padding:36px 44px;box-shadow:0 8px 32px #142d2018}header{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid var(--ink);padding-bottom:18px}h1{font-size:30px;margin:0}h2{margin:30px 0 12px;font-size:20px}h3{font-size:16px}.sub,.muted{color:var(--muted)}.badge{align-self:flex-start;border:1px solid #537465;border-radius:999px;padding:5px 12px;font-weight:700;letter-spacing:.07em}.badge.PARTIAL,.badge.STALE{color:#8d441f;border-color:#bf8058}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.metric{padding:12px;border:1px solid var(--line);border-radius:8px}.metric strong{display:block;font-size:21px}.metric span{color:var(--muted);font-size:12px}svg{display:block;width:100%;height:auto;border:1px solid var(--line);background:#f6f8f7}.legend{display:flex;flex-wrap:wrap;gap:14px;margin:12px 0}.swatch{display:inline-block;width:13px;height:13px;vertical-align:-2px;margin-right:5px;border:1px solid #50645b}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f1f5f2}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f4;padding:14px;border-radius:6px;font-size:12px}.warning{background:#fff5e9;border-left:4px solid #bb7645;padding:12px}.print{position:fixed;right:20px;bottom:20px;border:0;border-radius:8px;background:#19372d;color:#fff;padding:12px 18px;font-weight:700;cursor:pointer}@media print{body{background:#fff}main{margin:0;max-width:none;box-shadow:none;padding:12mm}.print{display:none}h2{break-after:avoid}table,svg{break-inside:avoid}}@media(max-width:700px){main{margin:0;padding:22px}.metrics{grid-template-columns:repeat(2,1fr)}header{display:block}.badge{display:inline-block;margin-top:10px}}
     </style></head><body><button class="print" onclick="window.print()">Print report</button><main>"""
     yield f"<header><div><h1>Predicted mesh coverage</h1><div class='sub'>Project { _html(metadata.get('project_id')) } · alternative { _html(metadata.get('alternative_id')) } · job { _html(job['job_id']) }</div></div><span class='badge {report_state}'>{report_state}</span></header>"
-    yield f"<p class='warning'>{_html(metadata['prediction_warning'])} {('This export includes partial or unresolved cells; inspect the state counts and profile-limit settings.' if metadata['partial'] else '')} {('Inputs changed since this run; treat it as a historical snapshot.' if metadata['stale'] else '')}</p>"
+    yield f"<p class='warning'>{_html(metadata['prediction_warning'])} {_html(route_search_warning)} {('This export includes partial or unresolved cells; inspect the state counts and profile-limit settings.' if metadata['partial'] else '')} {('Inputs changed since this run; treat it as a historical snapshot.' if metadata['stale'] else '')}</p>"
     yield "<section class='metrics'>"
     for label, value in (
         ("Covered cells", counts["covered_cells"]),

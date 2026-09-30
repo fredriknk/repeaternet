@@ -25,7 +25,7 @@ function cancelActiveInspection(){
 }
 
 function enterCoverageInspect(){
-  if(!result||resultStale||!result.search_complete){setCoverageStatus('Finish a route search before inspecting locations.',true);return;}
+  if(!result||resultStale||!result.found||!result.active_alternative_id){setCoverageStatus('Find a certified route before inspecting locations.',true);return;}
   const display=coverageDisplayInfo||coverageJob;
   if(display&&(display.snapshot_version!==result.snapshot_version||display.alternative_id!==result.active_alternative_id||(display.stale&&!display.route_current)||display.route_current===false)){
     setCoverageStatus('The displayed coverage belongs to a stale or different route snapshot. Load coverage for the current route before inspecting locations.',true);return;
