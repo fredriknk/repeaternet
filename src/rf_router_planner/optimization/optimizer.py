@@ -57,7 +57,7 @@ class OptimizationResult:
         return self.alternatives[self.active_solution_index]
 
     def select_solution(self, index: int) -> NetworkSolution:
-        """Activate an alternative while keeping legacy route fields useful."""
+        """Activate an alternative and synchronize its route and link views."""
         if not 0 <= index < len(self.alternatives):
             raise IndexError("Solution index out of range")
         self.active_solution_index = index

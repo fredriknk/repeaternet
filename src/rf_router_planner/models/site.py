@@ -15,7 +15,7 @@ class SiteKind(str, Enum):
 class SiteOrigin(str, Enum):
     """How a site entered the project.
 
-    ``OPTIMIZED`` is the backward-compatible default for generated candidate
+    ``OPTIMIZED`` is the default for generated candidate
     sites.  Manual and known-network sites are kept distinct so the UI can
     render them differently without overloading ``SiteKind``.
     """

@@ -14,4 +14,4 @@ htmlcov/
 cache/
 web-data/
 .env
-*.rfplan.json
+*.webplan.json

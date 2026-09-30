@@ -3,6 +3,22 @@ import pytest
 from rf_router_planner.project_store import ProjectStore
 
 
+def test_new_project_uses_isolated_storage_without_adopting_loose_files(tmp_path):
+    key = "a" * 48
+    workspace = tmp_path / key
+    workspace.mkdir()
+    loose_plan = workspace / "plan.json"
+    loose_plan.write_text('{"a": [60, 10]}', encoding="utf-8")
+    store = ProjectStore(tmp_path / "projects.sqlite3", tmp_path)
+
+    project = store.active(key)
+
+    assert project["plan"] == {}
+    assert store.project_path(key, project).parent == workspace / "projects"
+    assert loose_plan.read_text(encoding="utf-8") == '{"a": [60, 10]}'
+    assert store.active(key)["id"] == project["id"]
+
+
 def test_project_store_keeps_previous_revision_and_workspace_isolation(tmp_path):
     store = ProjectStore(tmp_path / "projects.sqlite3", tmp_path)
     key_a, key_b = "a" * 48, "b" * 48
@@ -16,7 +32,7 @@ def test_project_store_keeps_previous_revision_and_workspace_isolation(tmp_path)
     assert recovered is not None
     assert recovered["plan"] == second
     assert recovered["previous_plan"] == first
-    assert [item["id"] for item in store.list(key_b)] != [original["id"]]
+    assert [item["id"] for item in store.list_active(key_b)] != [original["id"]]
 
 
 def test_duplicate_copies_terrain_and_archive_preserves_files(tmp_path):
@@ -32,7 +48,7 @@ def test_duplicate_copies_terrain_and_archive_preserves_files(tmp_path):
     assert copy_file.read_bytes() == b"test terrain"
     assert store.archive(key, source["id"])
     assert (source_dir / "dtm" / "tile.tif").exists()
-    assert [item["id"] for item in store.list(key)] == [copy["id"]]
+    assert [item["id"] for item in store.list_active(key)] == [copy["id"]]
 
 
 def test_active_project_cannot_be_archived_or_deleted(tmp_path):

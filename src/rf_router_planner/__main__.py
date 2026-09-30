@@ -1,3 +1,4 @@
-from .app import main
+from .web import main
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    main()

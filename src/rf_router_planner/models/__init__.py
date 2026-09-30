@@ -6,7 +6,6 @@ from .settings import (
     LoRaSettings,
     OptimizationPriority,
     RFSettings,
-    TerrainSettings,
     ValidationMode,
 )
 from .site import HeightReference, Site, SiteKind, SiteOrigin
@@ -24,6 +23,5 @@ __all__ = [
     "Site",
     "SiteKind",
     "SiteOrigin",
-    "TerrainSettings",
     "ValidationMode",
 ]

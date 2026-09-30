@@ -9,7 +9,6 @@ from rf_router_planner.optimization.topology import (
     select_active_solution_index,
     solve_topologies,
 )
-from rf_router_planner.project import Project, load_project, save_project
 
 
 def link(left: str, right: str, margin: float = 10.0) -> LinkResult:
@@ -158,9 +157,9 @@ def test_required_manual_router_is_in_every_alternative() -> None:
     assert alternatives[0].router_ids == ["manual"]
 
 
-def test_optimization_result_additions_preserve_positional_construction() -> None:
+def test_select_solution_updates_active_route() -> None:
     a, b = client("A", 0), client("B", 10)
-    old_style = OptimizationResult([a, b], [], [], [], ["legacy"], 1.5)
+    result = OptimizationResult(route=[a, b], links=[], candidates=[], all_valid_links=[])
     solution = NetworkSolution(
         "one router",
         [a, router("R1", 5), b],
@@ -169,31 +168,13 @@ def test_optimization_result_additions_preserve_positional_construction() -> Non
         ["R1"],
         {("A", "B"): [["A", "R1", "B"]]},
     )
-    old_style.alternatives = [solution]
+    result.alternatives = [solution]
 
-    selected = old_style.select_solution(0)
+    selected = result.select_solution(0)
 
     assert selected is solution
-    assert old_style.router_count == 1
-    assert [site.id for site in old_style.route] == ["A", "R1", "B"]
-
-
-def test_site_origin_and_topology_settings_round_trip(tmp_path) -> None:
-    a, b = client("A", 0), client("B", 10)
-    known = router("known", 5, required=True, origin=SiteOrigin.KNOWN)
-    project = Project(endpoint_a=a, endpoint_b=b, selected_routers=[known])
-    project.candidate_settings.maximum_solution_routers = 4
-    project.candidate_settings.reliability_paths = 3
-    path = tmp_path / "network.rfplan.json"
-
-    save_project(project, path)
-    loaded = load_project(path)
-
-    assert loaded.selected_routers[0].origin == SiteOrigin.KNOWN
-    assert loaded.selected_routers[0].required
-    assert loaded.selected_routers[0].enabled
-    assert loaded.candidate_settings.maximum_solution_routers == 4
-    assert loaded.candidate_settings.reliability_paths == 3
+    assert result.router_count == 1
+    assert [site.id for site in result.route] == ["A", "R1", "B"]
 
 
 def test_infrastructure_can_prefer_two_short_masts_over_one_tall_mast():

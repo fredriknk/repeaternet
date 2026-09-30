@@ -133,26 +133,8 @@ class ProjectStore:
             ).fetchone()
             project = self._project(row)
             if project is None:
-                legacy = self._workspace_path(key)
-                has_legacy_data = any(
-                    (legacy / name).exists()
-                    for name in (
-                        "plan.json",
-                        "dtm",
-                        "dom",
-                        "terrain-generations",
-                        "kartverket-cache",
-                    )
-                )
-                directory = "." if has_legacy_data else "projects/new"
-                if directory != ".":
-                    directory = f"projects/{secrets.token_hex(10)}"
-                legacy_plan = legacy / "plan.json"
-                try:
-                    plan = json.loads(legacy_plan.read_text(encoding="utf-8")) if legacy_plan.exists() else {}
-                except (OSError, json.JSONDecodeError):
-                    plan = {}
-                project_id = self._insert(connection, key, "Untitled plan", plan, directory)
+                directory = f"projects/{secrets.token_hex(10)}"
+                project_id = self._insert(connection, key, "Untitled plan", {}, directory)
                 project = self._get(connection, key, project_id)
                 assert project is not None
             connection.execute(
@@ -162,7 +144,7 @@ class ProjectStore:
             )
             return project
 
-    def list(self, key: str) -> list[dict[str, Any]]:
+    def list_active(self, key: str) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM projects WHERE workspace_key=? AND archived=0 "

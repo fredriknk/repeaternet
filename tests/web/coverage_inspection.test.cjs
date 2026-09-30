@@ -14,14 +14,15 @@ const deferred = () => {
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function harness({ autosaveNow = async () => {}, onStart, onPoll } = {}) {
-  const events = [], rendered = [], errors = [];
+  const events = [], rendered = [], errors = [], views = [];
   const context = vm.createContext({
     AbortController, DOMException, setTimeout, clearTimeout,
     activeInspectionId: null, interactionMode: 'inspect-coverage', inspectionRequest: 0,
     coverageDisplayInfo: null, coverageJob: null, coverageHeightOverrides: {},
     inspectionController: null, inspectionLayer: { clearLayers() {} },
     coverageSettings: { client: { height_agl_m: 1.5 } },
-    $: () => ({}), readCoverageInputs() {}, coveragePayload: () => ({}),
+    $: () => ({ value: '', selectedOptions: [] }), readCoverageInputs() {}, coveragePayload: () => ({}),
+    setMainView(view) { views.push(view); },
     autosaveNow, invalidate() {}, coverageSettingsChanged() {}, coverageBusyState() {},
     async installProject() {},
     setCoverageStatus(message, error) { if (error) errors.push(message); },
@@ -42,7 +43,7 @@ function harness({ autosaveNow = async () => {}, onStart, onPoll } = {}) {
   });
   vm.runInContext(source, context);
   context.renderCoverageInspection = value => rendered.push(value.point);
-  return { context, events, rendered, errors,
+  return { context, events, rendered, errors, views,
     click: latitude => context.inspectAt({ lat: latitude, lng: 10 }),
   };
 }
@@ -57,6 +58,8 @@ test('a delayed autosave cannot submit an older click after a newer result', asy
   await old;
   assert.deepEqual(h.events.filter(value => value.startsWith('start:')), ['start:2']);
   assert.deepEqual(h.rendered, ['2']);
+  assert.deepEqual(h.views, ['view-analysis']);
+  assert.deepEqual(h.errors, []);
 });
 
 test('a pending start is cancelled before the newer click is dispatched', async () => {
@@ -85,6 +88,7 @@ test('leaving inspect mode cancels a job whose ID arrives after the mode change'
   await click;
   assert.deepEqual(h.events, ['start:1', 'cancel:1']);
   assert.deepEqual(h.rendered, []);
+  assert.deepEqual(h.views, []);
 });
 
 test('a failed obsolete start does not poison the queue or report an obsolete error', async () => {
@@ -121,7 +125,7 @@ test('profile-limit inspection renders unresolved paths without formatting missi
     inspectionLayer: {},
     coverageSettings: { client: { height_agl_m: 1.5 } },
     $: id => {
-      if (!elements.has(id)) elements.set(id, {});
+      if (!elements.has(id)) elements.set(id, { value: '', selectedOptions: [] });
       return elements.get(id);
     },
     readCoverageInputs() {}, coveragePayload: () => ({}), autosaveNow: async () => {},

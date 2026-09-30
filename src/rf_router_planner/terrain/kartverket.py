@@ -110,20 +110,15 @@ class KartverketProvider:
         self,
         services: dict[str, WCSService],
         cache_directory: str | Path,
-        maximum_area_km2: float = 400.0,
+        maximum_tile_area_km2: float = 400.0,
         maximum_pixels_per_tile: int = 4_000_000,
         maximum_tiles: int = 256,
     ) -> None:
         self.services = services
         self.cache_directory = Path(cache_directory)
-        self.maximum_tile_area_km2 = maximum_area_km2
+        self.maximum_tile_area_km2 = maximum_tile_area_km2
         self.maximum_pixels_per_tile = maximum_pixels_per_tile
         self.maximum_tiles = maximum_tiles
-
-    @property
-    def maximum_area_km2(self) -> float:
-        """Backward-compatible name for the per-request tile area."""
-        return self.maximum_tile_area_km2
 
     def plan_download(
         self,

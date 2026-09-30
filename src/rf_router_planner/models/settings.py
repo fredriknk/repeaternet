@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any
-
-
-def default_cache_directory() -> str:
-    root = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache"))
-    return str(root / "RF Router Planner" / "terrain-cache")
 
 
 class ValidationMode(str, Enum):
@@ -19,7 +12,6 @@ class ValidationMode(str, Enum):
 
 class DiffractionModel(str, Enum):
     BULLINGTON = "bullington"
-    DEYGOUT = "deygout"
 
 
 class OptimizationPriority(str, Enum):
@@ -91,22 +83,6 @@ class RFSettings:
     @classmethod
     def eu868_meshcore(cls) -> RFSettings:
         return cls()
-
-
-@dataclass(slots=True)
-class TerrainSettings:
-    dtm_paths: list[str] = field(default_factory=list)
-    dom_paths: list[str] = field(default_factory=list)
-    cache_directory: str = field(default_factory=default_cache_directory)
-    requested_resolution_m: float = 10.0
-    auto_resolution: bool = True
-    maximum_total_pixels: int = 50_000_000
-    maximum_download_area_km2: float = 400.0
-    maximum_pixels_per_tile: int = 4_000_000
-    maximum_download_tiles: int = 256
-    detail_resolution_m: float = 10.0
-    detail_corridor_width_m: float = 500.0
-    minimum_sample_step_m: float = 20.0
 
 
 @dataclass(slots=True)

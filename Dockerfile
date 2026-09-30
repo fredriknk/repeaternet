@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir . && python -c "import rasterio; from rasterio.me
 USER planner
 ENV RF_PLANNER_DATA=/data
 EXPOSE 8000
-CMD ["rf-router-web", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["rf-router-planner", "--host", "0.0.0.0", "--port", "8000"]

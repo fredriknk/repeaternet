@@ -17,6 +17,14 @@ from rf_router_planner.project_store import ProjectStore
 from rf_router_planner.web import create_app
 
 
+def test_web_settings_reject_unsupported_diffraction_model():
+    from rf_router_planner.models.settings import RFSettings
+    from rf_router_planner.web import settings
+
+    with pytest.raises(ValueError):
+        settings(RFSettings, {"diffraction_model": "deygout"})
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)

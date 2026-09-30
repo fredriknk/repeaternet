@@ -51,7 +51,6 @@ from .models.settings import (
     CandidateSettings,
     InfrastructurePolicy,
     RFSettings,
-    TerrainSettings,
     ValidationMode,
 )
 from .models.site import HeightReference, Site, SiteKind, SiteOrigin
@@ -890,13 +889,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             max(all_x) + padding,
             max(all_y) + padding,
         )
-        defaults = TerrainSettings()
         provider = KartverketProvider(
             load_services(Path(__file__).parent / "data" / "kartverket_wcs.json"),
             ws.directory / "kartverket-cache",
-            defaults.maximum_download_area_km2,
-            defaults.maximum_pixels_per_tile,
-            defaults.maximum_download_tiles,
         )
         route_corridor = RouteCorridor(tuple(projected), padding, extra_points)
         plan = provider.plan_download(
@@ -904,7 +899,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             float(requested_resolution),
             corridor=route_corridor,
             auto_resolution=auto_resolution,
-            maximum_total_pixels=defaults.maximum_total_pixels,
         )
         return provider, crs, plan, include_dom
 
@@ -1152,7 +1146,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/state")
     def state(request: Request) -> Any:
         ws = workspace(request)
-        projects = project_store.list(ws.workspace_key)
+        projects = project_store.list_active(ws.workspace_key)
         archived_projects = project_store.list_archived(ws.workspace_key)
         active_project = project_store.get(ws.workspace_key, ws.project_id) or ws.project
         if ws.storage_usage_bytes is None:
@@ -1411,14 +1405,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             context = coverage_context(ws, body)
             coverage_settings: CoverageSettings = context["settings"]
             sources: list[Site] = context["sources"]
-            preview_cells = min(
+            preview_cell_limit = min(
                 MAX_COVERAGE_PREVIEW_CELLS,
                 coverage_settings.maximum_cells,
                 MAX_COVERAGE_PREVIEW_EVALUATIONS // len(sources),
             )
             bounded_settings = replace(
                 coverage_settings,
-                maximum_cells=max(1, preview_cells),
+                maximum_cells=max(1, preview_cell_limit),
                 maximum_evaluations=MAX_COVERAGE_PREVIEW_EVALUATIONS,
             )
             started = time.perf_counter()
@@ -3326,7 +3320,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404, "Project not found")
         workspace_root = (root / ws.workspace_key).resolve()
         if project_store.project_path(ws.workspace_key, target) == workspace_root:
-            raise HTTPException(409, "The migrated workspace project cannot be permanently deleted")
+            raise HTTPException(409, "A project stored at the workspace root cannot be permanently deleted")
         try:
             project = project_store.delete(ws.workspace_key, project_id)
         except ValueError as exc:

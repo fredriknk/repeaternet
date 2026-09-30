@@ -13,7 +13,7 @@ def provider(tmp_path: Path, **kwargs) -> KartverketProvider:
         "dtm",
         "dom",
     )
-    return KartverketProvider({"EPSG:25833": service}, tmp_path, maximum_area_km2=400, **kwargs)
+    return KartverketProvider({"EPSG:25833": service}, tmp_path, maximum_tile_area_km2=400, **kwargs)
 
 
 def test_large_area_is_split_instead_of_rejected(tmp_path) -> None:
