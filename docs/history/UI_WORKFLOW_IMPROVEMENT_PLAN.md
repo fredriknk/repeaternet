@@ -1,3 +1,5 @@
+> Historical record, archived 2026-09-30. Implementation notes and test results describe their recorded revisions. For current behavior and remaining work, use the [user guide](../USER_GUIDE.md) and [roadmap](../ROADMAP.md).
+
 # RepeaterNet UI and workflow improvement plan
 
 Created: 2026-09-28. Status: implementation in progress (U0–U6 implemented; U7 validation remains).

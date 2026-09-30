@@ -1,3 +1,5 @@
+> Historical record, archived 2026-09-30. Implementation notes and test results describe their recorded revisions. For current behavior and remaining work, use the [user guide](../USER_GUIDE.md) and [roadmap](../ROADMAP.md).
+
 # Web usability and search performance implementation plan
 
 Created: 2026-09-26. Status: P0–P7 implementation milestones committed;
@@ -87,7 +89,7 @@ Implementation:
 - Record at least three fresh-process runs per timed comparison on the same
   machine; use medians and ranges. Separate instrumented from ordinary timings.
 - A real-terrain fixture is not checked into the repository. Use the
-  [fixture manifest](REAL_TERRAIN_FIXTURE.md) when a redistribution-approved
+  [fixture manifest](../REAL_TERRAIN_FIXTURE.md) when a redistribution-approved
   raster is selected; synthetic baselines must remain labeled synthetic.
 
 Completion evidence (Windows 11, Python 3.13.12, 24 logical CPUs; three fresh

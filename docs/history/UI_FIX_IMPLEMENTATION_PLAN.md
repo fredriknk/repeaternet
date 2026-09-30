@@ -1,3 +1,5 @@
+> Historical record, archived 2026-09-30. Implementation notes and test results describe their recorded revisions. For current behavior and remaining work, use the [user guide](../USER_GUIDE.md) and [roadmap](../ROADMAP.md).
+
 # Browser findings: fix implementation plan
 
 Date: 2026-09-29. Status: F0–F6 implemented; F7 real-browser acceptance is in progress.

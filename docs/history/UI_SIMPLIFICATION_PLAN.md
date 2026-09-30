@@ -1,3 +1,5 @@
+> Historical record, archived 2026-09-30. Implementation notes and test results describe their recorded revisions. For current behavior and remaining work, use the [user guide](../USER_GUIDE.md) and [roadmap](../ROADMAP.md).
+
 # RepeaterNet UI simplification and direct-action plan
 
 Status: implementation in progress; S0 source/API audit complete and S1 source implementation complete.

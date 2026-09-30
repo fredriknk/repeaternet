@@ -1,3 +1,5 @@
+> Historical record, archived 2026-09-30. Implementation notes and test results describe their recorded revisions. For current behavior and remaining work, use the [user guide](../USER_GUIDE.md) and [roadmap](../ROADMAP.md).
+
 # RF pathfinding improvement plan
 
 Next phase: [Web usability and search performance implementation plan](USABILITY_PERFORMANCE_PLAN.md).
@@ -225,7 +227,7 @@ for the complete method definition.
 
 ### Larger-search benchmark — 2026-09-26
 
-Added [`tools/benchmark_rf_search.py`](../tools/benchmark_rf_search.py) to make
+Added [`tools/benchmark_rf_search.py`](../../tools/benchmark_rf_search.py) to make
 the size sweep repeatable. It runs each measurement in a fresh process, reports
 `RouteOptimizer.optimize` wall time and peak working set, and uses deterministic
 random seeds. Timings have no pass/fail threshold. Environment: Windows 11,
@@ -335,7 +337,7 @@ add the selection workflow to the desktop UI.
 
 Investigation complete; production remediation was open at this point and is
 completed in the subsequent remediation section below. Added
-[`tools/profile_rf_search.py`](../tools/profile_rf_search.py), which instruments
+[`tools/profile_rf_search.py`](../../tools/profile_rf_search.py), which instruments
 the existing benchmark in a separate process, counts live profile-array payloads
 using weak references, reports peak process working set and pair-container sizes,
 and supports cooperative time and retained-profile limits. These limits are

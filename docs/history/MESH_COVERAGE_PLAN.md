@@ -1,3 +1,5 @@
+> Historical record, archived 2026-09-30. Implementation notes and test results describe their recorded revisions. For current behavior and remaining work, use the [user guide](../USER_GUIDE.md) and [roadmap](../ROADMAP.md).
+
 # Mesh coverage and planning tools implementation plan
 
 Created: 2026-09-27. Status: C0–C11 feature set delivered; C12 implementation corrections are delivered, with browser, deployment/concurrency, and field-accuracy release validation still open.
@@ -124,7 +126,7 @@ Implementation:
 - Add a coverage benchmark tool: source count, grid dimensions, requested area,
   radio settings, cold/warm runs, elapsed time, first chunk, RF calls, cache hits,
   terrain reads/bytes, response bytes and peak combined process memory.
-- Follow [the real-terrain fixture manifest](REAL_TERRAIN_FIXTURE.md). A local
+- Follow [the real-terrain fixture manifest](../REAL_TERRAIN_FIXTURE.md). A local
   licensed raster can be used without committing the raster; record its checksum,
   source, settings and availability. CI remains independent of provider downloads.
 
@@ -199,7 +201,7 @@ concurrency and desktop worker migration remain unverified or deferred.
 
 Continuation evidence (2026-09-27): an existing local Kartverket DTM cache was
 subsequently identified and its request identity/checksum verified. The
-[fixture manifest](fixtures/kartverket-nhm-25832-50m.md) records attribution,
+[fixture manifest](../fixtures/kartverket-nhm-25832-50m.md) records attribution,
 provenance limitations, fixed coordinates and reproduction commands. Three fresh
 processes per case used 50 m RF profiles over a 396.01 km² region:
 
@@ -211,8 +213,8 @@ processes per case used 50 m RF profiles over a 396.01 km² region:
 Both cases produced byte-identical serialized cold/warm results, with 100% warm
 cache hits (512 and 32,768). The standard case produced 3,349 covered and 747
 uncovered cells, no unknown cells, and 8,181,630 serialized bytes. Raw measurements
-are in [preview evidence](benchmarks/coverage-raster-preview.json) and
-[standard evidence](benchmarks/coverage-raster-standard.json). The memory figure
+are in [preview evidence](../benchmarks/coverage-raster-preview.json) and
+[standard evidence](../benchmarks/coverage-raster-standard.json). The memory figure
 is the engine child high-water working set, not concurrent web-server RSS. Cold
 means an empty application cache, not flushed filesystem/GDAL/storage caches.
 This closes the absence of real-raster core measurements; browser/concurrency,
@@ -234,7 +236,7 @@ scalar-metric cache cannot retain this full pair set, so the direct engine bench
 does not meet a 90% cache-reuse target at this size. Exact saved-result replay is
 implemented separately in C9; large-result HTTP replay and storage-pressure
 behavior remain open. Full measurements are in the
-[32-source maximum-budget artifact](benchmarks/coverage-raster-large-32x7744-c12.json).
+[32-source maximum-budget artifact](../benchmarks/coverage-raster-large-32x7744-c12.json).
 Reproduce with `python tools/benchmark_mesh_coverage.py --dtm
 cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif --sources 32
 --cells 7744 --repeats 3 --output
@@ -603,8 +605,8 @@ at 7,744 cells / 247,808 pairs and produces 48,027,449 bytes: current-job valida
 0.2594 s (0.2573–0.2600), archive lookup 0.2857 s (0.2771–0.4333), peak median
 117.63 MiB. Every repetition also rejects an extra out-of-grid cell appended at
 EOF. Exact fixture checksums, individual runs and commands are captured by
-[eight-source evidence](benchmarks/coverage-replay-8-sources.json) and
-[32-source evidence](benchmarks/coverage-replay-32-sources.json). These isolate
+[eight-source evidence](../benchmarks/coverage-replay-8-sources.json) and
+[32-source evidence](../benchmarks/coverage-replay-32-sources.json). These isolate
 large-file parsing/integrity and manifest selection using generated scalar data;
 they exclude RF computation, browser/HTTP latency and cold storage caches. The
 existing API regression separately proves identical requests do not rerun RF.
@@ -655,8 +657,8 @@ Warm median was 0.6398 s. All three cold/warm output checksums matched the basel
 `3a11ded81997c61a22beee3692c0bd4ec29d8253360e4486d47a489aacfac227`. Preview
 256×2 cold median was 0.1885 s (22.04× versus the baseline), first chunk 0.0915 s,
 and peak 125.06 MiB. Full per-run data is in the
-[standard real-raster benchmark](benchmarks/coverage-raster-standard-windowed.json)
-and [preview benchmark](benchmarks/coverage-raster-preview-windowed.json).
+[standard real-raster benchmark](../benchmarks/coverage-raster-standard-windowed.json)
+and [preview benchmark](../benchmarks/coverage-raster-preview-windowed.json).
 These are local-raster timings, not server/browser latency or field accuracy.
 
 ### C12b — Preserve final-profile sample limits [implemented · `5fa4b55`]
