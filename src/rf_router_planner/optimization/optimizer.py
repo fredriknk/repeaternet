@@ -274,10 +274,12 @@ class RouteOptimizer:
         *,
         evaluation_cache: LinkMetricsCache | None = None,
         cache_namespace: str = "default",
+        site_filter: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
     ) -> None:
         self.terrain = terrain
         self.rf_settings = rf_settings
         self.candidate_settings = candidate_settings
+        self.site_filter = site_filter
         self.evaluator = LinkEvaluator(terrain, rf_settings, evaluation_cache, cache_namespace)
 
     def _progressively_validate_link(self, source: Site, target: Site) -> LinkResult | None:
@@ -444,6 +446,20 @@ class RouteOptimizer:
             return OptimizationResult([], [], [], [], ["Optimization cancelled"])
         if any(site.required and not site.enabled for site in (required_routers or [])):
             raise ValueError("Required routers cannot be disabled")
+        site_filter = self.site_filter
+        road_diagnostics: list[str] = []
+        if site_filter is not None and candidates is None:
+            road_diagnostics.append("Road access filter kept 0 of 0 grid points.")
+
+        def record_road_access(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+            assert site_filter is not None
+            allowed = site_filter(xs, ys)
+            road_diagnostics[0] = (
+                f"Road access filter kept {np.count_nonzero(allowed)} of {xs.size} grid points."
+            )
+            return allowed
+
+        candidate_filter = record_road_access if site_filter is not None else None
         notify("Generating candidates", 0, 1)
         network_clients = clients or [endpoint_a, endpoint_b]
         mandatory = [site for site in (required_routers or []) if site.enabled]
@@ -474,7 +490,12 @@ class RouteOptimizer:
             anchor_b = replace(network_clients[-1], x=max_x, y=max_y)
             candidate_settings = replace(self.candidate_settings, unrestricted_bounding_area=True)
             generated = generate_candidates(
-                self.terrain, anchor_a, anchor_b, candidate_settings, exclusions or []
+                self.terrain,
+                anchor_a,
+                anchor_b,
+                candidate_settings,
+                exclusions or [],
+                site_filter=candidate_filter,
             )[1:-1]
             occupied = {site.id for site in [*network_clients, *mandatory]}
             for index, site in enumerate(generated, 1):
@@ -485,7 +506,12 @@ class RouteOptimizer:
             sites = [*network_clients, *mandatory, *generated, *optional]
         else:
             sites = generate_candidates(
-                self.terrain, endpoint_a, endpoint_b, self.candidate_settings, exclusions or []
+                self.terrain,
+                endpoint_a,
+                endpoint_b,
+                self.candidate_settings,
+                exclusions or [],
+                site_filter=candidate_filter,
             )
             if optional:
                 sites = [*sites[:-1], *optional, sites[-1]]
@@ -620,7 +646,7 @@ class RouteOptimizer:
                         list(snapshot_links),
                         sites,
                         list(link_by_key.values()),
-                        list(preview.diagnostics),
+                        [*preview.diagnostics, *road_diagnostics],
                         time.perf_counter() - started,
                         [preview],
                         0,
@@ -719,7 +745,7 @@ class RouteOptimizer:
                 list(active.links),
                 sites,
                 list(link_by_key.values()),
-                list(active.diagnostics),
+                [*active.diagnostics, *road_diagnostics],
                 time.perf_counter() - started,
                 alternatives,
                 active_index,
@@ -767,7 +793,7 @@ class RouteOptimizer:
                         list(fallback_links),
                         sites,
                         [*link_by_key.values(), *fallback_links],
-                        list(solution.diagnostics),
+                        [*solution.diagnostics, *road_diagnostics],
                         time.perf_counter() - started,
                         [solution],
                         0,
@@ -782,6 +808,7 @@ class RouteOptimizer:
         diagnostics.append(
             "Try showing more router-count solutions, widening the corridor, or increasing candidate density."
         )
+        diagnostics.extend(road_diagnostics)
         return OptimizationResult(
             [],
             [],
@@ -792,16 +819,25 @@ class RouteOptimizer:
         )
 
     def _refine_site(self, previous: Site, site: Site, following: Site) -> Site:
+        if (
+            site.kind != SiteKind.CANDIDATE
+            or site.origin != SiteOrigin.OPTIMIZED
+            or site.locked
+            or site.required
+        ):
+            return site
         radius = self.candidate_settings.refine_radius_m
         step = max(self.candidate_settings.refine_step_m, self.terrain.resolution_m)
         offsets = np.arange(-radius, radius + step * 0.5, step)
         best = site
         best_score = (-float("inf"), -float("inf"))
         for dx in offsets:
-            for dy in offsets:
-                if dx * dx + dy * dy > radius * radius:
-                    continue
-                x, y = site.x + float(dx), site.y + float(dy)
+            x = site.x + float(dx)
+            ys = site.y + offsets[dx * dx + offsets * offsets <= radius * radius]
+            if self.site_filter is not None and ys.size:
+                ys = ys[self.site_filter(np.full(ys.shape, x), ys)]
+            for trial_y in ys:
+                y = float(trial_y)
                 ground = float(self.terrain.sample(np.array([x]), np.array([y]))[0])
                 if not np.isfinite(ground):
                     continue

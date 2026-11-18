@@ -8,18 +8,20 @@ from fastapi.testclient import TestClient
 from pyproj import Transformer
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
+from shapely.geometry import LineString
 
 from rf_router_planner.integrations.corescope import CoreScopeClient, CoreScopeRepeater
 from rf_router_planner.models.network import NetworkSolution
+from rf_router_planner.models.settings import CandidateSettings, RoadAccessClasses
 from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
 from rf_router_planner.project_store import ProjectStore
-from rf_router_planner.web import create_app
+from rf_router_planner.terrain.roads import RoadAccessIndex
+from rf_router_planner.web import create_app, settings
 
 
 def test_web_settings_reject_unsupported_diffraction_model():
     from rf_router_planner.models.settings import RFSettings
-    from rf_router_planner.web import settings
 
     with pytest.raises(ValueError):
         settings(RFSettings, {"diffraction_model": "deygout"})
@@ -830,6 +832,98 @@ def test_invalid_upload_and_settings(client):
     assert (
         client.post("/api/cancel", headers={"origin": "https://other.example"}).status_code == 403
     )
+
+
+def test_road_access_settings_round_trip(client):
+    state = client.get("/api/state").json()
+    defaults = state["candidates"]
+    assert defaults["road_access_enabled"] is False
+    assert defaults["maximum_road_distance_m"] == 1000
+    assert defaults["road_access_classes"] == "all_drivable"
+    road_settings = {
+        "road_access_enabled": True,
+        "maximum_road_distance_m": 750.5,
+        "road_access_classes": "public_roads",
+    }
+    plan = {"a": [60, 10], "b": [60.1, 10.1], "rf": {}, "candidates": road_settings}
+    assert client.post("/api/projects/autosave", json={"plan": plan}).status_code == 200
+    restored = client.get("/api/state").json()["plan"]
+    assert restored == plan
+    parsed = settings(CandidateSettings, restored["candidates"])
+    assert parsed.road_access_enabled is True
+    assert parsed.maximum_road_distance_m == 750.5
+    assert parsed.road_access_classes is RoadAccessClasses.PUBLIC_ROADS
+    assert settings(CandidateSettings, {}) == CandidateSettings()
+
+    for invalid in (
+        {"maximum_road_distance_m": 9},
+        {"maximum_road_distance_m": 20_001},
+        {"maximum_road_distance_m": True},
+        {"road_access_enabled": "false"},
+        {"road_access_classes": "footways"},
+    ):
+        bad_plan = {**plan, "candidates": {**road_settings, **invalid}}
+        assert client.post("/api/optimize", json=bad_plan).status_code == 422
+
+
+@pytest.mark.parametrize("provider_fails", [False, True])
+def test_planning_job_with_road_access(client, monkeypatch, provider_fails):
+    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    a = list(reversed(reverse.transform(500100, 6650500)))
+    b = list(reversed(reverse.transform(500800, 6650500)))
+    seen = Event()
+    resume = Event()
+
+    def load_roads(bounds, crs, road_classes, max_distance_m, cache_directory):
+        assert bounds == pytest.approx((499100, 6649500, 501800, 6651500))
+        assert crs == "EPSG:25833"
+        assert road_classes is RoadAccessClasses.PUBLIC_ROADS
+        assert max_distance_m == 125
+        assert cache_directory.name == "overpass-cache"
+        seen.set()
+        assert resume.wait(timeout=5)
+        if provider_fails:
+            raise RuntimeError("Could not load road network from Overpass (HTTP 503)")
+        return RoadAccessIndex([LineString([(500450, 6650000), (500450, 6651000)])], max_distance_m)
+
+    monkeypatch.setattr("rf_router_planner.web.load_road_access_index", load_roads)
+    response = client.post(
+        "/api/optimize",
+        json={
+            "a": a,
+            "b": b,
+            "candidates": {
+                "road_access_enabled": True,
+                "maximum_road_distance_m": 125,
+                "road_access_classes": "public_roads",
+                "corridor_width_m": 1000,
+                "grid_spacing_m": 100,
+                "refine_radius_m": 0,
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    try:
+        assert seen.wait(timeout=5)
+        assert client.get("/api/state").json()["job"]["stage"] == "Loading road network"
+    finally:
+        resume.set()
+    for _ in range(200):
+        job = client.get("/api/state").json()["job"]
+        if job["state"] not in {"running", "queued"}:
+            break
+        time.sleep(0.02)
+
+    if provider_fails:
+        assert job["state"] == "failed", job
+        assert job["stage"] == "Could not load road network from Overpass (HTTP 503)"
+    else:
+        assert job["state"] == "complete", job
+        result = client.get("/api/result").json()
+        generated = [site for site in result["candidates"] if site["kind"] == "candidate"]
+        assert generated and all(abs(site["x"] - 500450) <= 125 for site in generated)
+        assert any(report.startswith("Road access filter kept ") for report in result["diagnostics"])
 
 
 def test_workspace_isolation_and_token(tmp_path, monkeypatch):

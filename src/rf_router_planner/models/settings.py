@@ -27,6 +27,11 @@ class InfrastructurePolicy(str, Enum):
     EXISTING_AND_PROPOSED = "existing_and_proposed"
 
 
+class RoadAccessClasses(str, Enum):
+    PUBLIC_ROADS = "public_roads"
+    ALL_DRIVABLE = "all_drivable"
+
+
 @dataclass(slots=True)
 class LoRaSettings:
     enabled: bool = False
@@ -109,6 +114,9 @@ class CandidateSettings:
     maximum_router_height_m: float = 10.0
     router_height_step_m: float = 1.0
     priority: OptimizationPriority = OptimizationPriority.MINIMUM_ROUTERS
+    road_access_enabled: bool = False
+    maximum_road_distance_m: float = 1000.0
+    road_access_classes: RoadAccessClasses = RoadAccessClasses.ALL_DRIVABLE
 
 
 def dataclass_to_dict(value: Any) -> Any:

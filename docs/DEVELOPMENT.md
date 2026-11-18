@@ -22,7 +22,7 @@ JavaScript and CSS without a Node build step.
 | `web_assets/` | Browser views, Leaflet interaction, responsive styles, inspection/navigation helpers |
 | `project_store.py` | SQLite named-project catalog, revisions, archive/restore, isolated project directories |
 | `models/` | Site, radio, candidate, network, and coverage contracts |
-| `terrain/` | Windowed raster access, profile sampling, candidates, Kartverket downloads |
+| `terrain/` | Windowed raster access, profile sampling, candidates, Kartverket downloads, Overpass road access |
 | `rf/` | Directional budgets, antenna patterns, curvature, Fresnel, Bullington diffraction |
 | `optimization/` | Screened graph, topology selection, staged validation, bounded metric caches, workers |
 | `coverage/` | Area grids, profiles, scenarios, comparisons, target assessment |
@@ -44,6 +44,12 @@ current browser workflow has two endpoints.
 New workspaces start with a new catalog project and do not adopt loose root-level
 files. Existing catalog entries are read directly. Obsolete formats have no
 migration guarantee during pre-release development.
+
+`RF_PLANNER_OVERPASS_URL` overrides the road data endpoint (default
+`https://overpass-api.de/api/interpreter`). Successful road queries are cached
+in each project's `overpass-cache` directory by endpoint, rounded WGS84 bounds,
+and highway classes. Coverage jobs use sites from the selected route and perform
+no road lookup.
 
 Run one web process. Its bounded scheduler, workspace registry, and shared
 scalar-metric caches are process-local. Route evaluation can use child workers.

@@ -58,8 +58,10 @@ from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .project_store import ProjectStore
 from .rf.propagation import LinkEvaluator
+from .terrain.candidate_sites import candidate_grid_spacing
 from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
+from .terrain.roads import load_road_access_index
 
 ASSETS = Path(__file__).parent / "web_assets"
 MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
@@ -244,6 +246,8 @@ def validate(rf: RFSettings, candidates: CandidateSettings) -> None:
         raise ValueError("Neighbors must be between 1 and 200")
     if not 0 <= candidates.refine_radius_m <= 2000:
         raise ValueError("Refinement radius must be between 0 and 2000 m")
+    if not 10 <= candidates.maximum_road_distance_m <= 20_000:
+        raise ValueError("Max distance to road must be between 10 and 20,000 m")
     if candidates.minimum_router_height_m > candidates.maximum_router_height_m:
         raise ValueError("Minimum height exceeds maximum height")
     if rf.lora.bandwidth_hz <= 0:
@@ -270,6 +274,13 @@ def coordinate_pair(body: dict[str, Any], key: str) -> tuple[float, float]:
     ):
         raise ValueError(f"Invalid {key} coordinates")
     return float(latitude), float(longitude)
+
+
+def _padded_site_bounds(
+    points: list[tuple[float, float]], padding: float
+) -> tuple[float, float, float, float]:
+    xs, ys = zip(*points, strict=True)
+    return min(xs) - padding, min(ys) - padding, max(xs) + padding, max(ys) + padding
 
 
 def parse_coverage_settings(value: Any) -> CoverageSettings:
@@ -881,14 +892,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         projected = [forward.transform(lon, lat) for lat, lon in endpoints]
         extra_points = tuple(forward.transform(lon, lat) for lat, lon in router_points)
         padding = float(candidates.corridor_width_m)
-        all_x = [point[0] for point in [*projected, *extra_points]]
-        all_y = [point[1] for point in [*projected, *extra_points]]
-        bounds = (
-            min(all_x) - padding,
-            min(all_y) - padding,
-            max(all_x) + padding,
-            max(all_y) + padding,
-        )
+        bounds = _padded_site_bounds([*projected, *extra_points], padding)
         provider = KartverketProvider(
             load_services(Path(__file__).parent / "data" / "kartverket_wcs.json"),
             ws.directory / "kartverket-cache",
@@ -4030,12 +4034,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             else candidates.maximum_candidates - len(known_sites) - len(manual_sites)
                         ),
                     )
+                    site_filter = None
+                    if (
+                        candidates.road_access_enabled
+                        and candidates.infrastructure_policy != InfrastructurePolicy.EXISTING_ONLY
+                        and not ws.cancel.is_set()
+                    ):
+                        progress("Loading road network", 0, 1)
+                        padding = candidates.corridor_width_m
+                        if required_sites or candidates.unrestricted_bounding_area:
+                            # The rectangular grid can extend half a step beyond its upper bounds.
+                            padding += candidate_grid_spacing(terrain, candidates) / 2
+                        bounds = _padded_site_bounds(
+                            [(site.x, site.y) for site in [*endpoints, *known_sites, *manual_sites]],
+                            padding,
+                        )
+                        road_index = load_road_access_index(
+                            bounds,
+                            terrain.crs,
+                            candidates.road_access_classes,
+                            candidates.maximum_road_distance_m,
+                            ws.directory / "overpass-cache",
+                        )
+                        site_filter = road_index.allowed
                     optimizer = RouteOptimizer(
                         terrain,
                         rf,
                         search_candidates,
                         evaluation_cache=rf_cache,
                         cache_namespace=ws.directory.name,
+                        site_filter=site_filter,
                     )
                     result = optimizer.optimize(
                         endpoints[0],

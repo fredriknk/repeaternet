@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 
@@ -87,19 +87,7 @@ def _spatially_balanced_top_n(
     return selected
 
 
-def generate_candidates(
-    terrain: TerrainSource,
-    endpoint_a: Site,
-    endpoint_b: Site,
-    settings: CandidateSettings,
-    exclusions: Iterable[list[tuple[float, float]]] = (),
-) -> list[Site]:
-    """Generate and spatially thin grid/high-ground candidates in an A-B corridor."""
-    padding = settings.corridor_width_m
-    min_x = max(terrain.bounds[0], min(endpoint_a.x, endpoint_b.x) - padding)
-    min_y = max(terrain.bounds[1], min(endpoint_a.y, endpoint_b.y) - padding)
-    max_x = min(terrain.bounds[2], max(endpoint_a.x, endpoint_b.x) + padding)
-    max_y = min(terrain.bounds[3], max(endpoint_a.y, endpoint_b.y) + padding)
+def candidate_grid_spacing(terrain: TerrainSource, settings: CandidateSettings) -> float:
     # Sample densely enough that the later local-refinement radius can actually
     # reach useful high ground.  A single grid whose points are 1 km apart can
     # miss a summit by more than 700 m, so a 250 m refinement radius would never
@@ -108,7 +96,24 @@ def generate_candidates(
     search_spacing = settings.grid_spacing_m
     if settings.refine_radius_m > 0:
         search_spacing = min(search_spacing, settings.refine_radius_m)
-    spacing = max(search_spacing, terrain.resolution_m)
+    return max(search_spacing, terrain.resolution_m)
+
+
+def generate_candidates(
+    terrain: TerrainSource,
+    endpoint_a: Site,
+    endpoint_b: Site,
+    settings: CandidateSettings,
+    exclusions: Iterable[list[tuple[float, float]]] = (),
+    site_filter: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+) -> list[Site]:
+    """Generate and spatially thin grid/high-ground candidates in an A-B corridor."""
+    padding = settings.corridor_width_m
+    min_x = max(terrain.bounds[0], min(endpoint_a.x, endpoint_b.x) - padding)
+    min_y = max(terrain.bounds[1], min(endpoint_a.y, endpoint_b.y) - padding)
+    max_x = min(terrain.bounds[2], max(endpoint_a.x, endpoint_b.x) + padding)
+    max_y = min(terrain.bounds[3], max(endpoint_a.y, endpoint_b.y) + padding)
+    spacing = candidate_grid_spacing(terrain, settings)
     xs_1d = np.arange(min_x, max_x + spacing * 0.5, spacing)
     ys_1d = np.arange(min_y, max_y + spacing * 0.5, spacing)
     if not len(xs_1d) or not len(ys_1d):
@@ -125,6 +130,9 @@ def generate_candidates(
     dom = terrain.sample(xs, ys, surface=True) if terrain.has_surface else dtm.copy()
     valid = np.isfinite(dtm)
     xs, ys, dtm, dom = xs[valid], ys[valid], dtm[valid], dom[valid]
+    if site_filter is not None and xs.size:
+        allowed = site_filter(xs, ys)
+        xs, ys, dtm, dom = xs[allowed], ys[allowed], dtm[allowed], dom[allowed]
     if not len(xs):
         return [endpoint_a, endpoint_b]
 

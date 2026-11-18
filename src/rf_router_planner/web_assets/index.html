@@ -156,6 +156,13 @@
         <section id="search-setup">
           <h2><span>05</span> Search</h2>
           <div id="search-settings"></div>
+          <div class="intent-controls">
+            <label><input id="road-access-enabled" type="checkbox"> Only suggest sites near roads</label>
+            <div id="road-access-options" hidden>
+              <div id="road-access-fields"></div>
+              <p class="hint">Road data under the ODbL. <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a></p>
+            </div>
+          </div>
           <label for="search-effort">Search effort</label>
           <select id="search-effort">
             <option value="quick">Quick · up to 200 candidate sites</option>
@@ -419,6 +426,7 @@
           </div>
           <div id="result-details">
           <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>
+          <p id="road-access-diagnostic" class="hint" hidden></p>
           <p id="rf-validation-note" class="hint" hidden>A passing link meets the configured RF validation criteria; LOS obstruction and Fresnel clearance are shown separately.</p>
           <div id="alternatives" hidden>
             <div class="analysis-alternative-controls">

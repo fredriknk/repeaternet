@@ -64,6 +64,22 @@ the configured final sampling step. Results include feasible alternatives for
 exact router counts. Reliability is the achieved number of node-independent
 paths, rather than how many nearby repeaters exist.
 
+In **Search**, enable **Only suggest sites near roads** to limit generated
+repeater sites to a straight-line distance from a mapped road. **Max distance
+to road (m)** defaults to 1,000 m and accepts 10–20,000 m. Choose **Public roads**
+to use mapped road classes from motorways through residential and service roads,
+or **Public roads and tracks** to include mapped tracks. The filter applies to
+generated sites. Endpoints, existing repeaters and manually pinned sites can
+still participate at any distance. Check access permissions and the terrain
+between the road and the site before choosing an installation location.
+
+The first search for an area and road class selection needs internet access to
+fetch data from Overpass. Subsequent searches with matching bounds and classes
+use the project's cached roads and can run offline. If the download fails, the
+search reports the error. Analysis reports how many terrain grid points passed
+the filter. Road data is available under the Open Database License (ODbL).
+[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
+
 Ready-terrain searches start with one click. Missing terrain prompts for one
 combined download-and-search action. The job card shows progress and cancellation.
 
