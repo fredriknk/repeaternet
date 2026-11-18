@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 import time
 from collections.abc import Callable
 from copy import deepcopy
@@ -13,7 +14,7 @@ from scipy.spatial import cKDTree
 from rf_router_planner.models.link import LinkResult
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.settings import CandidateSettings, OptimizationPriority, RFSettings
-from rf_router_planner.models.site import Site, SiteKind
+from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.cache import LinkMetricsCache
 from rf_router_planner.rf.propagation import LinkEvaluator
 from rf_router_planner.terrain.candidate_sites import generate_candidates
@@ -160,6 +161,108 @@ def screening_pair_indices(
             for neighbor_index in nearest:
                 allowed.add((min(i, neighbor_index), max(i, neighbor_index)))
     return sorted(allowed)
+
+
+BACKBONE_SITE_LIMIT = 64
+
+
+def backbone_site_indices(
+    sites: list[Site],
+    limit: int = BACKBONE_SITE_LIMIT,
+    excluded: set[int] | None = None,
+) -> list[int]:
+    """Pick a spatially spread set of the best high-ground relay sites.
+
+    Nearest-neighbor screening only produces short edges, so a route whose
+    useful hops are long summit-to-summit links would need far more routers
+    than allowed.  The backbone keeps the best site from each cell of a coarse
+    grid over the whole search area; all backbone pairs are screened so those
+    long links can be found.  Existing infrastructure gets a bounded share of
+    the slots so it cannot crowd out generated high ground.
+    """
+    skip = excluded or set()
+    pool = [
+        index
+        for index, site in enumerate(sites)
+        if index not in skip
+        and site.enabled
+        and np.isfinite(site.x)
+        and np.isfinite(site.y)
+    ]
+    if limit <= 0 or not pool:
+        return []
+    if len(pool) <= limit:
+        return sorted(pool)
+
+    def finite(value: float) -> float:
+        value = float(value)
+        return value if math.isfinite(value) else -math.inf
+
+    def rank(index: int) -> tuple[float, float, int]:
+        site = sites[index]
+        return (
+            -finite(site.site_quality),
+            -finite(site.antenna_absolute_elevation_m),
+            index,
+        )
+
+    known_all = sorted(
+        (index for index in pool if sites[index].origin == SiteOrigin.KNOWN), key=rank
+    )
+    known = known_all[: max(1, limit // 4)]
+    # Existing sites beyond their share must not re-enter via later passes.
+    surplus = set(known_all[len(known) :])
+    eligible = [index for index in pool if index not in surplus]
+
+    xs = np.asarray([sites[index].x for index in eligible], dtype=np.float64)
+    ys = np.asarray([sites[index].y for index in eligible], dtype=np.float64)
+    # Grid in the layout's principal axes so a diagonal corridor is binned
+    # like an axis-aligned one.
+    u, v = xs - xs.mean(), ys - ys.mean()
+    if len(eligible) > 1:
+        _, vectors = np.linalg.eigh(np.cov(np.vstack((u, v))))
+        major, minor = vectors[:, 1], vectors[:, 0]
+        u, v = u * major[0] + v * major[1], u * minor[0] + v * minor[1]
+    width = float(np.ptp(u))
+    height = float(np.ptp(v))
+    # Roughly ``limit`` occupied cells for both square and thin layouts.
+    cell = max(math.sqrt(width * height / limit), max(width, height) / limit)
+    best_by_cell: dict[tuple[int, int], int] = {}
+    if cell > 0:
+        min_u, min_v = float(u.min()), float(v.min())
+        for index, a, b in zip(eligible, u, v, strict=True):
+            key = (int((a - min_u) // cell), int((b - min_v) // cell))
+            current = best_by_cell.get(key)
+            if current is None or rank(index) < rank(current):
+                best_by_cell[key] = index
+
+    def has_quality(index: int) -> bool:
+        return math.isfinite(float(sites[index].site_quality))
+
+    spread = sorted(
+        (index for index in best_by_cell.values() if has_quality(index)), key=rank
+    )
+    selected: list[int] = []
+    seen: set[int] = set()
+    for index in [*known, *spread, *sorted(eligible, key=rank)]:
+        if index in seen:
+            continue
+        selected.append(index)
+        seen.add(index)
+        if len(selected) >= limit:
+            break
+    return sorted(selected)
+
+
+def backbone_pair_indices(
+    sites: list[Site],
+    limit: int = BACKBONE_SITE_LIMIT,
+    terminal_indices: set[int] | None = None,
+) -> list[tuple[int, int]]:
+    """All pairs among :func:`backbone_site_indices` (terminals already pair with all)."""
+    terminals = terminal_indices or {0, len(sites) - 1}
+    backbone = backbone_site_indices(sites, limit, terminals)
+    return list(itertools.combinations(backbone, 2))
 
 
 class RouteOptimizer:
@@ -410,7 +513,12 @@ class RouteOptimizer:
             if site.kind in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
             or site.required
         }
-        allowed_pairs = screening_pair_indices(sites, neighbor_limit, terminal_indices)
+        allowed_pairs = sorted(
+            {
+                *screening_pair_indices(sites, neighbor_limit, terminal_indices),
+                *backbone_pair_indices(sites, BACKBONE_SITE_LIMIT, terminal_indices),
+            }
+        )
         total_pairs = len(allowed_pairs)
         notify("Screening possible links", 0, total_pairs)
         maximum_distance = self.candidate_settings.maximum_link_distance_m

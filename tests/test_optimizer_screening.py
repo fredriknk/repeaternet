@@ -557,3 +557,95 @@ def test_all_alternative_profiles_restored_and_preparation_cancellable():
     )
     assert not result.found
     assert result.diagnostics == ["Optimization cancelled"]
+
+
+def test_optimizer_finds_long_summit_chain_beyond_two_routers(monkeypatch) -> None:
+    """Long-range hops between summits must be screened and assembled.
+
+    Each summit is surrounded by a dense cluster, so nearest-neighbor screening
+    only yields intra-cluster edges and the exact low-hop pass stops at two
+    routers.  The valid route needs five long summit-to-summit hops.
+    """
+    rng = random.Random(20261118)
+    endpoint_a = Site("A", 0, 100, kind=SiteKind.ENDPOINT_A)
+    endpoint_b = Site("B", 6000, 100, kind=SiteKind.ENDPOINT_B)
+    summits = [Site(f"S{n}", 1000.0 * n, 100, site_quality=1.0) for n in range(1, 6)]
+    clutter = [
+        Site(
+            f"S{n}-near-{k}",
+            1000.0 * n + rng.uniform(-90, 90),
+            100 + rng.uniform(-90, 90),
+            site_quality=rng.uniform(0.0, 0.5),
+        )
+        for n in range(1, 6)
+        for k in range(20)
+    ]
+    sites = [endpoint_a, *summits, *clutter, endpoint_b]
+    chain = [endpoint_a, *summits, endpoint_b]
+    valid_edges = {
+        frozenset(((left.x, left.y), (right.x, right.y)))
+        for left, right in zip(chain, chain[1:], strict=False)
+    }
+    evaluator = ChainOnlyEvaluator(valid_edges)
+
+    def fake_evaluate_pairs(_terrain, _rf, pairs, step, **_kwargs):
+        return [evaluator.evaluate(source, target, step) for source, target in pairs]
+
+    monkeypatch.setattr(
+        "rf_router_planner.optimization.optimizer.evaluate_link_pairs", fake_evaluate_pairs
+    )
+    settings = CandidateSettings(
+        maximum_neighbors_per_site=16,
+        maximum_solution_routers=6,
+        reliability_paths=1,
+        refine_radius_m=0,
+        coarse_sample_step_m=1,
+        medium_sample_step_m=1,
+        final_sample_step_m=1,
+    )
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((201, 6001)), resolution_m=1), RFSettings(), settings
+    )
+    optimizer.evaluator = evaluator  # type: ignore[assignment]
+
+    result = optimizer.optimize(endpoint_a, endpoint_b, candidates=sites)
+
+    assert result.found
+    assert [site.id for site in result.route] == [site.id for site in chain]
+
+
+@pytest.mark.parametrize("angle_deg", [0.0, 45.0, 120.0])
+def test_backbone_keeps_spread_summits_in_any_corridor_orientation(angle_deg) -> None:
+    from rf_router_planner.models.site import SiteOrigin
+    from rf_router_planner.optimization.optimizer import backbone_site_indices
+
+    rng = random.Random(7)
+    cos, sin = np.cos(np.radians(angle_deg)), np.sin(np.radians(angle_deg))
+
+    def place(site_id, along, across, quality, origin=SiteOrigin.OPTIMIZED):
+        return Site(
+            site_id,
+            along * cos - across * sin,
+            along * sin + across * cos,
+            site_quality=quality,
+            origin=origin,
+        )
+
+    sites = [place("A", 0, 0, 0.0)]
+    # Dense, slightly higher-quality clutter near A plus many existing sites.
+    sites += [place(f"c{k}", rng.uniform(0, 4000), rng.uniform(-500, 500), 0.9) for k in range(300)]
+    sites += [
+        place(f"k{k}", rng.uniform(0, 2000), rng.uniform(-200, 200), 0.95, SiteOrigin.KNOWN)
+        for k in range(120)
+    ]
+    summits = [place(f"S{n}", 30_000.0 * n, 0, 0.8) for n in range(1, 6)]
+    sites += summits
+    sites += [place(f"f{k}", rng.uniform(0, 180_000), rng.uniform(-5000, 5000), 0.1) for k in range(300)]
+    sites.append(place("B", 180_000, 0, 0.0))
+
+    selected = backbone_site_indices(sites, 64, {0, len(sites) - 1})
+    chosen = {sites[index].id for index in selected}
+
+    assert len(selected) <= 64
+    assert {summit.id for summit in summits} <= chosen
+    assert sum(sites[index].origin == SiteOrigin.KNOWN for index in selected) <= 16

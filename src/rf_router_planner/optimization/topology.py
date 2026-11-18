@@ -341,6 +341,79 @@ def _heuristic_router_layers(
     return layers
 
 
+_PATH_SEED_LIMIT = 32
+
+
+def _path_seed_subsets(
+    graph: nx.Graph,
+    clients: Sequence[Site],
+    required: Sequence[Site],
+    maximum_router_count: int,
+    cancelled: Callable[[], bool] = lambda: False,
+    requested_paths: int = 1,
+) -> list[list[str]]:
+    """Router subsets taken from few-hop paths through the screened graph.
+
+    The beam score rewards locally dense subsets, so it can fail to assemble
+    a long multi-hop relay chain (for example summit-to-summit links) until
+    every hop is present.  Shortest-hop paths supply such chains directly;
+    they are scored with the same objective as every other subset.
+    """
+    client_ids = [client.id for client in clients]
+    required_ids = [site.id for site in required]
+    seeds: list[list[str]] = []
+
+    def add(nodes: Iterable[str]) -> None:
+        routers = sorted({*nodes, *required_ids} - set(client_ids))
+        if len(routers) <= maximum_router_count and routers not in seeds:
+            seeds.append(routers)
+
+    if cancelled():
+        return seeds
+    if len(clients) == 2 and not required_ids:
+        # Unweighted: paths are yielded in non-decreasing hop count, so the
+        # first over-budget path ends the useful search.
+        try:
+            paths = nx.shortest_simple_paths(graph, client_ids[0], client_ids[1])
+            for path in itertools.islice(paths, _PATH_SEED_LIMIT):
+                if cancelled() or len(path) - 2 > maximum_router_count:
+                    break
+                add(path[1:-1])
+        except nx.NetworkXNoPath:
+            return []
+        if requested_paths > 1 and not cancelled():
+            # Redundant meshes need several disjoint chains in one subset.
+            disjoint = nx.node_disjoint_paths(
+                graph, client_ids[0], client_ids[1], cutoff=requested_paths
+            )
+            add(node for path in disjoint for node in path[1:-1])
+        return seeds
+
+    terminals = [*client_ids, *required_ids]
+    if any(node not in graph for node in terminals):
+        return seeds
+    # Shortest-hop trees rooted at terminals and well-connected hubs. A hub
+    # that is not on any pairwise shortest path can still give the smallest
+    # mesh (a star of short arms), which one Steiner approximation may miss.
+    hubs = sorted(graph.nodes, key=lambda node: (-graph.degree[node], node))
+    roots = list(dict.fromkeys([*terminals, *hubs[:_PATH_SEED_LIMIT]]))
+    for root in roots:
+        if cancelled():
+            return seeds
+        paths = nx.single_source_shortest_path(graph, root)
+        if all(node in paths for node in terminals):
+            add(node for terminal in terminals for node in paths[terminal])
+    if cancelled():
+        return seeds
+    try:
+        tree = nx.algorithms.approximation.steiner_tree(graph, terminals)
+    except (nx.NetworkXError, nx.NetworkXNoPath, ValueError):
+        return seeds
+    if all(node in tree for node in terminals):
+        add(tree.nodes)
+    return seeds
+
+
 def solve_topologies(
     sites: Sequence[Site],
     links: Sequence[LinkResult],
@@ -409,7 +482,14 @@ def solve_topologies(
     required_ids = {site.id for site in required}
     seeds: dict[int, list[tuple[Site, ...]]] = {}
     seen_seeds: set[tuple[str, ...]] = set()
-    for seed_ids in seed_router_subsets:
+    path_seeds = (
+        _path_seed_subsets(
+            graph, clients, required, maximum_router_count, is_cancelled, requested_paths
+        )
+        if needs_heuristic
+        else []
+    )
+    for seed_ids in [*seed_router_subsets, *path_seeds]:
         key = tuple(sorted(set(seed_ids)))
         if (
             key not in seen_seeds

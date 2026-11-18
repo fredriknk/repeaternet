@@ -30,6 +30,9 @@ def test_known_feasible_seed_survives_empty_heuristic_beam(monkeypatch):
     monkeypatch.setattr(
         "rf_router_planner.optimization.topology._heuristic_router_layers", lambda *a: {}
     )
+    monkeypatch.setattr(
+        "rf_router_planner.optimization.topology._path_seed_subsets", lambda *a: []
+    )
     sites = [client("A", 0), client("B", 100), router("L", 25), router("R", 75)]
     edges = [link("A", "L"), link("L", "R"), link("R", "B")]
     settings = CandidateSettings(maximum_solution_routers=2, reliability_paths=1)
@@ -316,3 +319,21 @@ def test_heuristic_search_is_labeled_and_cancellable(monkeypatch):
         == []
     )
     assert checks < 10
+
+
+def test_path_seeds_recover_long_relay_chain_lost_by_beam(monkeypatch):
+    """A multi-hop chain must survive a beam that prefers dense local clusters."""
+    monkeypatch.setattr("rf_router_planner.optimization.topology._EXACT_COMBINATION_LIMIT", 0)
+    monkeypatch.setattr(
+        "rf_router_planner.optimization.topology._heuristic_router_layers", lambda *a: {}
+    )
+    chain = ["S1", "S2", "S3", "S4"]
+    sites = [client("A", 0), client("B", 500)]
+    sites.extend(router(site_id, 100 * (index + 1)) for index, site_id in enumerate(chain))
+    edges = [link(a, b) for a, b in zip(["A", *chain], [*chain, "B"], strict=True)]
+    settings = CandidateSettings(maximum_solution_routers=6, reliability_paths=1)
+
+    solutions = solve_topologies(sites, edges, settings)
+
+    assert [solution.router_count for solution in solutions] == [4]
+    assert sorted(solutions[0].router_ids) == chain
