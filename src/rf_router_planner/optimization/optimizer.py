@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -24,6 +25,9 @@ from .graph import build_graph, select_path
 from .parallel import evaluate_link_pairs
 from .topology import select_active_solution_index, solve_topologies
 
+if TYPE_CHECKING:
+    from rf_router_planner.terrain.roads import RoadOverlay
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +42,7 @@ class OptimizationResult:
     alternatives: list[NetworkSolution] = field(default_factory=list)
     active_solution_index: int = 0
     search_complete: bool = True
+    road_overlay: RoadOverlay | None = None
 
     @property
     def found(self) -> bool:
@@ -834,13 +839,15 @@ class RouteOptimizer:
         for dx in offsets:
             x = site.x + float(dx)
             ys = site.y + offsets[dx * dx + offsets * offsets <= radius * radius]
+            xs = np.full(ys.shape, x)
+            elevations = self.terrain.sample(xs, ys)
+            valid = np.isfinite(elevations)
+            xs, ys, elevations = xs[valid], ys[valid], elevations[valid]
             if self.site_filter is not None and ys.size:
-                ys = ys[self.site_filter(np.full(ys.shape, x), ys)]
-            for trial_y in ys:
+                allowed = self.site_filter(xs, ys)
+                ys, elevations = ys[allowed], elevations[allowed]
+            for trial_y, ground in zip(ys, elevations, strict=True):
                 y = float(trial_y)
-                ground = float(self.terrain.sample(np.array([x]), np.array([y]))[0])
-                if not np.isfinite(ground):
-                    continue
                 surface = None
                 if self.terrain.has_surface:
                     sampled = float(
@@ -848,7 +855,7 @@ class RouteOptimizer:
                     )
                     surface = sampled if np.isfinite(sampled) else None
                 trial = replace(
-                    site, x=x, y=y, ground_elevation_m=ground, surface_elevation_m=surface
+                    site, x=x, y=y, ground_elevation_m=float(ground), surface_elevation_m=surface
                 )
                 try:
                     left = self.evaluator.evaluate(

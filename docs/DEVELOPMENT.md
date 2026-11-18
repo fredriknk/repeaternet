@@ -46,10 +46,15 @@ files. Existing catalog entries are read directly. Obsolete formats have no
 migration guarantee during pre-release development.
 
 `RF_PLANNER_OVERPASS_URL` overrides the road data endpoint (default
-`https://overpass-api.de/api/interpreter`). Successful road queries are cached
-in each project's `overpass-cache` directory by endpoint, rounded WGS84 bounds,
-and highway classes. Coverage jobs use sites from the selected route and perform
-no road lookup.
+`https://overpass-api.de/api/interpreter`). The global WGS84 grid uses 0.1° of
+latitude by 0.2° of longitude, about 11 × 11 km at 60° N. Each successful tile
+response is cached in the workspace's `overpass-cache` directory by endpoint,
+highway class set, tile index, and query schema version.
+The candidate filter loads tiles within the configured road distance of grid
+points that pass the corridor, terrain, and exclusion masks. The route result
+and its saved summary share a list of clipped road polylines across alternatives.
+Each alternative stores indices into that list and distances to the nearest
+mapped road within the display radius, keyed by router ID.
 
 Run one web process. Its bounded scheduler, workspace registry, and shared
 scalar-metric caches are process-local. Route evaluation can use child workers.

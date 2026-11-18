@@ -1,14 +1,15 @@
 import time
 from datetime import UTC, datetime
 from threading import Event
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import requests
 from fastapi.testclient import TestClient
 from pyproj import Transformer
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
-from shapely.geometry import LineString
 
 from rf_router_planner.integrations.corescope import CoreScopeClient, CoreScopeRepeater
 from rf_router_planner.models.network import NetworkSolution
@@ -16,7 +17,6 @@ from rf_router_planner.models.settings import CandidateSettings, RoadAccessClass
 from rf_router_planner.models.site import Site, SiteKind, SiteOrigin
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
 from rf_router_planner.project_store import ProjectStore
-from rf_router_planner.terrain.roads import RoadAccessIndex
 from rf_router_planner.web import create_app, settings
 
 
@@ -98,6 +98,7 @@ def test_real_route_upload_optimize_profile_export(client, tmp_path):
         recovered = restarted.get("/api/state").json()
         assert recovered["plan"]["a"] == a
         assert recovered["projects"]["previous_result"]["stale"] is False
+        assert "road_polylines" not in recovered["projects"]["previous_result"]
     assert result["active_alternative_id"]
     assert result["alternatives"]
     alternative = next(
@@ -867,32 +868,39 @@ def test_road_access_settings_round_trip(client):
 
 
 @pytest.mark.parametrize("provider_fails", [False, True])
-def test_planning_job_with_road_access(client, monkeypatch, provider_fails):
+def test_planning_job_with_road_access(client, tmp_path, monkeypatch, provider_fails):
     assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
     reverse = Transformer.from_crs(25833, 4326, always_xy=True)
     a = list(reversed(reverse.transform(500100, 6650500)))
     b = list(reversed(reverse.transform(500800, 6650500)))
+    longitude, latitude = reverse.transform(500550, 6650500)
     seen = Event()
     resume = Event()
 
-    def load_roads(bounds, crs, road_classes, max_distance_m, cache_directory):
-        assert bounds == pytest.approx((499100, 6649500, 501800, 6651500))
-        assert crs == "EPSG:25833"
-        assert road_classes is RoadAccessClasses.PUBLIC_ROADS
-        assert max_distance_m == 125
-        assert cache_directory.name == "overpass-cache"
+    def load_roads(_endpoint, *, data, **_kwargs):
+        assert "track" not in data["data"]
         seen.set()
         assert resume.wait(timeout=5)
         if provider_fails:
-            raise RuntimeError("Could not load road network from Overpass (HTTP 503)")
-        return RoadAccessIndex([LineString([(500450, 6650000), (500450, 6651000)])], max_distance_m)
+            response = requests.Response()
+            response.status_code = 503
+            response.raise_for_status()
+        geometry = []
+        for y in (6650000, 6651000):
+            lon, lat = reverse.transform(500450, y)
+            geometry.append({"lat": lat, "lon": lon})
+        return Mock(json=lambda: {"elements": [{"type": "way", "id": 1, "geometry": geometry}]})
 
-    monkeypatch.setattr("rf_router_planner.web.load_road_access_index", load_roads)
+    monkeypatch.setattr(requests, "post", load_roads)
+    monkeypatch.setattr("rf_router_planner.terrain.roads._retry_delay", lambda *_args: 0)
     response = client.post(
         "/api/optimize",
         json={
             "a": a,
             "b": b,
+            "manual_routers": [
+                {"id": "M-road", "latitude": latitude, "longitude": longitude, "policy": "required"}
+            ],
             "candidates": {
                 "road_access_enabled": True,
                 "maximum_road_distance_m": 125,
@@ -900,13 +908,16 @@ def test_planning_job_with_road_access(client, monkeypatch, provider_fails):
                 "corridor_width_m": 1000,
                 "grid_spacing_m": 100,
                 "refine_radius_m": 0,
+                "maximum_solution_routers": 1,
             },
         },
     )
     assert response.status_code == 200, response.text
     try:
         assert seen.wait(timeout=5)
-        assert client.get("/api/state").json()["job"]["stage"] == "Loading road network"
+        job = client.get("/api/state").json()["job"]
+        assert job["stage"] == "Loading road network"
+        assert job["total"] >= 1 and job["done"] == 0
     finally:
         resume.set()
     for _ in range(200):
@@ -917,13 +928,24 @@ def test_planning_job_with_road_access(client, monkeypatch, provider_fails):
 
     if provider_fails:
         assert job["state"] == "failed", job
-        assert job["stage"] == "Could not load road network from Overpass (HTTP 503)"
+        assert "tiles failed" in job["stage"] and "HTTP 503" in job["stage"]
     else:
         assert job["state"] == "complete", job
         result = client.get("/api/result").json()
         generated = [site for site in result["candidates"] if site["kind"] == "candidate"]
         assert generated and all(abs(site["x"] - 500450) <= 125 for site in generated)
         assert any(report.startswith("Road access filter kept ") for report in result["diagnostics"])
+        assert len(result["road_polylines"]) == 1
+        active = next(item for item in result["alternatives"] if item["selected"])
+        assert active["road_polyline_indices"] == [0]
+        assert active["nearest_road_distance_m"] == pytest.approx({"M-road": 100})
+        selected = client.post(f"/api/alternatives/{active['id']}/select").json()
+        assert selected["road_polylines"] == result["road_polylines"]
+        with TestClient(create_app(tmp_path)) as restarted:
+            restarted.cookies.set("planner_workspace", client.cookies.get("planner_workspace"))
+            summary = restarted.get("/api/state").json()["projects"]["previous_result"]
+        assert summary["road_polylines"] == result["road_polylines"]
+        assert summary["alternatives"][0]["nearest_road_distance_m"] == pytest.approx({"M-road": 100})
 
 
 def test_workspace_isolation_and_token(tmp_path, monkeypatch):

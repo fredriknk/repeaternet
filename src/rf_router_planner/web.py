@@ -58,10 +58,9 @@ from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .project_store import ProjectStore
 from .rf.propagation import LinkEvaluator
-from .terrain.candidate_sites import candidate_grid_spacing
 from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
-from .terrain.roads import load_road_access_index
+from .terrain.roads import RoadLoadCancelled, TiledRoadAccess
 
 ASSETS = Path(__file__).parent / "web_assets"
 MAX_COVERAGE_RESULT_BYTES = 100 * 1024 * 1024
@@ -124,7 +123,7 @@ def result_payload(
         else sum(site.origin == SiteOrigin.KNOWN for site in result.route[1:-1])
     )
     alternatives = []
-    for item in result.alternatives:
+    for index, item in enumerate(result.alternatives):
         site_by_id = {site.id: site for site in item.sites}
         primary_ids = item.primary_path_ids
         primary_links = [
@@ -160,6 +159,11 @@ def result_payload(
                 "route": [encode(site_by_id[site_id]) for site_id in primary_ids],
             }
         )
+        if result.road_overlay is not None:
+            alternatives[-1]["road_polyline_indices"] = result.road_overlay.polyline_indices[index]
+            alternatives[-1]["nearest_road_distance_m"] = result.road_overlay.nearest_distances_m[
+                index
+            ]
     return {
         "found": result.found,
         "router_count": result.router_count,
@@ -181,6 +185,11 @@ def result_payload(
         "candidates": encode(result.candidates),
         "active_alternative_id": solution_id(solution) if solution else None,
         "alternatives": alternatives,
+        **(
+            {"road_polylines": encode(result.road_overlay.polylines)}
+            if result.road_overlay is not None
+            else {}
+        ),
     }
 
 
@@ -3851,6 +3860,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         def run() -> None:
             terminal_status: dict[str, Any] | None = None
+
+            def cancelled_status() -> dict[str, Any]:
+                with ws.lock:
+                    stopped = ws.keep_result_on_cancel and ws.result is not None
+                    if not stopped:
+                        ws.result = None
+                        ws.snapshot_version = 0
+                    return {
+                        **ws.status,
+                        "state": "stopped" if stopped else "cancelled",
+                        "stage": (
+                            "Stopped with the latest certified route"
+                            if stopped
+                            else "Optimization cancelled"
+                        ),
+                    }
+
             try:
                 with ws.lock:
                     if ws.job_id != job_id:
@@ -3997,23 +4023,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                     "total": total,
                                 }
 
+                    road_access = (
+                        TiledRoadAccess(
+                            terrain.crs,
+                            candidates.road_access_classes,
+                            candidates.maximum_road_distance_m,
+                            root / ws.workspace_key / "overpass-cache",
+                            progress=progress,
+                            cancel=ws.cancel,
+                        )
+                        if candidates.road_access_enabled
+                        else None
+                    )
+                    completed_overlay = None
+
+                    def locate_result(result: OptimizationResult) -> None:
+                        for site in [*result.route, *result.candidates]:
+                            site.longitude, site.latitude = reverse.transform(site.x, site.y)
+                        for alternative in result.alternatives:
+                            for site in alternative.sites:
+                                site.longitude, site.latitude = reverse.transform(site.x, site.y)
+
                     def publish_snapshot(
                         snapshot: OptimizationResult, search_complete: bool
                     ) -> None:
-                        published = snapshot
-                        snapshot_sites = (
-                            published.active_solution.sites
-                            if published.active_solution
-                            else published.route
-                        )
-                        for site in [*snapshot_sites, *published.candidates]:
-                            site.longitude, site.latitude = reverse.transform(site.x, site.y)
+                        nonlocal completed_overlay
+                        locate_result(snapshot)
+                        if road_access is not None and snapshot.alternatives:
+                            snapshot.road_overlay = road_access.overlay(snapshot.alternatives)
+                            if search_complete:
+                                completed_overlay = snapshot.road_overlay
                         with ws.lock:
                             if ws.job_id != job_id or ws.input_revision != input_revision:
                                 return
                             ws.snapshot_version += 1
-                            published.search_complete = search_complete
-                            ws.result = published
+                            snapshot.search_complete = search_complete
+                            ws.result = snapshot
                             ws.status = {
                                 **ws.status,
                                 "state": "running",
@@ -4034,36 +4079,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             else candidates.maximum_candidates - len(known_sites) - len(manual_sites)
                         ),
                     )
-                    site_filter = None
-                    if (
-                        candidates.road_access_enabled
-                        and candidates.infrastructure_policy != InfrastructurePolicy.EXISTING_ONLY
-                        and not ws.cancel.is_set()
-                    ):
-                        progress("Loading road network", 0, 1)
-                        padding = candidates.corridor_width_m
-                        if required_sites or candidates.unrestricted_bounding_area:
-                            # The rectangular grid can extend half a step beyond its upper bounds.
-                            padding += candidate_grid_spacing(terrain, candidates) / 2
-                        bounds = _padded_site_bounds(
-                            [(site.x, site.y) for site in [*endpoints, *known_sites, *manual_sites]],
-                            padding,
-                        )
-                        road_index = load_road_access_index(
-                            bounds,
-                            terrain.crs,
-                            candidates.road_access_classes,
-                            candidates.maximum_road_distance_m,
-                            ws.directory / "overpass-cache",
-                        )
-                        site_filter = road_index.allowed
                     optimizer = RouteOptimizer(
                         terrain,
                         rf,
                         search_candidates,
                         evaluation_cache=rf_cache,
                         cache_namespace=ws.directory.name,
-                        site_filter=site_filter,
+                        site_filter=road_access.allowed if road_access is not None else None,
                     )
                     result = optimizer.optimize(
                         endpoints[0],
@@ -4080,27 +4102,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         cancelled=ws.cancel.is_set,
                         solution_progress=publish_snapshot,
                     )
-                    solution_sites = (
-                        result.active_solution.sites if result.active_solution else result.route
-                    )
-                    for site in [*solution_sites, *result.candidates]:
-                        site.longitude, site.latitude = reverse.transform(site.x, site.y)
                     if ws.cancel.is_set():
-                        with ws.lock:
-                            stopped = ws.keep_result_on_cancel and ws.result is not None
-                            if not stopped:
-                                ws.result = None
-                                ws.snapshot_version = 0
-                            terminal_status = {
-                                **ws.status,
-                                "state": "stopped" if stopped else "cancelled",
-                                "stage": (
-                                    "Stopped with the latest certified route"
-                                    if stopped
-                                    else "Optimization cancelled"
-                                ),
-                            }
+                        terminal_status = cancelled_status()
                     else:
+                        locate_result(result)
+                        if road_access is not None and result.alternatives:
+                            result.road_overlay = (
+                                completed_overlay or road_access.overlay(result.alternatives)
+                            )
                         result.search_complete = True
                         with ws.lock:
                             if ws.job_id == job_id and ws.input_revision == input_revision:
@@ -4113,6 +4122,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                     "snapshot_version": ws.snapshot_version,
                                     "search_complete": True,
                                 }
+            except RoadLoadCancelled:
+                terminal_status = cancelled_status()
             except Exception as exc:
                 with ws.lock:
                     if ws.job_id == job_id:
@@ -4148,6 +4159,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             "terrain_fingerprint": _terrain_fingerprint(ws),
                             "saved_at": time.time(),
                         }
+                        if "road_polylines" in payload:
+                            summary["road_polylines"] = payload["road_polylines"]
                         ws.result_summary = summary
                         project_store.save_result_summary(ws.workspace_key, ws.project_id, summary)
                     project_store.set_run_state(ws.workspace_key, ws.project_id, final_state)
@@ -4245,6 +4258,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 {key: value for key, value in item.items() if key != "route"}
                 for item in payload["alternatives"]
             ]
+            if "road_polylines" in payload:
+                summary["road_polylines"] = payload["road_polylines"]
             ws.result_summary = summary
             project_store.save_result_summary(ws.workspace_key, ws.project_id, summary)
             return payload

@@ -130,6 +130,19 @@ def generate_candidates(
     dom = terrain.sample(xs, ys, surface=True) if terrain.has_surface else dtm.copy()
     valid = np.isfinite(dtm)
     xs, ys, dtm, dom = xs[valid], ys[valid], dtm[valid], dom[valid]
+    polygons = list(exclusions)
+    if site_filter is not None and polygons:
+        # A filter can load external data based on the points it receives.
+        outside = np.fromiter(
+            (
+                not any(_inside_polygon(float(x), float(y), polygon) for polygon in polygons)
+                for x, y in zip(xs, ys, strict=True)
+            ),
+            dtype=bool,
+            count=xs.size,
+        )
+        xs, ys, dtm, dom = xs[outside], ys[outside], dtm[outside], dom[outside]
+        polygons = []
     if site_filter is not None and xs.size:
         allowed = site_filter(xs, ys)
         xs, ys, dtm, dom = xs[allowed], ys[allowed], dtm[allowed], dom[allowed]
@@ -151,7 +164,6 @@ def generate_candidates(
         elevation_score - np.clip(slope, 0, 1) * 0.35 - np.clip(obstruction / 20.0, 0, 1) * 0.25
     )
 
-    polygons = list(exclusions)
     cells: dict[tuple[int, int], list[int]] = defaultdict(list)
     for index, (x, y) in enumerate(zip(xs, ys, strict=True)):
         if any(_inside_polygon(float(x), float(y), polygon) for polygon in polygons):

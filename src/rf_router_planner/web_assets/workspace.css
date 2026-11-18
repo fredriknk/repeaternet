@@ -199,7 +199,8 @@ input:not([type="checkbox"]), select { font-size: 14px; }
   text-align: center;
   line-height: 1.4;
 }
-.map-tools button, .map-tools label { min-height: 40px; font-size: 12px; }
+.map-tools { right: 52px; flex-wrap: wrap; pointer-events: none; }
+.map-tools button, .map-tools label { min-height: 40px; font-size: 12px; pointer-events: auto; }
 .router-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .coordinate-entry { margin-top: 12px; }
 .coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -265,7 +266,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .run-panel { position: sticky; bottom: 0; }
   .workspace-action-bar { flex-wrap: wrap; }
   .workspace-action-bar .action-status { flex-basis: 100%; }
-  .map-tools { top: 9px; left: 52px; right: 8px; gap: 5px; }
+  .map-tools { top: 9px; left: 52px; right: 48px; gap: 5px; }
   .map-tools button, .map-tools label { min-height: 42px; padding: 7px; }
   .router-filters, .coordinate-grid { grid-template-columns: 1fr 1fr; }
 }

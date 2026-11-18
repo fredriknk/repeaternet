@@ -20,6 +20,8 @@ const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {m
 const topo = L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {maxZoom:18, attribution:'© Kartverket'});
 map.createPane('coveragePane');map.getPane('coveragePane').style.zIndex=350;
 const coverageRenderer=L.canvas({pane:'coveragePane',padding:0.25});
+map.createPane('repeaterRoadsPane').style.zIndex=375;
+const repeaterRoadLayer=L.layerGroup([], {attribution:osm.options.attribution});
 const routeLayer = L.layerGroup().addTo(map), candidateLayer = L.layerGroup().addTo(map), knownLayer = L.layerGroup().addTo(map), coverageLayer = L.layerGroup().addTo(map), predictedCoverageLayer=L.layerGroup(), coverageAreaLayer=L.layerGroup().addTo(map), coverageDiffLayer=L.layerGroup(), inspectionLayer=L.layerGroup().addTo(map), manualLayer = L.layerGroup().addTo(map), targetLayer=L.layerGroup().addTo(map);
 let routeLinkLayers=[];
 L.control.layers({'OpenStreetMap':osm, 'Kartverket topo':topo},{'Terrain coverage':coverageLayer,'Predicted mesh coverage':predictedCoverageLayer,'Coverage analysis area':coverageAreaLayer,'Coverage difference':coverageDiffLayer,'Coverage targets':targetLayer}).addTo(map);
@@ -41,7 +43,7 @@ function invalidate(reason='planning inputs'){
   updatePlanReadiness();
   if($('coverage-job-status'))setCoverageStatus('Route inputs changed. Recalculate coverage after validating the new route.');
   if(result){resultStale=true;resultStaleReason=reason;$('result-title').textContent='Previous certified route · stale';$('status').textContent=`${reason} changed. This route is for the previous settings; run a new search to validate the current plan.`;$('status').className='stale';$('exports').hidden=true;for(const layer of routeLayer.getLayers()){if(layer.setStyle)layer.setStyle({color:'#9b8e6b',dashArray:'5 6'});if(layer.dragging)layer.dragging.disable();}$('alternative-select').disabled=true;syncAnalysisBadge();updateCoverageActions();return;}
-  routeLayer.clearLayers();candidateLayer.clearLayers();$('metrics').replaceChildren();$('hops').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('alternatives').hidden=true;$('road-access-diagnostic').hidden=true;$('result-title').textContent='Ready for a new route';
+  routeLayer.clearLayers();candidateLayer.clearLayers();showRepeaterRoads();$('metrics').replaceChildren();$('hops').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('alternatives').hidden=true;$('road-access-diagnostic').hidden=true;$('result-title').textContent='Ready for a new route';
 }
 function updatePlanReadiness(report=terrainReadiness){
   const card=$('plan-readiness');if(!card)return;
@@ -871,9 +873,24 @@ async function chooseAlternative(){if(resultStale||busy||coverageBusy||coverageL
 function pinMovedRouter(site,point){let router=manualRouters.find(item=>item.id===site.id);if(!router){router={id:'M-'+crypto.randomUUID(),latitude:point.lat,longitude:point.lng,antenna_height_m:site.antenna_height_m,policy:'required'};manualRouters.push(router);}else{router.latitude=point.lat;router.longitude=point.lng;router.policy='required';}renderManualRouters();recordEdit();invalidate('proposed route site location');scheduleCoverageCheck();status(`${router.id} pinned as a required proposed site. Run a new search to certify the edited route.`);}
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?`Passes configured validation criteria${issues.length?` · ${issues.slice(0,2).join(', ')}`:''}`:issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
 function syncAnalysisBadge(){const badge=$('analysis-badge');badge.hidden=!result;badge.textContent=resultStale?'Stale':'Ready';badge.dataset.state=resultStale?'stale':'ready';}
+function showRepeaterRoads(){
+  repeaterRoadLayer.clearLayers();
+  const active=result?.alternatives?.find(item=>item.id===result.active_alternative_id);
+  const lines=(active?.road_polyline_indices||[]).map(index=>result.road_polylines?.[index]).filter(Boolean);
+  $('show-repeater-roads-control').hidden=!lines.length;
+  if(!lines.length||!$('show-repeater-roads').checked){
+    if(map.hasLayer(repeaterRoadLayer))map.removeLayer(repeaterRoadLayer);
+    return;
+  }
+  const style={pane:'repeaterRoadsPane',interactive:false};
+  L.polyline(lines,{...style,color:'#2e3037',weight:4}).addTo(repeaterRoadLayer);
+  L.polyline(lines,{...style,color:'#ffe1a1',weight:2}).addTo(repeaterRoadLayer);
+  if(!map.hasLayer(repeaterRoadLayer))repeaterRoadLayer.addTo(map);
+}
+$('show-repeater-roads').onchange=showRepeaterRoads;
 function render(){
   routeLayer.clearLayers();routeLinkLayers=[];$('metrics').replaceChildren();$('hops').querySelector('tbody').replaceChildren();$('profile').hidden=true;$('analysis-link-picker').hidden=true;$('hops-disclosure').hidden=true;$('rf-validation-note').hidden=true;
-  syncAnalysisBadge();$('route-show-map').disabled=!result?.links?.length;
+  syncAnalysisBadge();showRepeaterRoads();$('route-show-map').disabled=!result?.links?.length;
   const roadDiagnostic=$('road-access-diagnostic');
   roadDiagnostic.textContent=result.found?(result.diagnostics||[]).find(line=>line.startsWith('Road access filter kept '))||'':'';
   roadDiagnostic.hidden=!roadDiagnostic.textContent;
@@ -883,7 +900,15 @@ function render(){
   for(const [value,label] of [[result.router_count,'TOTAL ROUTERS'],[result.existing_router_count||0,'EXISTING'],[result.proposed_router_count??result.router_count,'PROPOSED'],[(distance/1000).toFixed(1)+' km','PRIMARY ROUTE'],[Number.isFinite(margin)?margin.toFixed(1)+' dB':'—','BOTTLENECK MARGIN'],[result.elapsed_seconds.toFixed(1)+' s','SEARCH TIME']]){const metric=document.createElement('div'),strong=document.createElement('strong'),small=document.createElement('small');metric.className='metric';strong.textContent=value;small.textContent=label;metric.append(strong,small);$('metrics').append(metric);}
   const linkSelector=$('analysis-link-select');linkSelector.replaceChildren();links.forEach((link,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`${index+1}. ${link.source_id} → ${link.target_id} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB`;linkSelector.append(option);});$('analysis-link-picker').hidden=!links.length;
   const sites=Object.fromEntries(result.route.map(site=>[site.id,site]));
-  result.route.filter(site=>!['endpoint_a','endpoint_b','client'].includes(site.kind)).forEach(site=>{const proposed=site.origin!=='known',marker=L.marker([site.latitude,site.longitude],{draggable:proposed&&!busy&&!resultStale,icon:L.divIcon({className:'site-marker'+(site.origin==='manual'?' manual-site':''),html:site.id.replace(/[^A-Za-z0-9]/g,'').slice(0,5),iconSize:[32,32]})}).bindTooltip(`${site.id} · ${site.origin==='known'?'existing':'proposed'}${proposed?' · drag to pin':''}`);marker._plannerDraggable=proposed;if(proposed)marker.on('dragend',event=>pinMovedRouter(site,event.target.getLatLng()));marker.addTo(routeLayer);});
+  result.route.filter(site=>!['endpoint_a','endpoint_b','client'].includes(site.kind)).forEach(site=>{
+    const proposed=site.origin!=='known',marker=L.marker([site.latitude,site.longitude],{draggable:proposed&&!busy&&!resultStale,icon:L.divIcon({className:'site-marker'+(site.origin==='manual'?' manual-site':''),html:site.id.replace(/[^A-Za-z0-9]/g,'').slice(0,5),iconSize:[32,32]})}).bindTooltip(`${site.id} · ${site.origin==='known'?'existing':'proposed'}${proposed?' · drag to pin':''}`);
+    const nearest=active?.nearest_road_distance_m?.[site.id];
+    if(Number.isFinite(nearest))marker.bindPopup(`Nearest road: ${Math.round(nearest)} m`);
+    else if(nearest===null)marker.bindPopup('No mapped road within the display radius.');
+    marker._plannerDraggable=proposed;
+    if(proposed)marker.on('dragend',event=>pinMovedRouter(site,event.target.getLatLng()));
+    marker.addTo(routeLayer);
+  });
   links.forEach((link,index)=>{
     const a=sites[link.source_id],b=sites[link.target_id];if(a&&b){const line=L.polyline([[a.latitude,a.longitude],[b.latitude,b.longitude]],{color:resultStale?'#9b8e6b':link.valid?'#176750':'#b44735',dashArray:resultStale?'5 6':null,weight:4}).addTo(routeLayer);routeLinkLayers[index]=line;line.bindTooltip(`${link.source_id} → ${link.target_id} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB · ${linkIssues(link)}`);line.on('click',()=>{setMainView('view-analysis');profile(index,true);});}
     const row=document.createElement('tr'),reason=linkIssues(link);for(const value of [`${link.source_id} → ${link.target_id}`,(link.distance_m/1000).toFixed(2)+' km',link.worst_margin_db.toFixed(1)+' dB',link.minimum_fresnel_clearance_ratio===null?'—':(link.minimum_fresnel_clearance_ratio*100).toFixed(0)+'%',link.los_clear?'Clear':'Obstructed',reason]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}row.tabIndex=0;row.setAttribute('aria-selected',String(index===selected));row.onclick=()=>profile(index);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();profile(index);}};$('hops').querySelector('tbody').append(row);

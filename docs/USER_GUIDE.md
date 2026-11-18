@@ -73,11 +73,18 @@ generated sites. Endpoints, existing repeaters and manually pinned sites can
 still participate at any distance. Check access permissions and the terrain
 between the road and the site before choosing an installation location.
 
-The first search for an area and road class selection needs internet access to
-fetch data from Overpass. Subsequent searches with matching bounds and classes
-use the project's cached roads and can run offline. If the download fails, the
-search reports the error. Analysis reports how many terrain grid points passed
-the filter. Road data is available under the Open Database License (ODbL).
+RepeaterNet downloads OpenStreetMap roads from Overpass in tiles of roughly
+10 km. It requests tiles within reach of candidate points on valid terrain in
+the search area. The workspace reuses downloaded tiles for the same road
+classes across searches and projects. Moving an endpoint only downloads
+newly needed tiles. **Loading road network** shows tile progress, and Analysis
+reports how many terrain grid points passed the filter.
+
+**Roads near repeaters** in the map controls is on by default when the selected
+solution has nearby road geometry. Switching solutions updates the roads shown.
+Click a repeater to see **Nearest road** in metres. The display searches up
+to 1.5 times **Max distance to road** around selected repeaters, including
+fixed sites. Road data is available under the Open Database License (ODbL).
 [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
 
 Ready-terrain searches start with one click. Missing terrain prompts for one
