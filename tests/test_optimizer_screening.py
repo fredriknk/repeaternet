@@ -164,9 +164,7 @@ def test_spatial_neighbor_index_matches_exhaustive_distance_ordering() -> None:
                         allowed.add((min(terminal, candidate), max(terminal, candidate)))
             for i, source in enumerate(sites):
                 nearest = sorted(
-                    (source.distance_to(target), j)
-                    for j, target in enumerate(sites)
-                    if j != i
+                    (source.distance_to(target), j) for j, target in enumerate(sites) if j != i
                 )
                 for _, j in nearest[:neighbor_limit]:
                     allowed.add((min(i, j), max(i, j)))
@@ -640,7 +638,9 @@ def test_backbone_keeps_spread_summits_in_any_corridor_orientation(angle_deg) ->
     ]
     summits = [place(f"S{n}", 30_000.0 * n, 0, 0.8) for n in range(1, 6)]
     sites += summits
-    sites += [place(f"f{k}", rng.uniform(0, 180_000), rng.uniform(-5000, 5000), 0.1) for k in range(300)]
+    sites += [
+        place(f"f{k}", rng.uniform(0, 180_000), rng.uniform(-5000, 5000), 0.1) for k in range(300)
+    ]
     sites.append(place("B", 180_000, 0, 0.0))
 
     selected = backbone_site_indices(sites, 64, {0, len(sites) - 1})
@@ -649,3 +649,49 @@ def test_backbone_keeps_spread_summits_in_any_corridor_orientation(angle_deg) ->
     assert len(selected) <= 64
     assert {summit.id for summit in summits} <= chosen
     assert sum(sites[index].origin == SiteOrigin.KNOWN for index in selected) <= 16
+
+
+def test_validation_explores_router_headroom_but_returns_only_within_limit(monkeypatch) -> None:
+    import rf_router_planner.optimization.optimizer as optimizer_module
+
+    real_solve = optimizer_module.solve_topologies
+    limits: list[int] = []
+
+    def recording_solve(sites, links, settings, *args, **kwargs):
+        limits.append(settings.maximum_solution_routers)
+        return real_solve(sites, links, settings, *args, **kwargs)
+
+    monkeypatch.setattr(optimizer_module, "solve_topologies", recording_solve)
+    endpoint_a = Site("A", 0, 100, kind=SiteKind.ENDPOINT_A)
+    endpoint_b = Site("B", 5000, 100, kind=SiteKind.ENDPOINT_B)
+    chain = [endpoint_a, *(Site(f"S{n}", 1000.0 * n, 100) for n in range(1, 5)), endpoint_b]
+    evaluator = ChainOnlyEvaluator(
+        {
+            frozenset(((left.x, left.y), (right.x, right.y)))
+            for left, right in zip(chain, chain[1:], strict=False)
+        }
+    )
+    monkeypatch.setattr(
+        optimizer_module,
+        "evaluate_link_pairs",
+        lambda _t, _rf, pairs, step, **_k: [evaluator.evaluate(a, b, step) for a, b in pairs],
+    )
+    settings = CandidateSettings(
+        maximum_solution_routers=4,
+        reliability_paths=1,
+        refine_radius_m=0,
+        coarse_sample_step_m=1,
+        medium_sample_step_m=1,
+        final_sample_step_m=1,
+    )
+    optimizer = RouteOptimizer(
+        ArrayTerrain(np.zeros((201, 5001)), resolution_m=1), RFSettings(), settings
+    )
+    optimizer.evaluator = evaluator  # type: ignore[assignment]
+
+    result = optimizer.optimize(endpoint_a, endpoint_b, candidates=chain)
+
+    assert result.found
+    assert limits[0] == 4 + optimizer_module.SEARCH_ROUTER_HEADROOM
+    assert limits[-1] == 4
+    assert all(solution.router_count <= 4 for solution in result.alternatives)

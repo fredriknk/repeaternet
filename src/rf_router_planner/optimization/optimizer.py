@@ -169,6 +169,8 @@ def screening_pair_indices(
 
 
 BACKBONE_SITE_LIMIT = 64
+# Extra routers the validation loop may explore beyond maximum_solution_routers.
+SEARCH_ROUTER_HEADROOM = 2
 
 
 def backbone_site_indices(
@@ -659,15 +661,25 @@ class RouteOptimizer:
                     )
                     solution_progress(_detached_progress_snapshot(partial), False)
         alternatives: list[NetworkSolution] = []
+        exploration_settings = replace(
+            self.candidate_settings,
+            maximum_solution_routers=self.candidate_settings.maximum_solution_routers
+            + SEARCH_ROUTER_HEADROOM,
+        )
         # Every nonterminal round certifies at least one previously unseen pair.
         # This terminates on a finite pool without returning coarse-only edges.
         while True:
             if is_cancelled():
                 return OptimizationResult([], [], sites, [], ["Optimization cancelled"])
+            # Explore a little beyond the router limit: every pair inside a
+            # selected subset is certified below, and larger subsets surface
+            # long links the sparse screening never paired. Those links often
+            # enable a better route within the limit; the final solve below
+            # applies the real limit.
             alternatives = solve_topologies(
                 sites,
                 list(link_by_key.values()),
-                self.candidate_settings,
+                exploration_settings,
                 cancelled=is_cancelled,
                 seed_router_subsets=seed_router_subsets,
             )
