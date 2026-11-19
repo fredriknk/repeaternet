@@ -14,7 +14,9 @@ def provider(tmp_path: Path, **kwargs) -> KartverketProvider:
         "dtm",
         "dom",
     )
-    return KartverketProvider({"EPSG:25833": service}, tmp_path, maximum_tile_area_km2=400, **kwargs)
+    return KartverketProvider(
+        {"EPSG:25833": service}, tmp_path, maximum_tile_area_km2=400, **kwargs
+    )
 
 
 def test_large_area_is_split_instead_of_rejected(tmp_path) -> None:
@@ -61,7 +63,9 @@ def test_auto_resolution_respects_total_pixel_budget(tmp_path) -> None:
 def test_explicit_area_tiles_skip_holes_and_stay_within_budget(tmp_path) -> None:
     planner = provider(tmp_path)
     area = box(0, 0, 60_000, 60_000).difference(box(20_000, 20_000, 40_000, 40_000))
-    plan = planner.plan_download(area.bounds, 10, area_geometry=area, maximum_total_pixels=6_000_000)
+    plan = planner.plan_download(
+        area.bounds, 10, area_geometry=area, maximum_total_pixels=6_000_000
+    )
     assert len(plan.tiles) == 8
     assert plan.effective_resolution_m > 10
     assert plan.pixel_count <= 6_000_000
@@ -101,9 +105,7 @@ def test_fetch_plan_reuses_content_addressed_cache(tmp_path, monkeypatch) -> Non
 def test_route_corridor_follows_bends_in_selected_route(tmp_path) -> None:
     planner = provider(tmp_path)
     route = RouteCorridor(((0, 0), (80_000, 0), (80_000, 80_000)), 2_000)
-    full = planner.plan_download(
-        (-2_000, -2_000, 82_000, 82_000), 25, auto_resolution=False
-    )
+    full = planner.plan_download((-2_000, -2_000, 82_000, 82_000), 25, auto_resolution=False)
     plan = planner.plan_download(
         (-2_000, -2_000, 82_000, 82_000),
         25,
@@ -129,6 +131,7 @@ def test_route_corridor_includes_selected_sites_away_from_the_route(tmp_path) ->
 def test_invalid_wcs_payload_retries_are_bounded_and_never_cached(tmp_path, monkeypatch) -> None:
     import requests
 
+    monkeypatch.setattr("rf_router_planner.terrain.kartverket._RETRY_BASE_DELAY_S", 0.0)
     planner = provider(tmp_path)
     plan = planner.plan_download((0, 0, 10_000, 10_000), 10, auto_resolution=False)
     calls = 0
@@ -158,7 +161,7 @@ def test_invalid_wcs_payload_retries_are_bounded_and_never_cached(tmp_path, monk
     destination = planner.cache_path("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m)
     with pytest.raises(OSError):
         planner.fetch("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m)
-    assert calls == 3
+    assert calls == 5
     assert not destination.exists()
     assert not list(tmp_path.glob("*.part"))
 
@@ -199,3 +202,61 @@ def test_fetch_plan_honors_cancellation_before_starting_a_tile(tmp_path) -> None
     plan = planner.plan_download((0, 0, 10_000, 10_000), 10, auto_resolution=False)
     with pytest.raises(RuntimeError, match="cancelled"):
         planner.fetch_plan("dtm", "EPSG:25833", plan, cancelled=lambda: True)
+
+
+def test_transient_503_is_retried_with_backoff(tmp_path, monkeypatch) -> None:
+    import numpy as np
+    import requests
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+
+    from rf_router_planner.terrain import kartverket
+
+    planner = provider(tmp_path, maximum_pixels_per_tile=10_000)
+    plan = planner.plan_download((0, 0, 1_000, 1_000), 10, auto_resolution=False)
+    tile = plan.tiles[0]
+    with MemoryFile() as memory:
+        with memory.open(
+            driver="GTiff",
+            width=100,
+            height=100,
+            count=1,
+            dtype="float32",
+            crs="EPSG:25833",
+            transform=from_origin(tile.bounds[0], tile.bounds[3], 10, 10),
+        ) as dataset:
+            dataset.write(np.zeros((100, 100), dtype=np.float32), 1)
+        payload = memory.read()
+
+    class Response:
+        def __init__(self, status: int) -> None:
+            self.status_code = status
+            self.headers = (
+                {"Retry-After": "3"} if status == 503 else {"content-length": str(len(payload))}
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(f"{self.status_code} Server Error", response=self)
+
+        def iter_content(self, chunk_size):
+            yield payload
+
+    statuses = iter([503, 503, 200])
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Response(next(statuses)))
+    delays: list[float] = []
+    real_delay = kartverket._retry_delay_s
+    monkeypatch.setattr(
+        kartverket, "_retry_delay_s", lambda r, a: delays.append(real_delay(r, a)) or 0.0
+    )
+
+    path = planner.fetch("dtm", "EPSG:25833", tile.bounds, plan.effective_resolution_m)
+
+    assert path.exists()
+    assert delays == [3.0, 4.0]  # Retry-After beats 2 s, then backoff 4 s wins.

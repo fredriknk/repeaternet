@@ -17,6 +17,23 @@ from shapely.geometry.base import BaseGeometry
 logger = logging.getLogger(__name__)
 
 
+# Kartverket's WCS answers 503 under load; give it time to recover.
+_DOWNLOAD_ATTEMPTS = 5
+_RETRY_BASE_DELAY_S = 2.0
+_RETRY_MAX_DELAY_S = 60.0
+
+
+def _retry_delay_s(response: object, attempt: int) -> float:
+    """Exponential backoff (2, 4, 8, 16 s), honouring a numeric Retry-After."""
+    delay = _RETRY_BASE_DELAY_S * 2**attempt
+    headers = getattr(response, "headers", None) or {}
+    try:
+        delay = max(delay, float(headers.get("Retry-After", 0)))
+    except (TypeError, ValueError):
+        pass
+    return min(delay, _RETRY_MAX_DELAY_S)
+
+
 @dataclass(frozen=True, slots=True)
 class WCSService:
     crs: str
@@ -337,7 +354,7 @@ class KartverketProvider:
                 logger.info("Kartverket cache hit: %s", destination)
                 return destination
         logger.info("Requesting Kartverket %s coverage from %s", product.upper(), endpoint)
-        for attempt in range(3):
+        for attempt in range(_DOWNLOAD_ATTEMPTS):
             if cancelled is not None and cancelled():
                 raise RuntimeError("Terrain download cancelled")
             temporary = destination.with_name(f"{destination.name}.{secrets.token_hex(6)}.part")
@@ -366,9 +383,11 @@ class KartverketProvider:
                 non_retryable_http = (
                     status is not None and 400 <= status < 500 and status not in {408, 429}
                 )
-                if attempt >= 2 or non_retryable_http:
+                if attempt >= _DOWNLOAD_ATTEMPTS - 1 or non_retryable_http:
                     raise
-                for _ in range((attempt + 1) * 5):
+                delay = _retry_delay_s(getattr(exc, "response", None), attempt)
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline:
                     if cancelled is not None and cancelled():
                         raise RuntimeError("Terrain download cancelled") from exc
                     time.sleep(0.1)
