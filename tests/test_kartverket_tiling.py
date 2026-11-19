@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from shapely.geometry import box
 
 from rf_router_planner.terrain.kartverket import KartverketProvider, RouteCorridor, WCSService
 
@@ -55,6 +56,16 @@ def test_auto_resolution_respects_total_pixel_budget(tmp_path) -> None:
     assert plan.effective_resolution_m > 10
     assert plan.pixel_count <= 25_000_000
     assert plan.effective_resolution_m in {15, 20, 25, 30, 50}
+
+
+def test_explicit_area_tiles_skip_holes_and_stay_within_budget(tmp_path) -> None:
+    planner = provider(tmp_path)
+    area = box(0, 0, 60_000, 60_000).difference(box(20_000, 20_000, 40_000, 40_000))
+    plan = planner.plan_download(area.bounds, 10, area_geometry=area, maximum_total_pixels=6_000_000)
+    assert len(plan.tiles) == 8
+    assert plan.effective_resolution_m > 10
+    assert plan.pixel_count <= 6_000_000
+    assert all(tile.bounds != (20_000, 20_000, 40_000, 40_000) for tile in plan.tiles)
 
 
 def test_manual_one_metre_job_gets_actionable_tile_limit_error(tmp_path) -> None:

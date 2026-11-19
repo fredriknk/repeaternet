@@ -9,11 +9,12 @@ let meshcoreRouters = [], routerPolicies = new Map(), selectedKnownRouterId = nu
 let manualRouters = [], selectedManualRouterId = null, undoStack = [], redoStack = [], lastHistoryPlan = null, resultStale = false, resultStaleReason = '';
 let projectInfo = null, baseRf = null, baseCandidates = null, autosaveTimer = null;
 let terrainOptions = {requested_resolution_m:10,auto_resolution:true,include_dom:true}, preparingTerrain = false, coverageTimer = null, terrainLoaded = false;
-let terrainReadiness=null;
+let terrainReadiness=null,coverageTerrainLoaded=false;
 let coverageSettings = {mode:'two_way',area_mode:'mesh',area_polygon_wgs84:null,cell_size_m:1000,area_buffer_m:5000,profile_step_m:200,maximum_profile_samples:4096,maximum_cells:4096,maximum_sources:64,maximum_evaluations:250000,include_endpoints:false,source_ids:[],client:{name:'Handheld · 1.5 m',height_agl_m:1.5,tx_power_dbm:20,gain_dbi:2.15,feed_loss_db:0,sensitivity_dbm:-130,miscellaneous_loss_db:0}};
 const defaultCoverageSettings=JSON.parse(JSON.stringify(coverageSettings));
 let coverageBusy = false, coverageJob = null, coverageDisplayInfo = null, coveragePreviewActive = false, coveragePreviewCells = [], coverageCells = [], coverageCursor = 0, coverageStale = false, inspectionRequest = 0, inspectionController = null, activeInspectionId = null, coverageHeightOverrides = {}, coverageComparison = null, comparisonRuns = [], coverageTargets = [], coverageTargetStates = new Map();
 let coverageRunReused=false,coverageEstimate=null,coverageEstimateRequest=0,coverageRevision=0,coveragePreflightBusy=false,coverageLoadingRun=false,coverageLoadRequest=0,coveragePollRequest=0,coverageRunMetadata=[];
+let coverageTerrainCheck=null,coverageTerrainUnknownKey=null,coverageTerrainJobId=null;
 let coverageDrawingPoints=[];
 const map = L.map('map').setView([60, 10.8], 9);
 const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap contributors'}).addTo(map);
@@ -141,6 +142,7 @@ function setWorkspace(id){
     button.setAttribute('aria-pressed',String(active));
   });
   if(mobileViewport.matches)setMobileDestination('setup');
+  updateCoverageTerrainAction();
   try{localStorage.setItem('repeaternet.active-workspace',id);}catch{}
   requestAnimationFrame(()=>{if(!$('view-map').hidden)map.invalidateSize({pan:false});if(!$('view-analysis').hidden&&result?.links.length)profile(selected);});
 }
@@ -273,6 +275,7 @@ async function loadSavedCoverageRun(jobId=$('coverage-active-run').value){
       page=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}/cells?cursor=${coverageCursor}&limit=192`);if(request!==coverageLoadRequest)return;
     }
     coverageStale=!!job.stale||!!page.stale;renderCoverageLegend();renderFailureControls();renderHeightScenarioControls();renderCoverageContext();
+    if(!coverageStale&&job.unknown_cells)noteCoverageTerrainGap();
     const complete=job.state==='complete'&&coverageCursor===requested;
     $('coverage-load-status').textContent=`${complete?'All saved cells loaded':`Partial result · ${coverageCursor.toLocaleString()} of ${requested.toLocaleString()} requested cells stored`} · ${job.state}${coverageStale?' · stale historical run':''}. No RF calculation was started.`;
     setCoverageStatus($('coverage-load-status').textContent,coverageStale||!complete);await refreshCoverageRunSelectors();
@@ -284,7 +287,25 @@ async function runCoverageComparison(){const baseline=$('coverage-baseline-run')
 function updateHeightScenarioButtons(){const inputs=[...document.querySelectorAll('[data-height-source]')],changed=inputs.some(input=>Math.abs(Number(input.value)-Number(input.dataset.originalHeight))>.0001),ready=!!result?.found&&!resultStale&&!busy&&!coverageBusy;$('coverage-height-apply').disabled=!ready||!changed;$('coverage-height-run').disabled=!ready||!inputs.length;}
 function applyCoverageHeightPreset(value){for(const input of document.querySelectorAll('[data-height-source]'))input.value=String(value);updateHeightScenarioButtons();}
 const updateTerrainCoverageCore=updateTerrainCoverage;
-updateTerrainCoverage=async()=>{terrainReadiness=await updateTerrainCoverageCore();updatePlanReadiness(terrainReadiness);return terrainReadiness;};
+async function checkRouteTerrain(requestPlan){
+  if(!terrainLoaded)return null;
+  const coverage=await api('/api/terrain/coverage?route_only=true',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)
+  });
+  terrainReadiness=coverage;
+  updatePlanReadiness(coverage);
+  return coverage;
+}
+updateTerrainCoverage=async(requestPlan=plan())=>{
+  const coverage=await updateTerrainCoverageCore(requestPlan);
+  if(coverage&&coverageTerrainLoaded){
+    await checkRouteTerrain(requestPlan).catch(()=>{terrainReadiness=null;updatePlanReadiness(null);});
+  }else{
+    terrainReadiness=coverage;
+    updatePlanReadiness(coverage);
+  }
+  return coverage;
+};
 function renderCoverageTargets(){const list=$('coverage-target-list');if(!list)return;list.replaceChildren();targetLayer.clearLayers();if(!coverageTargets.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='No saved targets. Place a point or import GeoJSON.';list.append(empty);}else{const collection={type:'FeatureCollection',features:coverageTargets};L.geoJSON(collection,{style:feature=>{const state=coverageTargetStates.get(feature.id),color=state==='pass'?'#287b64':state==='fail'?'#ce796d':state==='unresolved'?'#9476b7':state?'#a66d24':'#397aa8';return {color,weight:3,fillColor:color,fillOpacity:.17};},pointToLayer:(feature,latlng)=>{const state=coverageTargetStates.get(feature.id),color=state==='pass'?'#287b64':state==='fail'?'#ce796d':state==='unresolved'?'#9476b7':state?'#a66d24':'#397aa8';return L.circleMarker(latlng,{radius:7,color,fillColor:color,fillOpacity:.85,weight:2});},onEachFeature:(feature,layer)=>{const tip=document.createElement('span');tip.textContent=`${feature.properties?.name||feature.id} · ≥ ${Number(feature.properties?.minimum_margin_db||0).toFixed(1)} dB${coverageTargetStates.has(feature.id)?` · ${coverageTargetStates.get(feature.id)}`:''}`;layer.bindTooltip(tip);}}).addTo(targetLayer);for(const feature of coverageTargets){const row=document.createElement('div');row.className='known-router';const copy=document.createElement('span'),name=document.createElement('strong'),meta=document.createElement('small'),remove=document.createElement('button');name.textContent=feature.properties.name;const geometry=feature.geometry.type;meta.textContent=`${geometry} · ≥ ${Number(feature.properties.minimum_margin_db||0).toFixed(1)} dB${feature.properties.reference_id?` · connected to ${feature.properties.reference_id}`:''}${coverageTargetStates.has(feature.id)?` · ${coverageTargetStates.get(feature.id)}`:''}`;copy.append(name,meta);remove.className='text-button';remove.textContent='Remove';remove.onclick=()=>{const next=coverageTargets.filter(item=>item.id!==feature.id);void saveCoverageTargets(next).catch(error=>setTargetStatus(error.message,true));};row.append(copy,remove);list.append(row);}}$('coverage-assess-targets').disabled=!coverageTargets.length||busy||coverageBusy;}
 function setTargetStatus(message,error=false){$('coverage-target-summary').textContent=message;$('coverage-target-summary').className=error?'hint error':'hint';}
 async function saveCoverageTargets(features){const previous=coverageTargets;coverageTargets=features;try{const saved=await api('/api/coverage/targets',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'FeatureCollection',features})});coverageTargets=saved.targets.features;coverageTargetStates=new Map();coverageTargetStatesRunId=null;renderCoverageTargets();recordEdit();return coverageTargets;}catch(error){coverageTargets=previous;renderCoverageTargets();throw error;}}
@@ -502,11 +523,125 @@ function renderCoverageContext(){
 }
 function coverageReviewKey(payload){const normalized=clone(payload);normalized.settings={...normalized.settings,mode:'two_way'};if(normalized.settings.area_mode!=='view')delete normalized.map_bounds;return JSON.stringify(normalized);}
 function coverageEstimateIsCurrent(){if(!coverageEstimate)return false;try{return coverageEstimate.key===coverageReviewKey(coveragePayload());}catch{return false;}}
-function invalidateChangedCoverageExtent(){if(coverageSettings.area_mode==='view'&&coverageEstimate&&!coverageEstimateIsCurrent())invalidateCoverageEstimate('Map extent changed. Calculate again to use this new area.');}
+function invalidateChangedCoverageExtent(){if(coverageSettings.area_mode==='view'&&coverageEstimate&&!coverageEstimateIsCurrent())invalidateCoverageEstimate('Map extent changed. Calculate again to use this new area.');updateCoverageTerrainAction();}
 function coverageRouteReady(){return !!(result&&!resultStale&&result.found&&result.active_alternative_id);}
-function updateCoverageActions(){const ready=coverageRouteReady(),locked=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject;$('coverage-no-route').hidden=ready;$('coverage-start').disabled=!ready||locked;$('coverage-preview').disabled=!ready||locked;$('coverage-inspect').disabled=!ready||locked;}
+function updateCoverageActions(){const ready=coverageRouteReady(),locked=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject;$('coverage-no-route').hidden=ready;$('coverage-start').disabled=!ready||locked;$('coverage-preview').disabled=!ready||locked;$('coverage-inspect').disabled=!ready||locked;updateCoverageTerrainAction(locked);}
+
+function coverageTerrainKey(payload){
+  return JSON.stringify([projectInfo?.active_id,coverageReviewKey(payload)]);
+}
+function currentCoverageTerrainRequest(){
+  try{const payload=coveragePayload();return {payload,key:coverageTerrainKey(payload)};}catch{return null;}
+}
+function setCoverageTerrainStatus(message,error=false){
+  const status=$('coverage-terrain-status');
+  status.textContent=message;status.hidden=!message;status.className=error?'hint error':'hint';
+}
+function noteCoverageTerrainGap(){
+  coverageTerrainUnknownKey=currentCoverageTerrainRequest()?.key;
+  updateCoverageTerrainAction();
+}
+function updateCoverageTerrainAction(locked=$('coverage-start').disabled){
+  const button=$('coverage-terrain-download');
+  const current=currentCoverageTerrainRequest();
+  button.hidden=!current||!!coverageTerrainJobId||!(
+    coverageTerrainUnknownKey===current.key
+    || (coverageTerrainCheck?.key===current.key&&coverageTerrainCheck.estimate?.tile_count>0)
+  );
+  button.disabled=locked;
+  if(!current||locked||$('workspace-coverage').hidden||coverageTerrainCheck?.key===current.key)return;
+  coverageTerrainCheck=current;
+  setTimeout(async()=>{
+    if(coverageTerrainCheck!==current||currentCoverageTerrainRequest()?.key!==current.key)return;
+    if($('coverage-start').disabled){coverageTerrainCheck=null;return;}
+    try{
+      current.estimate=await api('/api/coverage/terrain/estimate',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(current.payload)
+      });
+    }catch{
+      // The download action reports errors when requested explicitly.
+    }
+    if(coverageTerrainCheck===current)updateCoverageTerrainAction();
+  },250);
+}
+async function requestCoverageTerrain(){
+  if($('coverage-terrain-download').disabled)return;
+  readCoverageInputs();
+  const current=currentCoverageTerrainRequest();
+  if(!current)return;
+  coveragePreflightBusy=true;syncCoverageLocks();
+  setCoverageTerrainStatus('Estimating missing terrain for the selected area…');
+  try{
+    await autosaveNow();
+    const request={method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(current.payload)};
+    const estimate=await api('/api/coverage/terrain/estimate',request);
+    if(currentCoverageTerrainRequest()?.key!==current.key)throw Error('The coverage area changed. Review a new terrain estimate.');
+    if(!estimate.tile_count){
+      setCoverageTerrainStatus('Installed terrain tiles already span this area. Any remaining gaps can be caused by missing elevation values or paths outside the area.');
+      return;
+    }
+    const copy=`${estimate.missing_area_km2.toLocaleString(undefined,{maximumFractionDigits:1})} km² missing · ${estimate.tile_count} tile(s) at ${estimate.effective_resolution_m} m · about ${estimate.estimated_raw_mib.toFixed(1)} MiB uncompressed · ${estimate.cache_hits}/${estimate.cache_total} product tiles cached. ${estimate.include_dom?'Ground and surface terrain included.':'Ground terrain included.'}`;
+    const confirmed=await askActionDialog({title:'Download terrain for coverage area?',copy,confirm:'Download terrain'});
+    if(!confirmed){setCoverageTerrainStatus('');return;}
+    if(currentCoverageTerrainRequest()?.key!==current.key)throw Error('The coverage area changed. Review a new terrain estimate.');
+    const job=await api('/api/coverage/terrain/prepare',request);
+    if(!job.job_id){setCoverageTerrainStatus(job.stage);return;}
+    coverageTerrainJobId=job.job_id;
+    if(interactionMode==='inspect-coverage')setInteractionMode('browse');
+    renderCoverageTerrainProgress(job);
+    void pollCoverageTerrain();
+  }catch(error){setCoverageTerrainStatus(error.message,true);}
+  finally{if(!coverageTerrainJobId){coveragePreflightBusy=false;syncCoverageLocks();}}
+}
+function renderCoverageTerrainProgress(job){
+  const progress=$('coverage-terrain-progress');
+  progress.hidden=false;progress.max=job.total;progress.value=job.done;
+  $('coverage-terrain-cancel').hidden=false;
+  $('coverage-terrain-reconnect').hidden=true;
+  setCoverageTerrainStatus(`${job.stage} · ${job.done}/${job.total} product tiles`);
+  updateCoverageTerrainAction();
+}
+async function pollCoverageTerrain(){
+  const jobId=coverageTerrainJobId;
+  if(!jobId)return;
+  $('coverage-terrain-reconnect').hidden=true;
+  try{
+    const {coverage_terrain_job:job}=await refresh();
+    if(coverageTerrainJobId!==jobId)return;
+    if(job?.job_id===jobId&&['queued','preparing'].includes(job.state)){
+      renderCoverageTerrainProgress(job);setTimeout(pollCoverageTerrain,800);return;
+    }
+    coverageTerrainJobId=null;coveragePreflightBusy=false;
+    $('coverage-terrain-progress').hidden=true;$('coverage-terrain-cancel').hidden=true;
+    $('coverage-terrain-reconnect').hidden=true;
+    if(job?.job_id===jobId&&job.state==='complete'){
+      invalidateCoverageEstimate('');
+      if(coverageDisplayInfo){coverageDisplayInfo={...coverageDisplayInfo,stale:true,route_current:false};coverageStale=true;renderCoverageLegend();}
+      inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;
+      renderCoverageContext();renderFailureControls();
+      setCoverageTerrainStatus('Coverage terrain is ready. Select Calculate coverage to use the new terrain.');
+      void updateTerrainCoverage();
+      void refreshCoverageRunSelectors().catch(()=>{});
+    }else{
+      setCoverageTerrainStatus(job?.job_id===jobId?job.stage:'The terrain download is no longer active.',job?.state!=='cancelled');
+    }
+    syncCoverageLocks();
+  }catch(error){
+    $('coverage-terrain-reconnect').hidden=false;
+    setCoverageTerrainStatus(`${error.message}. Reconnect to check the terrain download.`,true);
+  }
+}
+async function cancelCoverageTerrain(){
+  const jobId=coverageTerrainJobId;
+  if(!jobId)return;
+  try{
+    await api(`/api/coverage/terrain/${encodeURIComponent(jobId)}/cancel`,{method:'POST'});
+    if(jobId===coverageTerrainJobId)setCoverageTerrainStatus('Cancelling coverage terrain download…');
+  }catch(error){if(jobId===coverageTerrainJobId)setCoverageTerrainStatus(error.message,true);}
+}
 function invalidateCoverageEstimate(message='Coverage inputs changed. Calculate again to use the new settings.'){
   coverageRevision++;coverageEstimateRequest++;coverageEstimate=null;
+  coverageTerrainCheck=null;coverageTerrainUnknownKey=null;
   updateCoverageActions();
   if(message&&$('coverage-job-status'))setCoverageStatus(message);
 }
@@ -515,7 +650,7 @@ function coverageEstimateSummary(approved){
   const {payload,estimate}=approved,settings=payload.settings,sources=estimate.source_count||estimate.source_ids?.length||0;
   const sourceLimit=Math.min(settings.maximum_sources,64),evaluationLimit=Math.min(settings.maximum_evaluations,250000),cellLimit=Math.min(settings.maximum_cells,16384,Math.floor(evaluationLimit/Math.max(1,sources))),sampleLimit=Math.min(settings.maximum_profile_samples,16384);
   const mode={mesh:'selected mesh + buffer',view:'current map extent',drawn:'drawn polygon'}[settings.area_mode]||settings.area_mode;
-  const terrainGuidance=estimate.unknown_cells?` The current terrain service prepares route corridors, not arbitrary coverage areas; upload matching GeoTIFFs in Plan → Terrain or adjust the area. These cells will remain unknown.`:'';
+  const terrainGuidance=estimate.unknown_cells?' You can download terrain for the coverage area before calculating.':'';
   const routeSearchNote=estimate.route_search_complete===false?` Coverage describes this certified route only; the route search stopped with ${estimate.achieved_path_count}/${estimate.requested_path_count} requested independent paths, so unexplored alternatives are not included.`:'';
   return `Area: ${mode}. ${sources} source(s) · ${estimate.requested_area_cells.toLocaleString()} in-area cells at ${estimate.effective_cell_size_m.toFixed(0)} m · ${estimate.outside_area_cells.toLocaleString()} outside · ${estimate.planned_evaluations.toLocaleString()} planned source evaluations. Terrain known at ${estimate.terrain_available_cells.toLocaleString()} cells; ${estimate.unknown_cells.toLocaleString()} cells have unknown terrain. Limits: ${sourceLimit} sources, ${cellLimit.toLocaleString()} cells / ${evaluationLimit.toLocaleString()} evaluations, ${sampleLimit.toLocaleString()} profile samples per path · ${settings.profile_step_m} m profile step. ${estimate.surface_available?'Surface terrain included.':'Surface terrain unavailable; this is a terrain-only prediction.'}${terrainGuidance}${Object.keys(payload.source_height_overrides||{}).length?` ${Object.keys(payload.source_height_overrides).length} changed router height(s) and affected certified backbone links will be revalidated.`:''}${routeSearchNote}`;
 }
@@ -526,6 +661,7 @@ async function estimateCoverage(){
   const estimate=await api('/api/coverage/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   if(request!==coverageEstimateRequest||revision!==coverageRevision||key!==coverageReviewKey(coveragePayload()))throw Error('Coverage settings changed while estimating. Calculate again to use the current inputs.');
   coverageEstimate={key,payload,estimate,revision};updateCoverageActions();
+  if(estimate.unknown_cells)noteCoverageTerrainGap();
   setCoverageStatus('Estimate ready. Confirm once to start the requested coverage operation.');return coverageEstimate;
 }
 async function requestCoverageAction({preview=false}={}){
@@ -549,12 +685,13 @@ async function previewCoverage(approved=coverageEstimate){
   try{
     await autosaveNow();const preview=await api('/api/coverage/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(revision!==coverageRevision||key!==coverageReviewKey(coveragePayload()))return;
+    if(preview.unknown_cells)noteCoverageTerrainGap();
     coverageCells=[];coverageCursor=0;coverageDisplayInfo=preview;coveragePreviewCells=preview.cells;coveragePreviewActive=true;coverageStale=false;predictedCoverageLayer.clearLayers();if(!map.hasLayer(predictedCoverageLayer))predictedCoverageLayer.addTo(map);for(const cell of preview.cells)addCoverageCell(cell);renderCoverageLegend();renderCoverageContext();setCoverageStatus(`Approximate preview · ${preview.requested_cells} cells at ${preview.effective_cell_size_m.toFixed(0)} m · ${preview.covered_cells} covered · ${preview.unknown_cells} unknown · ${preview.unresolved_cells||0} unresolved · ${preview.elapsed_seconds.toFixed(2)} s. This is not the full saved result.`);
   }catch(error){setCoverageStatus(error.message,true);}finally{coverageBusyState(false);updateCoverageActions();}
 }
 function coverageBusyState(value){coverageBusy=value;if(value&&interactionMode==='inspect-coverage')setInteractionMode('browse');if(value)cancelActiveInspection();syncCoverageLocks();if(!value)void refreshCoverageTargetRuns(coverageJob?.job_id).catch(()=>{});}
 function syncAlternativeControls(){
-  const locked=busy||coverageBusy||coverageLoadingRun||switchingProject||alternativeSelecting||resultStale;
+  const locked=busy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||alternativeSelecting||resultStale;
   const selector=$('alternative-select');
   for(const button of document.querySelectorAll('.alternative-card')){
     const selected=button.dataset.alternativeId===selector.value;
@@ -586,6 +723,7 @@ async function pollCoverage(jobId,request=++coveragePollRequest){
     if(running){setCoverageStatus(`${job.stage} · ${job.done||0}/${job.total||job.requested_cells||'?'} grid cells computed · ${coverageCursor.toLocaleString()} saved cells loaded so far${job.stale?' · STALE':''}`,!!job.stale);$('coverage-reconnect').hidden=true;setTimeout(()=>void pollCoverage(jobId,request),800);return;}
     while(page.next_cursor!==null&&page.next_cursor!==undefined){setCoverageStatus(`Calculation ${job.state}; loading saved cells · ${coverageCursor.toLocaleString()} of ${stored.toLocaleString()}.`);page=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}/cells?cursor=${coverageCursor}&limit=192`);if(request!==coveragePollRequest)return;if(page.cells.length){appendCoverageCells(page.cells);coverageCursor=page.next_cursor??coverageCursor+page.cells.length;}setCoverageResultProgress(coverageCursor,page.stored_cells||stored,true);}
     coverageBusyState(false);$('coverage-cancel').hidden=true;$('coverage-reconnect').hidden=true;coverageStale=!!job.stale||job.state==='cancelled';renderCoverageLegend();renderFailureControls();renderHeightScenarioControls();renderCoverageContext();
+    if(!job.stale&&job.unknown_cells)noteCoverageTerrainGap();
     if(job.state==='complete'){const fullyLoaded=coverageCursor===total;setCoverageStatus(`${coverageRunReused?'Identical saved coverage reused; no RF recalculation was needed. ':''}${job.covered_cells||0} covered of ${job.evaluated_cells||0} evaluated in-area cells · ${job.unknown_cells||0} unknown · ${job.unresolved_cells||0} unresolved profiles · ${job.outside_area_cells||0} outside · ${fullyLoaded?'all requested samples loaded':`partial storage · ${coverageCursor.toLocaleString()} of ${total.toLocaleString()} requested samples loaded`} · ${job.source_ids?.length||0} sources · ${job.effective_cell_size_m?.toFixed(0)||'—'} m cells.${job.stale?' This is a stale historical result.':''}`,!!job.stale||!fullyLoaded);}
     else if(job.state==='cancelled')setCoverageStatus(`Coverage calculation cancelled; ${coverageCursor.toLocaleString()} of ${total.toLocaleString()} requested samples are available.${job.stale?' This historical result is stale.':''}`,true);
     else if(job.state==='failed')setCoverageStatus(job.stage||'Coverage calculation failed.',true);
@@ -616,7 +754,7 @@ function formatBytes(value){if(value<1024)return `${value} B`;const units=['KiB'
 function scheduleAutosave(){saveRevision++;setProjectSaveState('Saving changes…','saving');clearTimeout(autosaveTimer);const revision=saveRevision;autosaveTimer=setTimeout(()=>autosaveNow(revision).catch(error=>{if(revision===saveRevision)setProjectSaveState(`Save failed · ${error.message}`,'failed');}),500);}
 async function autosaveNow(revision=saveRevision){clearTimeout(autosaveTimer);if(!projectInfo)return;const projectId=projectInfo.active_id,snapshot=clone(plan());setProjectSaveState('Saving changes…','saving');const request=saveQueue.catch(()=>{}).then(()=>api('/api/projects/autosave',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:projectId,plan:snapshot})}));saveQueue=request.catch(()=>{});let saved;try{saved=await request;}catch(error){if(projectInfo?.active_id===projectId&&revision===saveRevision)setProjectSaveState(`Save failed · ${error.message}`,'failed');throw error;}if(projectInfo?.active_id!==projectId||revision!==saveRevision)return saved;projectInfo.has_previous_revision=saved.has_previous_revision;savedRevision=revision;$('recover-project').hidden=!saved.has_previous_revision;setProjectSaveState(`Saved · ${formatBytes(projectInfo.storage_usage_bytes||0)} in this workspace`,'saved');return saved;}
 $('retry-save').onclick=()=>autosaveNow().catch(error=>setProjectSaveState(`Save failed · ${error.message}`,'failed'));
-async function refresh(){const data=await api('/api/state');terrainLoaded=data.terrain.dtm.length>0;for(const kind of ['dtm','dom'])$(kind+'-count').textContent=data.terrain[kind].length+' '+kind.toUpperCase()+' tiles';$('surface-note').textContent=data.terrain.dom.length?'Surface terrain loaded — includes obstruction geometry.':'Surface obstruction data unavailable — terrain only.';if(!terrainLoaded){coverageLayer.clearLayers();$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';}$('coverage-note').className='hint';const cache=data.rf_cache||{};$('cache-stats').textContent=`RF cache · ${cache.entries||0} saved · ${cache.hits||0} reused · ${cache.misses||0} computed · ${cache.evictions||0} evicted`;renderProjects(data.projects);return data;}
+async function refresh(){const data=await api('/api/state');terrainLoaded=data.terrain.dtm.length>0;coverageTerrainLoaded=!!(data.coverage_terrain?.dtm.length||data.coverage_terrain?.dom.length);for(const kind of ['dtm','dom'])$(kind+'-count').textContent=data.terrain[kind].length+' '+kind.toUpperCase()+' tiles';$('surface-note').textContent=data.terrain.dom.length?'Surface terrain loaded — includes obstruction geometry.':'Surface obstruction data unavailable — terrain only.';if(!terrainLoaded){coverageLayer.clearLayers();$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';}$('coverage-note').className='hint';const cache=data.rf_cache||{};$('cache-stats').textContent=`RF cache · ${cache.entries||0} saved · ${cache.hits||0} reused · ${cache.misses||0} computed · ${cache.evictions||0} evicted`;renderProjects(data.projects);return data;}
 function setBusy(value){busy=value;$('optimize').disabled=value||routePreflightBusy;$('cancel').hidden=!value;$('cancel').textContent=activeJobKind==='terrain'?'Cancel terrain preparation':'Cancel optimization';$('stop-keep').hidden=!value||activeJobKind!=='route';$('stop-keep').disabled=!value||lastSnapshotVersion===0;$('clear-cache').disabled=value||routePreflightBusy;document.querySelectorAll('aside input:not([data-display-only]), aside select:not([data-display-only]), [data-place], [data-clear], #open, #import-plan, #load-meshcore, #include-all, #include-none, #estimate-terrain, #prepare-terrain, #add-router, #add-router-coordinate, #add-target-coordinate, #project-select, #new-project, #rename-project, #recover-project, #duplicate-project, #archive-project, #delete-project').forEach(el=>el.disabled=value);Object.values(markers).forEach(marker=>value?marker.dragging.disable():marker.dragging.enable());for(const layer of routeLayer.getLayers())if(layer.dragging){if(value||resultStale||!layer._plannerDraggable)layer.dragging.disable();else layer.dragging.enable();}renderMeshcoreRouters();renderManualRouters();$('alternative-select').disabled=value||resultStale;setHistoryButtons();syncCoverageLocks();}
 function formatElapsed(){const seconds=Math.max(0,Math.floor((Date.now()-(jobStartedAt||Date.now()))/1000));return seconds<60?`${seconds} s`:`${Math.floor(seconds/60)} min ${String(seconds%60).padStart(2,'0')} s`;}
 function updateJobCard({kind='route',state='running',phase='',message='',progress=null,retry=false}){
@@ -685,6 +823,9 @@ $('coverage-area').addEventListener('change',event=>{const requested=event.targe
 $('coverage-draw-area').onclick=startCoverageAreaDrawing;$('coverage-finish-area').onclick=finishCoverageArea;$('coverage-clear-area').onclick=clearCoverageArea;
 $('coverage-opacity').oninput=event=>setCoverageOpacity(event.target.value);
 $('coverage-preview').onclick=()=>void requestCoverageAction({preview:true});$('coverage-start').onclick=()=>void requestCoverageAction();$('coverage-find-route').onclick=()=>{setWorkspace('workspace-plan');setPlanSection('search-setup');setMainView('view-map');if(mobileViewport.matches)setMobileDestination('setup');};$('coverage-cancel').onclick=cancelCoverage;
+$('coverage-terrain-download').onclick=requestCoverageTerrain;
+$('coverage-terrain-cancel').onclick=cancelCoverageTerrain;
+$('coverage-terrain-reconnect').onclick=pollCoverageTerrain;
 $('failure-run').onclick=analyzeFailureScenario;$('failure-reset').onclick=resetFailureScenario;
 $('coverage-height-run').onclick=startCoverageHeightScenario;$('coverage-compare-run').onclick=runCoverageComparison;
 $('coverage-height-apply').onclick=applyCoverageHeightScenario;
@@ -704,6 +845,7 @@ $('open').onchange=async e=>{try{load(JSON.parse(await e.target.files[0].text())
 function emptyProjectPlan(){return {format:'repeaternet-web',version:1,a:[59.9139,10.7522],b:[59.95,10.85],rf:clone(baseRf),candidates:clone(baseCandidates),terrain:{requested_resolution_m:10,auto_resolution:true,include_dom:true},coverage:clone(defaultCoverageSettings),coverage_targets:{type:'FeatureCollection',features:[]},search_effort:'balanced',known_routers:[],manual_routers:[]};}
 function showPlanSummary(data){const summary=data.projects?.previous_result;if(summary){const prefix=summary.stale?'Saved result is stale':'Last certified result';status(`${prefix}: ${summary.router_count} router(s), ${summary.alternatives?.length||0} alternative(s). Rerun to restore the full route and profiles.`);}else if(data.job.state==='interrupted'){status('Previous search was interrupted by restart. The saved inputs are ready to rerun.',true);}else status('Project ready. Changes save automatically.');}
 async function installProject(response){
+  coverageTerrainCheck=null;coverageTerrainUnknownKey=null;setCoverageTerrainStatus('');
   setInteractionMode('browse');result=null;resultStale=false;resultStaleReason='';lastSnapshotVersion=0;activeJobId=null;activeJobKind=null;jobStartedAt=null;$('route-job-card').hidden=true;$('retry-job').hidden=true;coveragePollRequest++;coverageLoadRequest++;coverageLoadingRun=false;coverageJob=null;coverageDisplayInfo=null;coveragePreviewActive=false;coveragePreviewCells=[];coverageCells=[];coverageCursor=0;coverageStale=false;terrainReadiness=null;$('coverage-load-progress').hidden=true;$('coverage-result-progress').hidden=true;$('coverage-result-progress-copy').hidden=true;
   saveRevision++;savedRevision=saveRevision;saveState='saved';setProjectSaveState('Saved automatically','saved');
   coverageBusyState(false);predictedCoverageLayer.clearLayers();if(map.hasLayer(predictedCoverageLayer))map.removeLayer(predictedCoverageLayer);routeLayer.clearLayers();candidateLayer.clearLayers();
@@ -787,7 +929,7 @@ function createRouteOperation(){const snapshot=clone(plan());return {id:crypto.r
 async function startRouteSearch(operation,preflightCoverage=null){
   if(busy||coverageBusy||coverageLoadingRun||switchingProject)throw Error('Another planner operation is active. Wait for it to finish before searching.');
   if(!routeOperationIsCurrent(operation))throw Error('The route inputs changed during preparation. Review them and start the search again.');
-  const coverage=preflightCoverage||await updateTerrainCoverage(operation.snapshot);
+  const coverage=preflightCoverage||await checkRouteTerrain(operation.snapshot);
   if(!routeOperationIsCurrent(operation))throw Error('The route inputs changed during terrain checking. Start the search again to use the latest settings.');
   if(!coverage?.covered)throw Error('Ground terrain is missing at one or more selected sites. Upload terrain for the gaps, then start the route search again.');
   await autosaveNow(operation.revision);
@@ -807,7 +949,7 @@ $('optimize').onclick=async()=>{
   const operation=createRouteOperation();setRoutePreflightBusy(true);
   try{
     status('Checking terrain coverage…');
-    const coverage=await updateTerrainCoverage(operation.snapshot);
+    const coverage=await checkRouteTerrain(operation.snapshot);
     if(!routeOperationIsCurrent(operation))throw Error('Route settings changed during terrain checking. Start again to use the latest settings.');
     if(coverage?.covered){await startRouteSearch(operation,coverage);return;}
     await autosaveNow(operation.revision);
@@ -958,6 +1100,10 @@ updateCoverageTargetInputs();
     }
     if((data.projects.previous_result||data.job.state==='interrupted')&&!restoredResult)showPlanSummary(data);
     if(['failed','cancelled','interrupted'].includes(data.job.state))status(data.job.stage||$('job-message').textContent,data.job.state==='failed');
+    if(data.coverage_terrain_job&&['queued','preparing'].includes(data.coverage_terrain_job.state)){
+      coverageTerrainJobId=data.coverage_terrain_job.job_id;coveragePreflightBusy=true;
+      syncCoverageLocks();renderCoverageTerrainProgress(data.coverage_terrain_job);void pollCoverageTerrain();
+    }
     if(data.coverage_job){coverageJob=data.coverage_job;const active=['queued','running'].includes(coverageJob.state);coverageBusyState(active);$('coverage-cancel').hidden=!active;coverageCursor=0;pollCoverage(coverageJob.job_id);}
     if(terrainLoaded)void updateTerrainCoverage();await refreshCoverageRunSelectors();
   }catch(error){status(error.message,true);}

@@ -33,6 +33,27 @@ ChunkCallback = Callable[[list[CoverageCell]], None]
 Cancel = Callable[[], bool]
 
 
+def coverage_area_bounds(
+    sources: list[Site],
+    settings: CoverageSettings,
+    requested_bounds: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float]:
+    if not sources:
+        raise ValueError("Select at least one mesh router to calculate coverage")
+    if requested_bounds is None:
+        buffer_m = settings.area_buffer_m
+        requested_bounds = (
+            min(site.x for site in sources) - buffer_m,
+            min(site.y for site in sources) - buffer_m,
+            max(site.x for site in sources) + buffer_m,
+            max(site.y for site in sources) + buffer_m,
+        )
+    left, bottom, right, top = requested_bounds
+    if not all(math.isfinite(v) for v in requested_bounds) or left >= right or bottom >= top:
+        raise ValueError("Coverage area bounds must be finite and have positive width and height")
+    return requested_bounds
+
+
 def make_grid(
     sources: list[Site],
     terrain: TerrainSource,
@@ -42,19 +63,9 @@ def make_grid(
     requested_area_geometry: BaseGeometry | None = None,
 ) -> tuple[CoverageGrid, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build cell centres in terrain CRS and their WGS84 render coordinates."""
-    if not sources:
-        raise ValueError("Select at least one mesh router to calculate coverage")
     if settings.maximum_cells < 1 or settings.maximum_sources < 1:
         raise ValueError("Coverage limits must be positive")
-    if requested_bounds is None:
-        left = min(site.x for site in sources) - settings.area_buffer_m
-        bottom = min(site.y for site in sources) - settings.area_buffer_m
-        right = max(site.x for site in sources) + settings.area_buffer_m
-        top = max(site.y for site in sources) + settings.area_buffer_m
-    else:
-        left, bottom, right, top = requested_bounds
-    if not all(math.isfinite(v) for v in (left, bottom, right, top)) or left >= right or bottom >= top:
-        raise ValueError("Coverage area bounds must be finite and have positive width and height")
+    left, bottom, right, top = coverage_area_bounds(sources, settings, requested_bounds)
 
     cell_size = settings.cell_size_m
     if not math.isfinite(cell_size) or cell_size <= 0:

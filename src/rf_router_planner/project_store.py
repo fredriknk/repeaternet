@@ -225,7 +225,7 @@ class ProjectStore:
             assert target is not None
             source_dir = self.project_path(key, source)
             target_dir = self.project_path(key, target)
-            for name in ("dtm", "dom", "terrain-generations"):
+            for name in ("dtm", "dom", "terrain-generations", "coverage-terrain-generations"):
                 source_path = source_dir / name
                 target_path = target_dir / name
                 if source_path.exists():

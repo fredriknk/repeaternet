@@ -93,6 +93,7 @@ function renderCoverageInspection(response,latitude,longitude){
   $('inspection-title').textContent=`${selectedRun||'Current mesh'} · ${latitude.toFixed(5)}, ${longitude.toFixed(5)} · handheld at ${response.client.height_agl_m} m AGL`;
   const point=[latitude,longitude];
   if(response.state==='unknown_terrain'){
+    noteCoverageTerrainGap();
     $('inspection-summary').textContent=response.message;
     $('inspection-detail').textContent='No RF conclusion is available without ground terrain at this point.';
     $('inspection-chart').hidden=true;
@@ -101,6 +102,7 @@ function renderCoverageInspection(response,latitude,longitude){
     return;
   }
   if(response.state==='unknown_links'){
+    noteCoverageTerrainGap();
     $('inspection-summary').textContent=response.message||'Terrain data is missing along every candidate path; coverage is unknown.';
     $('inspection-detail').textContent='The client location has known ground elevation, but no router path could be evaluated because the path terrain is incomplete.';
     $('inspection-chart').hidden=true;

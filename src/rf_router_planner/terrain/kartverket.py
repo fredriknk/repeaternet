@@ -10,7 +10,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from shapely import prepare
 from shapely.geometry import LineString, MultiPoint, box
+from shapely.geometry.base import BaseGeometry
 
 logger = logging.getLogger(__name__)
 
@@ -126,14 +128,15 @@ class KartverketProvider:
         requested_resolution_m: float,
         *,
         corridor: Corridor | None = None,
+        area_geometry: BaseGeometry | None = None,
         auto_resolution: bool = True,
         maximum_total_pixels: int = 50_000_000,
     ) -> DownloadPlan:
         """Create a deterministic, cache-friendly WCS tile plan.
 
-        Tiles are aligned to a global grid and filtered against the true buffered
-        route corridor. In automatic mode the resolution is increased only as
-        much as needed to remain under the total pixel budget.
+        Tiles are aligned to a global grid and filtered against the buffered
+        route corridor or an explicit analysis area. Automatic resolution
+        keeps the selected tiles under the total pixel budget.
         """
         min_x, min_y, max_x, max_y = bounds
         if max_x <= min_x or max_y <= min_y:
@@ -144,15 +147,24 @@ class KartverketProvider:
             raise ValueError("Maximum total pixels must be positive")
         if self.maximum_tile_area_km2 <= 0 or self.maximum_pixels_per_tile <= 0:
             raise ValueError("Tile area and pixel limits must be positive")
+        if area_geometry is not None:
+            if corridor is not None or not area_geometry.is_valid or area_geometry.area <= 0:
+                raise ValueError("Provide one valid download area with positive area")
+            if area_geometry.area > self.maximum_tiles * self.maximum_tile_area_km2 * 1_000_000:
+                raise ValueError("The download exceeds the tile limit. Reduce the coverage area.")
+            prepare(area_geometry)
 
         resolution = requested_resolution_m
         if auto_resolution:
-            target_area = self._target_area_m2(bounds, corridor)
+            target_area = (
+                area_geometry.area if area_geometry is not None
+                else self._target_area_m2(bounds, corridor)
+            )
             minimum_resolution = math.sqrt(target_area / maximum_total_pixels)
             resolution = self._nice_resolution(max(resolution, minimum_resolution))
 
         for _attempt in range(12):
-            tiles = self._build_tiles(bounds, resolution, corridor)
+            tiles = self._build_tiles(bounds, resolution, corridor, area_geometry)
             pixels = sum(tile.pixel_count for tile in tiles)
             if not auto_resolution or pixels <= maximum_total_pixels:
                 break
@@ -169,7 +181,9 @@ class KartverketProvider:
                 f"The download requires {len(tiles)} tiles; the configured limit is "
                 f"{self.maximum_tiles}. "
             )
-            if auto_resolution:
+            if area_geometry is not None:
+                message += "Reduce the coverage area."
+            elif auto_resolution:
                 message += "Increase the tile limit or reduce the corridor width."
             else:
                 message += "Enable automatic resolution or request a coarser raster."
@@ -185,7 +199,8 @@ class KartverketProvider:
         )
 
     def _build_tiles(
-        self, bounds: Bounds, resolution_m: float, corridor: Corridor | None
+        self, bounds: Bounds, resolution_m: float, corridor: Corridor | None,
+        area_geometry: BaseGeometry | None = None,
     ) -> list[DownloadTile]:
         min_x, min_y, max_x, max_y = bounds
         side_from_area = math.sqrt(self.maximum_tile_area_km2 * 1_000_000.0)
@@ -200,7 +215,14 @@ class KartverketProvider:
             x = start_x
             while x < max_x:
                 tile_bounds = (x, y, x + tile_side, y + tile_side)
-                if corridor_shape is None or corridor_shape.intersects(box(*tile_bounds)):
+                if area_geometry is not None:
+                    tile_shape = box(*tile_bounds)
+                    intersects = area_geometry.intersects(tile_shape) and not area_geometry.touches(
+                        tile_shape
+                    )
+                else:
+                    intersects = corridor_shape is None or corridor_shape.intersects(box(*tile_bounds))
+                if intersects:
                     width_pixels = max(1, math.ceil(tile_side / resolution_m))
                     height_pixels = max(1, math.ceil(tile_side / resolution_m))
                     tiles.append(DownloadTile(tile_bounds, width_pixels, height_pixels))
