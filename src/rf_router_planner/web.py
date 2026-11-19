@@ -16,6 +16,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields, is_dataclass, replace
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,8 @@ from .export.coverage_report import (
 )
 from .export.csv_export import export_route_csv
 from .export.geojson import export_route_geojson
+from .export.route_report import export_route_html
+from .export.route_report_coverage import ReportCoverage, build_report_coverage
 from .integrations.corescope import CoreScopeClient
 from .models.coverage import ClientRadioProfile, CoverageMode, CoverageSettings
 from .models.settings import (
@@ -463,6 +466,8 @@ class Workspace:
         }
         self.result: Any = None
         self.result_rf_settings: dict[str, Any] | None = None
+        self.result_plan: dict[str, Any] = {}
+        self.result_terrain: tuple[float, bool] | None = None
         self.result_plan_fingerprint: str | None = None
         self.coverage_job: dict[str, Any] | None = None
         self.restore_coverage_job()
@@ -499,6 +504,8 @@ class Workspace:
         self.result_summary = project["result_summary"]
         self.result = None
         self.result_rf_settings = None
+        self.result_plan = {}
+        self.result_terrain = None
         self.result_plan_fingerprint = None
         self.job_id = None
         self.coverage_cancel = threading.Event()
@@ -558,6 +565,20 @@ def _load_coverage_manifest(workspace: Workspace, job_id: str) -> dict[str, Any]
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) and value.get("job_id") == job_id else None
+
+
+def _coverage_manifests(directory: Path, current_job: dict[str, Any] | None) -> list[dict[str, Any]]:
+    manifests = {}
+    for path in (directory / "coverage-jobs").glob("*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(item, dict) and isinstance(item.get("job_id"), str):
+            manifests[item["job_id"]] = item
+    if current_job:
+        manifests[current_job["job_id"]] = current_job
+    return list(manifests.values())
 
 
 def _iter_coverage_cells(
@@ -2007,20 +2028,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with ws.lock:
             current_job = dict(ws.coverage_job) if ws.coverage_job else None
             directory = ws.directory
-        manifests: dict[str, dict[str, Any]] = {}
-        archive = directory / "coverage-jobs"
-        if archive.is_dir():
-            for path in archive.glob("*.json"):
-                try:
-                    item = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-                if isinstance(item, dict) and isinstance(item.get("job_id"), str):
-                    manifests[item["job_id"]] = item
-        if current_job:
-            manifests[current_job["job_id"]] = current_job
         recent = sorted(
-            manifests.values(), key=lambda value: value.get("created_at", 0), reverse=True
+            _coverage_manifests(directory, current_job),
+            key=lambda value: value.get("created_at", 0),
+            reverse=True,
         )[:50]
         current_terrain_fingerprint = _terrain_fingerprint(ws)
         return {
@@ -3832,6 +3843,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ws.cancel.clear()
             ws.result = None
             ws.result_rf_settings = dict(body.get("rf", {}))
+            ws.result_plan = body
+            ws.result_terrain = None
             ws.result_plan_fingerprint = _route_plan_fingerprint(body)
             ws.result_summary = None
             ws.inputs = body
@@ -4059,6 +4072,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             ws.snapshot_version += 1
                             snapshot.search_complete = search_complete
                             ws.result = snapshot
+                            ws.result_terrain = (terrain.resolution_m, terrain.has_surface)
                             ws.status = {
                                 **ws.status,
                                 "state": "running",
@@ -4114,6 +4128,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         with ws.lock:
                             if ws.job_id == job_id and ws.input_revision == input_revision:
                                 ws.result = result
+                                ws.result_terrain = (terrain.resolution_m, terrain.has_surface)
                                 ws.snapshot_version += 1
                                 terminal_status = {
                                     **ws.status,
@@ -4273,6 +4288,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             deleted = rf_cache.clear(ws.directory.name)
         return {"ok": True, "deleted_entries": deleted}
 
+    def route_report_coverage(
+        request: Request, ws: Workspace, directory: Path, current_job: dict[str, Any] | None,
+    ) -> tuple[ReportCoverage | None, str]:
+        jobs = _coverage_manifests(directory, current_job)
+        job = max(
+            (item for item in jobs if item.get("state") == "complete"),
+            key=lambda item: item.get("created_at", 0),
+            default=None,
+        )
+        if job is None:
+            note = (
+                "Coverage is omitted because the run is incomplete." if jobs
+                else "No completed coverage run is available."
+            )
+            return None, note
+        if job.get("stale") or not coverage_current(ws, job):
+            return None, "Coverage is omitted because it was computed for a different route, terrain or settings."
+        try:
+            context = coverage_export_context(
+                request, job["job_id"], include_partial=True,
+                include_stale=False, target_report_id=None,
+            )
+            if context["metadata"]["partial"]:
+                return None, "Coverage is omitted because the run is incomplete or has unresolved cells."
+            report = build_report_coverage(
+                _iter_coverage_cells(context["directory"], context["job"]),
+                context["job"], context["metadata"], context["target_report"],
+            )
+        except (HTTPException, OSError, ValueError, TypeError, KeyError):
+            return None, "Coverage is omitted because the saved coverage data is unavailable."
+        return report, ""
+
     @app.get("/api/export/{kind}")
     def export(kind: str, request: Request) -> Any:
         ws = workspace(request)
@@ -4282,6 +4329,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(404, "Run a plan first")
             _write_json_atomic(path, ws.inputs)
             return FileResponse(path, filename="route.webplan.json")
+        if kind == "html":
+            with ws.lock:
+                if ws.result is None:
+                    raise HTTPException(404, "No result to export")
+                result = replace(ws.result)
+                plan = ws.result_plan
+                resolution, surface = ws.result_terrain or (None, None)
+                directory = ws.directory
+                job = dict(ws.coverage_job) if ws.coverage_job else None
+                revision = (ws.project_id, ws.job_id, ws.snapshot_version)
+            coverage, coverage_note = route_report_coverage(request, ws, directory, job)
+            with ws.lock:
+                if coverage and revision != (ws.project_id, ws.job_id, ws.snapshot_version):
+                    coverage = None
+                    coverage_note = "Coverage is omitted because the selected route changed during export."
+            document = export_route_html(
+                result, settings(RFSettings, plan.get("rf", {})),
+                settings(CandidateSettings, plan.get("candidates", {})),
+                generated_at=datetime.now(UTC),
+                endpoint_coordinates=(plan.get("a"), plan.get("b")),
+                terrain_resolution_m=resolution, surface_available=surface,
+                coverage=coverage, coverage_note=coverage_note,
+            )
+            temporary = tempfile.TemporaryDirectory(prefix="route-report-")
+            path = Path(temporary.name) / "route-report.html"
+            try:
+                path.write_text(document, encoding="utf-8")
+            except OSError:
+                temporary.cleanup()
+                raise
+            return FileResponse(
+                path, filename=path.name, media_type="text/html",
+                background=BackgroundTask(temporary.cleanup),
+            )
         if kind not in {"csv", "geojson"} or ws.result is None:
             raise HTTPException(404, "No result to export")
         path = ws.directory / f"route.{kind}"

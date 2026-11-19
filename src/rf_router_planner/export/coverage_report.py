@@ -335,6 +335,19 @@ def _color(cell: dict[str, Any], mode: str) -> str:
     return "#287b64" if margin >= 10 else "#61a88c" if margin >= 5 else "#f0ca62" if margin >= 0 else "#ce796d"
 
 
+def coverage_legend(mode: str) -> tuple[tuple[str, str], ...]:
+    labels = ("3+ usable sources", "2 usable sources", "1 usable source") if mode == "overlap" else (
+        "≥ 10 dB", "5–10 dB", "0–5 dB",
+    )
+    return (
+        *zip(labels, ("#287b64", "#61a88c", "#f0ca62"), strict=True),
+        ("Not usable", _color({}, mode)),
+        ("Unknown terrain", _color({"state": "unknown_terrain"}, mode)),
+        ("Unresolved profile limit", _color({"state": "unresolved"}, mode)),
+        ("Not evaluated", _color({"state": "not_evaluated"}, mode)),
+    )
+
+
 def _map_point(longitude: float, latitude: float, bounds: tuple[float, float, float, float]) -> tuple[float, float]:
     south, west, north, east = bounds
     width = max(east - west, 1e-9)
@@ -344,6 +357,20 @@ def _map_point(longitude: float, latitude: float, bounds: tuple[float, float, fl
 
 def _html(value: Any) -> str:
     return html.escape(str(value), quote=True)
+
+
+def coverage_target_table(target_report: dict[str, Any]) -> str:
+    rows = []
+    for item in target_report.get("targets", []):
+        detail = item.get("best_two_way_margin_db", item.get("covered_area_m2", item.get("covered_length_m")))
+        rows.append(
+            f"<tr><td>{_html(item.get('name'))}</td><td>{_html(item.get('state'))}</td>"
+            f"<td>{_html(detail if detail is not None else item.get('message'))}</td></tr>"
+        )
+    return (
+        "<table><thead><tr><th>Target</th><th>Outcome</th><th>Margin / area / length detail</th>"
+        f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    )
 
 
 def printable_report_chunks(
@@ -449,17 +476,18 @@ def printable_report_chunks(
                 points = " ".join(f"{_map_point(float(point[0]), float(point[1]), bounds)[0]:.1f},{_map_point(float(point[0]), float(point[1]), bounds)[1]:.1f}" for point in line)
                 tag = "polyline" if geometry_type == "LineString" else "polygon"
                 yield f"<{tag} points='{points}' fill='{color if geometry_type == 'Polygon' else 'none'}' fill-opacity='.18' stroke='{color}' stroke-width='3'><title>{_html(target.get('properties', {}).get('name'))}: {_html(state)}</title></{tag}>"
-    yield "</svg><div class='legend'><span><i class='swatch' style='background:#287b64'></i> ≥ 10 dB</span><span><i class='swatch' style='background:#61a88c'></i> 5–10 dB</span><span><i class='swatch' style='background:#f0ca62'></i> 0–5 dB</span><span><i class='swatch' style='background:#ce796d'></i> Not usable</span><span><i class='swatch' style='background:#a7afb0'></i> Unknown terrain</span><span><i class='swatch' style='background:#9476b7'></i> Unresolved profile limit</span><span><i class='swatch' style='background:#e2e5e3'></i> Not evaluated</span><span><i class='swatch' style='background:#f7f8f7'></i> Outside requested area</span></div>"
+    mode = str(job.get("mode", "two_way"))
+    legend = (*coverage_legend(mode), ("Outside requested area", _color({"state": "outside_area"}, mode)))
+    yield "</svg><div class='legend'>" + "".join(
+        f"<span><i class='swatch' style='background:{color}'></i> {_html(label)}</span>"
+        for label, color in legend
+    ) + "</div>"
     yield "<h2>Coverage states</h2><table><thead><tr><th>State</th><th>Cells</th></tr></thead><tbody>"
     for state, count in counts["state_counts"].items():
         yield f"<tr><td>{_html(state)}</td><td>{_html(count)}</td></tr>"
     yield "</tbody></table><h2>Coverage targets</h2>"
     if target_report:
-        yield "<table><thead><tr><th>Target</th><th>Outcome</th><th>Margin / area / length detail</th></tr></thead><tbody>"
-        for item in target_report.get("targets", []):
-            detail = item.get("best_two_way_margin_db", item.get("covered_area_m2", item.get("covered_length_m")))
-            yield f"<tr><td>{_html(item.get('name'))}</td><td>{_html(item.get('state'))}</td><td>{_html(detail if detail is not None else item.get('message'))}</td></tr>"
-        yield "</tbody></table>"
+        yield coverage_target_table(target_report)
     else:
         yield "<p class='muted'>No saved target-assessment report is attached to this coverage run.</p>"
     yield "<h2>Scenario comparison</h2>"

@@ -846,6 +846,20 @@ def test_coverage_geojson_json_and_offline_html_exports_are_workspace_scoped(
         assert "Scenario comparison" in report.text
         assert "https://" not in report.text
 
+        route_report = client.get("/api/export/html")
+        assert route_report.status_code == 200, route_report.text
+        assert '<section id="coverage">' in route_report.text
+        assert '"image":"data:image/png;base64,' in route_report.text
+        assert "Export target" in route_report.text
+
+        alternative = client.get("/api/result").json()["active_alternative_id"]
+        assert client.post(f"/api/alternatives/{alternative}/select").status_code == 200
+        stale_route_report = client.get("/api/export/html")
+        assert stale_route_report.status_code == 200
+        assert "Coverage is omitted because it was computed for a different route" in stale_route_report.text
+        assert '<section id="coverage">' not in stale_route_report.text
+        assert '"coverage":null' in stale_route_report.text
+
         isolated = TestClient(client.app)
         isolated.get("/")
         assert isolated.get(

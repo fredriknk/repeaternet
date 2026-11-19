@@ -98,8 +98,16 @@ not launch a new route search.
 
 Edits to endpoints, radio, terrain, or sites mark affected results stale.
 A proposed site can be pinned by moving it, but the edited network needs a new
-search. Undo/Redo applies to plan edits. Route CSV and GeoJSON exports describe
-the selected validated result.
+search. Undo/Redo applies to plan edits. Route CSV, GeoJSON, and HTML exports
+describe the selected validated result. **HTML report** downloads a single
+shareable, printable file with the route map, site details, terrain profiles,
+and directional link budgets. The map's route and coverage layers work offline,
+and OpenStreetMap basemap tiles require an internet connection.
+
+The report includes the latest completed coverage run when it matches the
+selected route, terrain, and coverage settings and has no unresolved or
+unevaluated cells. It explains any omission. Coverage statistics use the full
+grid. The map uses a size-limited preview that you can toggle on or off.
 
 ## Predicted mesh coverage
 

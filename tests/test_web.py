@@ -69,6 +69,7 @@ def tile_with_nodata_gap():
 
 
 def test_real_route_upload_optimize_profile_export(client, tmp_path):
+    assert client.get("/api/export/html").status_code == 404
     assert (
         client.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())}).status_code == 200
     )
@@ -116,6 +117,12 @@ def test_real_route_upload_optimize_profile_export(client, tmp_path):
     assert len(result["links"][0]["profile"]["distances_m"]) > 2
     assert client.get("/api/export/csv").text.startswith("hop,from,to")
     assert client.get("/api/export/geojson").json()["type"] == "FeatureCollection"
+    report = client.get("/api/export/html")
+    assert report.status_code == 200
+    assert report.headers["content-type"] == "text/html; charset=utf-8"
+    assert report.headers["content-disposition"] == 'attachment; filename="route-report.html"'
+    assert "A → B" in report.text and "Terrain resolution</dt><dd>10.0 m" in report.text
+    assert "No completed coverage run is available." in report.text
     assert client.get("/api/export/project").json()["a"] == a
     cold_cache = client.get("/api/state").json()["rf_cache"]
     assert cold_cache["misses"] > 0
