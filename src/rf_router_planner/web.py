@@ -384,6 +384,9 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
     include_endpoints = value.get("include_endpoints", defaults.include_endpoints)
     if not isinstance(include_endpoints, bool):
         raise ValueError("include_endpoints must be a boolean")
+    area_includes_clients = value.get("area_includes_clients", defaults.area_includes_clients)
+    if not isinstance(area_includes_clients, bool):
+        raise ValueError("area_includes_clients must be a boolean")
     source_ids = value.get("source_ids", defaults.source_ids)
     if (
         not isinstance(source_ids, list)
@@ -417,6 +420,7 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
             "maximum_evaluations", defaults.maximum_evaluations, 250_000
         ),
         include_endpoints=include_endpoints,
+        area_includes_clients=area_includes_clients,
         source_ids=source_ids,
         client=client,
     )
@@ -1134,6 +1138,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for site in result.active_solution.sites
                 if site.kind not in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
             ]
+            # The default mesh area must also reach the people the route serves.
+            client_sites = [
+                site
+                for site in result.active_solution.sites
+                if site.kind in {SiteKind.ENDPOINT_A, SiteKind.ENDPOINT_B, SiteKind.CLIENT}
+            ]
             if coverage_settings.include_endpoints:
                 known_source_ids = {site.id for site in sources}
                 sources.extend(
@@ -1192,7 +1202,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         requested_bounds = None
         requested_area_geometry = None
-        if coverage_settings.area_mode == "view":
+        if (
+            coverage_settings.area_mode == "mesh"
+            and coverage_settings.area_includes_clients
+            and sources
+        ):
+            buffer_m = coverage_settings.area_buffer_m
+            extent = [*sources, *client_sites]
+            requested_bounds = (
+                min(site.x for site in extent) - buffer_m,
+                min(site.y for site in extent) - buffer_m,
+                max(site.x for site in extent) + buffer_m,
+                max(site.y for site in extent) + buffer_m,
+            )
+        elif coverage_settings.area_mode == "view":
             values = body.get("map_bounds")
             if not isinstance(values, list) or len(values) != 4:
                 raise ValueError("Map coverage needs south, west, north, and east bounds")
@@ -3947,7 +3970,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         workspace(request)
         try:
             start, end = coordinate_pair(body, "a"), coordinate_pair(body, "b")
-            corridor_width = body.get("corridor_width_m", 10_000)
+            corridor_width = body.get("corridor_width_m", CandidateSettings().corridor_width_m)
             if (
                 not isinstance(corridor_width, (int, float))
                 or isinstance(corridor_width, bool)

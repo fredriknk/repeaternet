@@ -93,7 +93,8 @@ class RFSettings:
 @dataclass(slots=True)
 class CandidateSettings:
     infrastructure_policy: InfrastructurePolicy = InfrastructurePolicy.EXISTING_AND_PROPOSED
-    corridor_width_m: float = 10_000.0
+    # Search distance on each side of the A-B line, including around both endpoints.
+    corridor_width_m: float = 15_000.0
     unrestricted_bounding_area: bool = False
     grid_spacing_m: float = 1_000.0
     cell_size_m: float = 2_000.0

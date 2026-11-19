@@ -118,6 +118,8 @@ def prepare_workspace(
     coverage_settings = {
         "mode": "two_way",
         "area_mode": "mesh",
+        # These fixtures assert exact repeater-only grid geometry.
+        "area_includes_clients": False,
         "cell_size_m": 500.0,
         "area_buffer_m": 500.0,
         "profile_step_m": 100.0,
@@ -1548,3 +1550,27 @@ def test_comparison_rejects_terrain_changed_after_snapshot(tmp_path, monkeypatch
         )
         assert compared.status_code == 409
         assert "terrain" in compared.json()["detail"]
+
+
+def test_mesh_coverage_area_includes_route_endpoints(tmp_path, monkeypatch) -> None:
+    """Endpoints far from the repeaters must still be inside the default area."""
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        # The fake route's repeater is 400 m from each endpoint; a 100 m buffer
+        # around repeaters alone would leave both endpoints off the map.
+        settings = {
+            **prepared["coverage"]["settings"],
+            "area_includes_clients": True,
+            "area_buffer_m": 100.0,
+            "cell_size_m": 100.0,
+            "maximum_cells": 400,
+        }
+        request = {**prepared["coverage"], "settings": settings}
+        response = client.post("/api/coverage/estimate", json=request)
+        assert response.status_code == 200, response.text
+        bounds = response.json()["area_bounds_wgs84"]
+        south, west, north, east = bounds
+        for latitude, longitude in (prepared["plan"]["a"], prepared["plan"]["b"]):
+            assert south <= latitude <= north
+            assert west <= longitude <= east

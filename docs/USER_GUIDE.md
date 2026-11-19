@@ -114,6 +114,8 @@ grid. The map uses a size-limited preview that you can toggle on or off.
 Coverage uses the selected route's repeaters, optionally a subset or added
 endpoints, and a separate client radio profile. It evaluates downlink and uplink
 independently. Choose the mesh buffer, map extent, or a drawn polygon as the area.
+The mesh buffer surrounds the repeaters and the route's endpoints/clients, so
+the places the route serves are always on the coverage map.
 
 Calculate and Quick preview first estimate the work, then ask for one
 confirmation. Preview is approximate and limited to 256 cells and 4,096 source
@@ -199,6 +201,10 @@ in practice. All of them are configurable:
 - **Maximum hop length 50 km.** Longer LoRa links are physically possible
   between summits but are rarely dependable. Clear the field for no limit.
 - **1 dB feed loss** per antenna for cables and connectors.
+- **15 km corridor half-width.** Candidate sites, terrain downloads and
+  MeshCore router lookups cover everything within 15 km of the A–B line,
+  including a 15 km radius around each endpoint (a 30 km wide band with
+  rounded ends).
 - **Surface terrain (DOM) included** in Kartverket downloads, so trees and
   buildings count as obstructions. This doubles the download size.
 

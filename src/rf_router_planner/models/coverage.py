@@ -73,6 +73,8 @@ class CoverageSettings:
     maximum_sources: int = 64
     maximum_evaluations: int = 250_000
     include_endpoints: bool = False
+    # Extend the default mesh area to cover the route's endpoints/clients too.
+    area_includes_clients: bool = True
     source_ids: list[str] = field(default_factory=list)
     client: ClientRadioProfile = field(default_factory=ClientRadioProfile)
 
