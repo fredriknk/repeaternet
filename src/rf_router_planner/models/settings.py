@@ -56,7 +56,7 @@ class LoRaSettings:
 @dataclass(slots=True)
 class AntennaSettings:
     gain_dbi: float = 2.15
-    feed_loss_db: float = 0.0
+    feed_loss_db: float = 1.0
     height_agl_m: float = 3.0
     pattern_csv: str | None = None
 
@@ -68,7 +68,7 @@ class RFSettings:
     receiver_sensitivity_dbm: float = -130.0
     fade_margin_db: float = 10.0
     miscellaneous_loss_db: float = 0.0
-    k_factor: float = 4.0 / 3.0
+    k_factor: float = 1.0
     required_fresnel_clearance: float = 0.60
     validation_mode: ValidationMode = ValidationMode.PROPAGATION
     endpoint_a: AntennaSettings = field(default_factory=AntennaSettings)
@@ -106,7 +106,7 @@ class CandidateSettings:
     coarse_sample_step_m: float = 200.0
     medium_sample_step_m: float = 50.0
     final_sample_step_m: float = 10.0
-    maximum_link_distance_m: float | None = None
+    maximum_link_distance_m: float | None = 50_000.0
     refine_radius_m: float = 250.0
     refine_step_m: float = 50.0
     optimize_heights: bool = False

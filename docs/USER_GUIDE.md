@@ -166,8 +166,18 @@ clearance. “Passes configured validation criteria” therefore must be read
 alongside obstruction, clearance, and sampling information.
 
 Diffraction uses the Bullington terrain component, not the full
-delta-Bullington/spherical-Earth method. The default effective-Earth factor is
-4/3 and the Fresnel target is 60%. These assumptions are configurable.
+delta-Bullington/spherical-Earth method. The Fresnel target is 60%.
+
+Defaults are deliberately conservative so a certified route is likely to work
+in practice. All of them are configurable:
+
+- **Effective-Earth k-factor 1.0** rather than the textbook 4/3, so long paths
+  keep clearance under poorer-than-average refraction.
+- **Maximum hop length 50 km.** Longer LoRa links are physically possible
+  between summits but are rarely dependable. Clear the field for no limit.
+- **1 dB feed loss** per antenna for cables and connectors.
+- **Surface terrain (DOM) included** in Kartverket downloads, so trees and
+  buildings count as obstructions. This doubles the download size.
 
 The web workflow supports two endpoints. Longer-route search is bounded and
 heuristic; it does not prove global optimality across all terrain. Final sampled

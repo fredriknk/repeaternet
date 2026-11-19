@@ -861,7 +861,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ):
             raise ValueError("Terrain resolution must be between 1 and 1,000 m")
         auto_resolution = options.get("auto_resolution", True)
-        include_dom = options.get("include_dom", False)
+        include_dom = options.get("include_dom", True)
         if not isinstance(auto_resolution, bool) or not isinstance(include_dom, bool):
             raise ValueError("Terrain auto-resolution and surface-data options must be boolean")
 
