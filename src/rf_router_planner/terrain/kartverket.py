@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shapely import prepare
-from shapely.geometry import LineString, MultiPoint, box
+from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
+
+from .corridor import corridor_geometry
 
 logger = logging.getLogger(__name__)
 
@@ -262,14 +264,9 @@ class KartverketProvider:
     @staticmethod
     def _corridor_shape(corridor: Corridor):  # type: ignore[no-untyped-def]
         if isinstance(corridor, RouteCorridor):
-            shape = LineString(corridor.points).buffer(corridor.width_m)
-            if corridor.extra_points:
-                shape = shape.union(MultiPoint(corridor.extra_points).buffer(corridor.width_m))
-            return shape
+            return corridor_geometry(corridor.points, corridor.width_m, corridor.extra_points)
         ax, ay, bx, by, width = corridor
-        if width <= 0:
-            raise ValueError("Corridor width must be positive")
-        return LineString([(ax, ay), (bx, by)]).buffer(width)
+        return corridor_geometry([(ax, ay), (bx, by)], width)
 
     @staticmethod
     def _nice_resolution(minimum_m: float) -> float:

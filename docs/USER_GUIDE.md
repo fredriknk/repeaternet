@@ -114,8 +114,10 @@ grid. The map uses a size-limited preview that you can toggle on or off.
 Coverage uses the selected route's repeaters, optionally a subset or added
 endpoints, and a separate client radio profile. It evaluates downlink and uplink
 independently. Choose the mesh buffer, map extent, or a drawn polygon as the area.
-The mesh buffer surrounds the repeaters and the route's endpoints/clients, so
-the places the route serves are always on the coverage map.
+The mesh area is the route's search corridor (full width, extending one
+half-width past each endpoint) plus the mesh buffer around every repeater and
+endpoint/client, so the places the route serves and the terrain behind them are
+always on the coverage map.
 
 Calculate and Quick preview first estimate the work, then ask for one
 confirmation. Preview is approximate and limited to 256 cells and 4,096 source
@@ -202,9 +204,8 @@ in practice. All of them are configurable:
   between summits but are rarely dependable. Clear the field for no limit.
 - **1 dB feed loss** per antenna for cables and connectors.
 - **15 km corridor half-width.** Candidate sites, terrain downloads and
-  MeshCore router lookups cover everything within 15 km of the A–B line,
-  including a 15 km radius around each endpoint (a 30 km wide band with
-  rounded ends).
+  MeshCore router lookups cover a 30 km wide band along the A–B line that
+  continues at full width for 15 km past each endpoint (square ends).
 - **Surface terrain (DOM) included** in Kartverket downloads, so trees and
   buildings count as obstructions. This doubles the download size.
 

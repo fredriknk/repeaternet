@@ -151,7 +151,7 @@ def test_diagonal_candidate_search_loads_fewer_tiles_with_identical_results(tmp_
     rectangle_tiles = (math.floor(north * 10) - math.floor(south * 10) + 1) * (
         math.floor(east * 5) - math.floor(west * 5) + 1
     )
-    assert (post.call_count, rectangle_tiles) == (28, 121)
+    assert (post.call_count, rectangle_tiles) == (30, 121)
 
 
 def test_nodata_and_excluded_points_do_not_load_tiles(tmp_path, monkeypatch):

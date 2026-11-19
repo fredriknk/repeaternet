@@ -9,6 +9,7 @@ import numpy as np
 from rf_router_planner.models.settings import CandidateSettings
 from rf_router_planner.models.site import Site, SiteKind
 
+from .corridor import corridor_bounds, inside_corridor
 from .raster import TerrainSource
 
 
@@ -109,10 +110,19 @@ def generate_candidates(
 ) -> list[Site]:
     """Generate and spatially thin grid/high-ground candidates in an A-B corridor."""
     padding = settings.corridor_width_m
-    min_x = max(terrain.bounds[0], min(endpoint_a.x, endpoint_b.x) - padding)
-    min_y = max(terrain.bounds[1], min(endpoint_a.y, endpoint_b.y) - padding)
-    max_x = min(terrain.bounds[2], max(endpoint_a.x, endpoint_b.x) + padding)
-    max_y = min(terrain.bounds[3], max(endpoint_a.y, endpoint_b.y) + padding)
+    if settings.unrestricted_bounding_area:
+        left = min(endpoint_a.x, endpoint_b.x) - padding
+        bottom = min(endpoint_a.y, endpoint_b.y) - padding
+        right = max(endpoint_a.x, endpoint_b.x) + padding
+        top = max(endpoint_a.y, endpoint_b.y) + padding
+    else:
+        left, bottom, right, top = corridor_bounds(
+            [(endpoint_a.x, endpoint_a.y), (endpoint_b.x, endpoint_b.y)], padding
+        )
+    min_x = max(terrain.bounds[0], left)
+    min_y = max(terrain.bounds[1], bottom)
+    max_x = min(terrain.bounds[2], right)
+    max_y = min(terrain.bounds[3], top)
     spacing = candidate_grid_spacing(terrain, settings)
     xs_1d = np.arange(min_x, max_x + spacing * 0.5, spacing)
     ys_1d = np.arange(min_y, max_y + spacing * 0.5, spacing)
@@ -121,9 +131,12 @@ def generate_candidates(
     grid_x, grid_y = np.meshgrid(xs_1d, ys_1d)
     xs, ys = grid_x.ravel(), grid_y.ravel()
     if not settings.unrestricted_bounding_area:
-        mask = (
-            _distance_to_segment(xs, ys, endpoint_a.x, endpoint_a.y, endpoint_b.x, endpoint_b.y)
-            <= settings.corridor_width_m
+        mask = inside_corridor(
+            xs,
+            ys,
+            (endpoint_a.x, endpoint_a.y),
+            (endpoint_b.x, endpoint_b.y),
+            settings.corridor_width_m,
         )
         xs, ys = xs[mask], ys[mask]
     dtm = terrain.sample(xs, ys)

@@ -17,6 +17,7 @@ import rf_router_planner.web as web_module
 from rf_router_planner.models.coverage import CoverageCell, CoverageState
 from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.network import NetworkSolution
+from rf_router_planner.models.settings import CandidateSettings
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
 from rf_router_planner.terrain.kartverket import KartverketProvider
@@ -1572,5 +1573,13 @@ def test_mesh_coverage_area_includes_route_endpoints(tmp_path, monkeypatch) -> N
         bounds = response.json()["area_bounds_wgs84"]
         south, west, north, east = bounds
         for latitude, longitude in (prepared["plan"]["a"], prepared["plan"]["b"]):
+            assert south <= latitude <= north
+            assert west <= longitude <= east
+        # The area follows the search corridor: a full half-width beyond each
+        # endpoint along the route (A-B runs west-east here) and to each side.
+        half_width = CandidateSettings().corridor_width_m
+        behind_a = coordinates(500100.0 - 0.95 * half_width, 6650500.0 + 0.95 * half_width)
+        beyond_b = coordinates(500900.0 + 0.95 * half_width, 6650500.0 - 0.95 * half_width)
+        for latitude, longitude in (behind_a, beyond_b):
             assert south <= latitude <= north
             assert west <= longitude <= east

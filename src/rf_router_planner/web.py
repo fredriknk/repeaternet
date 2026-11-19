@@ -64,6 +64,12 @@ from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .project_store import ProjectStore
 from .rf.propagation import LinkEvaluator
+from .terrain.corridor import (
+    corridor_bounds,
+    corridor_geometry,
+    inside_corridor,
+    site_buffer,
+)
 from .terrain.kartverket import DownloadPlan, KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
 from .terrain.roads import RoadLoadCancelled, TiledRoadAccess
@@ -423,6 +429,25 @@ def parse_coverage_settings(value: Any) -> CoverageSettings:
         area_includes_clients=area_includes_clients,
         source_ids=source_ids,
         client=client,
+    )
+
+
+def within_corridor_latlon(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+    half_width_m: float,
+) -> bool:
+    """Square-ended corridor test on WGS84 points using a local metric scale."""
+    latitude_scale = 111_320.0
+    longitude_scale = latitude_scale * max(0.1, math.cos(math.radians((start[0] + end[0]) / 2)))
+
+    def metres(value: tuple[float, float]) -> tuple[float, float]:
+        return value[1] * longitude_scale, value[0] * latitude_scale
+
+    px, py = metres(point)
+    return bool(
+        inside_corridor(np.array([px]), np.array([py]), metres(start), metres(end), half_width_m)[0]
     )
 
 
@@ -1001,7 +1026,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         projected = [forward.transform(lon, lat) for lat, lon in endpoints]
         extra_points = tuple(forward.transform(lon, lat) for lat, lon in router_points)
         padding = float(candidates.corridor_width_m)
-        bounds = _padded_site_bounds([*projected, *extra_points], padding)
+        bounds = corridor_bounds(projected, padding, extra_points)
         provider = terrain_provider(ws.directory)
         route_corridor = RouteCorridor(tuple(projected), padding, extra_points)
         plan = provider.plan_download(
@@ -1207,14 +1232,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             and coverage_settings.area_includes_clients
             and sources
         ):
+            # The route's search corridor (full width, extending one half-width
+            # past each endpoint) plus a buffer around every repeater/client.
             buffer_m = coverage_settings.area_buffer_m
-            extent = [*sources, *client_sites]
-            requested_bounds = (
-                min(site.x for site in extent) - buffer_m,
-                min(site.y for site in extent) - buffer_m,
-                max(site.x for site in extent) + buffer_m,
-                max(site.y for site in extent) + buffer_m,
-            )
+            half_width = settings(CandidateSettings, plan.get("candidates", {})).corridor_width_m
+            endpoint_a = next((s for s in client_sites if s.kind == SiteKind.ENDPOINT_A), None)
+            endpoint_b = next((s for s in client_sites if s.kind == SiteKind.ENDPOINT_B), None)
+            parts = [site_buffer(site.x, site.y, buffer_m) for site in [*sources, *client_sites]]
+            if endpoint_a is not None and endpoint_b is not None:
+                parts.append(
+                    corridor_geometry(
+                        [(endpoint_a.x, endpoint_a.y), (endpoint_b.x, endpoint_b.y)], half_width
+                    )
+                )
+            requested_area_geometry = unary_union(parts)
+            left, bottom, right, top = requested_area_geometry.bounds
+            requested_bounds = (float(left), float(bottom), float(right), float(top))
         elif coverage_settings.area_mode == "view":
             values = body.get("map_bounds")
             if not isinstance(values, list) or len(values) != 4:
@@ -3984,7 +4017,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 distance = distance_to_segment_m(
                     (repeater.latitude, repeater.longitude), start, end
                 )
-                if distance > corridor_width:
+                if not within_corridor_latlon(
+                    (repeater.latitude, repeater.longitude), start, end, corridor_width
+                ):
                     continue
                 nearby.append(
                     {
