@@ -66,6 +66,28 @@ checks: these enforce current behavior, not compatibility with old releases.
 Likewise, coverage model fingerprints prevent reuse of scientifically different
 results and must remain authoritative.
 
+Coverage terrain is published atomically in project-local
+`coverage-terrain-generations/generation-*/{dtm,dom}` directories. The coverage
+terrain estimate and prepare endpoints use the same projected mesh buffer, map
+extent, or polygon as the grid. They subtract installed raster footprints by
+product and select aligned tiles within the existing Kartverket budget. The
+estimate measures tile extents. Sampling still checks no-data values. DOM
+follows the presence of route DOM. Set `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` to override the
+25 m starting resolution. The planner can coarsen it to fit the pixel budget.
+
+Preparation uses the shared bounded planner queue and publishes a generation
+only after all requested products are ready. Job status is available in
+`/api/state` under `coverage_terrain_job` and cancellation uses
+`POST /api/coverage/terrain/{job_id}/cancel`. The project's `kartverket-cache`
+retains completed tiles after cancellation. Changing area or route selection
+preserves installed coverage generations. Route terrain uploads, preparation,
+and clearing remove installed coverage generations and preserve the tile cache.
+
+Coverage jobs, inspection, and target assessment all pass route paths first to
+`RasterTerrain`, whose first unmasked sample wins for each product. Coverage
+reuse and staleness checks fingerprint both sets of files. Route certification,
+readiness checks, and the route RF cache use route terrain exclusively.
+
 ## Verification
 
 From an activated virtual environment:

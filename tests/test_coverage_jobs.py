@@ -7,6 +7,7 @@ from threading import Event
 
 import numpy as np
 import pytest
+import rasterio
 from fastapi.testclient import TestClient
 from pyproj import Transformer
 from rasterio.io import MemoryFile
@@ -18,6 +19,7 @@ from rf_router_planner.models.link import DirectionResult, LinkResult
 from rf_router_planner.models.network import NetworkSolution
 from rf_router_planner.models.site import Site, SiteKind
 from rf_router_planner.optimization.optimizer import OptimizationResult, RouteOptimizer
+from rf_router_planner.terrain.kartverket import KartverketProvider
 from rf_router_planner.web import create_app
 
 
@@ -108,10 +110,11 @@ def wait_for(client: TestClient, job_id: str, terminal: set[str]) -> dict:
     pytest.fail(f"Coverage job {job_id} did not reach {terminal}")
 
 
-def prepare_workspace(client: TestClient, monkeypatch, optimizer=fake_optimizer) -> dict:
+def prepare_workspace(
+    client: TestClient, monkeypatch, optimizer=fake_optimizer, *, download_route=False
+) -> dict:
     monkeypatch.setattr(RouteOptimizer, "optimize", optimizer)
     assert client.get("/").status_code == 200
-    assert client.post("/api/terrain/dtm", files={"file": ("ground.tif", terrain_tile())}).status_code == 200
     coverage_settings = {
         "mode": "two_way",
         "area_mode": "mesh",
@@ -131,37 +134,258 @@ def prepare_workspace(client: TestClient, monkeypatch, optimizer=fake_optimizer)
             "miscellaneous_loss_db": 0.0,
         },
     }
-    route = client.post(
-        "/api/optimize",
-        json={
-            "a": coordinates(500100.0, 6650500.0),
-            "b": coordinates(500900.0, 6650500.0),
-            "rf": {},
-            "candidates": {"maximum_candidates": 20, "refine_radius_m": 0},
-            "coverage": coverage_settings,
-        },
-    )
+    plan = {
+        "a": coordinates(500100.0, 6650500.0),
+        "b": coordinates(500900.0, 6650500.0),
+        "rf": {},
+        "candidates": {"maximum_candidates": 20, "refine_radius_m": 0},
+        "coverage": coverage_settings,
+    }
+    if download_route:
+        plan["terrain"] = {"include_dom": True, "requested_resolution_m": 10}
+        plan["candidates"]["corridor_width_m"] = 50
+        terrain = client.post("/api/terrain/prepare", json=plan)
+        assert terrain.status_code == 200, terrain.text
+        assert wait_for_workspace_job(client, "job")["state"] == "terrain_ready"
+    else:
+        uploaded = client.post("/api/terrain/dtm", files={"file": ("ground.tif", terrain_tile())})
+        assert uploaded.status_code == 200, uploaded.text
+    route = client.post("/api/optimize", json=plan)
     assert route.status_code == 200, route.text
-    for _ in range(500):
-        state = client.get("/api/state").json()
-        if state["job"]["state"] not in {"queued", "running", "preparing"}:
-            break
-        time.sleep(0.01)
-    assert state["job"]["state"] == "complete", state["job"]
+    job = wait_for_workspace_job(client, "job")
+    assert job["state"] == "complete", job
+    state = client.get("/api/state").json()
     result = client.get("/api/result").json()
     assert result["router_count"] >= 1
     body = {
-        "snapshot_version": state["job"]["snapshot_version"],
+        "snapshot_version": job["snapshot_version"],
         "alternative_id": result["active_alternative_id"],
         "settings": coverage_settings,
     }
     return {"coverage": body, "result": result, "plan": state["plan"]}
 
 
+def wait_for_workspace_job(client: TestClient, name: str) -> dict:
+    for _ in range(500):
+        job = client.get("/api/state").json()[name]
+        if job and job["state"] not in {"queued", "running", "preparing"}:
+            return job
+        time.sleep(0.01)
+    pytest.fail(f"{name} did not finish")
+
+
 def start_coverage(client: TestClient, prepared: dict) -> dict:
     response = client.post("/api/coverage/jobs", json=prepared["coverage"])
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.fixture
+def mock_coverage_terrain(monkeypatch):
+    class SmallTileKartverket(KartverketProvider):
+        def __init__(self, services, cache_directory):
+            super().__init__(services, cache_directory, maximum_tile_area_km2=1.0)
+
+    fetches = []
+
+    def fetch(self, product, crs, bounds, resolution_m, progress=None, cancelled=None):
+        fetches.append((product, bounds, resolution_m))
+        path = self.cache_path(product, crs, bounds, resolution_m)
+        if not path.exists():
+            left, bottom, right, top = bounds
+            width, height = round((right - left) / resolution_m), round((top - bottom) / resolution_m)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(
+                path, "w", driver="GTiff", width=width, height=height, count=1,
+                dtype="float32", crs=crs,
+                transform=from_origin(left, top, resolution_m, resolution_m),
+            ) as dataset:
+                dataset.write(np.zeros((height, width), dtype=np.float32), 1)
+        return path
+
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    monkeypatch.delenv("RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M", raising=False)
+    monkeypatch.setattr(web_module, "KartverketProvider", SmallTileKartverket)
+    monkeypatch.setattr(SmallTileKartverket, "fetch", fetch)
+    return fetches
+
+
+def expand_coverage(client: TestClient, prepared: dict) -> None:
+    coverage = prepared["coverage"]["settings"]
+    coverage.update(area_buffer_m=1300, maximum_cells=36)
+    prepared["plan"]["coverage"] = coverage
+    assert client.post("/api/projects/autosave", json={"plan": prepared["plan"]}).status_code == 200
+
+
+def test_coverage_terrain_extends_coverage_and_preserves_route(tmp_path, monkeypatch, mock_coverage_terrain):
+    route_rf_fingerprints = []
+
+    def optimizer(self, endpoint_a, endpoint_b, **kwargs):
+        route_rf_fingerprints.append(self.evaluator._terrain_fingerprint)
+        return fake_optimizer(self, endpoint_a, endpoint_b, **kwargs)
+
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch, optimizer, download_route=True)
+        body = prepared["coverage"]
+        route_files = list(tmp_path.glob("**/terrain-generations/generation-*/*/*.tif"))
+        assert len(route_files) == 2
+        original_files = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in route_files}
+        original_state = client.get("/api/state").json()
+        original_result = client.get("/api/result").json()
+
+        estimate_url = "/api/coverage/terrain/estimate"
+        prepare_url = "/api/coverage/terrain/prepare"
+        estimate = client.post(estimate_url, json=body)
+        assert estimate.status_code == 200, estimate.text
+        assert estimate.json()["tile_count"] == estimate.json()["missing_area_km2"] == 0
+        assert client.post(prepare_url, json=body).json()["job_id"] is None
+
+        expand_coverage(client, prepared)
+        before = start_coverage(client, prepared)
+        baseline = wait_for(client, before["job_id"], {"complete"})
+        assert baseline["unknown_cells"] > 0
+
+        estimate = client.post(estimate_url, json=body).json()
+        assert estimate["missing_area_km2"] == pytest.approx(2.6**2 - 1)
+        assert estimate["tile_count"] == 8
+        assert estimate["cache_hits"] == 0
+        assert estimate["cache_total"] == 16
+        assert estimate["include_dom"]
+        assert estimate["effective_resolution_m"] == 25
+        assert estimate["estimated_raw_mib"] == pytest.approx(16 * 40**2 * 4 / 1024**2)
+
+        mock_coverage_terrain.clear()
+        started = client.post(prepare_url, json=body)
+        assert started.status_code == 200, started.text
+        job = wait_for_workspace_job(client, "coverage_terrain_job")
+        assert job["state"] == "complete", job
+        assert job["done"] == job["total"] == 16
+        assert sorted({product for product, _, _ in mock_coverage_terrain}) == ["dom", "dtm"]
+        assert all(
+            bounds != (500000, 6650000, 501000, 6651000) and resolution == 25
+            for _, bounds, resolution in mock_coverage_terrain
+        )
+        assert client.post(estimate_url, json=body).json()["tile_count"] == 0
+
+        state = client.get("/api/state").json()
+        assert state["terrain"] == original_state["terrain"]
+        assert state["job"] == original_state["job"]
+        assert client.get("/api/result").json() == original_result
+        assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in route_files} == original_files
+        assert set(tmp_path.glob("**/terrain-generations/generation-*/*/*.tif")) == set(route_files)
+        assert state["projects"]["previous_result"]["terrain_fingerprint"] == (
+            original_state["projects"]["previous_result"]["terrain_fingerprint"]
+        )
+        assert len(state["coverage_terrain"]["dtm"]) == len(state["coverage_terrain"]["dom"]) == 8
+        report = client.post("/api/terrain/coverage", json=prepared["plan"]).json()
+        assert len(report["dtm_outlines"]) == len(report["dom_outlines"]) == 9
+        route_only = client.post(
+            "/api/terrain/coverage?route_only=true", json=prepared["plan"]
+        ).json()
+        assert len(route_only["dtm_outlines"]) == len(route_only["dom_outlines"]) == 1
+
+        assert client.get(f"/api/coverage/jobs/{before['job_id']}").json()["stale"]
+        after = start_coverage(client, prepared)
+        completed = wait_for(client, after["job_id"], {"complete"})
+        assert after["job_id"] != before["job_id"]
+        assert completed["unknown_cells"] == 0
+        assert completed["settings_fingerprint"] == baseline["settings_fingerprint"]
+        assert completed["terrain_fingerprint"] != baseline["terrain_fingerprint"]
+        assert web_module._coverage_reuse_fingerprint(completed) != (
+            web_module._coverage_reuse_fingerprint(baseline)
+        )
+
+        # An endpoint covered only by supplemental terrain cannot start route search.
+        new_plan = {**prepared["plan"], "b": coordinates(501500, 6650500)}
+        assert client.post("/api/terrain/coverage", json=new_plan).json()["covered"]
+        assert client.post("/api/optimize", json=new_plan).status_code == 422
+        assert client.post("/api/optimize", json=prepared["plan"]).status_code == 200
+        assert wait_for_workspace_job(client, "job")["state"] == "complete"
+        assert len(route_rf_fingerprints) == 2
+        assert route_rf_fingerprints[0] == route_rf_fingerprints[1]
+        assert client.get("/api/state").json()["coverage_terrain"] == state["coverage_terrain"]
+
+        mock_coverage_terrain.clear()
+        assert client.delete("/api/terrain/dom").status_code == 200
+        assert client.get("/api/state").json()["coverage_terrain"] == {"dtm": [], "dom": []}
+        assert len(list(tmp_path.glob("**/kartverket-cache/*.tif"))) == 18
+
+
+def test_coverage_terrain_cancellation_and_busy_guards(tmp_path, monkeypatch, mock_coverage_terrain):
+    coverage_started, finish_coverage = Event(), Event()
+    download_started, finish_download = Event(), Event()
+    calculate = web_module.calculate_coverage
+    fetch = web_module.KartverketProvider.fetch
+
+    def paused_coverage(*args, **kwargs):
+        coverage_started.set()
+        assert finish_coverage.wait(5)
+        return calculate(*args, **kwargs)
+
+    def paused_fetch(self, product, crs, bounds, resolution_m, progress=None, cancelled=None):
+        path = fetch(self, product, crs, bounds, resolution_m, progress, cancelled)
+        download_started.set()
+        assert finish_download.wait(5)
+        return path
+
+    monkeypatch.setattr(web_module, "calculate_coverage", paused_coverage)
+    monkeypatch.setattr(web_module.KartverketProvider, "fetch", paused_fetch)
+    monkeypatch.setenv("RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M", "50")
+    with TestClient(create_app(tmp_path)) as client:
+        prepared = prepare_workspace(client, monkeypatch)
+        expand_coverage(client, prepared)
+        body, url = prepared["coverage"], "/api/coverage/terrain"
+        estimate = client.post(f"{url}/estimate", json=body).json()
+        assert estimate["effective_resolution_m"] == 50
+        assert not estimate["include_dom"]
+        coverage = start_coverage(client, prepared)
+        try:
+            assert coverage_started.wait(5)
+            assert client.post(f"{url}/prepare", json=body).status_code == 409
+        finally:
+            finish_coverage.set()
+        assert wait_for(client, coverage["job_id"], {"complete"})["state"] == "complete"
+
+        started = client.post(f"{url}/prepare", json=body)
+        assert started.status_code == 200, started.text
+        try:
+            assert download_started.wait(5)
+            assert client.get("/api/state").json()["coverage_terrain"] == {"dtm": [], "dom": []}
+            assert client.post("/api/optimize", json=prepared["plan"]).status_code == 409
+            assert client.post("/api/coverage/jobs", json=body).status_code == 409
+            assert client.post(f"{url}/prepare", json=body).status_code == 409
+            assert client.delete("/api/terrain/dtm").status_code == 409
+            job_id = started.json()["job_id"]
+            assert client.post(f"{url}/{job_id}/cancel").status_code == 200
+        finally:
+            finish_download.set()
+        assert wait_for_workspace_job(client, "coverage_terrain_job")["state"] == "cancelled"
+        assert not list(tmp_path.glob("**/coverage-terrain-generations/generation-*"))
+        assert client.get("/api/result").json() == prepared["result"]
+        assert client.post(f"{url}/estimate", json=body).json()["cache_hits"] == 1
+        assert client.post(f"{url}/prepare", json=body).status_code == 200
+        assert wait_for_workspace_job(client, "coverage_terrain_job")["state"] == "complete"
+
+        route_started, finish_route = Event(), Event()
+
+        def paused_optimizer(self, endpoint_a, endpoint_b, **kwargs):
+            route_started.set()
+            assert finish_route.wait(5)
+            return fake_optimizer(self, endpoint_a, endpoint_b, **kwargs)
+
+        monkeypatch.setattr(RouteOptimizer, "optimize", paused_optimizer)
+        assert client.post("/api/optimize", json=prepared["plan"]).status_code == 200
+        try:
+            assert route_started.wait(5)
+            assert client.post(f"{url}/prepare", json=body).status_code == 409
+        finally:
+            finish_route.set()
+        assert wait_for_workspace_job(client, "job")["state"] == "complete"
+
+        replacement = {**prepared["plan"], "candidates": {"corridor_width_m": 50}}
+        assert client.post("/api/terrain/prepare", json=replacement).status_code == 200
+        assert wait_for_workspace_job(client, "job")["state"] == "terrain_ready"
+        assert client.get("/api/state").json()["coverage_terrain"] == {"dtm": [], "dom": []}
 
 
 def test_route_completion_waits_for_persistence_and_releases_preview_capacity(

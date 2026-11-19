@@ -1,5 +1,7 @@
 .coverage-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}
 .coverage-actions button{font-size:11px;padding:9px 7px}
+#coverage-terrain-download,#coverage-terrain-progress,#coverage-terrain-status{grid-column:1/-1}
+#coverage-terrain-progress{width:100%;accent-color:var(--accent)}
 .coverage-panel .fields{gap:9px}
 .coverage-context{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:9px;background:var(--surface-subtle)}
 .coverage-context h3{margin:0 0 7px;font-size:14px}

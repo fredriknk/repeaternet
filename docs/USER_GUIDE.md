@@ -113,6 +113,21 @@ evaluations. Standard calculations default to a 4,096-cell budget, with settings
 bounded to 16,384 cells, 64 sources, and 250,000 cell/source evaluations.
 The estimate reports effective grid spacing and coarsening.
 
+Choose **Download terrain for coverage area** when the area extends beyond
+installed terrain or a calculation reports unknown terrain. The confirmation
+shows the missing area, tile count, resolution, estimated size, and cached tiles.
+Surface terrain is included when the route has surface terrain loaded. You can
+cancel the download from the Coverage panel. When it finishes, choose
+**Calculate coverage** to use the additional terrain.
+
+Coverage uses the route's terrain first wherever it has valid samples, then
+uses the additional tiles. Downloads leave the certified route and its terrain
+intact. Changing the coverage area or route alternative keeps previously
+downloaded tiles available to the project. Clearing, uploading, or preparing
+route terrain resets the additional set. Cached Kartverket tiles can be reused.
+Existing no-data pixels and paths outside the downloaded area can still
+produce unknown results.
+
 Results stream onto the map. Views show two-way, downlink, uplink, overlap, or
 best-serving source. Inspect a location for exact-point directional margins,
 network membership, and a terrain/Fresnel profile. Samples outside a drawn area,

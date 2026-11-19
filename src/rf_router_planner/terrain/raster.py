@@ -80,7 +80,7 @@ class ArrayTerrain(TerrainSource):
 
 
 class RasterTerrain(TerrainSource):
-    """Windowed, on-demand GeoTIFF sampler with optional DTM/DOM mosaics."""
+    """Windowed GeoTIFF mosaics. For each product the first unmasked sample wins."""
 
     SAMPLE_WINDOW_SIDE = 256
 

@@ -55,6 +55,23 @@ def test_mosaic_uses_first_unmasked_value_and_fills_gaps_from_next_tile(tmp_path
         np.testing.assert_array_equal(terrain.sample(xs, ys), [10, 20, 30, 40])
 
 
+def test_higher_resolution_route_takes_priority_over_supplemental_ground_and_surface(tmp_path):
+    transform = from_origin(500000, 6651000, 25, 25)
+    route_dtm = write_raster(tmp_path / "route-dtm.tif", np.full((2, 2), 100, dtype="float32"))
+    route_dom = write_raster(tmp_path / "route-dom.tif", np.full((2, 2), 110, dtype="float32"))
+    coverage_dtm = write_raster(
+        tmp_path / "coverage-dtm.tif", np.full((2, 2), 200, dtype="float32"), transform
+    )
+    coverage_dom = write_raster(
+        tmp_path / "coverage-dom.tif", np.full((2, 2), 250, dtype="float32"), transform
+    )
+    xs, ys = np.array([500005, 500030]), np.array([6650995, 6650995])
+    with RasterTerrain([route_dtm, coverage_dtm], [route_dom, coverage_dom]) as terrain:
+        assert terrain.resolution_m == 10
+        np.testing.assert_array_equal(terrain.sample(xs, ys), [100, 200])
+        np.testing.assert_array_equal(terrain.sample(xs, ys, surface=True), [110, 250])
+
+
 def test_surface_raster_mask_stays_unknown_for_profile_fallback(tmp_path):
     ground = write_raster(tmp_path / "ground.tif", np.full((2, 2), 10, dtype=np.float32))
     surface = write_raster(tmp_path / "surface.tif", np.array([[20, -9999], [30, 40]], dtype=np.float32))

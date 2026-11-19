@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields, is_dataclass, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +27,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pyproj import CRS, Transformer
 from shapely.geometry import Polygon, box
+from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as transform_geometry
+from shapely.ops import unary_union
 from starlette.background import BackgroundTask
 
 from .coordinates import norway_utm_epsg
 from .coverage.compare import compare_coverage_streams
-from .coverage.engine import calculate_coverage, coverage_area_mask, make_grid
+from .coverage.engine import calculate_coverage, coverage_area_bounds, coverage_area_mask, make_grid
 from .coverage.profiles import bounded_profile_step
 from .coverage.scenarios import analyze_node_failures
 from .coverage.target_assessment import assess_targets
@@ -58,7 +61,7 @@ from .optimization.cache import LinkMetricsCache
 from .optimization.optimizer import OptimizationResult, RouteOptimizer
 from .project_store import ProjectStore
 from .rf.propagation import LinkEvaluator
-from .terrain.kartverket import KartverketProvider, RouteCorridor, load_services
+from .terrain.kartverket import DownloadPlan, KartverketProvider, RouteCorridor, load_services
 from .terrain.raster import RasterTerrain
 from .terrain.roads import RoadLoadCancelled, TiledRoadAccess
 
@@ -450,6 +453,8 @@ class Workspace:
         self.project = project
         self.lock = threading.Lock()
         self.cancel = threading.Event()
+        self.coverage_terrain_cancel = threading.Event()
+        self.coverage_terrain_job: dict[str, Any] | None = None
         self.coverage_cancel = threading.Event()
         self.inspection_cancels: dict[str, threading.Event] = {}
         self.inspection_job: dict[str, Any] | None = None
@@ -478,6 +483,17 @@ class Workspace:
     def coverage_job_path(self) -> Path:
         return self.directory / "coverage-job.json"
 
+    @property
+    def planner_active(self) -> bool:
+        return self.status["state"] in {"queued", "running", "preparing"} or (
+            self.coverage_terrain_job is not None
+            and self.coverage_terrain_job["state"] in {"queued", "preparing"}
+        )
+
+    @property
+    def coverage_terrain_directory(self) -> Path:
+        return self.directory / "coverage-terrain-generations"
+
     def restore_coverage_job(self) -> None:
         try:
             job = json.loads(self.coverage_job_path.read_text(encoding="utf-8"))
@@ -501,6 +517,9 @@ class Workspace:
         self.result_rf_settings = None
         self.result_plan_fingerprint = None
         self.job_id = None
+        self.coverage_terrain_cancel.set()
+        self.coverage_terrain_cancel = threading.Event()
+        self.coverage_terrain_job = None
         self.coverage_cancel = threading.Event()
         for cancel_event in self.inspection_cancels.values():
             cancel_event.set()
@@ -529,6 +548,45 @@ def _terrain_paths(workspace: Workspace, kind: str) -> list[Path]:
         (workspace.directory / "terrain-generations").glob(f"generation-*/{kind}/*.tif")
     )
     return sorted([*flat, *generated])
+
+
+def _coverage_terrain_paths(workspace: Workspace, kind: str) -> list[Path]:
+    return sorted(workspace.coverage_terrain_directory.glob(f"generation-*/{kind}/*.tif"))
+
+
+def _coverage_mosaic_paths(workspace: Workspace, kind: str) -> list[Path]:
+    # RasterTerrain uses the first unmasked sample for each DTM or DOM coordinate.
+    return [*_terrain_paths(workspace, kind), *_coverage_terrain_paths(workspace, kind)]
+
+
+def _clear_coverage_terrain(workspace: Workspace) -> None:
+    if workspace.coverage_terrain_directory.exists():
+        shutil.rmtree(workspace.coverage_terrain_directory)
+    workspace.coverage_terrain_job = None
+
+
+def _missing_terrain_area(
+    area: BaseGeometry, paths: list[Path], crs: str
+) -> BaseGeometry:
+    import rasterio
+
+    footprints = []
+    for path in paths:
+        with rasterio.open(path) as dataset:
+            if dataset.crs != crs:
+                raise ValueError("All terrain rasters must have the same defined CRS")
+            corners = (
+                (0, 0), (dataset.width, 0),
+                (dataset.width, dataset.height), (0, dataset.height),
+            )
+            affine = dataset.transform
+            footprint = Polygon([
+                (affine.a * x + affine.b * y + affine.c, affine.d * x + affine.e * y + affine.f)
+                for x, y in corners
+            ])
+            if area.intersects(footprint):
+                footprints.append(footprint)
+    return area.difference(unary_union(footprints))
 
 
 def _write_json_atomic(path: Path, value: Any) -> None:
@@ -593,7 +651,10 @@ def _decode_coverage_sites(value: Any) -> list[Site]:
     return sites
 
 
-def _terrain_fingerprint(workspace: Workspace) -> list[list[str | int]]:
+def _terrain_fingerprint(
+    workspace: Workspace, *, coverage: bool = False
+) -> list[list[str | int]]:
+    paths = _coverage_mosaic_paths if coverage else _terrain_paths
     return [
         list(item)
         for item in sorted(
@@ -603,7 +664,7 @@ def _terrain_fingerprint(workspace: Workspace) -> list[list[str | int]]:
                 path.stat().st_mtime_ns,
             )
             for kind in ("dtm", "dom")
-            for path in _terrain_paths(workspace, kind)
+            for path in paths(workspace, kind)
         )
     ]
 
@@ -782,6 +843,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
     )
     max_workers = max(1, int(os.environ.get("RF_PLANNER_MAX_ACTIVE_JOBS", "1")))
+    coverage_terrain_resolution = float(
+        os.environ.get("RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M", "25")
+    )
+    if not 1 <= coverage_terrain_resolution <= 1000:
+        raise ValueError("RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M must be between 1 and 1,000 m")
     scheduler = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rf-plan")
     scheduler_lock = threading.Lock()
     job_slots = {"outstanding": 0}
@@ -840,6 +906,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 workspaces[key] = Workspace(directory, project_store, key, project)
                 _refresh_recovery_summary(workspaces[key])
             return workspaces[key]
+
+    def terrain_provider(directory: Path) -> KartverketProvider:
+        return KartverketProvider(
+            load_services(Path(__file__).parent / "data" / "kartverket_wcs.json"),
+            directory / "kartverket-cache",
+        )
 
     def build_download_plan(
         ws: Workspace, body: dict[str, Any]
@@ -902,10 +974,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         extra_points = tuple(forward.transform(lon, lat) for lat, lon in router_points)
         padding = float(candidates.corridor_width_m)
         bounds = _padded_site_bounds([*projected, *extra_points], padding)
-        provider = KartverketProvider(
-            load_services(Path(__file__).parent / "data" / "kartverket_wcs.json"),
-            ws.directory / "kartverket-cache",
-        )
+        provider = terrain_provider(ws.directory)
         route_corridor = RouteCorridor(tuple(projected), padding, extra_points)
         plan = provider.plan_download(
             bounds,
@@ -915,9 +984,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return provider, crs, plan, include_dom
 
-    def terrain_coverage_report(ws: Workspace, body: dict[str, Any]) -> dict[str, Any]:
-        dtm_paths = _terrain_paths(ws, "dtm")
-        dom_paths = _terrain_paths(ws, "dom")
+    def terrain_coverage_report(
+        ws: Workspace, body: dict[str, Any], *, route_only: bool = False
+    ) -> dict[str, Any]:
+        paths = _terrain_paths if route_only else _coverage_mosaic_paths
+        dtm_paths = paths(ws, "dtm")
+        dom_paths = paths(ws, "dom")
         if not dtm_paths:
             raise ValueError("Prepare or upload ground terrain first")
         with RasterTerrain(dtm_paths, dom_paths) as terrain:
@@ -1014,12 +1086,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         }
 
     def coverage_context(ws: Workspace, body: dict[str, Any]) -> dict[str, Any]:
+        import rasterio
+
         coverage_settings = parse_coverage_settings(body.get("settings", {}))
         snapshot_version = body.get("snapshot_version")
         if not isinstance(snapshot_version, int) or isinstance(snapshot_version, bool):
             raise ValueError("Coverage request needs a route snapshot version")
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"}:
+            if ws.planner_active:
                 raise HTTPException(409, "Wait until route search or terrain preparation finishes")
             result = ws.result
             if result is None or result.active_solution is None:
@@ -1071,13 +1145,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(422, "This route has no radio sources; include endpoints to preview their coverage")
             if len(sources) > coverage_settings.maximum_sources:
                 raise HTTPException(422, f"Select no more than {coverage_settings.maximum_sources} radio sources")
-            dtm_paths = _terrain_paths(ws, "dtm")
-            dom_paths = _terrain_paths(ws, "dom")
+            dtm_paths = _coverage_mosaic_paths(ws, "dtm")
+            dom_paths = _coverage_mosaic_paths(ws, "dom")
+            include_dom = bool(_terrain_paths(ws, "dom"))
             if not dtm_paths:
                 raise HTTPException(422, "Prepare or upload ground terrain first")
+            with rasterio.open(dtm_paths[0]) as dataset:
+                if dataset.crs is None:
+                    raise ValueError("Coverage terrain must have a defined CRS")
+                terrain_crs = dataset.crs.to_string()
             plan = dict(ws.inputs)
             route_fingerprint = _route_plan_fingerprint(plan)
-            terrain_fingerprint = _terrain_fingerprint(ws)
+            terrain_fingerprint = _terrain_fingerprint(ws, coverage=True)
             project_id = ws.project_id
             input_revision = ws.input_revision
             selected_snapshot = ws.snapshot_version
@@ -1098,24 +1177,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             north, east = coordinate_pair({"northeast": [north, east]}, "northeast")
             if south >= north or west >= east:
                 raise ValueError("Map coverage bounds must have positive width and height")
-            with RasterTerrain(dtm_paths) as terrain:
-                forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
-                first = forward.transform(west, south)
-                last = forward.transform(east, north)
-                requested_bounds = (
-                    min(first[0], last[0]),
-                    min(first[1], last[1]),
-                    max(first[0], last[0]),
-                    max(first[1], last[1]),
-                )
+            forward = Transformer.from_crs(4326, terrain_crs, always_xy=True)
+            first = forward.transform(west, south)
+            last = forward.transform(east, north)
+            requested_bounds = (
+                min(first[0], last[0]),
+                min(first[1], last[1]),
+                max(first[0], last[0]),
+                max(first[1], last[1]),
+            )
         elif coverage_settings.area_mode == "drawn":
             assert coverage_settings.area_polygon_wgs84 is not None
-            with RasterTerrain(dtm_paths) as terrain:
-                forward = Transformer.from_crs(4326, terrain.crs, always_xy=True)
-                requested_area_geometry = transform_geometry(
-                    forward.transform,
-                    Polygon(coverage_settings.area_polygon_wgs84),
-                )
+            forward = Transformer.from_crs(4326, terrain_crs, always_xy=True)
+            requested_area_geometry = transform_geometry(
+                forward.transform,
+                Polygon(coverage_settings.area_polygon_wgs84),
+            )
             if not requested_area_geometry.is_valid or requested_area_geometry.area <= 0:
                 raise ValueError("Drawn coverage area is invalid in the terrain coordinate system")
             left, bottom, right, top = requested_area_geometry.bounds
@@ -1133,6 +1210,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "candidates": settings(CandidateSettings, plan.get("candidates", {})),
             "dtm_paths": dtm_paths,
             "dom_paths": dom_paths,
+            "include_dom": include_dom,
+            "terrain_crs": terrain_crs,
             "requested_bounds": requested_bounds,
             "requested_area_geometry": requested_area_geometry,
             "route_fingerprint": route_fingerprint,
@@ -1146,6 +1225,211 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "achieved_path_count": achieved_path_count,
             "requested_path_count": requested_path_count,
         }
+
+    def build_coverage_terrain_plan(
+        context: dict[str, Any],
+    ) -> tuple[KartverketProvider, str, dict[str, DownloadPlan], dict[str, Any]]:
+        bounds = coverage_area_bounds(
+            context["sources"], context["settings"], context["requested_bounds"]
+        )
+        area = context["requested_area_geometry"]
+        if area is None:
+            area = box(*bounds)
+        crs = context["terrain_crs"]
+        provider = terrain_provider(context["workspace_directory"])
+        products = ("dtm", "dom") if context["include_dom"] else ("dtm",)
+        missing = {
+            product: _missing_terrain_area(area, context[f"{product}_paths"], crs)
+            for product in products
+        }
+        missing_area = unary_union(list(missing.values()))
+        effective_resolution = coverage_terrain_resolution
+        plans: dict[str, DownloadPlan] = {}
+        tile_count = 0
+        download_area = 0.0
+        if missing_area.area > 0:
+            if crs not in provider.services:
+                raise ValueError(f"No configured Kartverket WCS service for {crs}")
+            left, bottom, right, top = missing_area.bounds
+            plan = provider.plan_download(
+                (left, bottom, right, top),
+                coverage_terrain_resolution,
+                area_geometry=missing_area,
+            )
+            effective_resolution = plan.effective_resolution_m
+            tile_count = len(plan.tiles)
+            download_area = plan.download_area_km2
+            for product, geometry in missing.items():
+                tiles = tuple(
+                    tile for tile in plan.tiles if geometry.intersection(box(*tile.bounds)).area > 0
+                )
+                if tiles:
+                    plans[product] = replace(plan, tiles=tiles)
+
+        estimated_raw_mib = sum(plan.estimated_raw_mib_per_product for plan in plans.values())
+        return provider, crs, plans, {
+            "crs": crs,
+            "missing_area_km2": missing_area.area / 1_000_000,
+            "download_area_km2": download_area,
+            "tile_count": tile_count,
+            "requested_resolution_m": coverage_terrain_resolution,
+            "effective_resolution_m": effective_resolution,
+            "estimated_raw_mib": estimated_raw_mib,
+            "estimated_disk_mib": estimated_raw_mib * 2,
+            "cache_hits": sum(
+                provider.cached_tile_count(product, crs, plan) for product, plan in plans.items()
+            ),
+            "cache_total": sum(len(plan.tiles) for plan in plans.values()),
+            "include_dom": context["include_dom"],
+        }
+
+    def validate_coverage_terrain_context(ws: Workspace, context: dict[str, Any]) -> None:
+        if (
+            ws.planner_active
+            or ws.project_id != context["project_id"]
+            or ws.snapshot_version != context["snapshot_version"]
+            or _route_plan_fingerprint(ws.inputs) != context["route_fingerprint"]
+            or _terrain_fingerprint(ws, coverage=True) != context["terrain_fingerprint"]
+        ):
+            raise HTTPException(409, "The selected route or terrain changed; estimate again")
+
+    @app.post("/api/coverage/terrain/estimate")
+    def estimate_coverage_terrain(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            context = coverage_context(ws, body)
+            with ws.lock:
+                validate_coverage_terrain_context(ws, context)
+                return build_coverage_terrain_plan(context)[3]
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/coverage/terrain/prepare")
+    def prepare_coverage_terrain(body: dict[str, Any], request: Request) -> Any:
+        ws = workspace(request)
+        try:
+            context = coverage_context(ws, body)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        with ws.lock:
+            if ws.planner_active or (
+                ws.coverage_job and ws.coverage_job["state"] in {"queued", "running"}
+            ) or (
+                ws.inspection_job and ws.inspection_job["state"] in {"queued", "running"}
+            ):
+                raise HTTPException(409, "A planner, coverage, or terrain job is already active")
+            validate_coverage_terrain_context(ws, context)
+            try:
+                provider, crs, plans, estimate = build_coverage_terrain_plan(context)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            total = estimate["cache_total"]
+            if not plans:
+                return {
+                    "job_id": None, "state": "complete", "stage": "Coverage terrain is already available",
+                    "done": 0, "total": 0, "terrain_estimate": estimate,
+                }
+            with scheduler_lock:
+                if job_slots["outstanding"] >= max_outstanding_jobs:
+                    raise HTTPException(429, "The planner queue is full; retry shortly")
+                queued = job_slots["outstanding"] >= max_workers
+                job_slots["outstanding"] += 1
+            cancel_event = threading.Event()
+            ws.coverage_terrain_cancel = cancel_event
+            generation_root = ws.coverage_terrain_directory
+            job_id = secrets.token_hex(12)
+            job = {
+                "job_id": job_id,
+                "state": "queued" if queued else "preparing",
+                "stage": "Waiting for a terrain worker" if queued else "Preparing coverage terrain",
+                "done": 0,
+                "total": total,
+                "terrain_estimate": estimate,
+            }
+            ws.coverage_terrain_job = job
+            initial_status = dict(job)
+
+        def run() -> None:
+            staging: Path | None = None
+            try:
+                with ws.lock:
+                    if cancel_event.is_set():
+                        raise RuntimeError("Coverage terrain download cancelled")
+                    job.update(state="preparing", stage="Preparing coverage terrain")
+                generation_root.mkdir(parents=True, exist_ok=True)
+                staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=generation_root))
+
+                def report(product: str, base: int, index: int, count: int, cached: bool) -> None:
+                    with ws.lock:
+                        job.update(
+                            stage=f"Coverage {product.upper()} tile {index}/{count}"
+                            + (" (cache hit)" if cached else ""),
+                            done=base + index - 1,
+                        )
+
+                completed = 0
+                for product, plan in plans.items():
+                    sources = provider.fetch_plan(
+                        product, crs, plan,
+                        partial(report, product, completed),
+                        cancel_event.is_set,
+                    )
+                    output = staging / product
+                    output.mkdir()
+                    for index, source in enumerate(sources, 1):
+                        if cancel_event.is_set():
+                            raise RuntimeError("Coverage terrain download cancelled")
+                        shutil.copy2(source, output / f"tile-{index:04d}.tif")
+                    completed += len(sources)
+                with RasterTerrain(
+                    list((staging / "dtm").glob("*.tif")) or context["dtm_paths"],
+                    list((staging / "dom").glob("*.tif")),
+                ) as terrain:
+                    if terrain.crs != crs:
+                        raise ValueError("Downloaded coverage terrain has an unexpected CRS")
+                with ws.lock:
+                    if cancel_event.is_set() or ws.coverage_terrain_job is not job:
+                        raise RuntimeError("Coverage terrain download cancelled")
+                    staging.replace(generation_root / f"generation-{job_id}")
+                    staging = None
+                    ws.storage_usage_bytes = None
+                    job.update(state="complete", stage="Coverage terrain ready", done=total)
+            except Exception as exc:
+                if staging is not None:
+                    shutil.rmtree(staging, ignore_errors=True)
+                with ws.lock:
+                    if ws.coverage_terrain_job is job:
+                        ws.storage_usage_bytes = None
+                    if cancel_event.is_set():
+                        job.update(state="cancelled", stage="Coverage terrain download cancelled")
+                    else:
+                        job.update(state="failed", stage=str(exc))
+            finally:
+                with scheduler_lock:
+                    job_slots["outstanding"] -= 1
+
+        try:
+            scheduler.submit(run)
+        except RuntimeError as exc:
+            with ws.lock:
+                job.update(state="failed", stage="Could not queue coverage terrain download")
+            with scheduler_lock:
+                job_slots["outstanding"] -= 1
+            raise HTTPException(503, job["stage"]) from exc
+        return initial_status
+
+    @app.post("/api/coverage/terrain/{job_id}/cancel")
+    def cancel_coverage_terrain(job_id: str, request: Request) -> Any:
+        ws = workspace(request)
+        with ws.lock:
+            job = ws.coverage_terrain_job
+            if not job or job["job_id"] != job_id:
+                raise HTTPException(404, "Coverage terrain job not found in this workspace")
+            if job["state"] not in {"queued", "preparing"}:
+                raise HTTPException(409, "Coverage terrain download already finished")
+            ws.coverage_terrain_cancel.set()
+        return {"ok": True}
 
     @app.get("/")
     def index(request: Request) -> Any:
@@ -1178,11 +1462,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "snapshot_version": ws.snapshot_version,
             },
             "coverage_job": dict(ws.coverage_job) if ws.coverage_job else None,
+            "coverage_terrain_job": dict(ws.coverage_terrain_job) if ws.coverage_terrain_job else None,
             "rf_cache": rf_cache.stats(ws.directory.name),
             "rf": encode(RFSettings()),
             "candidates": encode(CandidateSettings()),
             "terrain": {
                 kind: [p.name for p in _terrain_paths(ws, kind)]
+                for kind in ("dtm", "dom")
+            },
+            "coverage_terrain": {
+                kind: [p.name for p in _coverage_terrain_paths(ws, kind)]
                 for kind in ("dtm", "dom")
             },
             "plan": ws.inputs or None,
@@ -1221,7 +1510,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     and solution_id(result.active_solution) == job["alternative_id"]
                     and _plan_fingerprint(current_settings) == job["settings_fingerprint"]
                 )
-                return route_matches and _terrain_fingerprint(ws) == job["terrain_fingerprint"]
+                return route_matches and _terrain_fingerprint(
+                    ws, coverage=True
+                ) == job["terrain_fingerprint"]
         except (ValueError, TypeError, KeyError):
             return False
 
@@ -1239,7 +1530,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     and _route_plan_fingerprint(ws.inputs) == job["route_fingerprint"]
                     and solution_id(result.active_solution) == job["alternative_id"]
                 )
-            return current and _terrain_fingerprint(ws) == job["terrain_fingerprint"]
+                return current and _terrain_fingerprint(
+                    ws, coverage=True
+                ) == job["terrain_fingerprint"]
         except (ValueError, TypeError, KeyError):
             return False
 
@@ -1401,7 +1694,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "Wait for active calculations before editing coverage targets")
@@ -1635,10 +1928,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ):
                     raise HTTPException(409, "A coverage calculation or inspection is already running")
                 if (
-                    ws.snapshot_version != context["snapshot_version"]
+                    ws.planner_active
+                    or ws.snapshot_version != context["snapshot_version"]
                     or ws.project_id != context["project_id"]
                     or ws.result_plan_fingerprint != context["route_fingerprint"]
-                    or _terrain_fingerprint(ws) != context["terrain_fingerprint"]
+                    or _terrain_fingerprint(ws, coverage=True) != context["terrain_fingerprint"]
                     or _plan_fingerprint(
                         encode(parse_coverage_settings((ws.inputs or {}).get("coverage", {})))
                     )
@@ -2022,7 +2316,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recent = sorted(
             manifests.values(), key=lambda value: value.get("created_at", 0), reverse=True
         )[:50]
-        current_terrain_fingerprint = _terrain_fingerprint(ws)
+        current_terrain_fingerprint = _terrain_fingerprint(ws, coverage=True)
         return {
             "jobs": [
                 {
@@ -2082,7 +2376,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(404, "Coverage run not found in this project workspace")
             if (
                 baseline.get("terrain_fingerprint") != scenario.get("terrain_fingerprint")
-                or baseline.get("terrain_fingerprint") != _terrain_fingerprint(ws)
+                or baseline.get("terrain_fingerprint") != _terrain_fingerprint(ws, coverage=True)
             ):
                 raise HTTPException(409, "Runs use different or changed terrain; recalculate on the same terrain")
             if baseline.get("radio_fingerprint") != scenario.get("radio_fingerprint"):
@@ -2402,9 +2696,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not targets["features"]:
                 raise HTTPException(422, "Add or import at least one saved coverage target first")
             project_id = ws.project_id
-            terrain_fingerprint = _terrain_fingerprint(ws)
-            terrain_paths = _terrain_paths(ws, "dtm")
-            dom_paths = _terrain_paths(ws, "dom")
+            terrain_fingerprint = _terrain_fingerprint(ws, coverage=True)
+            terrain_paths = _coverage_mosaic_paths(ws, "dtm")
+            dom_paths = _coverage_mosaic_paths(ws, "dom")
             directory = ws.directory
         if not coverage_current(ws, job) or terrain_fingerprint != job.get("terrain_fingerprint"):
             raise HTTPException(409, "Coverage run is stale; recalculate before assessing targets")
@@ -2695,7 +2989,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 and ws.result_plan_fingerprint == job["route_fingerprint"]
                 and _route_plan_fingerprint(ws.inputs) == job["route_fingerprint"]
                 and _plan_fingerprint(current_settings) == job["settings_fingerprint"]
-                and _terrain_fingerprint(ws) == job["terrain_fingerprint"]
+                and _terrain_fingerprint(ws, coverage=True) == job["terrain_fingerprint"]
             )
             if not current:
                 raise HTTPException(409, "Coverage results are stale; recalculate before analyzing failures")
@@ -3041,10 +3335,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}:
                     raise HTTPException(409, "Wait for coverage calculation to finish before inspecting a point")
                 if (
-                    ws.project_id != context["project_id"]
+                    ws.planner_active
+                    or ws.project_id != context["project_id"]
                     or ws.snapshot_version != context["snapshot_version"]
                     or ws.result_plan_fingerprint != context["route_fingerprint"]
-                    or _terrain_fingerprint(ws) != context["terrain_fingerprint"]
+                    or _terrain_fingerprint(ws, coverage=True) != context["terrain_fingerprint"]
                     or (
                         inspection_run is None
                         and _plan_fingerprint(
@@ -3191,7 +3486,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return name
 
     def ensure_projects_idle(ws: Workspace) -> None:
-        if ws.status["state"] in {"queued", "running", "preparing"} or (
+        if ws.planner_active or (
             ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
         ) or (
             ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
@@ -3212,7 +3507,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if body.get("project_id") is not None and body.get("project_id") != ws.project_id:
             raise HTTPException(409, "Autosave belongs to a project that is no longer active")
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ):
                 raise HTTPException(409, "Plan inputs are locked while a job is active")
@@ -3392,10 +3687,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/terrain/coverage")
-    def terrain_coverage(body: dict[str, Any], request: Request) -> Any:
+    def terrain_coverage(body: dict[str, Any], request: Request, route_only: bool = False) -> Any:
         ws = workspace(request)
         try:
-            return terrain_coverage_report(ws, body)
+            with ws.lock:
+                return terrain_coverage_report(ws, body, route_only=route_only)
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -3407,7 +3703,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ) or (
                 ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
@@ -3519,6 +3815,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     destination = generation_root / f"generation-{job_id}"
                     staging.replace(destination)
                     staging = None
+                    _clear_coverage_terrain(ws)
                     ws.inputs = body
                     project_store.autosave(ws.workspace_key, ws.project_id, body)
                     ws.result_summary = None
@@ -3565,7 +3862,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ) or (
                 ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
@@ -3594,6 +3891,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         list(reversed(reverse.transform(left, bottom))),
                         list(reversed(reverse.transform(right, top))),
                     ]
+                _clear_coverage_terrain(ws)
                 ws.input_revision += 1
                 ws.result = None
                 ws.result_plan_fingerprint = None
@@ -3612,7 +3910,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404)
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ) or (
                 ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
@@ -3620,6 +3918,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(409, "Wait for the current job")
             for path in _terrain_paths(ws, kind):
                 path.unlink()
+            _clear_coverage_terrain(ws)
             ws.input_revision += 1
             ws.result = None
             ws.result_plan_fingerprint = None
@@ -3807,7 +4106,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(422, str(exc)) from exc
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ) or (
                 ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
@@ -3818,7 +4117,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not dtm:
                 raise HTTPException(422, "Prepare or upload ground terrain first")
             try:
-                coverage = terrain_coverage_report(ws, body)
+                coverage = terrain_coverage_report(ws, body, route_only=True)
             except (ValueError, TypeError, KeyError) as exc:
                 raise HTTPException(422, str(exc)) from exc
             if coverage["uncovered_sites"]:
@@ -4217,7 +4516,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def select_alternative(alternative_id: str, request: Request) -> Any:
         ws = workspace(request)
         with ws.lock:
-            if ws.status["state"] in {"queued", "running", "preparing"} or (
+            if ws.planner_active or (
                 ws.coverage_job and ws.coverage_job.get("state") in {"queued", "running"}
             ) or (
                 ws.inspection_job and ws.inspection_job.get("state") in {"queued", "running"}
