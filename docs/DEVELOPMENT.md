@@ -48,7 +48,7 @@ migration guarantee during pre-release development.
 `RF_PLANNER_OVERPASS_URL` overrides the road data endpoint (default
 `https://overpass-api.de/api/interpreter`). The global WGS84 grid uses 0.1° of
 latitude by 0.2° of longitude, about 11 × 11 km at 60° N. Each successful tile
-response is cached in the workspace's `overpass-cache` directory by endpoint,
+response is cached in the shared `shared-cache/overpass` directory by endpoint,
 highway class set, tile index, and query schema version.
 The candidate filter loads tiles within the configured road distance of grid
 points that pass the corridor, terrain, and exclusion masks. The route result
@@ -78,7 +78,7 @@ follows the presence of route DOM. Set `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M
 Preparation uses the shared bounded planner queue and publishes a generation
 only after all requested products are ready. Job status is available in
 `/api/state` under `coverage_terrain_job` and cancellation uses
-`POST /api/coverage/terrain/{job_id}/cancel`. The project's `kartverket-cache`
+`POST /api/coverage/terrain/{job_id}/cancel`. The shared `shared-cache/kartverket` tile cache
 retains completed tiles after cancellation. Changing area or route selection
 preserves installed coverage generations. Route terrain uploads, preparation,
 and clearing remove installed coverage generations and preserve the tile cache.
@@ -153,3 +153,14 @@ Current instructions belong in README, the user guide, this document, and the
 roadmap. Dated plans and reports under [history](history/README.md) are evidence,
 not current requirements. Changes that remove features should identify the
 removed behavior and verification performed. Git retains removed source.
+
+## Shared download cache
+
+Kartverket terrain tiles and OpenStreetMap road tiles are cached once for the
+whole server under `$RF_PLANNER_DATA/shared-cache/` (override with
+`RF_PLANNER_CACHE_DIR`). File names are hashes of the exact upstream request,
+so every project and workspace reuses them, and writes are atomic. The cache is
+not counted in per-workspace storage usage and is never pruned automatically;
+delete the directory to reclaim space. Kartverket downloads send a descriptive
+User-Agent, pause briefly between consecutive network tiles, and retry
+transient errors with exponential backoff.

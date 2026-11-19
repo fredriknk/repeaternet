@@ -850,6 +850,9 @@ def _refresh_recovery_summary(workspace: Workspace) -> None:
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
     root = (data_dir or Path(os.environ.get("RF_PLANNER_DATA", "web-data"))).resolve()
+    # Downloaded Kartverket tiles and OSM road tiles are content-addressed by
+    # their exact request, so every project and workspace can share them.
+    shared_cache = Path(os.environ.get("RF_PLANNER_CACHE_DIR", root / "shared-cache")).resolve()
     root.mkdir(parents=True, exist_ok=True)
     project_store = ProjectStore(root / "projects.sqlite3", root)
     app = FastAPI(title="RF Router Planner")
@@ -928,10 +931,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 _refresh_recovery_summary(workspaces[key])
             return workspaces[key]
 
-    def terrain_provider(directory: Path) -> KartverketProvider:
+    def terrain_provider(_directory: Path | None = None) -> KartverketProvider:
         return KartverketProvider(
             load_services(Path(__file__).parent / "data" / "kartverket_wcs.json"),
-            directory / "kartverket-cache",
+            shared_cache / "kartverket",
         )
 
     def build_download_plan(
@@ -4340,7 +4343,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             terrain.crs,
                             candidates.road_access_classes,
                             candidates.maximum_road_distance_m,
-                            root / ws.workspace_key / "overpass-cache",
+                            shared_cache / "overpass",
                             progress=progress,
                             cancel=ws.cancel,
                         )

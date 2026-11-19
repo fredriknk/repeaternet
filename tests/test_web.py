@@ -1,5 +1,6 @@
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event
 from unittest.mock import Mock
 
@@ -966,3 +967,45 @@ def test_workspace_isolation_and_token(tmp_path, monkeypatch):
         first.post("/api/terrain/dtm", files={"file": ("ground.tif", tile())})
         assert len(first.get("/api/state").json()["terrain"]["dtm"]) == 1
         assert second.get("/api/state").json()["terrain"]["dtm"] == []
+
+
+def test_kartverket_tiles_are_shared_between_workspaces(tmp_path, monkeypatch):
+    from rf_router_planner.terrain.kartverket import KartverketProvider
+
+    monkeypatch.delenv("RF_PLANNER_TOKEN", raising=False)
+    downloads: list[Path] = []
+
+    def fake_fetch(self, product, crs, bounds, resolution_m, progress=None, cancelled=None):
+        destination = self.cache_path(product, crs, bounds, resolution_m)
+        if not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(tile())
+            downloads.append(destination)
+        return destination
+
+    monkeypatch.setattr(KartverketProvider, "fetch", fake_fetch)
+    reverse = Transformer.from_crs(25833, 4326, always_xy=True)
+    body = {
+        "a": list(reversed(reverse.transform(500100, 6650500))),
+        "b": list(reversed(reverse.transform(500800, 6650500))),
+        "rf": {},
+        "candidates": {"corridor_width_m": 500},
+        "terrain": {"requested_resolution_m": 10, "auto_resolution": True, "include_dom": True},
+    }
+    app = create_app(tmp_path)
+    with TestClient(app) as first:
+        assert first.get("/").status_code == 200
+        assert first.post("/api/terrain/estimate", json=body).json()["cache_hits"] == 0
+        assert first.post("/api/terrain/prepare", json=body).status_code == 200
+        for _ in range(200):
+            if first.get("/api/state").json()["job"]["state"] not in {"queued", "preparing"}:
+                break
+            time.sleep(0.02)
+    assert downloads
+    assert all(path.parent == tmp_path / "shared-cache" / "kartverket" for path in downloads)
+    fetched_once = len(downloads)
+    with TestClient(app) as second:
+        assert second.get("/").status_code == 200
+        estimate = second.post("/api/terrain/estimate", json=body).json()
+    assert estimate["cache_hits"] == estimate["cache_total"]
+    assert len(downloads) == fetched_once

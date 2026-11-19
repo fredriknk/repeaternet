@@ -308,7 +308,7 @@ def test_coverage_terrain_extends_coverage_and_preserves_route(tmp_path, monkeyp
         mock_coverage_terrain.clear()
         assert client.delete("/api/terrain/dom").status_code == 200
         assert client.get("/api/state").json()["coverage_terrain"] == {"dtm": [], "dom": []}
-        assert len(list(tmp_path.glob("**/kartverket-cache/*.tif"))) == 18
+        assert len(list(tmp_path.glob("**/shared-cache/kartverket/*.tif"))) == 18
 
 
 def test_coverage_terrain_cancellation_and_busy_guards(tmp_path, monkeypatch, mock_coverage_terrain):

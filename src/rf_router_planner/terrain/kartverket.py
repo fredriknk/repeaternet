@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # Kartverket's WCS answers 503 under load; give it time to recover.
 _DOWNLOAD_ATTEMPTS = 5
+# Courtesy gap between consecutive network downloads (cache hits skip it).
+_INTER_TILE_PAUSE_S = 0.5
+USER_AGENT = "RepeaterNet RF planner (Kartverket terrain client)"
 _RETRY_BASE_DELAY_S = 2.0
 _RETRY_MAX_DELAY_S = 60.0
 
@@ -287,11 +290,19 @@ class KartverketProvider:
     ) -> list[Path]:
         paths: list[Path] = []
         total = len(plan.tiles)
+        downloaded_previous = False
         for index, tile in enumerate(plan.tiles, 1):
             if cancelled is not None and cancelled():
                 raise RuntimeError("Terrain download cancelled")
             destination = self.cache_path(product, crs, tile.bounds, plan.effective_resolution_m)
             cached = destination.exists()
+            if downloaded_previous and not cached:
+                deadline = time.monotonic() + _INTER_TILE_PAUSE_S
+                while time.monotonic() < deadline:
+                    if cancelled is not None and cancelled():
+                        raise RuntimeError("Terrain download cancelled")
+                    time.sleep(0.05)
+            downloaded_previous = not cached
             if progress:
                 progress(index, total, cached)
             if cancelled is None:
@@ -359,7 +370,13 @@ class KartverketProvider:
                 raise RuntimeError("Terrain download cancelled")
             temporary = destination.with_name(f"{destination.name}.{secrets.token_hex(6)}.part")
             try:
-                with requests.get(endpoint, params=params, stream=True, timeout=(15, 300)) as response:
+                with requests.get(
+                    endpoint,
+                    params=params,
+                    headers={"User-Agent": USER_AGENT},
+                    stream=True,
+                    timeout=(15, 300),
+                ) as response:
                     response.raise_for_status()
                     total = int(response.headers.get("content-length", 0))
                     downloaded = 0
