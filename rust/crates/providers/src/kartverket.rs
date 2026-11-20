@@ -251,7 +251,7 @@ impl WcsRequest<'_> {
             .collect::<Vec<_>>()
             .join(", ");
         let serialized = format!("({}, [{entries}])", transport::py_repr(self.endpoint));
-        format!("{:x}", Sha256::digest(serialized.as_bytes()))
+        crate::lower_hex(&Sha256::digest(serialized.as_bytes()))
     }
 }
 

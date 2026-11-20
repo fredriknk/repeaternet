@@ -824,3 +824,14 @@ impl<W: Write> Write for LimitedWriter<W> {
         self.inner.flush()
     }
 }
+
+/// Lowercase hexadecimal encoding of a digest.
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}

@@ -160,7 +160,6 @@ if ($dependencies.Count -eq 0) { throw 'Cargo metadata returned no external depe
 $noticeManifest = Get-Item -LiteralPath $NoticeManifestPath
 $noticeRoot = $noticeManifest.DirectoryName
 $noticeInput = Get-Content -LiteralPath $noticeManifest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($noticeInput.lock_sha256 -ne $lockHash) { throw 'Notice manifest was prepared for a different Cargo.lock.' }
 if ($noticeInput.target -ne $targetTriple) { throw 'Notice manifest was prepared for a different target.' }
 $usesSqlCipher = @($buildTree.Keys | Where-Object {
     $_ -like 'libsqlite3-sys-*' -and ($buildTree[$_] | Where-Object { $_ -match 'sqlcipher' })
@@ -168,50 +167,61 @@ $usesSqlCipher = @($buildTree.Keys | Where-Object {
 $noticeFiles = @{}
 Add-NoticeFile 'licenses/rust-standard-library/COPYRIGHT-library.html' $rustNotices
 Add-NoticeFile 'licenses/release-notices.json' $noticeManifest.FullName
+
+# Supplements and license selections are keyed by crate name, so they follow
+# version updates. A crate's own file wins over a supplement with the same name.
+$packagesByName = @{}
+foreach ($package in $dependencies) { $packagesByName[$package.name] += @($package) }
+$supplementsByCrate = @{}
 foreach ($entry in $noticeInput.supplements) {
-    if ($entry.file -notmatch '^texts/[A-Za-z0-9._/-]+$' -or $entry.archive -notmatch '^licenses/[A-Za-z0-9._/-]+$' -or
-        $entry.file -match '(^|/)\.\.?(/|$)' -or $entry.archive -match '(^|/)\.\.?(/|$)' -or
+    if ($entry.file -notmatch '^texts/[A-Za-z0-9._/-]+$' -or $entry.file -match '(^|/)\.\.?(/|$)' -or
         $entry.sha256 -notmatch '^[0-9A-Fa-f]{64}$' -or -not $entry.source) {
         throw "Invalid supplemental notice record: $($entry.file)"
     }
-    Add-NoticeFile $entry.archive (Join-Path $noticeRoot $entry.file) $entry.sha256
-}
-
-$inventory = [Collections.Generic.List[string]]::new()
-$selectedLicenses = @{}
-foreach ($selection in $noticeInput.license_selections) {
-    $package = @($dependencies | Where-Object { "$($_.name)-$($_.version)" -eq $selection.crate })
-    if ($package.Count -ne 1 -or $package[0].license -ne $selection.declared -or
-        $selection.selected -ne 'Apache-2.0' -or
-        $selection.declared -notin @('MIT OR Apache-2.0', 'MIT/Apache-2.0') -or
-        -not $noticeFiles.ContainsKey("licenses/crates/$($selection.crate)/LICENSE-APACHE-2.0.txt")) {
-        throw "Invalid or unsupported license selection: $($selection.crate)"
+    if ($entry.crate) {
+        if ($entry.name -notmatch '^[A-Za-z0-9._-]+$') { throw "Invalid supplemental notice name: $($entry.file)" }
+        if (-not $packagesByName.ContainsKey($entry.crate)) {
+            Write-Warning "Notice supplement for $($entry.crate) is unused; the crate is not in the build graph."
+            continue
+        }
+        $supplementsByCrate[$entry.crate] += @($entry)
+    } elseif ($entry.archive -match '^licenses/[A-Za-z0-9._/-]+$' -and $entry.archive -notmatch '(^|/)\.\.?(/|$)') {
+        Add-NoticeFile $entry.archive (Join-Path $noticeRoot $entry.file) $entry.sha256
+    } else {
+        throw "Invalid supplemental notice record: $($entry.file)"
     }
-    $selectedLicenses[$selection.crate] = $selection.selected
 }
 $knownGaps = @{}
 foreach ($gap in $noticeInput.unresolved) { $knownGaps[$gap.crate] = $gap.reason }
+
+$inventory = [Collections.Generic.List[string]]::new()
 $targetCount = 0
-if (@($noticeInput.crates.PSObject.Properties).Count -ne $dependencies.Count) {
-    throw 'Cargo tree count differs from the notice manifest.'
-}
 foreach ($package in $dependencies) {
     $key = "$($package.name)-$($package.version)"
-    $record = $noticeInput.crates.PSObject.Properties[$key]
-    if (-not $record) { throw "Crate missing from the notice manifest: $key" }
     $scope = if ($targetTree.ContainsKey($key)) { $targetCount++; 'target' } else { 'build/proc-macro' }
     $license = if ($package.license) { $package.license } else { '(see license file)' }
     $inventory.Add("$($package.name) $($package.version) | $scope | $license | $($package.source)")
     $destination = "licenses/crates/$key"
     $files = Get-LicenseFiles $package
-    foreach ($required in $record.Value) {
-        if (-not $files.ContainsKey($required)) { throw "Missing required notice file for ${key}: $required" }
-    }
     foreach ($relative in ($files.Keys | Sort-Object)) {
         Add-NoticeFile "$destination/$relative" $files[$relative]
     }
-    if (-not ($noticeFiles.Keys -like "$destination/*") -and -not $knownGaps.ContainsKey($key)) {
-        throw "No license text found for $key."
+    foreach ($entry in $supplementsByCrate[$package.name]) {
+        if (-not $files.ContainsKey($entry.name)) {
+            Add-NoticeFile "$destination/$($entry.name)" (Join-Path $noticeRoot $entry.file) $entry.sha256
+        }
+    }
+    if (-not ($noticeFiles.Keys -like "$destination/*") -and -not $knownGaps.ContainsKey($package.name)) {
+        throw "No license text found for $key. Add its upstream license text to rust/notices/texts and a supplement to release-notices.json."
+    }
+}
+foreach ($selection in $noticeInput.license_selections) {
+    $package = @($packagesByName[$selection.crate])
+    if ($package.Count -ne 1 -or $package[0].license -ne $selection.declared -or
+        $selection.selected -ne 'Apache-2.0' -or
+        $selection.declared -notin @('MIT OR Apache-2.0', 'MIT/Apache-2.0') -or
+        -not $noticeFiles.ContainsKey("licenses/crates/$($package[0].name)-$($package[0].version)/LICENSE-APACHE-2.0.txt")) {
+        throw "Invalid or unsupported license selection: $($selection.crate)"
     }
 }
 $missingTexts = @($knownGaps.Keys | Sort-Object | ForEach-Object { "${_}: $($knownGaps[$_])" })
@@ -286,9 +296,9 @@ label means reachable through normal edges without passing through a proc macro.
 The build/proc-macro label covers the remaining build graph. The target graph
 is not a list of code proven linked into the executable.
 
-Required notice files for this inventory are checked against the offline notice
-manifest. See licenses/release-notices.json for source URLs, excerpt ranges and
-supplemental SHA-256 hashes. Review the unresolved items and applicable upstream
+License files are collected from each crate's locked source. Crates that do not
+ship them use the supplemental texts listed in licenses/release-notices.json with
+their source URLs and SHA-256 hashes. Review the unresolved items and applicable upstream
 terms before distribution. File validation does not establish legal completeness
 or binary provenance.
 
