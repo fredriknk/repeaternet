@@ -1,154 +1,216 @@
+
 # Development and architecture
 
-## Supported application
+RepeaterNet runs as one native `repeaternet` process. It serves an embedded
+vanilla-JavaScript and Leaflet dashboard. The Kartverket service table and
+terrain CRS catalog are embedded too. The executable runs without a frontend
+build, Python, GDAL or PROJ. The retired Python implementation is available at
+commit `18b7cee`. The [migration inventory](history/RUST_MIGRATION.md) records
+the original compatibility contracts.
 
-RepeaterNet has one runtime interface: the self-hosted web dashboard served by
-the native `repeaternet` executable. The executable embeds the browser assets,
-the Kartverket service table and the CRS catalog; it needs no Python, GDAL, PROJ
-or asset directory at runtime. The Python implementation was retired after the
-Rust port reached parity; it remains in Git at baseline commit `18b7cee`, and the
-[migration inventory](history/RUST_MIGRATION.md) records the contracts it fixed.
-The Rust server still opens Python-era project catalogs and saved coverage.
-
-Use the Rust toolchain pinned in `rust/rust-toolchain.toml` (1.100). Windows
-builds need the MSVC C++ Build Tools and a Windows SDK. Node is needed only for
-the frontend tests; the dashboard uses bundled JavaScript and CSS without a
-build step.
+```mermaid
+flowchart LR
+    Browser["Browser with Leaflet"] <-->|HTTP and job polling| Server["Axum server"]
+    Server <--> Workers["Scheduler and blocking workers"]
+    Workers <--> Optimizer["Optimizer"]
+    Workers <--> Coverage["Coverage engine"]
+    Optimizer --> RF["RF core"]
+    Coverage --> RF
+    Workers <--> Terrain["Terrain and CRS transforms"]
+    Terrain --> RF
+    Server <--> Projects["Project store · SQLite"]
+    Workers <--> Runs["Coverage store · JSON and JSONL"]
+    Workers <--> Providers["Provider adapters"]
+    Optimizer -.->|Road filter| Providers
+    Providers <-->|Terrain tiles| Kartverket
+    Providers <-->|Road tiles| Overpass
+    Providers <-->|Repeaters| CoreScope
+```
 
 ## Source layout
 
-All code lives in the Cargo workspace under `rust/`.
+The Cargo workspace lives under [`rust/`](../rust). Paths in this table are
+relative to the repository root.
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/web-server` | The `repeaternet` binary: launcher, axum routes, workspace state, validation, scheduler, persistence integration |
-| `crates/web-server/assets/` | Embedded dashboard HTML/CSS/JavaScript and Leaflet |
-| `crates/web-server/tests/js/` | Node event/race tests for the dashboard scripts |
-| `crates/project-store` | SQLite named-project catalog, revisions, archive/restore, startup recovery |
-| `crates/rf-core` | Sites, settings, directional budgets, antenna patterns, curvature, Fresnel, Bullington diffraction |
-| `crates/terrain` | GeoTIFF decoding, CRS transforms, windowed sampling, profiles, corridors |
-| `crates/optimizer` | Candidate generation, screened graph, topology selection, staged validation, RF caches, workers |
-| `crates/coverage` | Area grids, profiles, scenarios, comparisons, target assessment |
-| `crates/coverage-store` | Saved coverage runs, result pages, target reports, legacy Python run identity |
-| `crates/exports` | Route CSV/GeoJSON/HTML and coverage JSON/GeoJSON/HTML |
-| `crates/providers` | Kartverket WCS, Overpass roads and CoreScope clients |
-| `tools/` | Windows build, release verification and packaging scripts |
-| `.github/workflows/` | CI and tagged release builds |
+| [`rust/crates/web-server/`](../rust/crates/web-server/README.md) | Launcher, axum routes, workspace state, validation, jobs and persistence integration |
+| [`rust/crates/web-server/assets/`](../rust/crates/web-server/assets) | Dashboard and Leaflet assets embedded at build time |
+| [`rust/crates/web-server/tests/`](../rust/crates/web-server/tests) | Executable integration test and Node dashboard tests |
+| [`rust/crates/project-store/`](../rust/crates/project-store/README.md) | SQLite projects, revisions, route snapshots and recovery |
+| [`rust/crates/rf-core/`](../rust/crates/rf-core/README.md) | RF sites, radio budgets, profile sampling and propagation math |
+| [`rust/crates/terrain/`](../rust/crates/terrain/README.md) | GeoTIFF decoding, CRS transforms, terrain mosaics and corridors |
+| [`rust/crates/optimizer/`](../rust/crates/optimizer/README.md) | Candidate generation, graph search, RF certification and scalar cache |
+| [`rust/crates/coverage/`](../rust/crates/coverage/README.md) | Area grids, exact-point evaluation, scenarios, comparisons and targets |
+| [`rust/crates/coverage-store/`](../rust/crates/coverage-store/README.md) | Coverage manifests, result pages, target reports and identity checks |
+| [`rust/crates/exports/`](../rust/crates/exports/README.md) | Route CSV, GeoJSON and HTML, plus coverage JSON, GeoJSON and HTML |
+| [`rust/crates/providers/`](../rust/crates/providers/README.md) | Kartverket WCS, Overpass roads and CoreScope adapters |
+| [`tools/`](../tools) | Windows build, executable verification and release packaging |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Windows PR checks and tagged Windows release publishing |
 
-The RF, terrain and optimization crates are independent of HTTP and browser
-code. Multi-client graph routines remain useful engine functionality even though
-the current browser workflow has two endpoints. Each crate README documents its
-contracts, compatibility limits and fixtures.
+## Process model
 
-## Persistence and process model
+Run one server process per data directory. The workspace registry, job
+scheduler and scalar RF caches live in that process. The registry serializes
+state access by workspace cookie. Handlers capture project and job identity
+under the workspace lock, run blocking raster, network and search work on
+workers, then recheck identity before publishing. Planner jobs share a
+bounded scheduler. Route and coverage evaluation can use additional scoped
+worker threads. Terrain uploads use separate admission limits.
+[Configuration and limits](../rust/README.md#environment-variables)
 
-`RF_PLANNER_DATA/projects.sqlite3` stores the catalog. Workspaces contain isolated
-`projects/<id>` directories with terrain, plan snapshots, and saved results.
-New workspaces start with a new catalog project and do not adopt loose root-level
-files. Existing catalog entries are read directly. Catalogs written by the
-Python implementation open in place.
+### Route search
 
-`RF_PLANNER_OVERPASS_URL` overrides the road data endpoint (default
-`https://overpass-api.de/api/interpreter`). The global WGS84 grid uses 0.1° of
-latitude by 0.2° of longitude, about 11 × 11 km at 60° N. Each successful tile
-response is cached in the shared `shared-cache/overpass` directory by endpoint,
-highway class set, tile index, and query schema version.
-The candidate filter loads tiles within the configured road distance of grid
-points that pass the corridor, terrain, and exclusion masks. The route result
-and its saved summary share a list of clipped road polylines across alternatives.
-Each alternative stores indices into that list and distances to the nearest
-mapped road within the display radius, keyed by router ID.
+1. The dashboard saves pending edits and checks terrain readiness. It can
+   estimate and queue a Kartverket corridor download, poll until the terrain
+   is ready, then submit the route plan to `POST /api/optimize`.
+2. The handler validates the plan and requested project revision, opens route
+   terrain, projects site coordinates and checks required ground samples.
+   It saves the plan and queues the route job.
+3. The optimizer generates candidate sites when enabled, applies terrain and
+   exclusion filters, and optionally filters by mapped Overpass roads.
+   It screens links, searches topologies and certifies alternatives at the
+   final profile resolution using RF core. It publishes certified snapshots
+   as they become available.
+4. The server persists the terminal native snapshot, summary and run state in
+   SQLite. The dashboard polls `/api/state` for job progress and reads
+   `/api/result` for alternatives and profiles. On reopening, the server
+   restores a saved completed or stopped snapshot if the plan and route
+   terrain fingerprints match.
 
-Run one web process. Its bounded scheduler, workspace registry, and shared
-scalar-metric caches are process-local. Route evaluation uses worker threads.
-Increasing server job concurrency multiplies active terrain/profile work;
-benchmark memory before changing deployment defaults.
+### Coverage run
 
-Keep path containment, workspace isolation, stale-result checks, and job-identity
-checks: these enforce current behavior, not compatibility with old releases.
-Likewise, coverage model fingerprints prevent reuse of scientifically different
-results and must remain authoritative.
+1. The dashboard sends coverage settings and the certified route snapshot and
+   alternative. It can estimate or preview the grid, or request supplemental
+   Kartverket terrain for the chosen area.
+2. The handler resolves area, sources and grid, applies optional source-height
+   overrides and builds the run identity. The coverage mosaic reads route
+   terrain first and supplemental terrain second. The identity includes
+   both sets of terrain files, settings, radio and model.
+3. The coverage store checks for a compatible complete run. On a miss, a
+   planner worker evaluates the grid and commits ordered JSONL chunks with
+   progress metadata. The manifest records the committed byte watermark.
+   Cancellation leaves committed chunks available for paging. Recovery marks
+   unfinished runs interrupted and trims uncommitted native data.
+4. The dashboard polls the manifest and pages the stored cells for the map.
+   Exports and analyses read the saved grid. Exact-point inspection queues
+   a separate evaluation and uses live settings or a compatible saved run.
+   [HTTP job and export contracts](../rust/README.md#http-reference)
 
-Coverage terrain is published atomically in project-local
-`coverage-terrain-generations/generation-*/{dtm,dom}` directories. The coverage
-terrain estimate and prepare endpoints use the same projected mesh buffer, map
-extent, or polygon as the grid. They subtract installed raster footprints by
-product and select aligned tiles within the existing Kartverket budget. The
-estimate measures tile extents. Sampling still checks no-data values. DOM
-follows the presence of route DOM. Set `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` to override the
-25 m starting resolution. The planner can coarsen it to fit the pixel budget.
+## Persistence layout
 
-Preparation uses the shared bounded planner queue and publishes a generation
-only after all requested products are ready. Job status is available in
-`/api/state` under `coverage_terrain_job` and cancellation uses
-`POST /api/coverage/terrain/{job_id}/cancel`. The shared `shared-cache/kartverket` tile cache
-retains completed tiles after cancellation. Changing area or route selection
-preserves installed coverage generations. Route terrain uploads, preparation,
-and clearing remove installed coverage generations and preserve the tile cache.
+| Path relative to the selected data directory | Contents |
+| --- | --- |
+| `projects.sqlite3` | Catalog, workspace selection, current and previous plan, route summary and run state, and the native snapshot in `route_results`. SQLite can create WAL and SHM sidecars. |
+| `projects.sqlite3.repeaternet-intent` | SQLite journal for staged project-store publication and reconciliation. |
+| `<workspace-key>/projects/<directory-token>/` | Project files. Catalog project IDs and directory tokens are separate. Legacy catalog rows can refer to the workspace root. |
+| `shared-cache/kartverket/`, `shared-cache/overpass/` | Shared downloads. `RF_PLANNER_CACHE_DIR` overrides the cache root. |
 
-Coverage jobs, inspection, and target assessment all pass route paths first to
-`RasterTerrain`, whose first unmasked sample wins for each product. Coverage
-reuse and staleness checks fingerprint both sets of files. Route certification,
-readiness checks, and the route RF cache use route terrain exclusively.
+Paths below are relative to a project directory.
+
+| Path | Contents |
+| --- | --- |
+| `plan.json` | Atomic mirror of the SQLite plan. SQLite is authoritative. |
+| `dtm/`, `dom/` | Route ground and surface uploads. |
+| `terrain-generations/generation-*/{dtm,dom}/` | Downloaded route terrain. |
+| `coverage-terrain-generations/generation-*/{dtm,dom}/` | Downloaded supplemental terrain. |
+| `coverage-job.json`, `coverage-jobs/<job-id>.json` | Latest manifest and prior manifests archived on rollover. |
+| `coverage-reused-selection.json` | Optional pointer recording a reused run selected by the server. |
+| `coverage-results/<job-id>.jsonl` | Ordered coverage result chunks, one array per line. |
+| `coverage-target-reports/<job-id>-<report-id>.json` | Saved target assessments. |
+| `.coverage-store.lock` | File lock for cooperating coverage-store readers and writers. |
+
+New projects start with their own directory. Loose files in a workspace root
+stay in place. Existing Python catalog rows and compatible historical
+coverage artifacts can be read in place. See the
+[project store](../rust/crates/project-store/README.md) and
+[coverage store](../rust/crates/coverage-store/README.md) for recovery rules.
+
+Terrain generations are staged beside their destination and published with a
+rename after all requested products are ready. Upload and removal operations
+can create `.terrain-upload-*` and `.terrain-removal-*` staging entries.
+The project store uses `.repeaternet-stage-*` and `.repeaternet-owner-*`
+entries during journaled publication. Route uploads, clearing or
+successful route terrain preparation remove supplemental generations.
+Changing the coverage area or selected alternative preserves them. The
+supplemental estimate subtracts installed tile footprints by product. Raster
+sampling still checks masked and missing pixels.
+
+Shared provider caches sit outside project storage usage. Kartverket and
+Overpass keys incorporate their upstream request or tile schema. The Overpass
+grid uses 0.1° latitude by 0.2° longitude cells. Provider downloads can survive
+a cancelled job and be reused. Shared caches have no automatic retention
+policy. Stop the server before taking a backup of the full data directory or
+removing the shared cache.
+
+## Dashboard assets
+
+[`index.html`](../rust/crates/web-server/assets/dashboard/index.html) loads
+Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
+`workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
+the deferred classic scripts load in order
+`main_view_navigation.js`, `app.js` and `coverage_inspection.js`.
+Put new styles in the layer that owns the feature.
+
+Register a new asset and its content type in
+[`src/assets.rs`](../rust/crates/web-server/src/assets.rs) and reference it
+from the page as needed. Rebuild the executable to see embedded asset changes.
+Follow the [UX design rules](UX_DESIGN_RULES.md) and use a throwaway data
+directory outside the repository for browser checks.
 
 ## Verification
 
-From `rust/`:
+Use the [pinned toolchain](../rust/rust-toolchain.toml). Windows builds use the
+MSVC C++ Build Tools and a Windows SDK. From `rust/` run:
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cd .. && node --test rust/crates/web-server/tests/js/
+```
+
+From the repository root run:
+
+```sh
+node --test rust/crates/web-server/tests/js/
 git diff --check
 ```
 
-CI runs the same checks on Windows for every pull request. The Rust suites exercise RF math,
-terrain decoding and CRS transforms, exact and heuristic search, cancellation,
-caches, project isolation and recovery, coverage lifecycle, scenarios, targets,
-exports and HTTP workflows. The executable integration test launches the binary,
-uploads terrain, routes, calculates coverage and reopens the project after
-restart. Fixtures captured from the Python implementation are frozen oracles;
-their generators remain at commit `18b7cee`. Node tests cover navigation event
-bubbling and delayed inspection/autosave races.
+Windows CI also reruns terrain and coverage tests with
+`RF_PLANNER_TERRAIN_CACHE_MB=0`. The Rust suites include RF and terrain
+fixtures, optimizer certification, storage recovery and HTTP workflows.
+The executable integration test launches on loopback with temporary data,
+uploads a synthetic GeoTIFF, searches, calculates coverage, verifies paging,
+inspection and exports, then reopens the project after restart. Python-derived
+fixtures are frozen oracles. Their generators remain at `18b7cee`.
 
-Before a release, run the [release validation](RELEASE_VALIDATION.md) workflow on
-the exact executable. After packaging or dependency changes, also rebuild the
-container with `docker compose up -d --build` and check startup, HTTP access and
-a representative workflow. Automated assertions do not replace browser layout,
-file-download or field-accuracy checks. Record unverified acceptance items in
-[the roadmap](ROADMAP.md).
+Node uses the built-in test runner. Tests exercise the navigation helper and
+evaluate slices of the classic dashboard scripts with stubbed browser, map
+and network calls. They cover navigation event handling, autosave and
+inspection races, terrain actions, and road overlays. When moving a function,
+check the source boundaries used by the tests. Use a real browser to verify
+layout, focus and downloads after UI changes.
+
+Before release, run the [release workflow](RELEASE_VALIDATION.md) on the exact
+candidate. For container changes, rebuild and check the supplied Compose
+service with a disposable volume. Track open acceptance work in the
+[roadmap](ROADMAP.md).
+
+## Documentation screenshots
+
+Before opening a PR for a major dashboard change, regenerate the user-guide
+images with the [manual Playwright capture tool](../tools/docs-screenshots/README.md).
 
 ## Benchmarks
 
-The coverage crate's [cache benchmark](../rust/crates/coverage/README.md#cache-benchmark)
-measures cold and warm coverage evaluation on synthetic or local raster terrain.
-Record host, settings, fixture checksum, cold/warm definition and repetitions.
-The [terrain fixture manifest](REAL_TERRAIN_FIXTURE.md) explains provenance.
-[Recorded artifacts](benchmarks) were measured with the removed Python tools and
-are dated baseline measurements, not performance guarantees for other hardware
-or the native engine. “Cold” clears application caches, not OS storage caches.
-A larger scalar cache can consume substantial memory; preserve bounded defaults.
+The [coverage cache benchmark](../rust/crates/coverage/README.md#cache-benchmark)
+measures cold and warm coverage on synthetic terrain or a local raster.
+Record the host, revision, settings, fixture checksum and repetitions. Cold
+runs begin with empty application caches and use the ordinary OS file cache.
+The [terrain fixture manifest](REAL_TERRAIN_FIXTURE.md) lists optional real
+terrain uses. [Recorded Python measurements](benchmarks) are dated baselines.
 
-## Maintenance policy
-
-Implement the current product directly. Remove replaced paths and their
-exclusive tests rather than carrying parallel implementations or silent format
-fallbacks. Retain current validation and scientific metadata. Keep one source for
-runtime defaults/configuration and update callers together.
-
-Current instructions belong in README, the user guide, this document, and the
-roadmap. Dated plans and reports under [history](history/README.md) are evidence,
-not current requirements. Changes that remove features should identify the
-removed behavior and verification performed. Git retains removed source.
-
-## Shared download cache
-
-Kartverket terrain tiles and OpenStreetMap road tiles are cached once for the
-whole server under `$RF_PLANNER_DATA/shared-cache/` (override with
-`RF_PLANNER_CACHE_DIR`). File names are hashes of the exact upstream request,
-so every project and workspace reuses them, and writes are atomic. The cache is
-not counted in per-workspace storage usage and is never pruned automatically;
-delete the directory to reclaim space. Kartverket downloads send a descriptive
-User-Agent, pause briefly between consecutive network tiles, and retry
-transient errors with exponential backoff.
+Current instructions live in the application reference, the user guide and
+this guide. [Historical records](history/README.md) preserve dated plans and
+evidence. When changing the engine, preserve workspace isolation, path
+containment, stale-result guards and model fingerprints.

@@ -74,7 +74,7 @@ code changed and the complete automated suite was not rerun for this CSS fix.
   360×640, and 844×390. The prior report covered 1280×720 and 390×844 only.
 - **Deployment under load:** exercise two workspaces, container restart/recovery,
   storage pressure, saved-run replay over HTTP, max-budget jobs, cancellation
-  latency, and aggregate server/child memory. Measure cold/warm latency and
+  latency, and total server and worker memory. Measure cold/warm latency and
   first-result time on the documented terrain fixture.
 
 Mark each acceptance item pass, fail, blocked, or not tested with build revision
@@ -85,17 +85,17 @@ are not current release approval.
 
 The Rust executable passed the automated workspace suite, the isolated Windows
 release verifier and a container smoke test on the development PC. Still
-required before the first tagged release:
+open for release acceptance:
 
 - **Clean-machine launch:** the manual Explorer, terminal and browser test in
   [release validation](RELEASE_VALIDATION.md) on a clean Windows install.
-- **Hosted pipeline:** a first run of the GitHub Actions Windows release job.
 - **Live providers:** Kartverket and Overpass checks against the public services.
 - **Terrain breadth and recovery:** broader GeoTIFF/CRS compatibility and recovery
   from a corrupt current coverage manifest.
 
-The browser acceptance items above were recorded against the Python runtime and
-must be repeated against the native executable.
+The browser acceptance items above were recorded against the Python runtime.
+The native executable still needs the full acceptance pass. Windows
+releases are published from version tags (v0.1.0 onward) and the workflow packages Windows x64. [Release validation](RELEASE_VALIDATION.md)
 
 ## Engineering follow-up
 
@@ -120,15 +120,15 @@ must be repeated against the native executable.
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | C1 | Remove desktop UI, desktop files/tests/dependencies, alternate launcher, unused contour/logging code, duplicate configs, Deygout dispatch, old workspace adoption, and renamed tile-limit alias; resolve type ambiguities and refresh inspection test fixtures | Complete: `f0420d9` |
-| C2 | Publish current web-only README/guide/development docs; consolidate open work here; archive dated plans and reports with corrected links | Complete: this documentation commit |
-| R1 | Replace the Python runtime with the native Rust executable; embed the dashboard; remove the Python source, tests and tools; ship a static Linux binary and a `scratch` container; add CI, tagged Windows/Linux releases and GHCR images | Complete: `rust-only-release` branch, 2026-11-20 |
+| C2 | Publish current web-only README/guide/development docs; consolidate open work here; archive dated plans and reports with corrected links | Complete: `cd5a998` |
+| R1 | Replace the Python runtime with the native Rust executable; embed the dashboard; remove the Python source, tests and tools; build a static Linux binary for the local `scratch` image and add CI and tagged Windows releases | Complete: `rust-only-release` branch, 2026-11-20 |
 
 The current catalog, terrain data, and saved results are not reset by cleanup.
 Removed source remains recoverable in Git. Desktop-specific tests are retired;
 web/core tests and new startup/storage/model-validation checks cover the
 remaining product. Cleanup does not close the release acceptance list above.
 
-Verification for this cleanup:
+Historical verification for the September Python cleanup:
 
 - Python: **187 passed**, 19.85 s, 71 dependency deprecation warnings. Six tests
   exclusive to retired desktop behavior were removed; three checks were added

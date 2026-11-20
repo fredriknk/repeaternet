@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS projects_workspace_updated
     ON projects(workspace_key, archived, updated_at DESC);
+CREATE TABLE IF NOT EXISTS route_results (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    snapshot_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS workspace_state (
     workspace_key TEXT PRIMARY KEY,
     active_project_id TEXT NOT NULL

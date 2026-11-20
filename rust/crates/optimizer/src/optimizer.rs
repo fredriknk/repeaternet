@@ -1,10 +1,10 @@
 use crate::cache::CacheKey;
-use crate::candidates::{generate, sample};
+use crate::candidates::{candidate_grid_spacing, generate_with_access_pool, sample};
 use crate::parallel::{for_each_batched, worker_count};
 use crate::screening::screened_pairs;
 use crate::topology::solve_graph;
 use crate::{
-    backbone_site_indices, pair, select_active_solution_index, CandidateSettings,
+    backbone_site_indices, link_is_clear, pair, select_active_solution_index, CandidateSettings,
     InfrastructurePolicy, LinkMetricsCache, NetworkSolution, OptimizationError,
     OptimizationPriority, PlanningSite, RoutingGraph, SiteFilter, SiteOrigin,
 };
@@ -15,8 +15,12 @@ use repeaternet_rf_core::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
+#[path = "bridges.rs"]
+mod bridges;
+
 const BACKBONE_LIMIT: usize = 64;
 const ROUTER_HEADROOM: usize = 2;
+const MAX_ENDPOINT_FRONTIER: usize = 32;
 type Pair = (usize, usize);
 
 /// RF evaluation seam for specialized adapters and deterministic tests. Independent
@@ -90,6 +94,7 @@ pub enum Stage {
     ScreeningPossibleLinks,
     CheckingEndpointVisibleCandidates,
     CheckingTwoRepeaterSummitLinks,
+    CheckingInteriorBridgeLinks,
     EvaluatingRfLinks,
     SearchingTopologies,
     ValidatingSolutionAlternatives,
@@ -103,6 +108,7 @@ impl Stage {
             Self::ScreeningPossibleLinks => "Screening possible links",
             Self::CheckingEndpointVisibleCandidates => "Checking endpoint-visible candidates",
             Self::CheckingTwoRepeaterSummitLinks => "Checking two-repeater summit links",
+            Self::CheckingInteriorBridgeLinks => "Checking interior bridge links",
             Self::EvaluatingRfLinks => "Evaluating RF links",
             Self::SearchingTopologies => "Searching topologies",
             Self::ValidatingSolutionAlternatives => "Validating solution alternatives",
@@ -370,6 +376,7 @@ impl<'a> RouteOptimizer<'a> {
             links: BTreeMap::new(),
             final_checked: BTreeSet::new(),
             snapshot: None,
+            certified_by_count: BTreeMap::new(),
             diagnostics: Vec::new(),
             seeds: Vec::new(),
         };
@@ -381,8 +388,18 @@ impl<'a> RouteOptimizer<'a> {
         if search.hooks.cancelled() {
             return Ok(search.interrupted());
         }
-        let (sites, filter_counts) = self.prepare_sites(request, &|| search.hooks.cancelled())?;
+        let automatic_candidates = request.candidates.is_none()
+            && self.settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly;
+        let (sites, filter_counts) =
+            self.prepare_sites(request, &search.rf, &|| search.hooks.cancelled())?;
         search.sites = sites;
+        if automatic_candidates && self.settings.maximum_candidates > 0 {
+            let spacing = candidate_grid_spacing(self.terrain, self.settings);
+            search.diagnostics.push(format!(
+                "Effective candidate grid spacing: {spacing:.1} m (requested {:.1} m).",
+                self.settings.grid_spacing_m
+            ));
+        }
         if let Some([kept, checked]) = filter_counts {
             search.diagnostics.push(format!(
                 "Road access filter kept {kept} of {checked} grid points."
@@ -412,6 +429,7 @@ impl<'a> RouteOptimizer<'a> {
     fn prepare_sites(
         &self,
         request: OptimizationRequest,
+        evaluation: &RfEvaluation<'_>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(Vec<PlanningSite>, Option<[usize; 2]>), OptimizationError> {
         let OptimizationRequest {
@@ -540,13 +558,84 @@ impl<'a> RouteOptimizer<'a> {
                         "Terrain bounds are required for candidate generation".into(),
                     )
                 })?;
-                let (generated, counts) = generate(
+                let (mut generated, mut counts, access_pool) = generate_with_access_pool(
                     self.terrain,
                     bounds,
                     [low, high],
                     &settings,
                     &exclusions,
                     self.site_filter,
+                    cancelled,
+                )?;
+                let search_height_m = if settings.optimize_heights {
+                    settings.maximum_router_height_m
+                } else {
+                    self.rf.router.height_agl_m
+                };
+                let valid_access_link = |left: &Site, right: &Site| {
+                    let (source, target) = if left.id <= right.id {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                    if evaluation.evaluator.optimistic_margin_db(source, target)? < 0.0 {
+                        return Ok(false);
+                    }
+                    Ok(evaluation
+                        .evaluate(
+                            source,
+                            target,
+                            settings.final_sample_step_m,
+                            false,
+                            cancelled,
+                        )?
+                        .is_some_and(|link| link.valid))
+                };
+                let spacing = candidate_grid_spacing(self.terrain, &settings);
+                let mut refine_access = |center: Point| {
+                    let step = (spacing / 2.0).max(self.terrain.resolution_m());
+                    if step >= spacing {
+                        return Ok(Vec::new());
+                    }
+                    let radius = step * 8.0;
+                    let local_bounds = [
+                        bounds[0].max(center.x - radius),
+                        bounds[1].max(center.y - radius),
+                        bounds[2].min(center.x + radius),
+                        bounds[3].min(center.y + radius),
+                    ];
+                    if local_bounds[0] > local_bounds[2] || local_bounds[1] > local_bounds[3] {
+                        return Ok(Vec::new());
+                    }
+                    // At most 17 by 17 samples. The final pool still enforces both site caps.
+                    let local_settings = CandidateSettings {
+                        grid_spacing_m: step,
+                        refine_radius_m: 0.0,
+                        maximum_candidates: 289,
+                        candidates_per_cell: 289,
+                        ..settings.clone()
+                    };
+                    let (samples, checked) = crate::candidates::generate(
+                        self.terrain,
+                        local_bounds,
+                        [low, high],
+                        &local_settings,
+                        &exclusions,
+                        self.site_filter,
+                        cancelled,
+                    )?;
+                    counts[0] += checked[0];
+                    counts[1] += checked[1];
+                    Ok(samples)
+                };
+                crate::endpoint_access::recover_with_refinement(
+                    &mut generated,
+                    access_pool,
+                    &sites,
+                    &settings,
+                    search_height_m,
+                    &valid_access_link,
+                    &mut refine_access,
                     cancelled,
                 )?;
                 if self.site_filter.is_some() {
@@ -724,6 +813,7 @@ struct Search<'a, 'b> {
     links: BTreeMap<Pair, LinkResult>,
     final_checked: BTreeSet<Pair>,
     snapshot: Option<OptimizationResult>,
+    certified_by_count: BTreeMap<usize, NetworkSolution>,
     diagnostics: Vec<String>,
     seeds: Vec<Vec<String>>,
 }
@@ -747,6 +837,7 @@ impl Search<'_, '_> {
             }
         }
         self.screen(&terminals)?;
+        let mut checked_bridges = false;
         let mut exploration = self.settings.clone();
         exploration.maximum_solution_routers = exploration
             .maximum_solution_routers
@@ -788,6 +879,26 @@ impl Search<'_, '_> {
                 checked_low_hop = true;
                 self.low_hop()?;
                 continue;
+            }
+            if self.settings.priority == OptimizationPriority::MaximumReliability {
+                for solution in alternatives.drain(..) {
+                    self.retain_certified(solution);
+                }
+                alternatives = std::mem::take(&mut self.certified_by_count)
+                    .into_values()
+                    .collect();
+            }
+            if alternatives.is_empty() && !checked_bridges {
+                checked_bridges = true;
+                if self.search_bridges(&terminals)? {
+                    continue;
+                }
+                if self.hooks.cancelled() {
+                    return Ok(self.interrupted());
+                }
+            }
+            if alternatives.is_empty() {
+                self.diagnose_bridge_failure(&terminals)?;
             }
             self.restore_profiles(&mut alternatives)?;
             if self.hooks.cancelled() {
@@ -870,7 +981,84 @@ impl Search<'_, '_> {
             },
         )?;
         // Coarse/medium classifications cannot safely prove RF failure.
-        self.certify_pairs(&retry, |_, _, _| {})
+        self.certify_pairs(&retry, |_, _, _| {})?;
+
+        if terminals.len() == 2 && self.settings.maximum_solution_routers >= 2 {
+            let a = *terminals.first().expect("two terminals");
+            let b = *terminals.last().expect("two terminals");
+            self.check_endpoint_frontier(a, b)?;
+        }
+        Ok(())
+    }
+
+    fn check_endpoint_frontier(&mut self, a: usize, b: usize) -> Result<(), OptimizationError> {
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        // Favor routers with strong access links even if they are outside each
+        // other's nearest neighbors and did not make the geographic backbone.
+        let limit = self
+            .settings
+            .maximum_neighbors_per_site
+            .clamp(1, MAX_ENDPOINT_FRONTIER);
+        let frontier = |endpoint| {
+            let mut links = Vec::new();
+            for node in 0..self.sites.len() {
+                if self.hooks.cancelled() {
+                    break;
+                }
+                if node != a && node != b {
+                    if let Some(link) = self.links.get(&pair(endpoint, node)) {
+                        links.push((node, link));
+                    }
+                }
+            }
+            let rank = |(left_node, left): &(usize, &LinkResult),
+                        (right_node, right): &(usize, &LinkResult)| {
+                link_is_clear(right)
+                    .cmp(&link_is_clear(left))
+                    .then_with(|| right.worst_margin_db().total_cmp(&left.worst_margin_db()))
+                    .then_with(|| {
+                        self.sites[*left_node]
+                            .rf
+                            .id
+                            .cmp(&self.sites[*right_node].rf.id)
+                    })
+            };
+            if links.len() > limit {
+                links.select_nth_unstable_by(limit, rank);
+                links.truncate(limit);
+            }
+            links.into_iter().map(|(node, _)| node).collect::<Vec<_>>()
+        };
+        let left = frontier(a);
+        let right = frontier(b);
+        let mut pairs = BTreeSet::new();
+        for left in left {
+            for &right in &right {
+                let key = pair(left, right);
+                if left != right
+                    && !self.links.contains_key(&key)
+                    && !self.final_checked.contains(&key)
+                {
+                    pairs.insert(key);
+                }
+            }
+        }
+        if pairs.is_empty() || self.hooks.cancelled() {
+            return Ok(());
+        }
+        let pairs: Vec<_> = pairs.into_iter().collect();
+        let total = pairs.len();
+        self.hooks
+            .notify(Stage::CheckingTwoRepeaterSummitLinks, 0, total);
+        let mut done = 0;
+        self.certify_pairs(&pairs, |_, _, hooks| {
+            done += 1;
+            if done % 10 == 0 || done == total {
+                hooks.notify(Stage::CheckingTwoRepeaterSummitLinks, done, total);
+            }
+        })
     }
 
     fn low_hop(&mut self) -> Result<(), OptimizationError> {
@@ -1114,8 +1302,23 @@ impl Search<'_, '_> {
             .search_pair(&self.sites, key, step, profile, &|| self.hooks.cancelled())
     }
 
+    fn retain_certified(&mut self, solution: NetworkSolution) {
+        let count = solution.router_count();
+        if self
+            .certified_by_count
+            .get(&count)
+            .is_none_or(|incumbent| crate::topology::improves_certified_pair(&solution, incumbent))
+        {
+            self.certified_by_count.insert(count, solution);
+        }
+    }
+
     fn publish_certified(&mut self, previous: &[NetworkSolution]) -> Result<(), OptimizationError> {
-        if self.snapshot.is_some() || previous.is_empty() || self.hooks.cancelled() {
+        let reliability = self.settings.priority == OptimizationPriority::MaximumReliability;
+        if (self.snapshot.is_some() && !reliability)
+            || previous.is_empty()
+            || self.hooks.cancelled()
+        {
             return Ok(());
         }
         let mut certified = Vec::new();
@@ -1133,17 +1336,23 @@ impl Search<'_, '_> {
                 continue;
             }
             let graph = RoutingGraph::from_links(&solution.sites, self.links.values())?;
-            let mut settings = self.settings.clone();
-            settings.maximum_solution_routers = solution.router_count();
-            let mut alternatives = solve_graph(&graph, &settings, &|| self.hooks.cancelled(), &[])?;
-            if let Some(topology) = alternatives
-                .pop()
-                .filter(|s| s.router_count() == solution.router_count())
+            if let Some(mut topology) = crate::topology::certify_installation(&graph, self.settings)
             {
+                topology
+                    .diagnostics
+                    .push("Retained a route verified during final-resolution link checks.".into());
                 certified.push(topology);
             }
         }
         if certified.is_empty() || self.hooks.cancelled() {
+            return Ok(());
+        }
+        if reliability {
+            for solution in &certified {
+                self.retain_certified(solution.clone());
+            }
+        }
+        if self.snapshot.is_some() {
             return Ok(());
         }
         for solution in &mut certified {
@@ -1219,9 +1428,7 @@ impl Search<'_, '_> {
         let mut diagnostics = if let Some(index) = active_index {
             alternatives[index].diagnostics.clone()
         } else {
-            let mut diagnostics = vec![
-                "No connected mesh was found within the configured router-count limit.".into(),
-            ];
+            let mut diagnostics = Vec::new();
             let required: Vec<_> = self
                 .sites
                 .iter()
@@ -1231,7 +1438,6 @@ impl Search<'_, '_> {
             if !required.is_empty() {
                 diagnostics.push(format!("Required routers checked: {}", required.join(", ")));
             }
-            diagnostics.push("Try showing more router-count solutions, widening the corridor, or increasing candidate density.".into());
             diagnostics
         };
         diagnostics.extend(self.diagnostics.clone());

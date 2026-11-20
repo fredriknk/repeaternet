@@ -6,3 +6,6 @@ description = "Terrain candidate selection and certified RF mesh optimization"
 
 [dependencies]
 repeaternet-rf-core = { path = "../rf-core" }
+
+[dev-dependencies]
+repeaternet-terrain = { path = "../terrain" }

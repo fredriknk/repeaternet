@@ -1,5 +1,6 @@
 use crate::{
-    compare_scores, pair, OptimizationError, OptimizationPriority, PlanningSite, SiteOrigin,
+    compare_scores, link_is_clear, pair, OptimizationError, OptimizationPriority, PlanningSite,
+    SiteOrigin,
 };
 use repeaternet_rf_core::LinkResult;
 use std::cmp::{Ordering, Reverse};
@@ -123,10 +124,7 @@ impl<'a> RoutingGraph<'a> {
         match priority {
             OptimizationPriority::MinimumRouters => self.hop_path(source, target, |_, _, _| true),
             OptimizationPriority::MaximumReliability => {
-                let margin = self.widest_margins(source)[target];
-                self.hop_path(source, target, |_, _, link| {
-                    link.worst_margin_db() >= margin
-                })
+                self.reliability_path(source, target, |_, _, _| true)
             }
             OptimizationPriority::FewestNewInstallations => {
                 let forward = self.installation_distances(source, false);
@@ -141,6 +139,28 @@ impl<'a> RoutingGraph<'a> {
             }
             OptimizationPriority::MinimumInfrastructure => self.infrastructure_path(source, target),
         }
+    }
+
+    pub(crate) fn reliability_path(
+        &self,
+        source: usize,
+        target: usize,
+        eligible: impl Fn(usize, usize, &LinkResult) -> bool,
+    ) -> Option<Vec<usize>> {
+        let clear_margin = self.widest_margins_where(source, |a, b, link| {
+            eligible(a, b, link) && link_is_clear(link)
+        })[target];
+        let require_clear = clear_margin > f64::NEG_INFINITY;
+        let margin = if require_clear {
+            clear_margin
+        } else {
+            self.widest_margins_where(source, &eligible)[target]
+        };
+        self.hop_path(source, target, |a, b, link| {
+            eligible(a, b, link)
+                && (!require_clear || link_is_clear(link))
+                && link.worst_margin_db() >= margin
+        })
     }
 
     fn hop_path(
@@ -176,10 +196,21 @@ impl<'a> RoutingGraph<'a> {
             }
             best[target]
         };
-        let margin = widest(LinkResult::worst_margin_db, &|_, _, _| true);
+        let clear_margin = widest(LinkResult::worst_margin_db, &|_, _, link| {
+            link_is_clear(link)
+        });
+        let require_clear = clear_margin > f64::NEG_INFINITY;
+        let margin = if require_clear {
+            clear_margin
+        } else {
+            widest(LinkResult::worst_margin_db, &|_, _, _| true)
+        };
+        let meets_margin = |link: &LinkResult| {
+            (!require_clear || link_is_clear(link)) && link.worst_margin_db() >= margin
+        };
         let fresnel = widest(
             |link| link.minimum_fresnel_clearance_ratio,
-            &|_, _, link| link.worst_margin_db() >= margin,
+            &|_, _, link| meets_margin(link),
         );
         let mut best = vec![None; self.sites.len()];
         best[source] = Some(([0.0; 3], vec![source]));
@@ -189,7 +220,7 @@ impl<'a> RoutingGraph<'a> {
             };
             for &(right, link) in &self.neighbors[left] {
                 if !on_shortest(left, right, link)
-                    || link.worst_margin_db() < margin
+                    || !meets_margin(link)
                     || link.minimum_fresnel_clearance_ratio < fresnel
                 {
                     continue;
@@ -238,7 +269,15 @@ impl<'a> RoutingGraph<'a> {
         (distance, order)
     }
 
-    pub(crate) fn widest_margins(&self, source: usize) -> Vec<f64> {
+    pub(crate) fn widest_margins(&self, source: usize, clear_only: bool) -> Vec<f64> {
+        self.widest_margins_where(source, |_, _, link| !clear_only || link_is_clear(link))
+    }
+
+    fn widest_margins_where(
+        &self,
+        source: usize,
+        eligible: impl Fn(usize, usize, &LinkResult) -> bool,
+    ) -> Vec<f64> {
         let mut best = vec![f64::NEG_INFINITY; self.sites.len()];
         best[source] = f64::INFINITY;
         let mut queue = BinaryHeap::from([(OrderedFloat(best[source]), source)]);
@@ -247,6 +286,9 @@ impl<'a> RoutingGraph<'a> {
                 continue;
             }
             for &(right, link) in &self.neighbors[left] {
+                if !eligible(left, right, link) {
+                    continue;
+                }
                 let trial = margin.min(link.worst_margin_db());
                 if trial > best[right] {
                     best[right] = trial;
@@ -325,6 +367,11 @@ impl<'a> RoutingGraph<'a> {
             .map(|edge| self.edges[&pair(edge[0], edge[1])].worst_margin_db())
             .fold(f64::INFINITY, f64::min)
     }
+
+    pub(crate) fn path_is_clear(&self, path: &[usize]) -> bool {
+        path.windows(2)
+            .all(|edge| link_is_clear(self.edges[&pair(edge[0], edge[1])]))
+    }
 }
 
 fn better_path(
@@ -345,7 +392,7 @@ fn better_path(
 }
 
 #[derive(Clone, Copy)]
-struct OrderedFloat(f64);
+pub(crate) struct OrderedFloat(pub(crate) f64);
 
 impl PartialEq for OrderedFloat {
     fn eq(&self, other: &Self) -> bool {

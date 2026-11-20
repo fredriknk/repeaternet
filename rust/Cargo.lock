@@ -1518,6 +1518,7 @@ name = "repeaternet-optimizer"
 version = "0.1.0"
 dependencies = [
  "repeaternet-rf-core",
+ "repeaternet-terrain",
 ]
 
 [[package]]
@@ -1558,6 +1559,7 @@ name = "repeaternet-rf-core"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "serde",
 ]
 
 [[package]]

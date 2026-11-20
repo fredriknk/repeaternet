@@ -1,14 +1,17 @@
+use crate::graph::OrderedFloat;
 use crate::{
-    compare_scores, pair, CandidateSettings, OptimizationError, OptimizationPriority, PlanningSite,
-    RoutingGraph, SiteOrigin,
+    compare_scores, link_is_clear, pair, CandidateSettings, OptimizationError,
+    OptimizationPriority, PlanningSite, RoutingGraph, SiteOrigin,
 };
 use repeaternet_rf_core::LinkResult;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
 
 const EXACT_LIMIT: usize = 100_000;
 const BEAM_WIDTH: usize = 64;
 const PATH_SEED_LIMIT: usize = 32;
+const QUALITY_SEED_HOP_LIMIT: usize = 16;
+const PAIRED_SEED_ROUTERS: usize = 4;
 pub type ClientPaths = BTreeMap<(String, String), Vec<Vec<String>>>;
 
 #[derive(Clone, Debug)]
@@ -71,17 +74,17 @@ impl NetworkSolution {
         self.links.iter().map(|link| link.distance_m).sum()
     }
 
-    pub fn primary_distance_m(&self) -> f64 {
-        self.primary_path_ids()
-            .windows(2)
-            .filter_map(|pair| {
-                self.links.iter().find(|link| {
-                    (link.source_id == pair[0] && link.target_id == pair[1])
-                        || (link.source_id == pair[1] && link.target_id == pair[0])
-                })
+    pub fn primary_links(&self) -> impl Iterator<Item = &LinkResult> {
+        self.primary_path_ids().windows(2).filter_map(|pair| {
+            self.links.iter().find(|link| {
+                (link.source_id == pair[0] && link.target_id == pair[1])
+                    || (link.source_id == pair[1] && link.target_id == pair[0])
             })
-            .map(|link| link.distance_m)
-            .sum()
+        })
+    }
+
+    pub fn primary_distance_m(&self) -> f64 {
+        self.primary_links().map(|link| link.distance_m).sum()
     }
 }
 
@@ -201,6 +204,21 @@ pub(crate) fn solve_graph(
     } else {
         Vec::new()
     };
+    let paired_seeds = if clients.len() == 2
+        && required.is_empty()
+        && requested == 2
+        && settings.priority == OptimizationPriority::MaximumReliability
+        && counts
+            .get(PAIRED_SEED_ROUTERS)
+            .is_some_and(|&count| count > EXACT_LIMIT)
+    {
+        let Some(seeds) = paired_path_seeds(graph, clients[0], clients[1], cancelled) else {
+            return Ok(Vec::new());
+        };
+        seeds
+    } else {
+        BTreeSet::new()
+    };
 
     let mut alternatives = Vec::new();
     for (depth, &count) in counts.iter().enumerate() {
@@ -216,24 +234,23 @@ pub(crate) fn solve_graph(
             nodes.extend(&routers);
             let subgraph = graph.induced(&nodes);
             if subgraph.bfs(0, |_, _, _| true).1.len() == nodes.len() {
-                let reliability = (settings.priority == OptimizationPriority::MaximumReliability)
-                    .then(|| {
-                        representative_paths(&subgraph, clients.len(), requested, settings.priority)
-                    });
-                let score = topology_score(
-                    &subgraph,
-                    clients.len(),
-                    reliability.as_ref().map_or(0, |(_, count)| *count),
-                    settings.priority,
-                );
+                let achieved = if settings.priority == OptimizationPriority::MaximumReliability {
+                    independent_path_count(&subgraph, clients.len(), requested)
+                } else {
+                    0
+                };
+                let score = topology_score(&subgraph, clients.len(), achieved, settings.priority);
                 if best.as_ref().is_none_or(|(current, key, _)| {
                     compare_scores(&score, current)
                         .then_with(|| key.cmp(&routers))
                         .is_gt()
                 }) {
-                    let (paths, achieved) = reliability.unwrap_or_else(|| {
-                        representative_paths(&subgraph, clients.len(), requested, settings.priority)
-                    });
+                    let (paths, achieved) = representative_paths(
+                        &subgraph,
+                        clients.len(),
+                        requested,
+                        settings.priority,
+                    );
                     best = Some((
                         score,
                         routers,
@@ -258,7 +275,23 @@ pub(crate) fn solve_graph(
             }
             evaluate(selection);
         }
-        if let Some((_, _, mut solution)) = best {
+        let mut solution = best.map(|(_, _, solution)| solution);
+        if depth == PAIRED_SEED_ROUTERS && !paired_seeds.is_empty() {
+            let replacement = improve_with_paired_seeds(
+                graph,
+                &clients,
+                &paired_seeds,
+                solution.as_ref(),
+                cancelled,
+            );
+            if cancelled() {
+                return Ok(Vec::new());
+            }
+            if let Some(replacement) = replacement {
+                solution = Some(replacement);
+            }
+        }
+        if let Some(mut solution) = solution {
             solution.diagnostics.push(if count <= EXACT_LIMIT {
                 format!("Exhaustive subset search within screened graph ({count} subsets).")
             } else {
@@ -355,16 +388,201 @@ fn edge_id(link: &LinkResult) -> (&str, &str) {
     (a.min(b), a.max(b))
 }
 
+/// Rebuild the paths of a selected installation after final-resolution RF checks.
+pub(crate) fn certify_installation(
+    graph: &RoutingGraph<'_>,
+    settings: &CandidateSettings,
+) -> Option<NetworkSolution> {
+    let (mut terminals, routers): (Vec<_>, Vec<_>) =
+        (0..graph.sites.len()).partition(|&node| graph.sites[node].is_client());
+    let clients = terminals.len();
+    terminals.extend(routers);
+    let subgraph = graph.induced(&terminals);
+    if subgraph.bfs(0, |_, _, _| true).1.len() != terminals.len() {
+        return None;
+    }
+    let requested = settings.reliability_paths.max(1);
+    let (paths, achieved) = representative_paths(&subgraph, clients, requested, settings.priority);
+    Some(make_solution(
+        &subgraph, clients, requested, achieved, paths,
+    ))
+}
+
+#[derive(Clone, Copy)]
+struct PathQuality {
+    los_blocked: usize,
+    fresnel_impeded: usize,
+    margin: f64,
+}
+
+impl PathQuality {
+    const EMPTY: Self = Self {
+        los_blocked: 0,
+        fresnel_impeded: 0,
+        margin: f64::INFINITY,
+    };
+    const MISSING: Self = Self {
+        los_blocked: usize::MAX,
+        fresnel_impeded: usize::MAX,
+        margin: f64::NEG_INFINITY,
+    };
+
+    fn add_link(&mut self, link: &LinkResult) {
+        self.los_blocked += usize::from(!link.los_clear);
+        self.fresnel_impeded += usize::from(!link.fresnel_clear);
+        self.margin = self.margin.min(link.worst_margin_db());
+    }
+
+    fn weakest(self, other: Self) -> Self {
+        Self {
+            los_blocked: self.los_blocked.max(other.los_blocked),
+            fresnel_impeded: self.fresnel_impeded.max(other.fresnel_impeded),
+            margin: self.margin.min(other.margin),
+        }
+    }
+
+    fn no_worse_than(self, other: Self) -> bool {
+        self.los_blocked <= other.los_blocked
+            && self.fresnel_impeded <= other.fresnel_impeded
+            && self.margin >= other.margin
+    }
+
+    fn cmp(self, other: Self) -> Ordering {
+        other
+            .los_blocked
+            .cmp(&self.los_blocked)
+            .then_with(|| other.fresnel_impeded.cmp(&self.fresnel_impeded))
+            .then_with(|| self.margin.total_cmp(&other.margin))
+    }
+}
+
+fn reliability_quality(solution: &NetworkSolution, achieved: usize) -> [PathQuality; 2] {
+    let links: BTreeMap<_, _> = solution
+        .links
+        .iter()
+        .filter(|link| link.valid)
+        .map(|link| (edge_id(link), link))
+        .collect();
+    let path_quality = |path: &[String]| {
+        if path.len() < 2 {
+            return PathQuality::MISSING;
+        }
+        let mut quality = PathQuality::EMPTY;
+        for hop in path.windows(2) {
+            let (a, b) = (hop[0].as_str(), hop[1].as_str());
+            let Some(link) = links.get(&(a.min(b), a.max(b))) else {
+                return PathQuality::MISSING;
+            };
+            quality.add_link(link);
+        }
+        quality
+    };
+
+    // The weakest primary and backup metrics across all client pairs determine
+    // the network's quality. Only paths supported by the achieved count enter.
+    if solution.client_paths.is_empty() {
+        return [PathQuality::MISSING; 2];
+    }
+    let mut primary = PathQuality::EMPTY;
+    let mut backup = PathQuality::EMPTY;
+    for paths in solution.client_paths.values() {
+        primary = primary.weakest(
+            paths
+                .first()
+                .map_or(PathQuality::MISSING, |p| path_quality(p)),
+        );
+        if paths.len() < achieved {
+            backup = PathQuality::MISSING;
+        }
+        for path in paths.iter().take(achieved).skip(1) {
+            backup = backup.weakest(path_quality(path));
+        }
+    }
+    [primary, backup]
+}
+
+fn compare_reliability_quality(a: [PathQuality; 2], b: [PathQuality; 2]) -> Ordering {
+    a[0].cmp(b[0]).then_with(|| a[1].cmp(b[1]))
+}
+
+/// Compare fully certified networks at the same installation count across search passes.
+pub(crate) fn improves_certified_pair(
+    candidate: &NetworkSolution,
+    incumbent: &NetworkSolution,
+) -> bool {
+    let achieved = candidate.achieved_path_count;
+    if achieved != incumbent.achieved_path_count {
+        return achieved > incumbent.achieved_path_count;
+    }
+    let next = reliability_quality(candidate, achieved);
+    let current = reliability_quality(incumbent, achieved);
+    next[0].no_worse_than(current[0])
+        && next[1].no_worse_than(current[1])
+        && compare_reliability_quality(next, current).is_gt()
+}
+
+fn improve_with_paired_seeds(
+    graph: &RoutingGraph<'_>,
+    clients: &[usize],
+    seeds: &BTreeSet<[usize; PAIRED_SEED_ROUTERS]>,
+    incumbent: Option<&NetworkSolution>,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<NetworkSolution> {
+    let incumbent_quality = incumbent
+        .filter(|solution| solution.achieved_path_count == 2)
+        .map(|solution| reliability_quality(solution, 2));
+    let mut best = None;
+    let mut best_quality = incumbent_quality;
+    for routers in seeds {
+        if cancelled() {
+            return None;
+        }
+        let mut nodes = clients.to_vec();
+        nodes.extend(routers);
+        let subgraph = graph.induced(&nodes);
+        let (paths, achieved) =
+            representative_paths(&subgraph, 2, 2, OptimizationPriority::MaximumReliability);
+        debug_assert_eq!(achieved, 2);
+        let candidate = make_solution(&subgraph, 2, 2, achieved, paths);
+        let quality = reliability_quality(&candidate, 2);
+        // A seed can restore redundancy or improve one path while preserving
+        // every quality metric of both incumbent paths.
+        if incumbent_quality.is_some_and(|current| {
+            !quality[0].no_worse_than(current[0]) || !quality[1].no_worse_than(current[1])
+        }) {
+            continue;
+        }
+        if best_quality.is_none_or(|current| compare_reliability_quality(quality, current).is_gt())
+        {
+            best = Some(candidate);
+            best_quality = Some(quality);
+        }
+    }
+    best
+}
+
 fn topology_score(
     graph: &RoutingGraph<'_>,
     clients: usize,
     achieved: usize,
     priority: OptimizationPriority,
 ) -> Vec<f64> {
+    let mut clear = true;
     let mut margin = f64::INFINITY;
     for source in 0..clients - 1 {
-        let widest = graph.widest_margins(source);
-        for &value in &widest[source + 1..clients] {
+        let widest = graph.widest_margins(source, true);
+        let targets = source + 1..clients;
+        let fallback = targets
+            .clone()
+            .any(|target| widest[target] == f64::NEG_INFINITY)
+            .then(|| graph.widest_margins(source, false));
+        clear &= fallback.is_none();
+        for target in targets {
+            let value = if widest[target] == f64::NEG_INFINITY {
+                fallback.as_ref().expect("unrestricted margins")[target]
+            } else {
+                widest[target]
+            };
             margin = margin.min(value);
         }
     }
@@ -388,14 +606,29 @@ fn topology_score(
             .map(|link| link.worst_margin_db())
             .sum::<f64>()
             / graph.edges.len() as f64;
-        return vec![leading, margin, degree as f64, mean, quality, -distance];
+        return vec![
+            leading,
+            f64::from(clear),
+            margin,
+            degree as f64,
+            mean,
+            quality,
+            -distance,
+        ];
     }
     let fresnel = graph
         .edges
         .values()
         .map(|l| l.minimum_fresnel_clearance_ratio)
         .fold(f64::INFINITY, f64::min);
-    let mut score = vec![margin, fresnel, -height, quality, -distance];
+    let mut score = vec![
+        f64::from(clear),
+        margin,
+        fresnel,
+        -height,
+        quality,
+        -distance,
+    ];
     if priority == OptimizationPriority::FewestNewInstallations {
         score.insert(
             0,
@@ -416,6 +649,31 @@ pub fn select_active_solution_index(
         .iter()
         .map(|solution| solution.requested_path_count)
         .max()?;
+    if priority == OptimizationPriority::MaximumReliability {
+        return alternatives
+            .iter()
+            .enumerate()
+            .map(|(index, solution)| {
+                let achieved = solution.achieved_path_count.min(requested);
+                (
+                    index,
+                    solution,
+                    achieved,
+                    reliability_quality(solution, achieved),
+                )
+            })
+            .max_by(
+                |(a_index, a, a_count, a_quality), (b_index, b, b_count, b_quality)| {
+                    a_count
+                        .cmp(b_count)
+                        .then_with(|| compare_reliability_quality(*a_quality, *b_quality))
+                        .then_with(|| b.router_count().cmp(&a.router_count()))
+                        .then_with(|| b.router_ids.cmp(&a.router_ids))
+                        .then_with(|| b_index.cmp(a_index))
+                },
+            )
+            .map(|(index, ..)| index);
+    }
     let score = |solution: &NetworkSolution| {
         let height: f64 = solution
             .sites
@@ -424,18 +682,17 @@ pub fn select_active_solution_index(
             .map(|s| s.rf.antenna_height_m)
             .sum();
         let count = solution.router_count() as f64;
-        let margin = solution.minimum_margin_db();
+        let (clear, margin) = primary_connection_quality(solution);
         match priority {
-            OptimizationPriority::MinimumRouters => vec![count],
-            OptimizationPriority::MinimumInfrastructure => vec![count * 100.0 + height, -margin],
-            OptimizationPriority::MaximumReliability => vec![
-                -(solution.achieved_path_count.min(requested) as f64),
-                count,
-                -margin,
-            ],
+            OptimizationPriority::MinimumRouters => vec![count, -f64::from(clear), -margin],
+            OptimizationPriority::MinimumInfrastructure => {
+                vec![count * 100.0 + height, -f64::from(clear), -margin]
+            }
+            OptimizationPriority::MaximumReliability => unreachable!(),
             OptimizationPriority::FewestNewInstallations => vec![
                 solution.proposed_router_count() as f64,
                 count,
+                -f64::from(clear),
                 -margin,
                 -solution
                     .links
@@ -469,6 +726,48 @@ pub fn select_active_solution_index(
         .map(|(index, _)| index)
 }
 
+fn primary_connection_quality(solution: &NetworkSolution) -> (bool, f64) {
+    let links: BTreeMap<_, _> = solution
+        .links
+        .iter()
+        .map(|link| (edge_id(link), link))
+        .collect();
+    let mut clear = true;
+    let mut weakest: Option<f64> = None;
+    for path in solution
+        .client_paths
+        .values()
+        .filter_map(|paths| paths.first())
+    {
+        for hop in path.windows(2) {
+            let (a, b) = (hop[0].as_str(), hop[1].as_str());
+            let Some(link) = links.get(&(a.min(b), a.max(b))) else {
+                return (false, f64::NEG_INFINITY);
+            };
+            clear &= link_is_clear(link);
+            let margin = link.worst_margin_db();
+            weakest = Some(weakest.map_or(margin, |current| current.min(margin)));
+        }
+    }
+    weakest.map_or((false, solution.minimum_margin_db()), |margin| {
+        (clear, margin)
+    })
+}
+
+fn independent_path_count(graph: &RoutingGraph<'_>, clients: usize, cutoff: usize) -> usize {
+    let mut achieved = cutoff;
+    for left in 0..clients {
+        for right in left + 1..clients {
+            achieved = achieved
+                .min(disjoint_paths(graph, left, right, achieved, &BTreeSet::new(), false).len());
+            if achieved == 1 {
+                return achieved;
+            }
+        }
+    }
+    achieved
+}
+
 fn representative_paths(
     graph: &RoutingGraph<'_>,
     clients: usize,
@@ -479,33 +778,52 @@ fn representative_paths(
     let mut achieved = cutoff;
     for left in 0..clients {
         for right in left + 1..clients {
-            let paths = if priority == OptimizationPriority::FewestNewInstallations {
-                let preferred = graph.path(left, right, priority).expect("connected subset");
-                let blocked = preferred[1..preferred.len() - 1].iter().copied().collect();
-                let mut paths = disjoint_paths(
-                    graph,
-                    left,
-                    right,
-                    cutoff - 1,
-                    &blocked,
-                    preferred.len() == 2,
-                );
-                paths.insert(0, preferred);
-                paths
+            let path_priority = if priority == OptimizationPriority::FewestNewInstallations {
+                priority
             } else {
-                let mut paths = disjoint_paths(graph, left, right, cutoff, &BTreeSet::new(), false);
+                OptimizationPriority::MaximumReliability
+            };
+            let preferred = graph
+                .path(left, right, path_priority)
+                .expect("connected subset");
+            let blocked: BTreeSet<_> = preferred[1..preferred.len() - 1].iter().copied().collect();
+            let skip_direct = preferred.len() == 2;
+            let mut paths = if priority == OptimizationPriority::MaximumReliability && cutoff == 2 {
+                graph
+                    .reliability_path(left, right, |a, b, _| {
+                        !blocked.contains(&a)
+                            && !blocked.contains(&b)
+                            && !(skip_direct && pair(a, b) == (left, right))
+                    })
+                    .into_iter()
+                    .collect()
+            } else {
+                disjoint_paths(graph, left, right, cutoff - 1, &blocked, skip_direct)
+            };
+            paths.insert(0, preferred);
+            if paths.len() < cutoff && priority != OptimizationPriority::FewestNewInstallations {
+                // The strongest path can cross two independent paths. Use
+                // residual flow to recover redundancy when that happens.
+                let independent =
+                    disjoint_paths(graph, left, right, cutoff, &BTreeSet::new(), false);
+                if independent.len() > paths.len() {
+                    paths = independent;
+                }
+            }
+            if priority != OptimizationPriority::FewestNewInstallations {
                 paths.sort_by(|a, b| {
-                    a.len()
-                        .cmp(&b.len())
+                    graph
+                        .path_is_clear(b)
+                        .cmp(&graph.path_is_clear(a))
                         .then_with(|| graph.bottleneck(b).total_cmp(&graph.bottleneck(a)))
+                        .then_with(|| a.len().cmp(&b.len()))
                         .then_with(|| {
                             a.iter()
                                 .map(|&i| &graph.sites[i].rf.id)
                                 .cmp(b.iter().map(|&i| &graph.sites[i].rf.id))
                         })
                 });
-                paths
-            };
+            }
             achieved = achieved.min(paths.len());
             by_pair.insert(
                 (
@@ -875,6 +1193,119 @@ fn tree_path(predecessor: &[Option<usize>], from: usize, to: usize) -> Option<Ve
     Some(path)
 }
 
+// A hop-bounded widest-path search adds seeds that a shortest-path enumeration
+// can miss, especially when many weaker paths tie on hop count.
+fn margin_path_seeds(
+    graph: &RoutingGraph<'_>,
+    source: usize,
+    target: usize,
+    max_hops: usize,
+    clear_only: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Vec<Vec<usize>> {
+    let mut margins = vec![f64::NEG_INFINITY; graph.sites.len()];
+    margins[source] = f64::INFINITY;
+    let mut predecessors = Vec::new();
+    let mut seeds = Vec::new();
+    for _ in 0..max_hops {
+        let mut next = margins.clone();
+        let mut previous: Vec<_> = (0..margins.len()).collect();
+        for (left, &margin) in margins.iter().enumerate() {
+            if cancelled() {
+                return seeds;
+            }
+            if margin == f64::NEG_INFINITY {
+                continue;
+            }
+            for &(right, link) in &graph.neighbors[left] {
+                if clear_only && !link_is_clear(link) {
+                    continue;
+                }
+                let trial = margin.min(link.worst_margin_db());
+                if trial > next[right] {
+                    next[right] = trial;
+                    previous[right] = left;
+                }
+            }
+        }
+        if next == margins {
+            break;
+        }
+        predecessors.push(previous);
+        if next[target] > margins[target] {
+            let mut node = target;
+            let mut path = vec![target];
+            for layer in predecessors.iter().rev() {
+                let previous = layer[node];
+                if previous != node {
+                    path.push(previous);
+                    node = previous;
+                }
+            }
+            path.reverse();
+            seeds.push(path);
+        }
+        margins = next;
+    }
+    seeds
+}
+
+// Keep the shortlist bounded while scanning three-hop routes, then pair each
+// retained route with its strongest internally disjoint partner.
+fn paired_path_seeds(
+    graph: &RoutingGraph<'_>,
+    source: usize,
+    target: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<BTreeSet<[usize; PAIRED_SEED_ROUTERS]>> {
+    let mut routes = BinaryHeap::with_capacity(PATH_SEED_LIMIT);
+    for &(x, ax) in &graph.neighbors[source] {
+        if x == target {
+            continue;
+        }
+        for &(y, xy) in &graph.neighbors[x] {
+            if cancelled() {
+                return None;
+            }
+            if y == source || y == target {
+                continue;
+            }
+            let Some(&yb) = graph.edges.get(&pair(y, target)) else {
+                continue;
+            };
+            let mut quality = PathQuality::EMPTY;
+            for link in [ax, xy, yb] {
+                quality.add_link(link);
+            }
+            let route = (
+                OrderedFloat(-quality.margin),
+                quality.los_blocked,
+                quality.fresnel_impeded,
+                x,
+                y,
+            );
+            if routes.len() < PATH_SEED_LIMIT {
+                routes.push(route);
+            } else if routes.peek().is_some_and(|worst| route < *worst) {
+                *routes.peek_mut().expect("full shortlist") = route;
+            }
+        }
+    }
+    let routes = routes.into_sorted_vec();
+    let mut seeds = BTreeSet::new();
+    for &(_, _, _, x, y) in &routes {
+        if let Some(&(_, _, _, u, v)) = routes
+            .iter()
+            .find(|&&(_, _, _, u, v)| x != u && x != v && y != u && y != v)
+        {
+            let mut nodes = [x, y, u, v];
+            nodes.sort_unstable();
+            seeds.insert(nodes);
+        }
+    }
+    Some(seeds)
+}
+
 fn path_seeds(
     graph: &RoutingGraph<'_>,
     terminals: &[usize],
@@ -910,6 +1341,17 @@ fn path_seeds(
     }
     if terminals.len() == 2 {
         let (source, target) = (terminals[0], terminals[1]);
+        let max_hops = maximum.saturating_add(1).min(QUALITY_SEED_HOP_LIMIT);
+        let has_obstructed_links = graph.edges.values().any(|link| !link_is_clear(link));
+        for clear_only in [true, false]
+            .into_iter()
+            .take(1 + usize::from(has_obstructed_links))
+        {
+            for path in margin_path_seeds(graph, source, target, max_hops, clear_only, cancelled) {
+                protected.extend(path.iter().copied().filter(|node| optional.contains(node)));
+                add(path);
+            }
+        }
         if let Some((_, _, _, first)) = closure.pop() {
             let mut paths = vec![first];
             let mut pending = BTreeSet::new();
