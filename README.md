@@ -108,6 +108,7 @@ and caches live in that process. RF evaluation uses worker threads.
 | `RF_PLANNER_RF_CACHE_ENTRIES` | `50000` | Route scalar-metric cache capacity |
 | `RF_PLANNER_COVERAGE_CACHE_ENTRIES` | `50000` | Separate coverage scalar-metric cache capacity |
 | `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` | `25` | Starting resolution for supplemental coverage terrain |
+| `RF_PLANNER_TERRAIN_CACHE_MB` | half of physical or container memory | Decoded terrain kept in memory across sampling calls; beyond it, terrain is read from disk per batch. `0` disables retention |
 | `RF_PLANNER_CACHE_DIR` | `<data>/shared-cache` | Shared Kartverket and Overpass download cache |
 | `RF_PLANNER_OVERPASS_URL` | public Overpass API | Road data endpoint |
 | `RF_PLANNER_TRUSTED_PROXY` | unset | Reverse-proxy peer IP allowed to set forwarded host and scheme |

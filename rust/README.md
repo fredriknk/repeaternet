@@ -41,6 +41,8 @@ Upload a DTM or approve a Kartverket download before starting a route. A DOM is 
 
 `RF_PLANNER_COVERAGE_CACHE_ENTRIES` sets the capacity of a separate process-local coverage RF cache and defaults to 50,000 entries. It reuses scalar link evaluations across previews, saved runs, exact-point inspection, target assessment, and height-scenario backbone checks. Entries are scoped to the project, terrain file revision, RF settings, site geometry, client radio, and effective profile spacing. Terrain revisions follow the dashboard's paths, sizes, and modification timestamps, so out-of-band edits must change that metadata. The coverage cache excludes serving-link profiles and missing-terrain results. Saved-run replay remains a separate disk-backed operation.
 
+GeoTIFF terrain is decoded once per 256 × 256 pixel window and kept in memory while a job runs, so repeated profile sampling does not reread the file. `RF_PLANNER_TERRAIN_CACHE_MB` caps the decoded terrain retained by all open rasters; it defaults to half of physical memory, or half of the container memory limit under cgroups. Beyond the cap, terrain is read from disk for each sampling batch, which is slower but gives identical results. `0` disables retention.
+
 ## HTTP endpoints
 
 | Method and path | Behavior |
