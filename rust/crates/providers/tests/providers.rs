@@ -172,6 +172,7 @@ fn serve(mut connection: TcpStream, reply: Reply) -> Request {
 }
 
 fn client() -> Client {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(3))
