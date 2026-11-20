@@ -378,3 +378,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .coverage-section-nav { top: 0; margin-inline: -14px; grid-template-columns: repeat(4, minmax(72px, 1fr)); overflow-x: auto; }
   .coverage-section-nav button { min-height: 44px; white-space: nowrap; }
 }
+
+#optional-plan-settings { grid-column: 1 / -1; }
+#optional-plan-settings summary { cursor: pointer; padding: 6px 0; }
+#optional-plan-settings button { width: 100%; margin-top: 4px; }
+.setting-hint { display: block; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.45; }
+#settings .fields:has(.setting-hint) { grid-template-columns: 1fr; }
+
+@media (max-width: 650px) {
+  .project-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .project-bar > label { grid-area: 1 / 1; }
+  .project-bar > .project-menu { grid-area: 1 / 2; }
+  .project-bar > #project-storage { grid-column: 1 / -1; white-space: normal; }
+  .project-bar > #project-transition-status { grid-column: 1 / -1; }
+}

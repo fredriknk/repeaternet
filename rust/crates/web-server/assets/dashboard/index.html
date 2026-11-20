@@ -75,51 +75,58 @@
           <button type="button" data-workspace-target="workspace-compare" aria-pressed="false">Compare</button>
         </nav>
         <div class="workspace-view" id="workspace-plan" aria-label="Plan route">
-        <details class="intro-help help-disclosure"><summary>Planning help</summary><p>Place two endpoints, add terrain for the area, then find the repeaters that connect them.</p></details>
         <div class="readiness-card" id="plan-readiness" data-readiness="needs-terrain" role="status" aria-live="polite">
-          <strong>Plan readiness</strong>
+          <strong>Next step</strong>
           <p id="plan-readiness-copy">Example coordinates show a short Oslo route. Add ground terrain before searching.</p>
           <button id="review-readiness" type="button">Review terrain</button>
         </div>
         <nav class="plan-section-nav" aria-label="Plan setup sections">
           <button type="button" data-plan-section="endpoint-setup" aria-current="true"><strong>Endpoints</strong><small id="section-summary-endpoints">Set start and destination</small></button>
           <button type="button" data-plan-section="terrain-setup" aria-current="false"><strong>Terrain</strong><small id="section-summary-terrain">Ground tiles required</small></button>
+          <details id="optional-plan-settings"><summary>Customize route settings</summary>
           <button type="button" data-plan-section="router-setup" aria-current="false"><strong>Routers</strong><small id="section-summary-routers">No routers loaded</small></button>
           <button type="button" data-plan-section="radio-setup" aria-current="false"><strong>Radio</strong><small>Frequency and link model</small></button>
           <button type="button" data-plan-section="search-setup" aria-current="false"><strong>Search</strong><small>Objective and effort</small></button>
+          </details>
         </nav>
         <section id="endpoint-setup">
-          <h2><span>01</span> Endpoints</h2>
+          <h2>Choose your endpoints</h2>
+          <p class="hint">Select A or B, then click its location on the map. You can also drag either pin or enter latitude and longitude below.</p>
           <div class="endpoint">
-            <button data-place="a" class="pin">A</button>
+            <button data-place="a" aria-label="Place start point on map" class="pin">A</button>
             <label>Start point<input id="a" value="59.9139, 10.7522" aria-label="Endpoint A latitude, longitude" aria-describedby="a-error"></label>
           </div>
           <p id="a-error" class="field-error" hidden></p>
           <div class="endpoint">
-            <button data-place="b" class="pin blue">B</button>
+            <button data-place="b" aria-label="Place destination on map" class="pin blue">B</button>
             <label>Destination<input id="b" value="59.95, 10.85" aria-label="Endpoint B latitude, longitude" aria-describedby="b-error"></label>
           </div>
           <p id="b-error" class="field-error" hidden></p>
-          <details class="help-disclosure"><summary>Help: placing endpoints</summary><p>Choose A or B, then click the map. Drag a marker to adjust its position, or enter coordinates directly.</p></details>
         </section>
         <section id="terrain-setup">
-          <h2><span>02</span> Terrain</h2>
+          <h2>Add elevation data</h2>
+          <p class="hint">In Norway, estimate the download for your route, then download the tiles. Elsewhere, upload ground elevation files covering your route.</p>
+          <div class="terrain-tools">
+            <details><summary>Download options</summary>
+            <p class="hint">Smaller grid cells capture finer terrain and require a larger download. Include surface terrain to account for trees and buildings.</p>
+            <label>Requested resolution · m<input id="terrain-resolution" type="number" min="1" max="1000" step="1" value="10"></label>
+            <label class="check-line"><input id="terrain-auto" type="checkbox" checked> Coarsen automatically to stay within the pixel budget</label>
+            <label class="check-line"><input id="terrain-dom" type="checkbox"> Also download surface terrain</label>
+            </details>
+            <button id="estimate-terrain" class="wide-button">Estimate Kartverket terrain</button>
+            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint"></p><button id="prepare-terrain" class="wide-button" hidden>Download planned terrain</button></div>
+          </div>
+          <details><summary>Upload your own terrain files</summary>
           <label class="upload">＋ Add ground terrain<small>DTM · GeoTIFF · up to 512 MiB per tile</small><input id="dtm" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
           <div class="file-row"><span id="dtm-count">No ground tiles</span><button data-clear="dtm" class="text-button">Clear</button></div>
           <label class="upload secondary">＋ Add surface terrain<small>Optional DOM · trees and buildings</small><input id="dom" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
           <div class="file-row"><span id="dom-count">No surface tiles</span><button data-clear="dom" class="text-button">Clear</button></div>
           <p id="surface-note" class="hint">Surface obstruction data unavailable — terrain only.</p>
-          <div class="terrain-tools">
-            <label>Requested resolution · m<input id="terrain-resolution" type="number" min="1" max="1000" step="1" value="10"></label>
-            <label class="check-line"><input id="terrain-auto" type="checkbox" checked> Coarsen automatically to stay within the pixel budget</label>
-            <label class="check-line"><input id="terrain-dom" type="checkbox"> Also download surface terrain</label>
-            <button id="estimate-terrain" class="wide-button">Estimate Kartverket terrain</button>
-            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint"></p><button id="prepare-terrain" class="wide-button" hidden>Download planned terrain</button></div>
-          </div>
+          </details>
           <p id="coverage-note" class="hint">Coverage outlines appear after terrain is loaded.</p>
         </section>
         <section id="router-setup">
-          <h2><span>03</span> Existing MeshCore routers</h2>
+          <h2>Choose router sites</h2>
           <details class="help-disclosure"><summary>Help: existing and proposed routers</summary><p>Feed activity is context, not proof of a usable RF link. Missing antenna data uses the configured repeater antenna assumptions. Excluded and stale entries stay in saved plans.</p></details>
           <button id="load-meshcore" class="wide-button">Find nearby MeshCore routers</button>
           <div class="file-row known-count"><span id="meshcore-count">No routers loaded</span></div>
@@ -150,11 +157,12 @@
           <div id="manual-list" class="known-list"><p class="hint">No manually placed sites yet.</p></div>
         </section>
         <section id="radio-setup">
-          <h2><span>04</span> Radio</h2>
+          <h2>Match your radio equipment</h2>
+          <p class="hint">Start with your network frequency. Adjust the equipment assumptions when you know the specifications for your radios and antennas.</p>
           <div id="settings"></div>
         </section>
         <section id="search-setup">
-          <h2><span>05</span> Search</h2>
+          <h2>Choose how to find a route</h2>
           <div id="search-settings"></div>
           <div class="intent-controls">
             <label><input id="road-access-enabled" type="checkbox"> Only suggest sites near roads</label>
@@ -178,7 +186,7 @@
         </div>
         <div class="workspace-view" id="workspace-coverage" aria-label="Coverage analysis" hidden>
         <section class="coverage-panel">
-          <h2><span>05</span> Predicted mesh coverage</h2>
+          <h2>Predict handheld coverage</h2>
           <details class="help-disclosure"><summary>Help: predicted coverage</summary><p>Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p></details>
           <div id="coverage-no-route" class="coverage-empty-state">
             <p>Find a certified route first to enable coverage calculations and location inspection. If you stop optimization, coverage uses the best certified route found so far.</p>
@@ -191,17 +199,18 @@
             <button type="button" data-coverage-section="runs" aria-controls="coverage-section-runs" aria-pressed="false">Saved runs</button>
           </nav>
           <div id="coverage-section-area" data-coverage-panel="area">
+          <p class="hint">For a first estimate, use the area around the route and check two-way coverage. This shows where a handheld can both hear a router and reach it.</p>
           <label>Coverage view<select id="coverage-mode" data-display-only>
-            <option value="two_way">Two-way margin</option>
+            <option value="two_way">Two-way signal margin</option>
             <option value="downlink">Router → handheld</option>
             <option value="uplink">Handheld → router</option>
             <option value="overlap">Overlapping routers</option>
             <option value="best_source">Best serving router</option>
           </select></label>
           <label>Area<select id="coverage-area">
-            <option value="mesh">Selected mesh + buffer</option>
-            <option value="view">Current map extent</option>
-            <option value="drawn">Drawn polygon</option>
+            <option value="mesh">Around the selected route</option>
+            <option value="view">Area visible on the map</option>
+            <option value="drawn">Draw a custom boundary</option>
           </select></label>
           <div class="coverage-actions" id="coverage-area-actions" hidden>
             <button id="coverage-draw-area" class="wide-button">Draw area on map</button>
@@ -220,18 +229,18 @@
             <label>Maximum profile samples<input id="coverage-profile-limit" type="number" min="3" max="16384" step="1" value="4096"></label>
             </div>
           </details>
-          <label id="coverage-endpoints-control" class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
-          <p id="coverage-endpoints-note" class="hint">For a direct route with no repeaters, enable endpoints to evaluate access from the two selected sites.</p>
           <details class="help-disclosure"><summary>Help: profile sample limit</summary><p>The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p></details>
           </div>
           <div id="coverage-section-sources" data-coverage-panel="sources" hidden>
-          <details>
+          <label id="coverage-endpoints-control" class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
+          <p id="coverage-endpoints-note" class="hint">For a direct route with no repeaters, enable endpoints to evaluate access from the two selected sites.</p>
+          <details open>
             <summary>Router sources <span id="coverage-source-count" class="hint">All routers in selected route</span></summary>
             <div id="coverage-sources" class="coverage-source-list"><p class="hint">Run a route search to choose sources.</p></div>
           </details>
           </div>
           <div id="coverage-section-handheld" data-coverage-panel="handheld" hidden>
-          <details>
+          <details open>
             <summary>Handheld radio assumptions</summary>
             <p class="hint">Example profile only; adjust to match the client radio you care about.</p>
             <div class="fields">

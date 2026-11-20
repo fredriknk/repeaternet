@@ -1,5 +1,12 @@
 # User guide
 
+## Find your first route
+
+1. Open **Plan** and choose **Endpoints**. Select A or B and click its location on the map, or drag the existing pins.
+2. Open **Terrain**. For a route in Norway, estimate the Kartverket download and review it before downloading. To use local files, expand **Upload your own terrain files**.
+3. Choose **Find repeater route**. The first search can use the default radio and search settings. To model specific equipment, open **Customize route settings** and choose **Radio**.
+4. Review the route in **Analysis**. Open **Coverage** to estimate where a handheld can communicate with the selected network.
+
 ## Projects and saved data
 
 The project selector manages named projects in the current browser workspace.
