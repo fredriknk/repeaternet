@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const app = fs.readFileSync(path.join(__dirname, '../src/rf_router_planner/web_assets/app.js'), 'utf8');
+const app = fs.readFileSync(path.join(__dirname, '../../assets/dashboard/app.js'), 'utf8');
 
 test('the map draws roads only for the selected alternative and honours the toggle', () => {
   const lineA = [[60, 15], [60, 15.01]];

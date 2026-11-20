@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const installNavigationControls = require('../src/rf_router_planner/web_assets/main_view_navigation.js');
+const installNavigationControls = require('../../assets/dashboard/main_view_navigation.js');
 
 class FakeElement extends EventTarget {
   constructor(dataset = {}) {

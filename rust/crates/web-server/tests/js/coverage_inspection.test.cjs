@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname,
-  '../../src/rf_router_planner/web_assets/coverage_inspection.js'), 'utf8');
+  '../../assets/dashboard/coverage_inspection.js'), 'utf8');
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
