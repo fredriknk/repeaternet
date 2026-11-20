@@ -1,17 +1,19 @@
 version: 2
+# One grouped pull request per ecosystem each month, including major versions.
 updates:
   - package-ecosystem: cargo
     directory: /rust
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 1
     groups:
-      cargo-minor:
-        update-types: [minor, patch]
+      cargo:
+        patterns: ['*']
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: ['*']

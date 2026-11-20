@@ -1,6 +1,6 @@
 # Release validation
 
-Tagged releases (`v*`) run the [CI workflow](../.github/workflows/ci.yml): workspace checks on Windows and Linux, this verifier and packager for the Windows executable, a static-linkage check and archive for the Linux musl binary, a GitHub Release with `SHA256SUMS.txt`, and a GHCR image. The manual clean-machine test below still applies to each release.
+Tagged releases (`v*`) run the [CI workflow](../.github/workflows/ci.yml) on Windows: the workspace checks, then this verifier and packager for the Windows executable, and a GitHub Release with the ZIP and `SHA256SUMS.txt`. Tags containing a hyphen are published as prereleases. Releases contain no Linux archive or container image. The manual clean-machine test below still applies to each release.
 
 ## Windows executable
 

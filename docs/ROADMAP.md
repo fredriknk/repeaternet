@@ -89,10 +89,8 @@ required before the first tagged release:
 
 - **Clean-machine launch:** the manual Explorer, terminal and browser test in
   [release validation](RELEASE_VALIDATION.md) on a clean Windows install.
-- **Hosted pipeline:** a first run of the GitHub Actions release and GHCR jobs.
+- **Hosted pipeline:** a first run of the GitHub Actions Windows release job.
 - **Live providers:** Kartverket and Overpass checks against the public services.
-- **Linux notices:** a full dependency license inventory for the Linux archive and
-  container image; the Windows packager already produces one.
 - **Terrain breadth and recovery:** broader GeoTIFF/CRS compatibility and recovery
   from a corrupt current coverage manifest.
 

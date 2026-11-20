@@ -1,10 +1,11 @@
 name: CI and release
 
+# Pull requests run the checks on Windows. Version tags (v*) also build,
+# verify and publish the Windows executable as a GitHub release.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   pull_request:
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 concurrency:
@@ -15,11 +16,10 @@ permissions:
   contents: read
 
 jobs:
-  checks:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest]
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: rust
@@ -39,75 +39,17 @@ jobs:
         env:
           RF_PLANNER_TERRAIN_CACHE_MB: "0"
       - name: Dashboard script tests
-        if: runner.os == 'Linux'
         working-directory: .
         run: node --test rust/crates/web-server/tests/js/
 
-  docker:
-    needs: checks
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
-      - name: Log in to GitHub Container Registry
+      - name: Build release executable
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
-            type=sha
-      - name: Build image, and publish it for release tags
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          load: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-          tags: ${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.tags || 'repeaternet:ci' }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Smoke-test the image
-        if: "!startsWith(github.ref, 'refs/tags/v')"
-        run: |
-          docker run -d --name repeaternet-ci -p 127.0.0.1:18000:8000 repeaternet:ci
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18000/health; then break; fi
-            sleep 1
-          done
-          curl -fsS -o /dev/null http://127.0.0.1:18000/
-          docker logs repeaternet-ci
-          docker rm -f repeaternet-ci
-
-  windows:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: checks
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Build Windows x64
-        working-directory: rust
         run: |
           rustup component add rust-docs
-          cargo fetch --locked --target x86_64-pc-windows-msvc
           cargo build --locked --release --target x86_64-pc-windows-msvc -p repeaternet
       - name: Verify and package
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: .
         shell: powershell
         run: |
           $exe = 'rust/target/x86_64-pc-windows-msvc/release/repeaternet.exe'
@@ -115,75 +57,22 @@ jobs:
           $json | Write-Output
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $report = $json | ConvertFrom-Json
-          New-Item -ItemType Directory -Path dist
+          New-Item -ItemType Directory -Path dist | Out-Null
           ./tools/package-rust-release.ps1 -ExePath $exe -ExpectedSha256 $report.sha256
-      - uses: actions/upload-artifact@v6
-        with:
-          name: windows-x64
-          path: dist/repeaternet-windows-x64.zip
-          if-no-files-found: error
-
-  linux:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: checks
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Build Linux x64
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
-          rustup component add rust-docs
-          cargo build --locked --release --target x86_64-unknown-linux-musl -p repeaternet
-      - name: Verify static linkage and package
-        run: |
-          binary=target/x86_64-unknown-linux-musl/release/repeaternet
-          file "$binary"
-          elf=$(readelf --wide --program-headers --dynamic "$binary")
-          if grep -Eq 'INTERP|\(NEEDED\)' <<< "$elf"; then
-            echo "The executable requires a dynamic linker or shared libraries." >&2
-            exit 1
-          fi
-          "$binary" --version
-          mkdir linux-package ../dist
-          install -m 755 "$binary" linux-package/repeaternet
-          cp "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" linux-package/
-          cp notices/texts/leaflet-1.9.4/LICENSE linux-package/LEAFLET-LICENSE.txt
-          (cd linux-package && sha256sum repeaternet > SHA256SUMS.txt)
-          tar -C linux-package -czf ../dist/repeaternet-linux-x64.tar.gz .
-      - uses: actions/upload-artifact@v6
-        with:
-          name: linux-x64
-          path: dist/repeaternet-linux-x64.tar.gz
-          if-no-files-found: error
-
-  publish:
-    needs: [windows, linux, docker]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v7
-        with:
-          pattern: '*-x64'
-          merge-multiple: true
-      - name: Publish release archives and checksums
+          $zip = Get-Item dist/repeaternet-windows-x64.zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($zip.Name)" | Out-File dist/SHA256SUMS.txt -Encoding ascii
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: .
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          sha256sum repeaternet-windows-x64.zip repeaternet-linux-x64.tar.gz > SHA256SUMS.txt
           flags=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             flags+=(--prerelease --latest=false)
           fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "${flags[@]}" \
-            repeaternet-windows-x64.zip repeaternet-linux-x64.tar.gz SHA256SUMS.txt
+            dist/repeaternet-windows-x64.zip dist/SHA256SUMS.txt
