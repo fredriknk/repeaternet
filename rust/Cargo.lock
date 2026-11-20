@@ -1518,6 +1518,7 @@ name = "repeaternet-optimizer"
 version = "0.1.0"
 dependencies = [
  "repeaternet-rf-core",
+ "repeaternet-terrain",
 ]
 
 [[package]]

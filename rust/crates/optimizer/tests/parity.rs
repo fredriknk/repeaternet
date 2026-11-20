@@ -349,7 +349,7 @@ fn exact_counts_keep_induced_links_and_required_multiclient_router() {
 }
 
 #[test]
-fn redundancy_reroutes_earlier_flow_and_reliability_prefers_small_resilient_mesh() {
+fn redundancy_reroutes_earlier_flow_and_reliability_prefers_stronger_resilient_mesh() {
     let ids = ["A", "B", "X", "Y", "Z", "W", "P", "Q", "R"];
     let sites: Vec<_> = ids
         .iter()
@@ -391,8 +391,113 @@ fn redundancy_reroutes_earlier_flow_and_reliability_prefers_small_resilient_mesh
     ];
     let result = solve_topologies(&sites, &simple, &reliability, &|| false, &[]).unwrap();
     let active = &result[select_active_solution_index(&result, reliability.priority).unwrap()];
-    assert_eq!(active.router_ids, ["X", "Y"]);
+    assert_eq!(active.router_ids, ["P", "Q", "R", "X"]);
     assert!(active.resilient());
+}
+
+#[test]
+fn paired_seeds_strengthen_the_backup_and_preserve_incumbent_path_quality() {
+    let settings = CandidateSettings {
+        maximum_solution_routers: 4,
+        reliability_paths: 2,
+        priority: OptimizationPriority::MaximumReliability,
+        ..CandidateSettings::default()
+    };
+    let mut sites: Vec<_> = ["A", "B", "P", "Q", "X", "Y"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| site(id, i as f64, 0.0))
+        .collect();
+    for i in 0..100 {
+        sites.push(site(&format!("D{i:03}"), i as f64, 1.0));
+    }
+
+    for (short_margin, short_clear, expected_margins) in [
+        (5.0, true, [30.0, 20.0]),
+        (40.0, true, [40.0, 40.0]),
+        (25.0, false, [30.0, 25.0]),
+    ] {
+        let mut links = vec![
+            link("A", "P", 30.0),
+            link("P", "Q", 30.0),
+            link("Q", "B", 30.0),
+            link("A", "X", 20.0),
+            link("X", "Y", 20.0),
+            link("Y", "B", 20.0),
+        ];
+        // Short routes fill the beam pool. The two routers for the 20 dB
+        // backup enter the four-router search together through a paired seed.
+        for decoy in &sites[6..] {
+            let mut first = link("A", &decoy.rf.id, short_margin);
+            first.los_clear = short_clear;
+            first.fresnel_clear = short_clear;
+            links.extend([first, link(&decoy.rf.id, "B", short_margin)]);
+        }
+        let incumbent = [vec!["P".into(), "Q".into(), "D000".into(), "D001".into()]];
+        let alternatives =
+            solve_topologies(&sites, &links, &settings, &|| false, &incumbent).unwrap();
+        let four = alternatives.iter().find(|s| s.router_count() == 4).unwrap();
+        let paths = &four.client_paths[&("A".into(), "B".into())];
+        let margins: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                path.windows(2)
+                    .map(|p| {
+                        links
+                            .iter()
+                            .find(|link| matches_edge(link, &p[0], &p[1]))
+                            .unwrap()
+                            .worst_margin_db()
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            })
+            .collect();
+        assert_eq!(margins, expected_margins);
+        assert_eq!(four.achieved_path_count, 2);
+
+        let active =
+            &alternatives[select_active_solution_index(&alternatives, settings.priority).unwrap()];
+        if short_margin == 5.0 {
+            assert_eq!(active.router_ids, ["P", "Q", "X", "Y"]);
+        }
+    }
+}
+
+#[test]
+fn reliability_ranks_backups_for_every_client_pair() {
+    let mut c = site("C", 20.0, 0.0);
+    c.rf.kind = SiteKind::Client;
+    let sites = [
+        site("A", 0.0, 0.0),
+        site("B", 10.0, 0.0),
+        c,
+        site("R", 10.0, 10.0),
+    ];
+    let settings = CandidateSettings {
+        maximum_solution_routers: 1,
+        reliability_paths: 3,
+        priority: OptimizationPriority::MaximumReliability,
+        ..CandidateSettings::default()
+    };
+    let alternatives = [5.0, 15.0].map(|c_margin| {
+        let links = [
+            link("A", "B", 30.0),
+            link("A", "C", 30.0),
+            link("B", "C", 30.0),
+            link("A", "R", 20.0),
+            link("B", "R", 10.0),
+            link("C", "R", c_margin),
+        ];
+        solve_topologies(&sites, &links, &settings, &|| false, &[])
+            .unwrap()
+            .pop()
+            .unwrap()
+    });
+    assert!(alternatives.iter().all(|s| s.achieved_path_count == 3));
+    assert_eq!(
+        select_active_solution_index(&alternatives, settings.priority),
+        Some(1)
+    );
 }
 
 #[test]
@@ -866,6 +971,116 @@ fn mock_settings(
         maximum_neighbors_per_site: 1,
         final_sample_step_m: 1.0,
         ..CandidateSettings::default()
+    }
+}
+
+#[test]
+fn interior_bridge_recovers_a_certified_route_outside_the_screened_pairs() {
+    let terrain = Terrain {
+        resolution: 1.0,
+        ridges: &[],
+    };
+    let rf = strict_settings();
+    let settings = mock_settings(OptimizationPriority::MaximumReliability, 3);
+    let mut sites = vec![
+        site("A", 0.0, 0.0),
+        site("left", 100.0, 0.0),
+        site("middle", 300.0, 0.0),
+        site("right", 500.0, 0.0),
+    ];
+    for bridge in &mut sites[1..] {
+        bridge.site_quality = -100.0;
+    }
+    for x in [100.0, 300.0, 500.0] {
+        for index in 1..=25 {
+            sites.push(site(&format!("decoy-{x}-{index}"), x, index as f64));
+        }
+    }
+    sites.push(site("B", 600.0, 0.0));
+    let terminals = BTreeSet::from([0, sites.len() - 1]);
+    let backbone = backbone_site_indices(&sites, 64, &terminals);
+    assert!(!backbone.contains(&2));
+    let screened = screening_pair_indices(&sites, 1, &terminals);
+    assert!(!screened.contains(&(1, 2)) && !screened.contains(&(2, 3)));
+    let mut fake = FakeRf::default();
+    for (a, b) in [
+        ("A", "left"),
+        ("left", "middle"),
+        ("middle", "right"),
+        ("right", "B"),
+    ] {
+        fake.add(a, b, Some(10.0), Some(10.0));
+    }
+    let mut bridge_pairs = 0;
+    let result = RouteOptimizer::new(&terrain, &rf, &settings)
+        .with_link_evaluation(&fake)
+        .optimize(
+            request(sites),
+            SearchHooks {
+                progress: Some(&mut |progress| {
+                    if progress.stage == Stage::CheckingInteriorBridgeLinks && progress.done == 0 {
+                        bridge_pairs += progress.total;
+                    }
+                }),
+                ..SearchHooks::default()
+            },
+        )
+        .unwrap();
+    assert!(bridge_pairs > 0 && bridge_pairs < 300);
+    let solution = result.active_solution().unwrap();
+    assert_eq!(
+        solution.primary_path_ids(),
+        ["A", "left", "middle", "right", "B"]
+    );
+    assert!(solution
+        .links
+        .iter()
+        .all(|link| link.valid && link.profile.is_some()));
+    let calls = fake.calls.lock().unwrap();
+    for bridge in [edge("left", "middle"), edge("middle", "right")] {
+        assert!(calls
+            .iter()
+            .any(|(pair, step, profile)| pair == &bridge && *step == 1.0 && !profile));
+        assert!(!calls
+            .iter()
+            .any(|(pair, step, _)| pair == &bridge && *step != 1.0));
+    }
+}
+
+#[test]
+fn no_route_diagnostics_distinguish_terminal_access_connectivity_and_budget() {
+    let terrain = Terrain {
+        resolution: 1.0,
+        ridges: &[],
+    };
+    let rf = strict_settings();
+    let settings = mock_settings(OptimizationPriority::MaximumReliability, 1);
+    let sites = vec![
+        site("A", 0.0, 0.0),
+        site("left", 100.0, 0.0),
+        site("right", 200.0, 0.0),
+        site("B", 300.0, 0.0),
+    ];
+    let mut fake = FakeRf::default();
+    for ((a, b), diagnostic) in [
+        (("A", "left"), "no usable links in the search graph: B"),
+        (("B", "right"), "disconnected components"),
+        (("left", "right"), "over budget: at least 2 routers"),
+    ] {
+        fake.add(a, b, Some(10.0), Some(10.0));
+        let result = RouteOptimizer::new(&terrain, &rf, &settings)
+            .with_link_evaluation(&fake)
+            .optimize(request(sites.clone()), SearchHooks::default())
+            .unwrap();
+        assert!(!result.found());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|message| message.contains(diagnostic)),
+            "{diagnostic}: {:?}",
+            result.diagnostics
+        );
     }
 }
 

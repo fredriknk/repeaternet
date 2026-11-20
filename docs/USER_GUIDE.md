@@ -68,8 +68,12 @@ proposed sites, or both.
 Select a search objective and effort. The engine generates terrain candidates,
 screens possible RF links, searches for routes, and validates selected links at
 the configured final sampling step. Results include feasible alternatives for
-exact router counts. Reliability is the achieved number of node-independent
-paths, rather than how many nearby repeaters exist.
+exact router counts. **Maximum reliability** first looks for the requested
+number of paths that can operate without sharing an intermediate router.
+Among equally redundant alternatives, RF quality can justify extra routers.
+Compare the network bottleneck margin across alternatives: a strong primary
+route can have a backup with very little margin. **Fewest total routers**
+remains available when installation count is the main constraint.
 
 In **Search**, enable **Only suggest sites near roads** to limit generated
 repeater sites to a straight-line distance from a mapped road. **Max distance

@@ -2,6 +2,7 @@
 
 mod cache;
 mod candidates;
+mod endpoint_access;
 mod graph;
 mod optimizer;
 mod parallel;
@@ -18,7 +19,7 @@ pub use optimizer::{
 pub use screening::{backbone_site_indices, screening_pair_indices};
 pub use topology::{select_active_solution_index, solve_topologies, ClientPaths, NetworkSolution};
 
-use repeaternet_rf_core::{RfError, Site, SiteKind};
+use repeaternet_rf_core::{LinkResult, RfError, Site, SiteKind};
 use std::{error, fmt};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -237,4 +238,8 @@ fn compare_scores(left: &[f64], right: &[f64]) -> std::cmp::Ordering {
 
 fn pair(left: usize, right: usize) -> (usize, usize) {
     (left.min(right), left.max(right))
+}
+
+fn link_is_clear(link: &LinkResult) -> bool {
+    link.los_clear && link.fresnel_clear
 }

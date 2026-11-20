@@ -95,8 +95,41 @@ pub(crate) fn generate(
     filter: Option<&SiteFilter<'_>>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(Vec<PlanningSite>, [usize; 2]), OptimizationError> {
+    generate_grid(
+        terrain, bounds, anchors, settings, exclusions, filter, cancelled, false,
+    )
+    .map(|(sites, counts, _)| (sites, counts))
+}
+
+pub(crate) fn generate_with_access_pool(
+    terrain: &dyn TerrainSource,
+    bounds: [f64; 4],
+    anchors: [Point; 2],
+    settings: &CandidateSettings,
+    exclusions: &[Vec<Point>],
+    filter: Option<&SiteFilter<'_>>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
+    generate_grid(
+        terrain, bounds, anchors, settings, exclusions, filter, cancelled, true,
+    )
+}
+
+pub(crate) type AccessPool = Vec<GridSite>;
+
+#[allow(clippy::too_many_arguments)]
+fn generate_grid(
+    terrain: &dyn TerrainSource,
+    bounds: [f64; 4],
+    anchors: [Point; 2],
+    settings: &CandidateSettings,
+    exclusions: &[Vec<Point>],
+    filter: Option<&SiteFilter<'_>>,
+    cancelled: &dyn Fn() -> bool,
+    collect_access_pool: bool,
+) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
     if settings.maximum_candidates == 0 || settings.candidates_per_cell == 0 || cancelled() {
-        return Ok((Vec::new(), [0; 2]));
+        return Ok((Vec::new(), [0; 2], Vec::new()));
     }
     let area = SearchArea::new(anchors[0], anchors[1], settings);
     let spacing = candidate_grid_spacing(terrain, settings);
@@ -133,7 +166,7 @@ pub(crate) fn generate(
     let delta = terrain.resolution_m().max(spacing / 4.0);
     for offset in (0..total).step_by(BATCH) {
         if cancelled() {
-            return Ok((Vec::new(), filter_counts));
+            return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         let points: Vec<_> = (offset..offset.saturating_add(BATCH).min(total))
             .map(|i| Point {
@@ -156,7 +189,7 @@ pub(crate) fn generate(
         let points: Vec<_> = valid.iter().map(|&(point, _)| point).collect();
         if let Some(allowed) = filter.filter(|_| !points.is_empty()) {
             if cancelled() {
-                return Ok((Vec::new(), filter_counts));
+                return Ok((Vec::new(), filter_counts, Vec::new()));
             }
             let keep = allowed(&points)?;
             if keep.len() != points.len() {
@@ -176,7 +209,7 @@ pub(crate) fn generate(
             continue;
         }
         if cancelled() {
-            return Ok((Vec::new(), filter_counts));
+            return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         let points: Vec<_> = valid.iter().map(|&(point, _)| point).collect();
         let surface = if terrain.has_surface() {
@@ -232,7 +265,7 @@ pub(crate) fn generate(
     let mut cells: Vec<Vec<usize>> = Vec::new();
     for (i, site) in samples.iter_mut().enumerate() {
         if cancelled() {
-            return Ok((Vec::new(), filter_counts));
+            return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         if filter.is_none() && excluded(site.point, exclusions) {
             continue;
@@ -241,10 +274,7 @@ pub(crate) fn generate(
         site.quality = (site.ground - min) / span
             - site.slope.min(1.0) * 0.35
             - (obstruction / 20.0).min(1.0) * 0.25;
-        let key = (
-            (site.point.x / settings.cell_size_m).floor() as i64,
-            (site.point.y / settings.cell_size_m).floor() as i64,
-        );
+        let key = cell_key(site.point, settings.cell_size_m);
         let cell = *cell_positions.entry(key).or_insert_with(|| {
             cells.push(Vec::new());
             cells.len() - 1
@@ -259,11 +289,23 @@ pub(crate) fn generate(
             .then_with(|| a.cmp(&b))
     };
     let mut retained = Vec::new();
+    let mut dropped = Vec::new();
     for mut cell in cells {
         if cancelled() {
-            return Ok((Vec::new(), filter_counts));
+            return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         cell.sort_unstable_by(rank);
+        if collect_access_pool {
+            dropped.extend(
+                cell.iter()
+                    .skip(settings.candidates_per_cell)
+                    .copied()
+                    .filter(|&index| {
+                        let point = samples[index].point;
+                        point.x <= right && point.y <= top
+                    }),
+            );
+        }
         retained.extend(cell.into_iter().take(settings.candidates_per_cell));
     }
     let limit = settings.maximum_candidates;
@@ -305,29 +347,50 @@ pub(crate) fn generate(
         .into_iter()
         .enumerate()
         .map(|(index, i)| {
-            let site = &samples[i];
-            let mut rf = Site::new(format!("C{}", index + 1), site.point.x, site.point.y);
-            rf.ground_elevation_m = site.ground;
-            rf.surface_elevation_m = site.surface;
+            let mut site = samples[i].planning_site(format!("C{}", index + 1));
             if settings.optimize_heights {
-                rf.antenna_height_m = settings.minimum_router_height_m;
+                site.rf.antenna_height_m = settings.minimum_router_height_m;
             }
-            PlanningSite {
-                terrain_slope: site.slope,
-                site_quality: site.quality,
-                ..rf.into()
-            }
+            site
         })
         .collect();
-    Ok((candidates, filter_counts))
+    let mut access_pool = Vec::with_capacity(dropped.len());
+    for index in dropped {
+        if cancelled() {
+            return Ok((Vec::new(), filter_counts, Vec::new()));
+        }
+        access_pool.push(samples[index]);
+    }
+    Ok((candidates, filter_counts, access_pool))
 }
 
-struct GridSite {
-    point: Point,
+#[derive(Clone, Copy)]
+pub(crate) struct GridSite {
+    pub(crate) point: Point,
     ground: f64,
     surface: Option<f64>,
     slope: f64,
-    quality: f64,
+    pub(crate) quality: f64,
+}
+
+impl GridSite {
+    pub(crate) fn planning_site(&self, id: String) -> PlanningSite {
+        let mut rf = Site::new(id, self.point.x, self.point.y);
+        rf.ground_elevation_m = self.ground;
+        rf.surface_elevation_m = self.surface;
+        PlanningSite {
+            terrain_slope: self.slope,
+            site_quality: self.quality,
+            ..rf.into()
+        }
+    }
+}
+
+pub(crate) fn cell_key(point: Point, cell_size_m: f64) -> (i64, i64) {
+    (
+        (point.x / cell_size_m).floor() as i64,
+        (point.y / cell_size_m).floor() as i64,
+    )
 }
 
 fn excluded(point: Point, polygons: &[Vec<Point>]) -> bool {
