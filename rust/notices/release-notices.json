@@ -70,21 +70,45 @@
       "file": "texts/apache/LICENSE-2.0.txt",
       "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
       "sha256": "CFC7749B96F63BD31C3C42B5C471BF756814053E847C10F3EB003417BC523D30",
-      "basis": "https://github.com/3liz/proj4rs/blob/bc266a822ee74215814d5478b5de85939c2cd94b/proj4rs/Cargo.toml"
+      "basis": "https://github.com/3liz/proj4rs/blob/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/Cargo.toml"
     },
     {
       "crate": "proj4rs",
       "name": "NOTICE-aeqd.txt",
       "file": "texts/proj4rs/NOTICE-aeqd.txt",
-      "source": "https://raw.githubusercontent.com/3liz/proj4rs/bc266a822ee74215814d5478b5de85939c2cd94b/proj4rs/src/projections/aeqd.rs",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/aeqd.rs",
       "sha256": "9999275B950FA729DFA6164DF4B2E9FB3D33388B0722B53B15E3B33A65626726",
       "lines": "1-24"
     },
     {
       "crate": "proj4rs",
+      "name": "NOTICE-cass.txt",
+      "file": "texts/proj4rs/NOTICE-cass.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/cass.rs",
+      "sha256": "BCA9080CC9CCF3F8B4189B3A7E1FD1A47BC5633F16BA60D1F475F8C1659C27DB",
+      "lines": "1-30"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-eqdc.txt",
+      "file": "texts/proj4rs/NOTICE-eqdc.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/eqdc.rs",
+      "sha256": "6A24AE6E7D046F3B5DA56F5D8F0FDFF5BB2125D1D85375BF02335ABFABC61A11",
+      "lines": "1-28"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-eqearth.txt",
+      "file": "texts/proj4rs/NOTICE-eqearth.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/eqearth.rs",
+      "sha256": "517BAF9DC6A1A173D027CD97E233DBAE77C49DBB729DC663B2FD12F0CCDB31CD",
+      "lines": "1-28"
+    },
+    {
+      "crate": "proj4rs",
       "name": "NOTICE-gauss.txt",
       "file": "texts/proj4rs/NOTICE-gauss.txt",
-      "source": "https://raw.githubusercontent.com/3liz/proj4rs/bc266a822ee74215814d5478b5de85939c2cd94b/proj4rs/src/math/gauss.rs",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/math/gauss.rs",
       "sha256": "CB0AA75806E920781467CC5DA7B75026872720C60BB27825ED4DFE0FE178C758",
       "lines": "1-27"
     },
@@ -92,17 +116,114 @@
       "crate": "proj4rs",
       "name": "NOTICE-geos.txt",
       "file": "texts/proj4rs/NOTICE-geos.txt",
-      "source": "https://raw.githubusercontent.com/3liz/proj4rs/bc266a822ee74215814d5478b5de85939c2cd94b/proj4rs/src/projections/geos.rs",
-      "sha256": "02C8B11E3245066D0A50C1ED500306C23609B0680478AEB53A50FE031B8CB921",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/geos.rs",
+      "sha256": "E1234A327008F2A2B6A81C51B9493747F743F04A0D6DA5132E07069A27AABC9F",
       "lines": "1-34"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-gnom.txt",
+      "file": "texts/proj4rs/NOTICE-gnom.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/gnom.rs",
+      "sha256": "A7FFCBCCD667A3BB71726289ED4AD7A24CD8CC6BB461669ADE003A89033690F3",
+      "lines": "1-29"
     },
     {
       "crate": "proj4rs",
       "name": "NOTICE-krovak.txt",
       "file": "texts/proj4rs/NOTICE-krovak.txt",
-      "source": "https://raw.githubusercontent.com/3liz/proj4rs/bc266a822ee74215814d5478b5de85939c2cd94b/proj4rs/src/projections/krovak.rs",
-      "sha256": "799618E80F95FD987DC80F607375F8B7BC035A6A518D20EA4FFB5D82B9C26BA8",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/krovak.rs",
+      "sha256": "4A568BD463AD7CE4017A26F09A1FFA988C43AD07BFD34D42AC059152D46451A0",
       "lines": "1-27"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-omerc.txt",
+      "file": "texts/proj4rs/NOTICE-omerc.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/omerc.rs",
+      "sha256": "AD1522B98E4A9EEA50094E494984979B521CBC5893A09A526A68DC2C645B5D9A",
+      "lines": "1-32"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-ortho.txt",
+      "file": "texts/proj4rs/NOTICE-ortho.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/ortho.rs",
+      "sha256": "7D1ABDD983F67628860D19D0E7A7745AA0E0583634E88D2BEF7C065AC59C0120",
+      "lines": "1-35"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-poly.txt",
+      "file": "texts/proj4rs/NOTICE-poly.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/poly.rs",
+      "sha256": "89212FBDB9906A49BEA407BF7D5191C51B60A5F478570AE588B2E21B1067BDF5",
+      "lines": "1-24"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-robin.txt",
+      "file": "texts/proj4rs/NOTICE-robin.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/robin.rs",
+      "sha256": "18C8B79237566B955A88D8B9AA13DAC90CD58BCA5B944D87793271A02212D161",
+      "lines": "1-29"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-sinu.txt",
+      "file": "texts/proj4rs/NOTICE-sinu.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/sinu.rs",
+      "sha256": "C285A1C10C34DB5C57FB9F19F316136E4A70BABE75209B8298020D4A271ECFBA",
+      "lines": "1-24"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-tpers.txt",
+      "file": "texts/proj4rs/NOTICE-tpers.txt",
+      "source": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/projections/tpers.rs",
+      "sha256": "A757C1004CED6A901344C7D0E0A49A3000AE77BD2BB13981447E332AF46CCA36",
+      "lines": "1-31"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "LICENSE-PROJ.txt",
+      "file": "texts/proj4rs/LICENSE-PROJ.txt",
+      "source": "https://raw.githubusercontent.com/OSGeo/PROJ/b24cdfa5ecdcc26bf730a2d5a40fbaaf4e9bcc91/COPYING",
+      "sha256": "6A8F30793E877D32E3F88B972F0970A051A3B5A26CD057D3993CB51E21C43319"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-latitudes.txt",
+      "file": "texts/proj4rs/NOTICE-latitudes.txt",
+      "source": "https://raw.githubusercontent.com/OSGeo/PROJ/b24cdfa5ecdcc26bf730a2d5a40fbaaf4e9bcc91/src/latitudes.cpp",
+      "sha256": "F6D08946B7B9D271370DCC8FF3225595EDCD0B170F797F2EDF7E08D19FD84D1B",
+      "basis": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/src/math/auth.rs",
+      "lines": "1-10"
+    },
+    {
+      "crate": "proj4rs",
+      "name": "NOTICE-nzmg.txt",
+      "file": "texts/proj4rs/NOTICE-nzmg.txt",
+      "source": "https://raw.githubusercontent.com/OSGeo/PROJ/b24cdfa5ecdcc26bf730a2d5a40fbaaf4e9bcc91/src/projections/nzmg.cpp",
+      "sha256": "A55B268E065B96D8268ECA43C67CCFA154DC1384B28C3C7C44BB58564C791CE2",
+      "basis": "https://raw.githubusercontent.com/3liz/proj4rs/12f3bced091c5a0ca6b06e4b572378582121cd2f/proj4rs/CHANGELOG.md",
+      "lines": "1-26"
+    },
+    {
+      "crate": "proj4rs-geodesic",
+      "name": "LICENSE-APACHE-2.0.txt",
+      "file": "texts/apache/LICENSE-2.0.txt",
+      "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "CFC7749B96F63BD31C3C42B5C471BF756814053E847C10F3EB003417BC523D30",
+      "basis": "https://github.com/3liz/proj4rs/blob/d9a6284695fac36c392020bce2de5774ec0e7c0e/Cargo.toml"
+    },
+    {
+      "crate": "proj4rs-geodesic",
+      "name": "LICENSE-GeographicLib-MIT.txt",
+      "file": "texts/proj4rs/LICENSE-GeographicLib-MIT.txt",
+      "source": "https://raw.githubusercontent.com/geographiclib/geographiclib-c/9e45e98ddb507022cb6cea90d7e5aa0c26cf5d82/LICENSE.txt",
+      "sha256": "CF5EBA0929DFB36BB05982D81CF2CC24029FDE35C670BF3B82DB3C902EF8F367",
+      "basis": "https://github.com/3liz/proj4rs/blob/d9a6284695fac36c392020bce2de5774ec0e7c0e/proj4rs-geodesic/src/lib.rs"
     },
     {
       "crate": "rstar",
@@ -184,8 +305,15 @@
       "crate": "proj4rs",
       "selected": "Apache-2.0",
       "declared": "MIT OR Apache-2.0",
-      "basis": "https://github.com/3liz/proj4rs/tree/bc266a822ee74215814d5478b5de85939c2cd94b",
-      "retained_notices": "Canonical Apache 2.0 text and all discovered embedded third-party notices are included. The alternative MIT grant is not selected."
+      "basis": "https://github.com/3liz/proj4rs/tree/12f3bced091c5a0ca6b06e4b572378582121cd2f",
+      "retained_notices": "Canonical Apache 2.0 text and third-party projection notices for the release build are included."
+    },
+    {
+      "crate": "proj4rs-geodesic",
+      "selected": "Apache-2.0",
+      "declared": "MIT OR Apache-2.0",
+      "basis": "https://github.com/3liz/proj4rs/tree/d9a6284695fac36c392020bce2de5774ec0e7c0e/proj4rs-geodesic",
+      "retained_notices": "Canonical Apache 2.0 text and the GeographicLib C MIT license are included."
     },
     {
       "crate": "unicode-casefold",

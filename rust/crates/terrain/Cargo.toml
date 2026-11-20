@@ -7,6 +7,6 @@ description = "Offline terrain sampling, projection and corridor geometry for Re
 
 [dependencies]
 geo = { version = "0.33.1", default-features = false }
-proj4rs = { version = "0.1.10", default-features = false, features = ["multi-thread", "esri"] }
+proj4rs = { version = "0.3.1", default-features = false }
 repeaternet-rf-core = { path = "../rf-core" }
 tiff-reader = { version = "0.11.1", default-features = false, features = ["zstd"] }
