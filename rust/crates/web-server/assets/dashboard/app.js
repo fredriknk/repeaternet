@@ -182,6 +182,7 @@ function setMainView(id,persist=true){
   const unchanged=$('workspace').dataset.mainView===id;
   for(const viewId of mainViewIds){const active=viewId===id,pane=$(viewId),tab=document.querySelector(`[data-main-view-target="${viewId}"]`);pane.hidden=!active;tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;}
   $('workspace').dataset.mainView=id;
+  if(id==='view-analysis'&&!['queued','running','preparing','failed','disconnected'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;
   if(persist)try{localStorage.setItem('repeaternet.main-view',id);}catch{}
   if(persist&&mobileViewport.matches)setMobileDestination(id==='view-map'?'map':'analysis');
   if(unchanged)return;
@@ -746,12 +747,8 @@ function coverageBusyState(value){coverageBusy=value;if(value&&interactionMode==
 function syncAlternativeControls(){
   const locked=busy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||alternativeSelecting||resultStale;
   const selector=$('alternative-select');
-  for(const button of document.querySelectorAll('.alternative-card')){
-    const selected=button.dataset.alternativeId===selector.value;
-    button.disabled=locked||selected;
-    button.classList.toggle('selected',selected);
-    button.setAttribute('aria-pressed',String(selected));
-  }
+  syncAlternativeRows();
+  document.querySelector('.alternative-table')?.classList.toggle('locked',locked);
   selector.disabled=locked;
 }
 function syncCoverageLocks(){
@@ -819,6 +816,7 @@ function updateJobCard({kind='route',state='running',phase='',message='',progres
 }
 $('view-results').onclick=()=>{setMainView('view-analysis');if(!['queued','running','preparing'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;};
 $('dismiss-job').onclick=()=>{$('route-job-card').hidden=true;};
+let jobCardHideTimer=null;new MutationObserver(()=>{clearTimeout(jobCardHideTimer);const card=$('route-job-card');if(!card.hidden&&card.dataset.state==='complete')jobCardHideTimer=setTimeout(()=>{if(card.dataset.state==='complete')card.hidden=true;},15000);}).observe($('route-job-card'),{attributes:true,attributeFilter:['data-state','hidden']});
 $('compare-open-coverage').onclick=()=>setWorkspace('workspace-coverage');
 new MutationObserver(syncScenarioEmptyState).observe($('coverage-active-run'),{childList:true});
 {const menu=document.querySelector('.project-menu');const close=()=>{menu.open=false;};menu.querySelector('.project-menu-actions').addEventListener('click',event=>{if(event.target.closest('button')&&!event.target.closest('#archived-projects'))close();});document.addEventListener('click',event=>{if(menu.open&&!menu.contains(event.target))close();});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&menu.open){close();menu.querySelector('summary').focus();}});}
@@ -1064,24 +1062,30 @@ async function poll(){
     else if(job.state==='cancelled')status('Search cancelled; any displayed previous route remains marked stale.',true);
   }catch(error){showJobConnectionError(error);}
 }
+function analysisMarginBand(db){if(!Number.isFinite(db))return {cls:'unknown',label:'unknown'};if(db>=10)return {cls:'strong',label:'strong'};if(db>=5)return {cls:'good',label:'good'};if(db>=0)return {cls:'marginal',label:'marginal'};return {cls:'fail',label:'fails'};}
+function analysisSiteLabel(id){try{if(typeof routeSiteLabel==='function'){const label=routeSiteLabel(id);if(label)return label;}}catch{}const site=result?.route?.find(item=>item.id===id);if(site?.kind==='endpoint_a')return 'A';if(site?.kind==='endpoint_b')return 'B';return id;}
+function marginPill(db,suffix=' dB'){const band=analysisMarginBand(db),pill=document.createElement('span');pill.className=`margin-pill margin-${band.cls}`;pill.textContent=Number.isFinite(db)?`${db.toFixed(1)}${suffix}`:'—';pill.title=`${band.label} margin`;return pill;}
 function renderAlternativeChoices(){
   const alternatives=result?.alternatives||[],panel=$('alternatives'),selector=$('alternative-select'),cards=$('alternative-cards');selector.replaceChildren();cards.replaceChildren();
   if(!alternatives.length){panel.hidden=true;return;}
   selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;
   const objective={minimum_routers:'fewest routers',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'independent paths and RF quality before router count'}[candidates.priority]||'configured objective';
+  const table=document.createElement('table'),head=document.createElement('thead'),body=document.createElement('tbody');table.className='alternative-table';table.setAttribute('aria-label','Route alternatives');head.innerHTML='<tr><th>Alternative</th><th>Routers</th><th>Existing · new</th><th>Primary length</th><th>Weakest link</th><th>Primary weakest</th><th>LOS-blocked hops</th><th>Independent paths</th></tr>';table.append(head,body);cards.append(table);
   for(const [index,item] of alternatives.entries()){
-    const option=document.createElement('option');option.value=item.id;option.textContent=item.name||`Alternative ${index+1} · ${item.router_count} ${item.router_count===1?'router':'routers'}`;selector.append(option);
-    const button=document.createElement('button');button.type='button';button.className='alternative-card'+(item.id===selector.value?' selected':'');button.dataset.alternativeId=item.id;button.setAttribute('aria-pressed',String(item.id===selector.value));
-    const title=document.createElement('strong'),meta=document.createElement('span'),summary=document.createElement('small');title.textContent=item.name||`Alternative ${index+1}`;meta.textContent=`${item.router_count} total · ${item.existing_router_count} existing · ${item.proposed_router_count} proposed · ${(item.primary_distance_m/1000).toFixed(2)} km · ${Number.isFinite(item.minimum_margin_db)?item.minimum_margin_db.toFixed(1)+' dB network bottleneck':'no margin'}`;if(Number.isFinite(item.primary_minimum_margin_db)){
-      meta.textContent += ` · ${item.primary_minimum_margin_db.toFixed(1)} dB primary · ${item.primary_los_blocked_hops} LOS-blocked primary hops`;
-    }
-    summary.textContent=`${item.achieved_path_count}/${item.requested_path_count} independent paths · ${item.resilient?'redundancy met':'redundancy not met'} · ${item.search_complete?'search complete':'search incomplete'}`;button.append(title,meta,summary);button.onclick=()=>{selector.value=item.id;void chooseAlternative();};cards.append(button);
+    const routers=`${item.router_count} ${item.router_count===1?'router':'routers'}`,weakest=Number.isFinite(item.minimum_margin_db)?`${item.minimum_margin_db.toFixed(1)} dB weakest`:'no margin';
+    const option=document.createElement('option');option.value=item.id;option.textContent=`${item.name||`Alternative ${index+1}`} · ${weakest} · ${(item.primary_distance_m/1000).toFixed(1)} km · ${item.achieved_path_count}/${item.requested_path_count} paths`;selector.append(option);
+    const row=document.createElement('tr');row.dataset.alternativeId=item.id;row.tabIndex=0;
+    const cells=[item.name||`Alternative ${index+1}`,String(item.router_count),`${item.existing_router_count} · ${item.proposed_router_count}`,`${(item.primary_distance_m/1000).toFixed(2)} km`,marginPill(item.minimum_margin_db),Number.isFinite(item.primary_minimum_margin_db)?marginPill(item.primary_minimum_margin_db):'—',Number.isFinite(item.primary_los_blocked_hops)?String(item.primary_los_blocked_hops):'—',`${item.achieved_path_count}/${item.requested_path_count}${item.resilient?' ✓':''}`];
+    for(const value of cells){const cell=document.createElement('td');if(value instanceof Node)cell.append(value);else cell.textContent=value;row.append(cell);}
+    if(!item.resilient)row.lastChild.classList.add('shortfall');if(!item.search_complete)row.firstChild.append(' (search incomplete)');
+    const choose=()=>{if($('alternative-select').disabled||item.id===$('alternative-select').value)return;$('alternative-select').value=item.id;void chooseAlternative();};row.onclick=choose;row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();choose();}};body.append(row);
   }
-  selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;selector.hidden=false;const active=alternatives.find(item=>item.id===selector.value);$('alternative-summary').textContent=active?`Ranked for ${objective} · ${(active.primary_distance_m/1000).toFixed(2)} km primary · ${active.achieved_path_count}/${active.requested_path_count} independent paths${active.resilient?' met':' · shortfall'}.`:'';$('alternative-comparison-summary').textContent=`Compare all ${alternatives.length} route alternatives`;panel.hidden=false;syncAlternativeControls();
+  selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;selector.hidden=false;const active=alternatives.find(item=>item.id===selector.value);$('alternative-summary').textContent=active?`${alternatives.length} alternatives, ranked for ${objective}.`:'';syncAlternativeRows();$('alternative-comparison-summary').textContent=`Compare all ${alternatives.length} route alternatives`;panel.hidden=false;syncAlternativeControls();
 }
 async function chooseAlternative(){if(resultStale||busy||coverageBusy||coverageLoadingRun||switchingProject||alternativeSelecting)return;const id=$('alternative-select').value;if(!id)return;alternativeSelecting=true;syncAlternativeControls();try{result=await api(`/api/alternatives/${encodeURIComponent(id)}/select`,{method:'POST'});resultStale=false;resultStaleReason='';coverageHeightOverrides={};invalidateCoverageEstimate('Selected route alternative changed. Review a new coverage estimate for this mesh.');coverageCells=[];coverageCursor=0;coverageStale=true;predictedCoverageLayer.clearLayers();setCoverageStatus('Route alternative changed. Recalculate coverage to match the selected mesh.');render();}catch(e){render();status(e.message,true);}finally{alternativeSelecting=false;syncAlternativeControls();}}
 function pinMovedRouter(site,point){let router=manualRouters.find(item=>item.id===site.id);if(!router){router={id:'M-'+crypto.randomUUID(),latitude:point.lat,longitude:point.lng,antenna_height_m:site.antenna_height_m,policy:'required'};manualRouters.push(router);}else{router.latitude=point.lat;router.longitude=point.lng;router.policy='required';}renderManualRouters();recordEdit();invalidate('proposed route site location');scheduleCoverageCheck();status(`${router.id} pinned as a required proposed site. Run a new search to certify the edited route.`);}
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?`Passes configured validation criteria${issues.length?` · ${issues.slice(0,2).join(', ')}`:''}`:issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
+function syncAlternativeRows(){const id=$('alternative-select').value;document.querySelectorAll('.alternative-table tbody tr').forEach(row=>{const on=row.dataset.alternativeId===id;row.classList.toggle('selected',on);row.setAttribute('aria-selected',String(on));});}
 function syncAnalysisBadge(){const badge=$('analysis-badge');badge.hidden=!result;badge.textContent=resultStale?'Stale':'Ready';badge.dataset.state=resultStale?'stale':'ready';}
 function showRepeaterRoads(){
   repeaterRoadLayer.clearLayers();
@@ -1107,8 +1111,20 @@ function render(){
   $('result-title').textContent=resultStale?'Previous certified route · stale':!result.found?'No viable route found':result.search_complete?'Your connection, mapped.':'Certified route · search incomplete';renderAlternativeChoices();
   if(!result.found){$('hops').hidden=true;$('exports').hidden=true;status(resultStale?'Previous search result is stale.':result.diagnostics.join(' · ')||'Try a wider corridor or different antenna heights.');return;}$('rf-validation-note').hidden=false;
   const links=result.links,active=(result.alternatives||[]).find(item=>item.id===result.active_alternative_id),margin=active?.minimum_margin_db??Math.min(...links.map(link=>link.worst_margin_db)),distance=active?.primary_distance_m??links.reduce((sum,link)=>sum+link.distance_m,0);
-  for(const [value,label] of [[result.router_count,'TOTAL ROUTERS'],[result.existing_router_count||0,'EXISTING'],[result.proposed_router_count??result.router_count,'PROPOSED'],[(distance/1000).toFixed(1)+' km','PRIMARY ROUTE'],[Number.isFinite(margin)?margin.toFixed(1)+' dB':'—','BOTTLENECK MARGIN'],[result.elapsed_seconds.toFixed(1)+' s','SEARCH TIME']]){const metric=document.createElement('div'),strong=document.createElement('strong'),small=document.createElement('small');metric.className='metric';strong.textContent=value;small.textContent=label;metric.append(strong,small);$('metrics').append(metric);}
-  const linkSelector=$('analysis-link-select');linkSelector.replaceChildren();links.forEach((link,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`${index+1}. ${link.source_id} → ${link.target_id} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB`;linkSelector.append(option);});$('analysis-link-picker').hidden=!links.length;
+  const band=analysisMarginBand(margin),requested=active?.requested_path_count??result.requested_path_count,achieved=active?.achieved_path_count??result.achieved_path_count,resilient=active?.resilient??(achieved>=requested),existing=result.existing_router_count||0,proposed=result.proposed_router_count??result.router_count;
+  const tiles=[[`${result.router_count}`,`Routers · ${existing} existing, ${proposed} new`,''],[(distance/1000).toFixed(1)+' km','Primary route length',''],[Number.isFinite(margin)?margin.toFixed(1)+' dB':'—',`Weakest link · ${band.label}`,`margin-${band.cls}`],[Number.isFinite(requested)?`${achieved}/${requested}`:'—',resilient?'Independent paths · met':'Independent paths · shortfall',resilient?'margin-strong':'margin-marginal']];
+  for(const [value,label,cls] of tiles){const metric=document.createElement('div'),strong=document.createElement('strong'),small=document.createElement('small');metric.className='metric '+cls;strong.textContent=value;small.textContent=label;metric.append(strong,small);$('metrics').append(metric);}
+  {const verdict=$('route-verdict'),weak=links.filter(link=>link.valid&&link.worst_margin_db<5).length,failed=links.filter(link=>!link.valid).length,parts=[];let state='ok';
+    if(resultStale){state='stale';parts.push(`Inputs changed (${resultStaleReason||'planning inputs'}). This route is for the previous settings; run a new search before relying on it.`);}
+    else if(failed){state='fail';parts.push(`${failed} link${failed===1?'':'s'} fail the configured validation.`);}
+    else if(band.cls==='marginal'){state='warn';parts.push(`All links pass, but the weakest link has only ${margin.toFixed(1)} dB margin and may drop out in poor conditions.`);}
+    else parts.push(`All ${links.length} links pass with at least ${Number.isFinite(margin)?margin.toFixed(1):'—'} dB margin.`);
+    if(!resultStale&&Number.isFinite(requested)&&!resilient){if(state==='ok')state='warn';parts.push(`Only ${achieved} of ${requested} requested independent paths found.`);}
+    if(!resultStale&&weak&&band.cls!=='marginal')parts.push(`${weak} link${weak===1?' is':'s are'} below 5 dB.`);
+    if(!result.search_complete&&!resultStale)parts.push('Search incomplete; a better route may exist.');
+    verdict.dataset.state=state;verdict.textContent=parts.join(' ');verdict.hidden=false;}
+  $('rf-validation-note').textContent=`Search took ${Number(result.elapsed_seconds||0).toFixed(1)} s.`;
+  const linkSelector=$('analysis-link-select');linkSelector.replaceChildren();links.forEach((link,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`${index+1}. ${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB`;linkSelector.append(option);});$('analysis-link-picker').hidden=!links.length;
   const sites=Object.fromEntries(result.route.map(site=>[site.id,site]));
   result.route.filter(site=>!['endpoint_a','endpoint_b','client'].includes(site.kind)).forEach(site=>{
     const proposed=site.origin!=='known',marker=L.marker([site.latitude,site.longitude],{draggable:proposed&&!busy&&!resultStale,icon:L.divIcon({className:'site-marker'+(site.origin==='manual'?' manual-site':''),html:site.id.replace(/[^A-Za-z0-9]/g,'').slice(0,5),iconSize:[32,32]})}).bindTooltip(`${site.id} · ${site.origin==='known'?'existing':'proposed'}${proposed?' · drag to pin':''}`);
@@ -1121,7 +1137,7 @@ function render(){
   });
   links.forEach((link,index)=>{
     const a=sites[link.source_id],b=sites[link.target_id];if(a&&b){const line=L.polyline([[a.latitude,a.longitude],[b.latitude,b.longitude]],{color:resultStale?'#9b8e6b':link.valid?'#176750':'#b44735',dashArray:resultStale?'5 6':null,weight:4}).addTo(routeLayer);routeLinkLayers[index]=line;line.bindTooltip(`${link.source_id} → ${link.target_id} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB · ${linkIssues(link)}`);line.on('click',()=>{setMainView('view-analysis');profile(index,true);});}
-    const row=document.createElement('tr'),reason=linkIssues(link);for(const value of [`${link.source_id} → ${link.target_id}`,(link.distance_m/1000).toFixed(2)+' km',link.worst_margin_db.toFixed(1)+' dB',link.minimum_fresnel_clearance_ratio===null?'—':(link.minimum_fresnel_clearance_ratio*100).toFixed(0)+'%',link.los_clear?'Clear':'Obstructed',reason]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}row.tabIndex=0;row.setAttribute('aria-selected',String(index===selected));row.onclick=()=>profile(index);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();profile(index);}};$('hops').querySelector('tbody').append(row);
+    const row=document.createElement('tr'),reason=linkIssues(link),resultCell=document.createElement('span');resultCell.className=link.valid?'link-result pass':'link-result fail';resultCell.textContent=link.valid?'Pass':'Fail';resultCell.title=reason;const linkName=document.createElement('span');linkName.textContent=`${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)}`;linkName.title=`${link.source_id} → ${link.target_id}`;for(const value of [linkName,(link.distance_m/1000).toFixed(2)+' km',marginPill(link.worst_margin_db),link.minimum_fresnel_clearance_ratio===null?'—':(link.minimum_fresnel_clearance_ratio*100).toFixed(0)+'%',link.los_clear?'Clear':'Obstructed',resultCell]){const cell=document.createElement('td');if(value instanceof Node)cell.append(value);else cell.textContent=value;row.append(cell);}row.tabIndex=0;row.setAttribute('aria-selected',String(index===selected));row.onclick=()=>profile(index);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();profile(index);}};$('hops').querySelector('tbody').append(row);
   });
   $('hops').hidden=false;$('hops-disclosure').hidden=false;$('exports').hidden=resultStale;status(resultStale?`Previous route is stale because ${resultStaleReason||'planning inputs'} changed. Run a new search before exporting.`:result.search_complete?'Calculation complete. Choose an alternative or link to inspect its profile.':`Certified route · ${result.achieved_path_count}/${result.requested_path_count} requested independent paths found to date.`);$('status').className=resultStale?'stale':'';showCandidates();if(links.length)profile(Math.min(selected,links.length-1));
 }
@@ -1129,7 +1145,7 @@ function showCandidates(){candidateLayer.clearLayers();if($('show-candidates').c
 $('show-candidates').onchange=showCandidates;
 function formatMetric(value,digits=1){return Number.isFinite(value)?value.toFixed(digits):'—';}
 function profile(index,focusRow=false){
-  if(!result?.links?.[index])return;selected=index;$('analysis-link-select').value=String(index);const link=result.links[index],profileData=link.profile;if(!profileData)return;$('profile').hidden=false;$('profile-title').textContent=`${link.source_id} → ${link.target_id} · ${(link.distance_m/1000).toFixed(2)} km`;
+  if(!result?.links?.[index])return;selected=index;$('analysis-link-select').value=String(index);const link=result.links[index],profileData=link.profile;if(!profileData)return;$('profile').hidden=false;$('profile-title').textContent=`${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)} · ${(link.distance_m/1000).toFixed(2)} km`;
   document.querySelectorAll('#hops tbody tr').forEach((row,i)=>{row.classList.toggle('selected',i===index);row.setAttribute('aria-selected',String(i===index));if(i===index&&focusRow){row.focus({preventScroll:true});row.scrollIntoView({block:'nearest'});}});
   routeLinkLayers.forEach((line,i)=>line.setStyle({weight:i===index?6:4,opacity:i===index?1:.76}));
   const assumptions=result.rf_settings||rf,clearance=Number(assumptions.required_fresnel_clearance??rf.required_fresnel_clearance),canvas=$('chart'),width=Math.max(200,canvas.clientWidth),height=230,ratio=devicePixelRatio||1;

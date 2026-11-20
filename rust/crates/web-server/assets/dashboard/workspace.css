@@ -501,7 +501,7 @@ main { height: calc(100dvh - 56px); }
 .shared-job-card:is([data-state="complete"], [data-state="stopped"], [data-state="cancelled"], [data-state="terrain_ready"], [data-state="interrupted"]) {
   position: absolute;
   z-index: 800;
-  top: 54px;
+  bottom: 30px;
   right: 14px;
   max-width: min(460px, calc(100% - 28px));
   margin: 0;
@@ -534,3 +534,51 @@ aside .text-button { font-size: 12px; }
 aside summary { font-size: 13px; }
 .help-disclosure summary { font-size: 12px; }
 .pin { cursor: crosshair; }
+
+/* ── Analysis: verdict, margin bands, alternatives table ───────────── */
+.route-verdict { margin: 10px 0 4px; padding: 10px 14px; border-radius: 10px; border: 1px solid #a9cdb8; background: #edf7f0; color: var(--text); font-size: 14px; font-weight: 550; line-height: 1.45; }
+.route-verdict::before { content: "✓ "; color: var(--state-success); font-weight: 800; }
+.route-verdict[data-state="warn"] { border-color: #e6c48a; background: #fff7e8; }
+.route-verdict[data-state="warn"]::before { content: "! "; color: #9a5b0b; }
+.route-verdict[data-state="fail"] { border-color: #e2a59c; background: #fdf0ee; }
+.route-verdict[data-state="fail"]::before { content: "✕ "; color: var(--state-error); }
+.route-verdict[data-state="stale"] { border-color: #d9c9a4; background: #f8f3e6; }
+.route-verdict[data-state="stale"]::before { content: "⟳ "; color: var(--state-warning); }
+#metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#metrics .metric { border-top: 3px solid transparent; }
+#metrics .metric.margin-strong, #metrics .metric.margin-good { border-top-color: #2f8f6b; }
+#metrics .metric.margin-marginal { border-top-color: #d08a1e; }
+#metrics .metric.margin-fail { border-top-color: #c0453a; }
+#metrics .metric small { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--muted); }
+.margin-pill { display: inline-block; min-width: 58px; padding: 2px 8px; border-radius: 999px; font-variant-numeric: tabular-nums; font-weight: 650; text-align: center; }
+.margin-pill.margin-strong { color: #0f5a40; background: #d7efe2; }
+.margin-pill.margin-good { color: #2f5f1f; background: #e6f2d3; }
+.margin-pill.margin-marginal { color: #7a4705; background: #fbe6c2; }
+.margin-pill.margin-fail { color: #8f231a; background: #f8d6d1; }
+.margin-pill.margin-unknown { color: var(--muted); background: #eceeed; }
+.link-result { display: inline-block; padding: 2px 8px; border-radius: 6px; font-weight: 650; cursor: help; }
+.link-result.pass { color: #0f5a40; background: #e3f2ea; }
+.link-result.fail { color: #8f231a; background: #f8d6d1; }
+.analysis-alternative-controls { grid-template-columns: minmax(260px, 1fr) auto; }
+#alternative-cards { display: block; overflow-x: auto; }
+.alternative-table { margin-top: 6px; background: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.alternative-table th { white-space: nowrap; }
+.alternative-table td, .alternative-table th { padding: 8px 10px; }
+.alternative-table tbody tr.selected { background: var(--surface-accent); box-shadow: inset 3px 0 var(--accent); }
+.alternative-table tbody tr.selected td:first-child { font-weight: 700; }
+.alternative-table.locked tbody tr { cursor: not-allowed; opacity: .7; }
+.alternative-table td.shortfall { color: #8a4b0f; font-weight: 650; }
+#hops-disclosure > summary { font-size: 15px; font-weight: 650; color: var(--text); }
+#hops-disclosure > summary .hint { font-weight: 400; }
+#hops tbody tr.selected { box-shadow: inset 3px 0 var(--accent); }
+.profile-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.profile-heading h3 { margin: 0; }
+.profile-heading #analysis-link-picker { margin: 0; max-width: 360px; }
+.profile-heading select { margin: 0; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0; color: var(--muted); font-size: 12px; }
+.chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; }
+#rf-validation-note { margin: 4px 0 0; }
+@media (max-width: 1100px) { #metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+#alternatives { display: block; }
+#alternatives .analysis-alternative-controls { grid-template-columns: minmax(260px, 480px) minmax(0, 1fr); }
