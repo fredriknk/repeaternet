@@ -46,7 +46,7 @@ becoming active. Uploaded terrain and RF computation work locally; online terrai
 retrieval and basemaps require network access.
 
 Service definitions have one source:
-[packaged Kartverket configuration](../src/rf_router_planner/data/kartverket_wcs.json).
+[packaged Kartverket configuration](../rust/crates/providers/src/kartverket_wcs.json).
 The provider chooses a configured Norwegian ETRS89 UTM service from the planning
 coordinates.
 

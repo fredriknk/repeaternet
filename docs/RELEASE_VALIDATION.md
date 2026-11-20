@@ -1,4 +1,8 @@
-# Windows Rust release validation
+# Release validation
+
+Tagged releases (`v*`) run the [CI workflow](../.github/workflows/ci.yml): workspace checks on Windows and Linux, this verifier and packager for the Windows executable, a static-linkage check and archive for the Linux musl binary, a GitHub Release with `SHA256SUMS.txt`, and a GHCR image. The manual clean-machine test below still applies to each release.
+
+## Windows executable
 
 Use Windows PowerShell 5.1 or PowerShell 7 on Windows. Both scripts accept a prebuilt executable and default to `rust/target/release/repeaternet.exe`. The examples run from the repository root. Use `-ExePath` to validate or package another build.
 
