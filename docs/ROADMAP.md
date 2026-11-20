@@ -95,7 +95,7 @@ open for release acceptance:
 
 The browser acceptance items above were recorded against the Python runtime.
 The native executable still needs the full acceptance pass. Windows
-prerelease tags exist and the current workflow packages Windows x64. [Release validation](RELEASE_VALIDATION.md)
+releases are published from version tags (v0.1.0 onward) and the workflow packages Windows x64. [Release validation](RELEASE_VALIDATION.md)
 
 ## Engineering follow-up
 

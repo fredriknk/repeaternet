@@ -7,7 +7,7 @@ routes and estimate handheld coverage.
 
 ![RepeaterNet dashboard with a planned route](docs/images/dashboard-route-overview.png)
 
-RepeaterNet is in pre-release. Route and coverage results are predictions based
+Route and coverage results are predictions based
 on the configured terrain and radio settings. Verify important links in the field.
 
 ## Run the executable
