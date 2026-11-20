@@ -49,6 +49,7 @@ pub fn lookup(path: &str) -> Option<Response> {
         "/assets/meshcore.css" => (CSS, dashboard!("meshcore.css")),
         "/assets/coverage.css" => (CSS, dashboard!("coverage.css")),
         "/assets/workspace.css" => (CSS, dashboard!("workspace.css")),
+        "/assets/map.css" => (CSS, dashboard!("map.css")),
         "/assets/main_view_navigation.js" => (JS, dashboard!("main_view_navigation.js")),
         "/assets/app.js" => (JS, dashboard!("app.js")),
         "/assets/coverage_inspection.js" => (JS, dashboard!("coverage_inspection.js")),
