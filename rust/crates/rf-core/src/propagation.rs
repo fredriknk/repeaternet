@@ -2,9 +2,11 @@
 
 use crate::{
     bullington_loss_db, elevation_angle_deg, free_space_path_loss_db, received_power_dbm,
-    sample_profile, AntennaSettings, DirectionResult, LinkResult, RadioBudget, RfError, RfSettings,
-    Site, TerrainSource, ValidationMode,
+    AntennaSettings, DirectionResult, LinkResult, RadioBudget, RfError, RfSettings, Site,
+    TerrainSource, ValidationMode,
 };
+
+use crate::profile::sample_path;
 
 /// Link-specific sampling options and radio overrides.
 #[derive(Clone, Copy, Debug)]
@@ -64,7 +66,7 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
         target: &Site,
         options: EvaluationOptions<'_>,
     ) -> Result<LinkResult, RfError> {
-        let profile = sample_profile(
+        let samples = sample_path(
             self.terrain,
             source,
             target,
@@ -72,40 +74,44 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             self.settings.k_factor,
             options.sample_step_m,
         )?;
-        let last = profile.distances_m.len() - 1;
-        let distance_m = profile.distances_m[last];
-        let mut min_clearance_idx = 1;
-        let mut min_ratio_idx = 1;
-        for i in 2..last {
-            if profile.clearance_m[i] < profile.clearance_m[min_clearance_idx] {
-                min_clearance_idx = i;
-            }
-            if profile.fresnel_clearance_ratio[i] < profile.fresnel_clearance_ratio[min_ratio_idx] {
-                min_ratio_idx = i;
-            }
-        }
-        let minimum_clearance_m = profile.clearance_m[min_clearance_idx];
-        let minimum_fresnel_clearance_ratio = profile.fresnel_clearance_ratio[min_ratio_idx];
-        let los_clear = minimum_clearance_m >= 0.0;
-        let fresnel_clear =
-            minimum_fresnel_clearance_ratio >= self.settings.required_fresnel_clearance;
-        let diffraction = bullington_loss_db(
-            &profile.distances_m,
-            &profile.effective_obstruction_m,
-            &profile.los_elevation_m,
-            self.settings.frequency_mhz,
-        )?;
-        let clutter_loss_db = if self.settings.clutter_loss_enabled && profile.surface_available {
-            let excess = profile
-                .surface_elevation_m
-                .iter()
-                .zip(&profile.dtm_elevation_m)
-                .map(|(surface, ground)| surface - ground)
-                .fold(0.0, f64::max);
-            excess * self.settings.clutter_loss_db_per_m
+        let clutter_loss_db = if self.settings.clutter_loss_enabled {
+            samples
+                .clutter_excess()
+                .map_or(0.0, |excess| excess * self.settings.clutter_loss_db_per_m)
         } else {
             0.0
         };
+        let (distance_m, metrics, diffraction, profile) = if options.include_profile {
+            let profile = samples.into_profile()?;
+            let diffraction = bullington_loss_db(
+                &profile.distances_m,
+                &profile.effective_obstruction_m,
+                &profile.los_elevation_m,
+                self.settings.frequency_mhz,
+            )?;
+            (
+                *profile.distances_m.last().unwrap(),
+                profile.clearance_metrics(),
+                diffraction,
+                Some(profile),
+            )
+        } else {
+            let scalar = samples.into_scalar()?;
+            let diffraction = bullington_loss_db(
+                &scalar.distances,
+                &scalar.obstructions,
+                &scalar.los,
+                self.settings.frequency_mhz,
+            )?;
+            (
+                *scalar.distances.last().unwrap(),
+                scalar.metrics,
+                diffraction,
+                None,
+            )
+        };
+        let los_clear = metrics.clearance >= 0.0;
+        let fresnel_clear = metrics.ratio >= self.settings.required_fresnel_clearance;
         let path = LinkPath {
             distance_m,
             fspl_db: free_space_path_loss_db(distance_m, self.settings.frequency_mhz)?,
@@ -144,13 +150,13 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             valid,
             los_clear,
             fresnel_clear,
-            minimum_clearance_m,
-            minimum_fresnel_clearance_ratio,
-            minimum_clearance_distance_m: profile.distances_m[min_ratio_idx],
-            maximum_fresnel_radius_m: profile.fresnel_radius_m.iter().copied().fold(0.0, f64::max),
+            minimum_clearance_m: metrics.clearance,
+            minimum_fresnel_clearance_ratio: metrics.ratio,
+            minimum_clearance_distance_m: metrics.ratio_distance,
+            maximum_fresnel_radius_m: metrics.maximum_radius,
             diffraction_loss_db: diffraction.loss_db,
             dominant_obstacles: diffraction.obstacles,
-            profile: options.include_profile.then_some(profile),
+            profile,
         })
     }
 
