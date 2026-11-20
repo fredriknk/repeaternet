@@ -103,7 +103,7 @@ cd .. && node --test rust/crates/web-server/tests/js/
 git diff --check
 ```
 
-CI runs the same checks on Windows and Linux. The Rust suites exercise RF math,
+CI runs the same checks on Windows for every pull request. The Rust suites exercise RF math,
 terrain decoding and CRS transforms, exact and heuristic search, cancellation,
 caches, project isolation and recovery, coverage lifecycle, scenarios, targets,
 exports and HTTP workflows. The executable integration test launches the binary,

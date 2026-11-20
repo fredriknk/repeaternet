@@ -32,7 +32,7 @@ pub fn fingerprint(value: &Value) -> String {
     hash.update(FORMAT);
     hash.update([0]);
     hash.update(canonical(value).to_string());
-    format!("{:x}", hash.finalize())
+    crate::lower_hex(&hash.finalize())
 }
 
 fn canonical(value: &Value) -> Value {

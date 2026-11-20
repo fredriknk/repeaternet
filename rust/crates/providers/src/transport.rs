@@ -7,6 +7,8 @@ use crate::{response_error, ProviderError, Result};
 use reqwest::blocking::{Client, Response};
 
 pub(crate) fn client(provider: &'static str, connect: u64, timeout: u64) -> Result<Client> {
+    // Keep ring for the static release builds. Install it once per process.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
         .connect_timeout(Duration::from_secs(connect))
         .timeout(Duration::from_secs(timeout))

@@ -135,10 +135,9 @@ fn alternative_id(solution: &NetworkSolution) -> String {
     routers.sort();
     let signature =
         json!({"paths": solution.client_paths.values().collect::<Vec<_>>(), "routers": routers});
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(crate::catalog::canonical_json(&signature, false))
-    );
+    let hash = crate::catalog::lower_hex(&Sha256::digest(crate::catalog::canonical_json(
+        &signature, false,
+    )));
     format!("alt-{}", &hash[..16])
 }
 

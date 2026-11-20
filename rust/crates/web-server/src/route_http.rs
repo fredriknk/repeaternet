@@ -481,6 +481,7 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
             };
             #[cfg(test)]
             if let Some(endpoint) = &app.overpass_endpoint {
+                let _ = rustls::crypto::ring::default_provider().install_default();
                 return TiledRoadAccess::with_client(
                     terrain.crs(),
                     classes,

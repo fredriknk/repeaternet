@@ -235,10 +235,18 @@ pub(crate) fn route_inputs_changed(before: &Value, after: &Value) -> bool {
 // The Python catalog hashes json.dumps(sort_keys=True, separators=(",", ":"))
 // with ASCII escaping and Python float formatting. Preserve arbitrary integers.
 pub(crate) fn plan_fingerprint(plan: &Value, route_only: bool) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(canonical_json(plan, route_only).as_bytes())
-    )
+    lower_hex(&Sha256::digest(canonical_json(plan, route_only).as_bytes()))
+}
+
+/// Lowercase hexadecimal encoding of a digest.
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 pub(crate) fn canonical_json(plan: &Value, route_only: bool) -> String {

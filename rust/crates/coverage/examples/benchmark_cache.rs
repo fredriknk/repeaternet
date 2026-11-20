@@ -161,7 +161,7 @@ fn run(
             "evaluated_cells": grid.evaluated_cells,
             "unknown_cells": grid.unknown_cells,
             "completed_cells": grid.completed_cells,
-            "result_sha256": format!("{:x}", hash.finalize()),
+            "result_sha256": hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
             "cache": { "entries": stats.entries, "hits": stats.hits, "misses": stats.misses },
             "cancel_ack_seconds": terrain.cancelled_at.get().map(|&at| (finished - at).as_secs_f64()),
         }))

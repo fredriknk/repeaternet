@@ -115,8 +115,8 @@ fn cache_path(
         tile.col
     );
     directory.join(format!(
-        "overpass-tile-{:x}.json",
-        Sha256::digest(key.as_bytes())
+        "overpass-tile-{}.json",
+        crate::lower_hex(&Sha256::digest(key.as_bytes()))
     ))
 }
 
@@ -186,7 +186,7 @@ impl RoadAccessIndex {
         );
         let center = GeoPoint::new(point.x, point.y);
         self.index
-            .locate_in_envelope_intersecting(&envelope)
+            .locate_in_envelope_intersecting(envelope)
             .map(|item| Euclidean.distance(&center, &self.lines[item.index]))
             .filter(|&distance| distance <= radius)
             .min_by(f64::total_cmp)
@@ -231,7 +231,7 @@ impl RoadAccessIndex {
         let envelope = AABB::from_corners(bounds.min().into(), bounds.max().into());
         let mut indices: Vec<_> = self
             .index
-            .locate_in_envelope_intersecting(&envelope)
+            .locate_in_envelope_intersecting(envelope)
             .map(|item| item.index)
             .collect();
         indices.sort_unstable();

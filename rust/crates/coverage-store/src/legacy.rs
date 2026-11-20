@@ -29,7 +29,7 @@ pub fn python_canonical_json(value: &Value) -> Option<String> {
 /// SHA-256 hex of [`python_canonical_json`], equal to `web._plan_fingerprint`.
 pub fn python_fingerprint(value: &Value) -> Option<String> {
     let output = python_canonical_json(value)?;
-    Some(format!("{:x}", Sha256::digest(output.as_bytes())))
+    Some(crate::lower_hex(&Sha256::digest(output.as_bytes())))
 }
 
 fn write_json(output: &mut String, value: &Value) -> Option<()> {

@@ -11,14 +11,12 @@ validate important links with site surveys and field measurements.
 
 RepeaterNet is a single self-contained executable. It embeds the dashboard and
 needs no Python, GIS runtime or installer. Download `repeaternet-windows-x64.zip`
-or `repeaternet-linux-x64.tar.gz` from the
-[GitHub releases](https://github.com/fredriknk/repeaternet/releases), check it
-against `SHA256SUMS.txt`, and run it:
+from the [GitHub releases](https://github.com/fredriknk/repeaternet/releases),
+check it against `SHA256SUMS.txt`, and double-click `repeaternet.exe`. The
+dashboard opens in your default browser at **http://127.0.0.1:8000/**.
 
-- **Windows:** double-click `repeaternet.exe`. The dashboard opens in your default
-  browser at **http://127.0.0.1:8000/**.
-- **Linux:** run `./repeaternet`. The binary is statically linked and runs on any
-  x86-64 distribution.
+Releases ship only the Windows executable. On Linux, [build from source](#build-from-source)
+or use Docker.
 
 Use `--no-browser` for headless operation, `--host`/`--port` to change the listen
 address and `--data <dir>` to select a data directory. Projects default to
@@ -37,9 +35,7 @@ docker compose up -d --build
 Open **http://localhost:8000**. The image contains only the static binary and CA
 certificates, and runs as UID 1000. Docker stores projects, terrain and saved
 coverage in the persistent `planner-data` volume. Rebuilding the image preserves
-that volume, including volumes created by the earlier Python image. Tagged
-releases also publish `ghcr.io/fredriknk/repeaternet`; replace `build: .` in
-`compose.yaml` with `image: ghcr.io/fredriknk/repeaternet:latest` to use it.
+that volume, including volumes created by the earlier Python image.
 
 The default bind address is localhost. Set `RF_PLANNER_BIND=0.0.0.0` in your
 environment or `.env` for LAN access. Set `RF_PLANNER_TOKEN` to require a shared

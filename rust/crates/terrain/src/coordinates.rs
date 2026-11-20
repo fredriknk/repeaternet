@@ -114,11 +114,6 @@ impl TerrainCrs {
     fn projected(self) -> Result<Proj, TerrainError> {
         let definition = if let Some(custom) = self.custom {
             let [lon, lat, x, y, p, q] = custom.parameters.map(f64::from_bits);
-            let lat = if self.south_polar_laea_origin().is_some() {
-                -lat
-            } else {
-                lat
-            };
             let ellps = if custom.grs80 { "GRS80" } else { "WGS84" };
             use CustomMethod::*;
             let (method, extra) = match custom.method {
@@ -150,11 +145,6 @@ impl TerrainCrs {
         } else {
             let (_, definition) =
                 epsg_definition(self.code).ok_or(TerrainError::UnsupportedCrs(self.code))?;
-            if self.code == 6932 {
-                // proj4rs 0.1.10 rejects valid coordinates in southern polar LAEA.
-                let north = definition.replace("+lat_0=-90", "+lat_0=90");
-                return Proj::from_proj_string(&north).map_err(TerrainError::Projection);
-            }
             if self.code == 4087 {
                 return Proj::from_proj_string("+proj=etmerc +ellps=WGS84")
                     .map_err(TerrainError::Projection);
@@ -162,16 +152,6 @@ impl TerrainCrs {
             return Proj::from_proj_string(definition).map_err(TerrainError::Projection);
         };
         Proj::from_proj_string(&definition).map_err(TerrainError::Projection)
-    }
-
-    fn south_polar_laea_origin(self) -> Option<f64> {
-        if self.code == 6932 {
-            return Some(0.0);
-        }
-        self.custom.and_then(|custom| {
-            let [_, lat, _, y, _, _] = custom.parameters.map(f64::from_bits);
-            (custom.method == CustomMethod::LambertAzimuthalEqualArea && lat == -90.0).then_some(y)
-        })
     }
 
     fn equidistant_cylindrical(self) -> Option<EquidistantCylindrical> {
@@ -244,7 +224,6 @@ pub struct Transformer {
     crs: TerrainCrs,
     geographic: Proj,
     projected: Proj,
-    south_polar_laea_origin: Option<f64>,
     equidistant_cylindrical: Option<EquidistantCylindrical>,
 }
 
@@ -272,7 +251,6 @@ impl Transformer {
             crs,
             geographic,
             projected,
-            south_polar_laea_origin: crs.south_polar_laea_origin(),
             equidistant_cylindrical: crs.equidistant_cylindrical(),
         })
     }
@@ -292,16 +270,10 @@ impl Transformer {
                 "Expected valid WGS84 longitude and latitude",
             ));
         }
-        // Reflect latitude and northing about the equator and false northing,
-        // respectively. The two polar LAEA forms have the same easting.
+        // proj4rs uses longitude/latitude in radians for geographic coordinates.
         let lat = point.latitude.to_radians();
-        let lat = if self.south_polar_laea_origin.is_some() {
-            -lat
-        } else {
-            lat
-        };
         let lon = point.longitude.to_radians();
-        let (mut x, mut y) = transform_xy(
+        let (mut x, y) = transform_xy(
             &self.geographic,
             &self.projected,
             if self.equidistant_cylindrical.is_some() {
@@ -312,9 +284,6 @@ impl Transformer {
             lat,
         )
         .map_err(TerrainError::Projection)?;
-        if let Some(origin) = self.south_polar_laea_origin {
-            y = origin + (origin - y);
-        }
         if let Some(eqc) = &self.equidistant_cylindrical {
             let delta = wrap_longitude(lon - eqc.central_meridian);
             x = eqc.false_easting + eqc.metres_per_radian * delta;
@@ -333,19 +302,13 @@ impl Transformer {
                 "Expected finite projected coordinates",
             ));
         }
-        let y = self
-            .south_polar_laea_origin
-            .map_or(point.y, |origin| origin + (origin - point.y));
         let x = if self.equidistant_cylindrical.is_some() {
             0.0
         } else {
             point.x
         };
-        let (mut longitude, mut latitude) = transform_xy(&self.projected, &self.geographic, x, y)
+        let (mut longitude, latitude) = transform_xy(&self.projected, &self.geographic, x, point.y)
             .map_err(TerrainError::Projection)?;
-        if self.south_polar_laea_origin.is_some() {
-            latitude = -latitude;
-        }
         if let Some(eqc) = &self.equidistant_cylindrical {
             let delta = (point.x - eqc.false_easting) / eqc.metres_per_radian;
             if delta.abs() > std::f64::consts::PI + 1e-12 {
