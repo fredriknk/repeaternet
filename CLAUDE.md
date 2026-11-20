@@ -1,0 +1,2 @@
+@AGENTS.md
+@docs/UX_DESIGN_RULES.md

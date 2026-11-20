@@ -1,7 +1,9 @@
 //! Projected site coordinates and antenna elevations.
 
+use serde::{Deserialize, Serialize};
+
 /// A projected coordinate in metres.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
@@ -15,7 +17,7 @@ impl Point {
 }
 
 /// Site role used to select a default antenna configuration.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SiteKind {
     EndpointA,
     EndpointB,
@@ -26,7 +28,7 @@ pub enum SiteKind {
 }
 
 /// Elevation datum for the antenna mounting height.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HeightReference {
     #[default]
     GroundDtm,
@@ -34,7 +36,7 @@ pub enum HeightReference {
 }
 
 /// RF-relevant site geometry and identity.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Site {
     pub id: String,
     pub position: Point,

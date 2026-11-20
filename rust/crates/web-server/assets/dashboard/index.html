@@ -9,51 +9,51 @@
     <link rel="stylesheet" href="/assets/meshcore.css">
     <link rel="stylesheet" href="/assets/coverage.css">
     <link rel="stylesheet" href="/assets/workspace.css?v=map-grid-2">
+    <link rel="stylesheet" href="/assets/map.css">
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/main_view_navigation.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
   <body>
-    <header>
-      <div class="brand">
-        <span class="logo">↗</span>
-        <div>RepeaterNet<small>TERRAIN-AWARE RF PLANNING</small></div>
+    <header class="app-bar">
+      <div class="brand" title="RepeaterNet · terrain-aware RF planning">
+        <span class="logo" aria-hidden="true">↗</span>
+        <span class="brand-name">RepeaterNet</span>
       </div>
-      <div class="header-actions">
-        <input id="open" type="file" accept=".json" aria-label="Select a RepeaterNet plan JSON file" hidden>
-        <button id="import-plan" type="button">Import plan JSON</button>
-        <button id="save">Export plan JSON</button>
-        <span class="badge">SELF HOSTED</span>
+      <div class="project-bar">
+        <label for="project-select" class="project-select-label"><span class="visually-hidden">Project</span><select id="project-select" title="Switch project"></select></label>
+        <button id="new-project" type="button" class="new-project-button" title="Start a new project">＋ New</button>
+        <details class="project-menu">
+          <summary aria-label="Project actions" title="Project actions">⋯</summary>
+          <div class="project-menu-actions">
+            <button id="rename-project" type="button">Rename…</button>
+            <button id="duplicate-project" type="button">Duplicate</button>
+            <button id="recover-project" type="button" hidden>Recover previous save</button>
+            <hr>
+            <input id="open" type="file" accept=".json" aria-label="Select a RepeaterNet plan JSON file" hidden>
+            <button id="import-plan" type="button">Import plan file…</button>
+            <button id="save" type="button">Export plan file</button>
+            <hr>
+            <button id="archive-project" type="button">Archive</button>
+            <button id="delete-project" type="button">Delete permanently…</button>
+            <details id="archived-projects">
+              <summary>Archived projects <span id="archived-project-count" class="count-pill">0</span></summary>
+              <p class="hint">Archived projects keep their saved plan and terrain. Restore one to return it to the active project list.</p>
+              <div id="archived-project-list" class="archived-project-list"></div>
+            </details>
+            <div class="project-tool-status">
+              <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
+              <button id="clear-cache" type="button">Clear saved RF calculations</button>
+              <p class="hint">RF estimates are predictions and require field validation.</p>
+            </div>
+          </div>
+        </details>
+        <span id="project-storage" class="save-state" role="status" aria-live="polite" data-save-state="saved">Saved automatically</span>
+        <button id="retry-save" type="button" hidden>Retry save</button>
+        <span id="project-transition-status" class="project-transition-status" role="alert" hidden></span>
       </div>
     </header>
-    <div class="project-bar">
-      <label for="project-select">Project<select id="project-select"></select></label>
-      <span id="project-storage" class="hint" role="status" aria-live="polite" data-save-state="saved">Saved automatically</span>
-      <span id="project-transition-status" class="project-transition-status" role="alert" hidden></span>
-      <button id="retry-save" type="button" hidden>Retry save</button>
-      <details class="project-menu">
-        <summary>Project actions</summary>
-        <div class="project-menu-actions">
-          <button id="new-project">New project</button>
-          <button id="rename-project">Rename</button>
-          <button id="recover-project" hidden>Recover previous</button>
-          <button id="duplicate-project">Duplicate</button>
-          <button id="archive-project">Archive</button>
-          <button id="delete-project">Delete</button>
-          <details id="archived-projects">
-            <summary>Archived projects <span id="archived-project-count">0</span></summary>
-            <p class="hint">Archived projects keep their saved plan and terrain. Restore one to return it to the active project list.</p>
-            <div id="archived-project-list" class="archived-project-list"></div>
-          </details>
-          <div class="project-tool-status">
-            <p id="cache-stats" class="hint">RF link metrics are cached within this workspace.</p>
-            <button id="clear-cache" type="button">Clear saved RF calculations</button>
-            <details class="help-disclosure"><summary>RF estimate limits</summary><p>RF estimates are predictions and require field validation.</p></details>
-          </div>
-        </div>
-      </details>
-    </div>
     <dialog id="action-dialog" class="app-dialog" aria-labelledby="action-dialog-title">
       <form id="action-dialog-form">
         <h2 id="action-dialog-title">Confirm action</h2>
@@ -70,41 +70,35 @@
     <main>
       <aside id="planner-setup">
         <nav class="workspace-nav" aria-label="Planning workspace">
-          <button type="button" data-workspace-target="workspace-plan" aria-pressed="true">Plan</button>
-          <button type="button" data-workspace-target="workspace-coverage" aria-pressed="false">Coverage</button>
-          <button type="button" data-workspace-target="workspace-compare" aria-pressed="false">Compare</button>
+          <button type="button" data-workspace-target="workspace-plan" aria-pressed="true"><span class="nav-step">1</span> Route</button>
+          <button type="button" data-workspace-target="workspace-coverage" aria-pressed="false"><span class="nav-step">2</span> Coverage</button>
+          <button type="button" data-workspace-target="workspace-compare" aria-pressed="false"><span class="nav-step">3</span> Scenarios</button>
         </nav>
         <div class="workspace-view" id="workspace-plan" aria-label="Plan route">
         <div class="readiness-card" id="plan-readiness" data-readiness="needs-terrain" role="status" aria-live="polite">
-          <strong>Next step</strong>
           <p id="plan-readiness-copy">Example coordinates show a short Oslo route. Add ground terrain before searching.</p>
           <button id="review-readiness" type="button">Review terrain</button>
         </div>
-        <nav class="plan-section-nav" aria-label="Plan setup sections">
-          <button type="button" data-plan-section="endpoint-setup" aria-current="true"><strong>Endpoints</strong><small id="section-summary-endpoints">Set start and destination</small></button>
-          <button type="button" data-plan-section="terrain-setup" aria-current="false"><strong>Terrain</strong><small id="section-summary-terrain">Ground tiles required</small></button>
-          <details id="optional-plan-settings"><summary>Customize route settings</summary>
-          <button type="button" data-plan-section="router-setup" aria-current="false"><strong>Routers</strong><small id="section-summary-routers">No routers loaded</small></button>
-          <button type="button" data-plan-section="radio-setup" aria-current="false"><strong>Radio</strong><small>Frequency and link model</small></button>
-          <button type="button" data-plan-section="search-setup" aria-current="false"><strong>Search</strong><small>Objective and effort</small></button>
-          </details>
-        </nav>
-        <section id="endpoint-setup">
-          <h2>Choose your endpoints</h2>
+        <div class="plan-steps">
+          <div class="plan-step" data-step="endpoint-setup">
+            <button type="button" class="plan-step-header" data-plan-section="endpoint-setup" aria-expanded="false" aria-controls="endpoint-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">1</span><span class="step-copy"><strong>Endpoints</strong><small id="section-summary-endpoints">Set start and destination</small></span><span class="step-chevron" aria-hidden="true"></span></button>
+            <section id="endpoint-setup" class="plan-step-body" hidden>
           <p class="hint">Select A or B, then click its location on the map. You can also drag either pin or enter latitude and longitude below.</p>
           <div class="endpoint">
-            <button data-place="a" aria-label="Place start point on map" class="pin">A</button>
+            <button data-place="a" aria-label="Place start point on map" title="Click, then click the map to place A" class="pin">A</button>
             <label>Start point<input id="a" value="59.9139, 10.7522" aria-label="Endpoint A latitude, longitude" aria-describedby="a-error"></label>
           </div>
           <p id="a-error" class="field-error" hidden></p>
           <div class="endpoint">
-            <button data-place="b" aria-label="Place destination on map" class="pin blue">B</button>
+            <button data-place="b" aria-label="Place destination on map" title="Click, then click the map to place B" class="pin blue">B</button>
             <label>Destination<input id="b" value="59.95, 10.85" aria-label="Endpoint B latitude, longitude" aria-describedby="b-error"></label>
           </div>
           <p id="b-error" class="field-error" hidden></p>
-        </section>
-        <section id="terrain-setup">
-          <h2>Add elevation data</h2>
+            </section>
+          </div>
+          <div class="plan-step" data-step="terrain-setup">
+            <button type="button" class="plan-step-header" data-plan-section="terrain-setup" aria-expanded="false" aria-controls="terrain-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">2</span><span class="step-copy"><strong>Terrain</strong><small id="section-summary-terrain">Ground tiles required</small></span><span class="step-chevron" aria-hidden="true"></span></button>
+            <section id="terrain-setup" class="plan-step-body" hidden>
           <p class="hint">In Norway, estimate the download for your route, then download the tiles. Elsewhere, upload ground elevation files covering your route.</p>
           <div class="terrain-tools">
             <details><summary>Download options</summary>
@@ -124,10 +118,13 @@
           <p id="surface-note" class="hint">Surface obstruction data unavailable — terrain only.</p>
           </details>
           <p id="coverage-note" class="hint">Coverage outlines appear after terrain is loaded.</p>
-        </section>
-        <section id="router-setup">
-          <h2>Choose router sites</h2>
+            </section>
+          </div>
+          <div class="plan-step" data-step="router-setup">
+            <button type="button" class="plan-step-header" data-plan-section="router-setup" aria-expanded="false" aria-controls="router-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">3</span><span class="step-copy"><strong>Routers<em class="step-optional">optional</em></strong><small id="section-summary-routers">Existing and proposed sites</small></span><span class="step-chevron" aria-hidden="true"></span></button>
+            <section id="router-setup" class="plan-step-body" hidden>
           <details class="help-disclosure"><summary>Help: existing and proposed routers</summary><p>Feed activity is context, not proof of a usable RF link. Missing antenna data uses the configured repeater antenna assumptions. Excluded and stale entries stay in saved plans.</p></details>
+          <h3>Existing MeshCore routers</h3>
           <button id="load-meshcore" class="wide-button">Find nearby MeshCore routers</button>
           <div class="file-row known-count"><span id="meshcore-count">No routers loaded</span></div>
           <label>Find by name or ID<input id="meshcore-search" type="search" placeholder="Search saved routers" autocomplete="off"></label>
@@ -155,14 +152,18 @@
             <button id="add-router-coordinate" type="button" class="wide-button">Add router at coordinates</button>
           </details>
           <div id="manual-list" class="known-list"><p class="hint">No manually placed sites yet.</p></div>
-        </section>
-        <section id="radio-setup">
-          <h2>Match your radio equipment</h2>
+            </section>
+          </div>
+          <div class="plan-step" data-step="radio-setup">
+            <button type="button" class="plan-step-header" data-plan-section="radio-setup" aria-expanded="false" aria-controls="radio-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">4</span><span class="step-copy"><strong>Radio<em class="step-optional">optional</em></strong><small id="section-summary-radio">Frequency and link model</small></span><span class="step-chevron" aria-hidden="true"></span></button>
+            <section id="radio-setup" class="plan-step-body" hidden>
           <p class="hint">Start with your network frequency. Adjust the equipment assumptions when you know the specifications for your radios and antennas.</p>
           <div id="settings"></div>
-        </section>
-        <section id="search-setup">
-          <h2>Choose how to find a route</h2>
+            </section>
+          </div>
+          <div class="plan-step" data-step="search-setup">
+            <button type="button" class="plan-step-header" data-plan-section="search-setup" aria-expanded="false" aria-controls="search-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">5</span><span class="step-copy"><strong>Search<em class="step-optional">optional</em></strong><small id="section-summary-search">Objective and effort</small></span><span class="step-chevron" aria-hidden="true"></span></button>
+            <section id="search-setup" class="plan-step-body" hidden>
           <div id="search-settings"></div>
           <div class="intent-controls">
             <label><input id="road-access-enabled" type="checkbox"> Only suggest sites near roads</label>
@@ -178,7 +179,9 @@
             <option value="thorough">Thorough · configured candidate limit</option>
           </select>
           <details class="help-disclosure"><summary>Help: search effort</summary><p>Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p></details>
-        </section>
+            </section>
+          </div>
+        </div>
         <div class="run-panel">
           <span id="plan-action-status" class="action-status" aria-live="off">Choose endpoints and add ground terrain to get started.</span>
           <button id="optimize" class="primary">Find repeater route <span>↗</span></button>
@@ -196,7 +199,7 @@
             <button type="button" data-coverage-section="area" aria-controls="coverage-section-area" aria-pressed="true">Area &amp; detail</button>
             <button type="button" data-coverage-section="sources" aria-controls="coverage-section-sources" aria-pressed="false">Sources</button>
             <button type="button" data-coverage-section="handheld" aria-controls="coverage-section-handheld" aria-pressed="false">Handheld</button>
-            <button type="button" data-coverage-section="runs" aria-controls="coverage-section-runs" aria-pressed="false">Saved runs</button>
+            <button type="button" data-coverage-section="runs" aria-controls="coverage-section-runs" aria-pressed="false">Runs</button>
           </nav>
           <div id="coverage-section-area" data-coverage-panel="area">
           <p class="hint">For a first estimate, use the area around the route and check two-way coverage. This shows where a handheld can both hear a router and reach it.</p>
@@ -264,6 +267,22 @@
             <progress id="coverage-load-progress" aria-label="Loading saved coverage cells" hidden></progress>
             <p id="coverage-load-status" class="hint" role="status" aria-live="polite">Saved runs load incrementally; no RF calculation is started.</p>
           </section>
+            <details id="coverage-export-controls" open>
+              <summary>Export &amp; print report</summary>
+              <p class="hint">Exports use the saved grid and include terrain/model assumptions. Partial or stale snapshots require an explicit checkbox and are marked in the output.</p>
+              <p id="coverage-export-run-summary" class="hint">Exports use the saved run selected above.</p>
+              <label class="check-line"><input id="coverage-export-partial" type="checkbox"> Allow partial/cancelled results</label>
+              <label class="check-line"><input id="coverage-export-stale" type="checkbox"> Allow stale historical results</label>
+              <label>Optional saved target report<select id="coverage-export-target-report"><option value="">No target report</option></select></label>
+              <label>Optional comparison run<select id="coverage-export-scenario"></select></label>
+              <label>Reference router for comparison<select id="coverage-export-reference"></select></label>
+              <div class="coverage-actions">
+                <button id="coverage-export-geojson" class="wide-button">Download GeoJSON cells &amp; targets</button>
+                <button id="coverage-export-json" class="wide-button">Download JSON results</button>
+                <button id="coverage-export-html" class="wide-button">Download printable HTML report</button>
+              </div>
+              <p id="coverage-export-status" class="hint" role="status" aria-live="polite">Choose a saved coverage run to export.</p>
+            </details>
           </div>
           <div class="coverage-actions">
             <button id="coverage-preview" class="wide-button" disabled>Quick approximate preview</button>
@@ -278,6 +297,11 @@
         </div>
         <div class="workspace-view" id="workspace-compare" aria-label="Compare scenarios" hidden>
         <section class="compare-panel">
+          <h2>Scenarios &amp; targets</h2>
+          <div id="compare-empty-state" class="coverage-empty-state" hidden>
+            <p>Router-failure and antenna-height scenarios start from a completed coverage run. Targets can be placed now and assessed once a run exists.</p>
+            <button id="compare-open-coverage" type="button">Open coverage</button>
+          </div>
           <details id="coverage-failure-scenarios">
             <summary>Router failure scenario</summary>
             <p class="hint">Temporarily remove selected routers from the certified mesh graph. Coverage that is still locally reachable is separate from coverage connected to your reference router.</p>
@@ -290,7 +314,7 @@
             <p id="failure-summary" class="hint" role="status" aria-live="polite">Complete a coverage calculation to analyze router failures.</p>
           </details>
           <details id="coverage-comparison-controls">
-            <summary>Compare alternatives & antenna heights</summary>
+            <summary>Antenna heights &amp; run comparison</summary>
             <p class="hint">Height runs are separate immutable scenarios. Affected certified router-to-router links are revalidated; previously uncertified links are never invented.</p>
             <div id="coverage-height-sources" class="coverage-source-list"></div>
             <div class="coverage-height-presets">
@@ -352,22 +376,6 @@
               <div id="coverage-target-comparison-results" class="known-list"></div>
             </details>
           </details>
-          <details id="coverage-export-controls">
-            <summary>Export coverage &amp; print report</summary>
-            <p class="hint">Exports use the saved grid and include terrain/model assumptions. Partial or stale snapshots require an explicit checkbox and are marked in the output.</p>
-            <p id="coverage-export-run-summary" class="hint">Exports use the selected saved run in the Coverage workspace.</p>
-            <label class="check-line"><input id="coverage-export-partial" type="checkbox"> Allow partial/cancelled results</label>
-            <label class="check-line"><input id="coverage-export-stale" type="checkbox"> Allow stale historical results</label>
-            <label>Optional saved target report<select id="coverage-export-target-report"><option value="">No target report</option></select></label>
-            <label>Optional comparison run<select id="coverage-export-scenario"></select></label>
-            <label>Reference router for comparison<select id="coverage-export-reference"></select></label>
-            <div class="coverage-actions">
-              <button id="coverage-export-geojson" class="wide-button">Download GeoJSON cells &amp; targets</button>
-              <button id="coverage-export-json" class="wide-button">Download JSON results</button>
-              <button id="coverage-export-html" class="wide-button">Download printable HTML report</button>
-            </div>
-            <p id="coverage-export-status" class="hint" role="status" aria-live="polite">Choose a saved coverage run to export.</p>
-          </details>
           <p class="hint">Bands are planning margins, not reliability classes. Overlap means multiple usable RF links, not independent mesh paths. Hide or show the layer using the map’s layer control.</p>
         </section>
         </div>
@@ -396,7 +404,7 @@
           <button id="view-analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="view-analysis" data-main-view-target="view-analysis">Analysis <span id="analysis-badge" hidden></span></button>
         </nav>
         <section id="route-job-card" class="job-card shared-job-card" data-state="idle" hidden aria-live="off">
-          <div class="job-card-heading"><strong id="job-phase">Route search</strong><span id="job-elapsed">Elapsed · 0 s</span></div>
+          <div class="job-card-heading"><strong id="job-phase">Route search</strong><span id="job-elapsed">Elapsed · 0 s</span><button id="dismiss-job" type="button" class="icon-button" aria-label="Dismiss job status" title="Dismiss" hidden>×</button></div>
           <p id="job-message" class="hint" role="status" aria-live="polite"></p>
           <p id="job-progress-copy" class="hint"></p>
           <progress id="progress" aria-label="Current planner job progress" hidden></progress>
@@ -410,6 +418,25 @@
         <div class="main-view-pane map-pane" id="view-map" role="tabpanel" aria-labelledby="view-map-tab" tabindex="0">
         <div class="map-wrap">
           <div id="map"></div>
+          <div class="map-top">
+          <div class="map-tools" role="group" aria-label="Map tools">
+            <div class="map-tool-group" role="group" aria-label="Place sites">
+              <button type="button" data-place="a" aria-pressed="false">Set A</button>
+              <button type="button" data-place="b" aria-pressed="false">Set B</button>
+              <button type="button" data-place="router" aria-pressed="false">Add router</button>
+              <button type="button" id="cancel-map-mode" hidden>Cancel</button>
+            </div>
+            <div class="map-tool-group" role="group" aria-label="Map view and history">
+              <button type="button" id="fit">Fit all</button>
+              <button type="button" id="undo" disabled>Undo</button>
+              <button type="button" id="redo" disabled>Redo</button>
+            </div>
+            <div class="map-tool-group" role="group" aria-label="Map overlays">
+              <label><input type="checkbox" id="show-candidates"> Candidates</label>
+              <label id="show-repeater-roads-control" hidden><input type="checkbox" id="show-repeater-roads" checked> Roads near repeaters</label>
+            </div>
+          </div>
+          <div id="map-hint" role="status" aria-live="polite" hidden></div>
           <section id="coverage-map-legend" class="coverage-map-legend" aria-label="Coverage estimate legend" hidden>
             <h3>Coverage legend</h3>
             <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search" placeholder="Router name or ID"></label>
@@ -422,15 +449,24 @@
               <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
             </div>
           </section>
-          <div class="map-tools">
-            <button id="fit">Fit endpoints</button>
-            <button id="cancel-map-mode" hidden>Cancel map action</button>
-            <button id="undo" disabled>Undo</button>
-            <button id="redo" disabled>Redo</button>
-            <label><input type="checkbox" id="show-candidates"> Candidates</label>
-            <label id="show-repeater-roads-control" hidden><input type="checkbox" id="show-repeater-roads" checked> Roads near repeaters</label>
           </div>
-          <div id="map-hint" role="status" aria-live="polite">Set your endpoints to start planning</div>
+          <details class="route-map-legend">
+            <summary>Map legend</summary>
+            <div class="map-legend-grid">
+              <span><i class="legend-endpoints"></i> Endpoints A / B</span>
+              <span><i class="legend-strong"></i> Strong ≥ 10 dB</span>
+              <span><i class="legend-proposed"></i> Proposed route site</span>
+              <span><i class="legend-good"></i> Good 5–&lt;10 dB</span>
+              <span><i class="legend-existing"></i> Existing route site</span>
+              <span><i class="legend-marginal"></i> Marginal 0–&lt;5 dB</span>
+              <span><i class="legend-manual"></i> Manual router</span>
+              <span><i class="legend-invalid"></i> Invalid link</span>
+              <span><i class="legend-required"></i> Required known router</span>
+              <span><i class="legend-stale"></i> Stale link</span>
+              <span><i class="legend-optional"></i> Optional known router</span>
+              <span><i class="legend-excluded"></i> Excluded known router</span>
+            </div>
+          </details>
         </div>
         </div>
         <div class="main-view-pane analysis-pane" id="view-analysis" role="tabpanel" aria-labelledby="view-analysis-tab" tabindex="0" hidden>
@@ -442,7 +478,7 @@
           <div id="result-details">
           <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>
           <p id="candidate-search-diagnostic" class="hint" hidden></p>
-          <p id="rf-validation-note" class="hint" hidden>A passing link meets the configured RF validation criteria; LOS obstruction and Fresnel clearance are shown separately.</p>
+          <p id="rf-validation-note" class="hint" hidden></p>
           <div id="alternatives" hidden>
             <div class="analysis-alternative-controls">
               <label for="alternative-select">Route alternative<select id="alternative-select"></select></label>
@@ -453,21 +489,21 @@
               <div id="alternative-cards" class="alternative-cards"></div>
             </details>
           </div>
+          <div id="route-verdict" class="route-verdict" hidden></div>
           <div id="metrics"></div>
-          <label id="analysis-link-picker" for="analysis-link-select" hidden>Link terrain profile<select id="analysis-link-select"></select></label>
           <div class="analysis-detail-grid">
-          <details id="hops-disclosure" hidden>
-            <summary>Route links and checks</summary>
-            <p class="hint">“Passes configured validation criteria” reflects the selected RF validation mode. LOS and Fresnel columns show geometric obstruction separately.</p>
+          <details id="hops-disclosure" open hidden>
+            <summary>Links <span class="hint">· select a row to show its terrain profile</span></summary>
             <div class="table-scroll"><table id="hops" hidden aria-label="Route links and radio checks">
-              <thead><tr><th>Link</th><th>Distance</th><th>Margin ↔</th><th>Fresnel</th><th>LOS</th><th>Result</th></tr></thead>
+              <thead><tr><th>Link</th><th>Distance</th><th>Weakest margin</th><th>Fresnel</th><th>LOS</th><th>Result</th></tr></thead>
               <tbody></tbody>
             </table></div>
+            <p class="hint">Pass means the link meets the configured RF validation mode in both directions. LOS and Fresnel show geometric obstruction separately; diffraction can still close a link.</p>
           </details>
           <div id="profile" hidden>
-            <h3 id="profile-title"></h3>
+            <div class="profile-heading"><h3 id="profile-title"></h3><label id="analysis-link-picker" for="analysis-link-select" hidden><span class="visually-hidden">Link terrain profile</span><select id="analysis-link-select"></select></label></div>
             <canvas id="chart" height="230" aria-label="Terrain, direct line of sight and Fresnel profile" role="img"></canvas>
-            <p class="hint">Brown: terrain + curvature · Green: surface · Blue: line of sight · Orange: required Fresnel boundary</p>
+            <p class="chart-legend" aria-hidden="true"><span><i style="background:#94785d"></i>Terrain + curvature</span><span><i style="background:#508c62"></i>Surface</span><span><i style="background:#457bab"></i>Line of sight</span><span><i style="background:#d69a45"></i>Required Fresnel boundary</span></p>
             <p id="profile-description" class="hint" role="status"></p>
             <details id="directional-budget"><summary>Forward and reverse link budget</summary><div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th>Direction</th><th>TX power</th><th>Path loss</th><th>Received</th><th>Sensitivity</th><th>Usable margin</th></tr></thead><tbody></tbody></table></div></details>
             <details id="profile-details"><summary>Detailed radio budget and assumptions</summary><pre id="budget"></pre></details>
@@ -475,7 +511,7 @@
           </div>
           </div>
           <section id="coverage-inspection" class="analysis-inspection" hidden aria-labelledby="inspection-title">
-            <div class="inspection-heading"><div><h3 id="inspection-title">Location inspection</h3><p id="inspection-summary" class="hint"></p></div><button id="inspection-show-map" type="button">Show location on map</button></div>
+            <div class="inspection-heading"><div><h3 id="inspection-title" tabindex="-1">Location inspection</h3><p id="inspection-summary" class="hint"></p></div><button id="inspection-show-map" type="button">Show location on map</button></div>
             <canvas id="inspection-chart" height="190" aria-label="Terrain and radio profile to the best serving router" role="img"></canvas>
             <details class="help-disclosure"><summary>Profile legend</summary><p>Brown: ground + curvature · Green: surface · Blue: line of sight · Orange: Fresnel clearance boundary.</p></details>
             <pre id="inspection-detail"></pre>

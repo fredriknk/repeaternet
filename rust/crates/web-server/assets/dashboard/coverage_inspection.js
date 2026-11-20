@@ -71,7 +71,7 @@ async function inspectAt(latlng){
     if(!isCurrent())return;
     const display=coverageDisplayInfo||coverageJob,selectedRunId=$('coverage-active-run').value;
     const savedRun=display?.job_id&&display.job_id===selectedRunId?display:null;
-    const payload=coveragePayload(savedRun?.settings||coverageSettings,savedRun?.source_height_overrides||coverageHeightOverrides);
+    const payload=coveragePayload(savedRun?.settings||coverageSettings,savedRun?.source_height_overrides);
     if(savedRun)payload.coverage_job_id=savedRun.job_id;
     const job=await startCurrentInspection({...payload,latitude,longitude},isCurrent);
     if(!job)return;
@@ -84,6 +84,8 @@ async function inspectAt(latlng){
     if(!response||!isCurrent())return;
     setMainView('view-analysis');
     renderCoverageInspection(response,latitude,longitude);
+    $('coverage-inspection').scrollIntoView({block:'start'});
+    $('inspection-title').focus({preventScroll:true});
   }catch(error){if(error.name!=='AbortError'&&requestId===inspectionRequest)setCoverageStatus(error.message,true);}
 }
 

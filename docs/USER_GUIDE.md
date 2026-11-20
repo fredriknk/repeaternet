@@ -2,18 +2,41 @@
 
 ## Find your first route
 
-1. Open **Plan** and choose **Endpoints**. Select A or B and click its location on the map, or drag the existing pins.
+The left panel follows the workflow: **1 Route**, **2 Coverage** and **3 Scenarios**.
+Route setup is a list of steps (Endpoints, Terrain, Routers, Radio, Search). Each
+step shows a summary and a check mark when it is complete; click a step to open it.
+
+1. Set the endpoints. Use **Set A** / **Set B** in the map toolbar and click the map,
+   right-click the map and choose **Set start (A) here**, drag the pins, or type
+   coordinates in **Endpoints**.
 2. Open **Terrain**. For a route in Norway, estimate the Kartverket download and review it before downloading. To use local files, expand **Upload your own terrain files**.
-3. Choose **Find repeater route**. The first search can use the default radio and search settings. To model specific equipment, open **Customize route settings** and choose **Radio**.
-4. Review the route in **Analysis**. Open **Coverage** to estimate where a handheld can communicate with the selected network.
+3. Choose **Find repeater route**. The first search can use the default radio and search settings. To model specific equipment, open **Radio**.
+4. Review the route in **Analysis**. The verdict line and colour-banded margins
+   (green ≥ 10 dB, light green 5–10 dB, amber 0–5 dB, red failing) show weak links
+   at a glance. Open **Coverage** to estimate where a handheld can communicate with
+   the selected network.
+
+## Editing on the map
+
+- **Add router** in the map toolbar, or right-click → **Add proposed router here**,
+  places a proposed site. Click it to change its antenna height or search policy,
+  or to remove it. Drag it to move it.
+- Click an existing MeshCore router to set it **Excluded**, **Optional** or
+  **Required** directly from the map.
+- Click a route site (R1, R2 …) for its height, origin, nearest road and link
+  margins. Drag a proposed route site to pin it as a required site.
+- **Fit all** fits endpoints, routers and the route. **Map legend** explains the
+  marker shapes and link colours.
+- Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) undo and redo plan edits. Esc cancels a map action.
 
 ## Projects and saved data
 
 The project selector manages named projects in the current browser workspace.
-Plan edits are autosaved. Rename, duplicate, archive, and restore projects from
-the project controls. Duplication copies the plan and terrain; it does not clone
+Plan edits are autosaved. **＋ New** next to the project selector starts a project;
+the **⋯** menu renames, duplicates, imports or exports a plan file, archives,
+deletes and restores projects. Duplication copies the plan and terrain; it does not clone
 a live calculation. Archived projects remain on disk and are available through
-**Archived projects**. **Recover previous** restores the previous saved plan
+**Archived projects**. **Recover previous save** restores the previous saved plan
 revision.
 
 Permanent deletion removes the selected project's stored data. Terrain clearing
@@ -99,11 +122,14 @@ fixed sites. Road data is available under the Open Database License (ODbL).
 [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
 
 Ready-terrain searches start with one click. Missing terrain prompts for one
-combined download-and-search action. The job card shows progress and cancellation.
+combined download-and-search action. The job card shows progress and cancellation;
+when the search finishes it shrinks to a dismissible notice.
 
-**Map** and **Analysis** are separate views. Analysis presents a compact
-alternative selector, route summary, and link/profile selector. Expand the
-comparison or directional budgets when needed. Help disclosures keep explanations
+**Map** and **Analysis** are separate views. Analysis presents the alternative
+selector, a verdict, the key figures (routers, length, weakest link, independent
+paths), the link table and the selected link's terrain profile. **Compare all
+route alternatives** shows every alternative in one table; click a row to select it.
+Expand directional budgets when needed. Help disclosures keep explanations
 out of the main form. Selecting an alternative reuses evaluated results; it does
 not launch a new route search.
 

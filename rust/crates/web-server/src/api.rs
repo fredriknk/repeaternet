@@ -227,8 +227,9 @@ impl Workspace {
         tokio::task::spawn_blocking(move || {
             if session.is_none() {
                 let active = app.store.active(&key)?;
-                app.store.project_path(&key, &active)?;
-                *session = Some(Session::open(&active, None));
+                let mut opened = Session::open(&active, None);
+                restore_project_route(&app, &key, &active, &mut opened)?;
+                *session = Some(opened);
             }
             action(&app, &key, session.as_mut().expect("initialized workspace"))
         })
@@ -363,11 +364,27 @@ fn project_name(body: &Map<String, Value>) -> ApiResult<&str> {
     Ok(normalize_project_name(name)?)
 }
 
-fn open_project(session: &mut Session, project: Project) -> Json<Value> {
+fn restore_project_route(
+    app: &AppState,
+    key: &str,
+    project: &Project,
+    session: &mut Session,
+) -> ApiResult<()> {
+    let directory = app.store.project_path(key, project)?;
+    route_http::restore(&app.store, key, project, &directory, session)
+}
+
+fn open_project(
+    app: &AppState,
+    key: &str,
+    session: &mut Session,
+    project: Project,
+) -> ApiResult<Json<Value>> {
     let mut opened = Session::open(&project, Some(session.input_revision));
     opened.upload = session.upload.clone();
     *session = opened;
-    Json(catalog::opened_project(project))
+    restore_project_route(app, key, &project, session)?;
+    Ok(Json(catalog::opened_project(project)))
 }
 
 async fn state(State(app): State<AppState>, workspace: Workspace) -> ApiResult<Json<Value>> {
@@ -473,7 +490,7 @@ async fn recover_previous(
                 .store
                 .recover_previous(key, &session.project_id)?
                 .ok_or_else(|| ApiError::missing("No previous autosaved revision is available"))?;
-            Ok(open_project(session, project))
+            open_project(app, key, session, project)
         })
         .await
 }
@@ -488,7 +505,7 @@ async fn create(
             ensure_idle(session)?;
             let plan = body.remove("plan").unwrap_or_else(|| json!({}));
             let project = app.store.create(key, project_name(&body)?, &plan)?;
-            Ok(open_project(session, project))
+            open_project(app, key, session, project)
         })
         .await
 }
@@ -505,7 +522,7 @@ async fn activate(
                 .store
                 .activate(key, &id)?
                 .ok_or_else(|| ApiError::missing("Project not found"))?;
-            Ok(open_project(session, project))
+            open_project(app, key, session, project)
         })
         .await
 }
@@ -523,7 +540,7 @@ async fn duplicate(
                 .store
                 .duplicate(key, &id, project_name(&body)?)?
                 .ok_or_else(|| ApiError::missing("Project not found"))?;
-            Ok(open_project(session, project))
+            open_project(app, key, session, project)
         })
         .await
 }
@@ -574,7 +591,7 @@ async fn restore(
                 .store
                 .restore(key, &id, project_name(&body)?)?
                 .ok_or_else(|| ApiError::missing("Archived project not found"))?;
-            Ok(open_project(session, project))
+            open_project(app, key, session, project)
         })
         .await
 }
