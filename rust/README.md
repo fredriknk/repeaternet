@@ -19,6 +19,10 @@ configuration. On Linux with a system linker, run
 static x86-64 Linux musl target on Alpine and runs it in a `scratch` image.
 Tagged releases package the Windows executable. [Release validation](../docs/RELEASE_VALIDATION.md)
 
+Build the standalone CoreScope capture tool with
+`cargo build --locked -p corescope-capture`. See the
+[capture guide](crates/corescope-capture/README.md) for CLI usage and schema.
+
 The launcher prints the URL after binding and opening the catalog. A wildcard
 bind prints the corresponding loopback address for local use. Ctrl+C stops
 the server. Windows also accepts Ctrl+Break, and Unix accepts SIGTERM.

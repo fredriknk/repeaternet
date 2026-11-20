@@ -45,6 +45,7 @@ relative to the repository root.
 | [`rust/crates/coverage-store/`](../rust/crates/coverage-store/README.md) | Coverage manifests, result pages, target reports and identity checks |
 | [`rust/crates/exports/`](../rust/crates/exports/README.md) | Route CSV, GeoJSON and HTML, plus coverage JSON, GeoJSON and HTML |
 | [`rust/crates/providers/`](../rust/crates/providers/README.md) | Kartverket WCS, Overpass roads and CoreScope adapters |
+| [`rust/crates/corescope-capture/`](../rust/crates/corescope-capture/README.md) | Standalone CoreScope RF reception and topology capture to SQLite |
 | [`tools/`](../tools) | Windows build, executable verification and release packaging |
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Windows PR checks and tagged Windows release publishing |
 

@@ -4,16 +4,20 @@ use std::{
 };
 
 use crate::{response_error, ProviderError, Result};
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, ClientBuilder, Response};
 
 pub(crate) fn client(provider: &'static str, connect: u64, timeout: u64) -> Result<Client> {
+    client_builder(connect, timeout)
+        .build()
+        .map_err(|source| ProviderError::Transport { provider, source })
+}
+
+pub(crate) fn client_builder(connect: u64, timeout: u64) -> ClientBuilder {
     // Keep ring for the static release builds. Install it once per process.
     let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
         .connect_timeout(Duration::from_secs(connect))
         .timeout(Duration::from_secs(timeout))
-        .build()
-        .map_err(|source| ProviderError::Transport { provider, source })
 }
 
 pub(crate) fn check(cancelled: &dyn Fn() -> bool) -> Result<()> {

@@ -1,0 +1,215 @@
+use std::{
+    io::{BufRead, BufReader, Write},
+    net::TcpListener,
+    thread,
+    time::{Duration, Instant},
+};
+
+use serde_json::{Value, json};
+
+use super::*;
+use crate::model::packet_page;
+
+const SAMPLE: &str = include_str!("../fixtures/packets.json");
+const SENDER: &str = "70d8fb2dae304b220850aa24672f066785105752e80a87cd98314a9fe8bc83bf";
+
+fn sample() -> Value {
+    serde_json::from_str(SAMPLE).unwrap()
+}
+
+#[test]
+fn packets_allowlist_advert_fields_and_deduplicate_receptions() {
+    let mut payload = sample();
+    let rows = payload["packets"].as_array_mut().unwrap();
+    let advert = rows[0].clone();
+    let mut duplicate_reception = advert["observations"][0].clone();
+    duplicate_reception["id"] = json!(999);
+    duplicate_reception["rssi"] = json!(-110);
+    rows[0]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate_reception);
+    rows[0]["raw_hex"] = json!("TEST_RAW_BYTES");
+    rows[0]["observations"][0]["decoded_json"] = json!({"text":"TEST_NESTED_MESSAGE"});
+    let mut decoded: Value =
+        serde_json::from_str(advert["decoded_json"].as_str().unwrap()).unwrap();
+    decoded["text"] = json!("TEST_ADVERT_MESSAGE");
+    decoded["flags"]["text"] = json!("TEST_FLAGS_MESSAGE");
+    rows[0]["decoded_json"] = json!(decoded.to_string());
+    rows[1]["payload_type"] = json!(5);
+    rows[1]["decoded_json"] = decoded;
+    rows[1]["decoded_json"]["text"] = json!("TEST_CHANNEL_MESSAGE");
+    rows[1].as_object_mut().unwrap().remove("observations");
+
+    let page = packet_page(payload, 0).unwrap();
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("capture.sqlite3");
+    let mut db = db::open(&db_path).unwrap();
+    assert_eq!(
+        db::save_page(
+            &mut db,
+            "sample",
+            db::Cursor::default(),
+            db::Cursor::default(),
+            &page.packets
+        )
+        .unwrap(),
+        4
+    );
+    assert_eq!(
+        db::save_page(
+            &mut db,
+            "sample",
+            db::Cursor::default(),
+            db::Cursor::default(),
+            &page.packets
+        )
+        .unwrap(),
+        0
+    );
+
+    let advert = db
+        .query_row(
+            "SELECT sender_pubkey, advert_lat, advert_lon, advert_flags, advert_name,
+                rssi, snr, path_prefixes, observer_id
+         FROM observations WHERE observation_id = 15686416",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, u8>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, f64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(advert.0, SENDER);
+    assert_eq!((advert.1, advert.2, advert.3), (59.382817, 10.65313, 146));
+    assert_eq!(advert.4, "NO-1570 Moss / Fuglevik");
+    assert_eq!((advert.5, advert.6, advert.7.as_str()), (-38.0, 11.5, "[]"));
+    assert_eq!(
+        advert.8,
+        "0933f690ce37579031fdc56da8de12d5a660600daa3087d513f61b109b0bfc1c"
+    );
+    let bare_packet = db
+        .query_row(
+            "SELECT sender_pubkey, observation_id FROM observations WHERE payload_type = 5",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(bare_packet, (None, None));
+    drop(db);
+    let bytes = fs::read(db_path).unwrap();
+    let data = String::from_utf8_lossy(&bytes);
+    assert!(!data.contains("TEST_"));
+    assert!(!data.contains("raw_hex"));
+    assert!(!data.contains("decoded_json"));
+}
+
+#[test]
+fn resumes_capped_scan_and_honors_backoff() {
+    let raw = sample();
+    let rows = raw["packets"].as_array().unwrap();
+    let page1 = json!({"packets":[rows[0], rows[1]], "total":3, "limit":2, "offset":0});
+    let page2 = json!({"packets":[rows[1], rows[2]], "total":3, "limit":2, "offset":1});
+    let empty = json!({"packets":[], "total":0, "limit":2, "offset":0});
+    let (base, server) = mock(vec![
+        (200, "", page1),
+        (429, "Retry-After: 2\r\n", Value::Null),
+        (503, "", Value::Null),
+        (200, "", page2),
+        (200, "", empty),
+    ]);
+    let db_dir = tempfile::tempdir().unwrap();
+    let path = db_dir.path().join("resume.sqlite3");
+    let mut db = db::open(&path).unwrap();
+    let mut client = CaptureClient::new(&base, Duration::from_millis(10)).unwrap();
+    let mut run = db::Run::start(&db, &base, "packets").unwrap();
+    capture::packets(&mut db, &mut client, 1, &mut run, &|| false).unwrap();
+    let cursor = db::cursor(&db, &base).unwrap();
+    assert!(run.capped);
+    assert_eq!(run.observations, 2);
+    assert_eq!(cursor.next_offset, 2);
+    assert_eq!(cursor.last_packet_id, Some(1316284));
+    drop(db);
+
+    let mut db = db::open(&path).unwrap();
+    let mut run = db::Run::start(&db, &base, "packets").unwrap();
+    capture::packets(&mut db, &mut client, 1, &mut run, &|| false).unwrap();
+    assert!(!run.capped);
+    assert_eq!(run.observations, 1);
+    assert_eq!(
+        db::cursor(&db, &base).unwrap().completed_until,
+        cursor.window_until
+    );
+    capture::packets(&mut db, &mut client, 1, &mut run, &|| false).unwrap();
+    let calls = server.join().unwrap();
+    assert!(calls[0].0.contains("GET /api/packets?"));
+    assert!(calls[0].0.contains("expand=observations"));
+    assert!(calls[0].0.contains("offset=0"));
+    assert!(
+        calls[0]
+            .0
+            .to_ascii_lowercase()
+            .contains("user-agent: repeaternet/")
+    );
+    assert!(calls[1].0.contains("offset=1"));
+    let until = |call: &str| {
+        call.split("until=")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(until(&calls[0].0), until(&calls[1].0));
+    assert_eq!(calls[1].0, calls[2].0);
+    assert_eq!(calls[2].0, calls[3].0);
+    assert!(calls[2].1.duration_since(calls[1].1) >= Duration::from_secs(2));
+    assert!(calls[3].1.duration_since(calls[2].1) >= Duration::from_secs(2));
+    assert!(calls[4].0.contains("since="));
+    assert!(calls[4].0.contains("offset=0"));
+}
+
+fn mock(
+    replies: Vec<(u16, &'static str, Value)>,
+) -> (String, thread::JoinHandle<Vec<(String, Instant)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        replies.into_iter().map(|(status, headers, body)| {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            let received = Instant::now();
+            let body = body.to_string();
+            write!(reader.get_mut(),
+                "HTTP/1.1 {status} Capture mock\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}", body.len()
+            ).unwrap();
+            (request, received)
+        }).collect()
+    });
+    (base, server)
+}
