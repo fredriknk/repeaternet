@@ -6,7 +6,7 @@ description = "Workspace-scoped RepeaterNet SQLite catalog and project files"
 
 [dependencies]
 getrandom = "0.3"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
