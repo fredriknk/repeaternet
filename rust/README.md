@@ -1,110 +1,245 @@
-# RepeaterNet application guide
 
-The native launcher serves the existing dashboard and its bundled Leaflet assets from one executable. It opens the dashboard in the default browser. Python, a separate asset directory, and a development server are unnecessary at runtime. The map's remote basemap tiles still need network access.
+# RepeaterNet application reference
 
-The dashboard runs route planning from uploaded GeoTIFF or Kartverket terrain using the native terrain sampler, RF model, and optimizer. It supports terrain readiness, certified alternatives and link profiles, MeshCore repeater import, road access, saved coverage, exact-point inspection, failure and height scenarios, target assessments, and route and coverage downloads. It opens project catalogs created by the retired Python application in place.
+The `repeaternet` executable embeds the dashboard, Leaflet, the Kartverket
+service table and the terrain CRS catalog. The dashboard's basemap and live
+providers need network access. Use the [user guide](../docs/USER_GUIDE.md)
+for planning workflows and the [development guide](../docs/DEVELOPMENT.md)
+for architecture, persistence and tests.
 
 ## Build and launch
 
-`rust-toolchain.toml` pins Rust 1.100.0. Windows builds also need the MSVC C++ Build Tools, and a Windows SDK. Run these commands in PowerShell from the repository root.
+Run Cargo from `rust/` with the pinned Rust 1.100.0 toolchain. Windows builds
+need the MSVC C++ Build Tools and a Windows SDK. From the repository root,
+`.\tools\build-rust.ps1` builds the Windows executable at
+`rust\target\release\repeaternet.exe` using the workspace's static CRT
+configuration. On Linux with a system linker, run
+`cargo build --locked --release -p repeaternet` from `rust/` and launch
+`./target/release/repeaternet`. The [Dockerfile](../Dockerfile) builds the
+static x86-64 Linux musl target on Alpine and runs it in a `scratch` image.
+Tagged releases package the Windows executable. [Release validation](../docs/RELEASE_VALIDATION.md)
 
-```powershell
-.\tools\build-rust.ps1
-.\rust\target\release\repeaternet.exe
-```
+The launcher prints the URL after binding and opening the catalog. A wildcard
+bind prints the corresponding loopback address for local use. Ctrl+C stops
+the server. Windows also accepts Ctrl+Break, and Unix accepts SIGTERM.
 
-The build script places the executable under `rust\target\release` and uses the workspace's static MSVC runtime configuration. You can copy the executable out of the checkout.
+### Command-line flags
 
-Linux builds need a system linker. Start in the repository root.
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--host <ip>` | `127.0.0.1` | Listen on an IPv4 or IPv6 address. `localhost` resolves to IPv4 loopback. Use `0.0.0.0` or `::` to bind the corresponding wildcard. |
+| `--port <port>` | `8000` | TCP port from 0 through 65535. Port 0 asks the OS to assign a port. |
+| `--data <directory>` | `RF_PLANNER_DATA` or the platform default below | Select the catalog and workspace data directory. The flag takes precedence. |
+| `--trusted-proxy <ip>` | `RF_PLANNER_TRUSTED_PROXY` or unset | Trust forwarded host and scheme from one socket peer IP. The flag takes precedence. |
+| `--no-browser` | Off | Serve without opening the default browser. |
+| `-h`, `--help` | Off | Print usage and exit. |
+| `-V`, `--version` | Off | Print the executable version and exit. |
 
-```sh
-cd rust
-cargo build --locked --release -p repeaternet
-./target/release/repeaternet
-```
+### Environment variables
 
-For a fully static binary that runs on any x86-64 distribution, install `musl-tools`, run `rustup target add x86_64-unknown-linux-musl`, and build with `--target x86_64-unknown-linux-musl`. The repository `Dockerfile` performs this build on Alpine and ships the binary in a `scratch` image.
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RF_PLANNER_DATA` | Platform default below | Select the data directory when `--data` is absent. |
+| `LOCALAPPDATA` | Windows account environment, otherwise unset | With no explicit data directory, use `%LOCALAPPDATA%/RepeaterNet/data` on Windows. An unset or empty value falls back to `web-data` relative to the working directory. |
+| `XDG_DATA_HOME` | Unset by RepeaterNet | On non-Windows systems, a nonempty value selects `$XDG_DATA_HOME/repeaternet` when the data directory is implicit. |
+| `HOME` | Account environment, otherwise unset | On non-Windows systems, use `$HOME/.local/share/repeaternet` if `XDG_DATA_HOME` is absent or empty. If neither is set and nonempty, use `web-data`. |
+| `RF_PLANNER_TOKEN` | Unset or empty | Require a shared token when nonempty. An invalid Unicode value prevents startup. |
+| `RF_PLANNER_TRUSTED_PROXY` | Unset | Accept `X-Forwarded-Host` and `X-Forwarded-Proto` from this peer IP when `--trusted-proxy` is absent. |
+| `RF_PLANNER_MAX_ACTIVE_JOBS` | `1` | Concurrent planner workers. The outstanding job bound is twice this value and includes active jobs. The server clamps the worker count to at least 1 and within the semaphore limit. |
+| `RF_PLANNER_RF_CACHE_ENTRIES` | `50000` | Process-wide route scalar-metric cache capacity. The server uses at least one entry. |
+| `RF_PLANNER_COVERAGE_CACHE_ENTRIES` | `50000` | Separate process-wide coverage scalar-metric cache capacity. The server uses at least one entry. |
+| `RF_PLANNER_TERRAIN_CACHE_MB` | Half of detected physical memory, reduced by the Linux cgroup limit when lower, or 1024 MiB if unavailable | Budget in MiB for resident decoded terrain windows shared by open rasters. Zero disables window retention. Reads still use the decoder's per-file block cache. |
+| `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` | `25` | Starting resolution for supplemental Kartverket terrain. Values must be 1 through 1,000 m. An invalid supplied number gives HTTP 422 from the coverage terrain endpoints. The tile planner can coarsen this spacing. |
+| `RF_PLANNER_CACHE_DIR` | `<data>/shared-cache` | Shared Kartverket and Overpass download cache root. |
+| `RF_PLANNER_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass interpreter used for route road access and overlays. |
+| `RF_PLANNER_BIND` | `127.0.0.1` | Compose host-side binding for port 8000. Set it in the shell or Compose `.env` file. The container listens on `0.0.0.0:8000`. |
 
-Run Cargo from `rust/` to pick up its Cargo configuration. Use `cargo test --workspace --locked` for the workspace tests and add `--release` to test the optimized binaries. The executable integration test starts the binary on loopback, uploads a checked-in terrain fixture, calculates a route and coverage, exercises paging, inspection and downloads, and reopens the project after restart.
+If the data directory is implicit and its catalog is absent, the launcher uses
+the preview directory if it contains `projects.sqlite3`. With
+`LOCALAPPDATA` on Windows, that is the adjacent `RepeaterNet/rust-preview`.
+With the non-Windows default or the `web-data` fallback, it is a
+`rust-preview` subdirectory of the default. Explicit data paths skip preview
+detection.
 
-The debug and release workspace suites ran on Windows x64 and in a `rust:1.100-slim` Linux x86-64 container. The Windows verifier copied the executable alone into a scratch directory and exercised headless launch, authentication, upload, routing, export, port contention, and restart. It reported only Windows system DLLs in the direct PE import table. [Windows verification workflow](../docs/RELEASE_VALIDATION.md)
+The supplied [Compose service](../compose.yaml) passes through
+`RF_PLANNER_TOKEN`. Add other server overrides to the service environment.
+The amd64 image runs as UID and GID 1000, sets `RF_PLANNER_DATA` and `TMPDIR`
+to `/data`, and sets `SSL_CERT_FILE` to
+`/etc/ssl/certs/ca-certificates.crt` for the bundled CA certificates.
+Compose mounts the named `planner-data` volume there. Rebuilding preserves
+that volume. Run one server process per data directory. For a consistent
+backup, stop the server and copy the complete directory or volume.
 
-The default address is `http://127.0.0.1:8000/`. The launcher prints the actual URL once it has bound the socket. Use `--host` for another listen address, `--port` to select a port, `--port 0` for an OS-assigned port, and `--no-browser` for a headless launch. Use Ctrl+C to stop the server gracefully. It also handles Ctrl+Break on Windows and SIGTERM on Linux.
+## HTTP reference
 
-Use `--data <directory>` or `RF_PLANNER_DATA` to select a data directory. The flag takes precedence. The default is `%LOCALAPPDATA%\RepeaterNet\data` on Windows and `${XDG_DATA_HOME:-$HOME/.local/share}/repeaternet` on Linux, with `web-data` as a fallback if the relevant environment variables are missing. If the default holds no `projects.sqlite3` but the earlier preview location (the `rust-preview` folder beside it on Windows, or inside it on Linux) does, the launcher keeps using the preview location and prints its path.
+All `/api/` routes, sign-in and UI assets are internal dashboard interfaces.
+Download endpoints produce the file formats described below. `/health` is
+the operator liveness check. The embedded OpenAPI document is a Python-era
+reference. Consult the Rust handlers for the current behavior.
 
-To reopen Python projects, stop the Python server, start the Rust executable with `--data` pointing at the same data directory, and use the same browser profile and host so it sends its existing `planner_workspace` cookie. The Rust server opens `projects.sqlite3` and its project directories directly. A new workspace cookie starts a new catalog workspace. Run one planner server at a time per data directory since project operations and active job state are coordinated within each process.
+API writes use JSON objects unless a row specifies a form, an empty body or a
+different shape. Dashboard geographic endpoint pairs use `[latitude, longitude]`.
+GeoJSON coordinates use longitude first. Application errors usually return
+`{"detail":"message"}`. JSON object validation can return a list in `detail`.
+Expect 404 for missing resources, 409 for stale identities or ineligible
+operations, 422 for invalid inputs and 429 for planner capacity limits.
+Axum also handles HEAD for GET routes, with an empty response body.
 
-Upload a DTM or approve a Kartverket download before starting a route. A DOM is optional. The automatic preflight can estimate missing route terrain, prepare it after approval, recheck readiness, and continue into route search. Uploads accept single-band projected-metre GeoTIFFs in 450 named CRSs and supported custom GeoKey encodings. Mosaic tiles need a common CRS. Kartverket operates in its configured Norwegian zones. The dashboard checks endpoint and selected-router ground samples separately from gaps along the endpoint line. A route link needs valid terrain samples along its own RF profile. [Supported CRS, encodings, and masks](crates/terrain/README.md)
+Queued jobs and their progress are polled over HTTP. Cancel requests signal the
+worker and return an acknowledgement. Poll for the terminal state. Running
+work stops at cancellation checkpoints, including after a blocking provider
+read returns. A full job queue returns 429. The standard API request body limit is 16 MiB. File and sign-in handlers use the limits listed below. Coverage estimate, preview, target
+assessment and CoreScope import take an immediately available worker and return
+429 if all workers are busy. Uploads have separate limits of two active uploads
+server-wide and one per workspace.
 
-`RF_PLANNER_MAX_ACTIVE_JOBS` sets the number of concurrent planner workers and defaults to one. The shared scheduler allows up to twice that number of outstanding route, terrain, coverage, and inspection jobs. Coverage estimate, preview, target assessment, and CoreScope import use an available worker and can return HTTP 429. Terrain uploads separately admit up to two staging or decode operations server-wide and one per workspace. A route plan's `candidates.parallel_workers` can be 1–64, and zero lets the optimizer choose. `RF_PLANNER_RF_CACHE_ENTRIES` sets the process-local route RF cache capacity and defaults to 50,000.
+### State and projects
 
-`RF_PLANNER_COVERAGE_CACHE_ENTRIES` sets the capacity of a separate process-local coverage RF cache and defaults to 50,000 entries. It reuses scalar link evaluations across previews, saved runs, exact-point inspection, target assessment, and height-scenario backbone checks. Entries are scoped to the project, terrain file revision, RF settings, site geometry, client radio, and effective profile spacing. Terrain revisions follow the dashboard's paths, sizes, and modification timestamps, so out-of-band edits must change that metadata. The coverage cache excludes serving-link profiles and missing-terrain results. Saved-run replay remains a separate disk-backed operation.
-
-GeoTIFF terrain is decoded once per 256 × 256 pixel window and kept in memory while a job runs, so repeated profile sampling does not reread the file. `RF_PLANNER_TERRAIN_CACHE_MB` caps the decoded terrain retained by all open rasters; it defaults to half of physical memory, or half of the container memory limit under cgroups. Beyond the cap, terrain is read from disk for each sampling batch, which is slower but gives identical results. `0` disables retention.
-
-## HTTP endpoints
-
-| Method and path | Behavior |
+| Method and path | Request and response |
 | --- | --- |
-| `GET /` | Serves the embedded dashboard and issues the isolated `planner_workspace` cookie when needed. Serves the sign-in page instead if a token is required and the browser has not signed in. |
-| `GET /assets/…`, `GET /leaflet/…` | Serves the dashboard HTML, CSS, JavaScript, Leaflet CSS and JavaScript, and the three checked-in Leaflet marker PNGs. Supports HEAD for these assets. |
-| `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, `GET /redoc` | Serves the embedded Python-baseline OpenAPI contract and discovery pages. Swagger UI and ReDoc load their rendering scripts from external CDNs. |
-| `POST /login` | Checks the `token` form field against `RF_PLANNER_TOKEN`. On success, issues the `planner_access` cookie and redirects to `/` with HTTP 303. An incorrect token returns 401. |
-| `GET /health` | Returns `{"status":"ok","runtime":"rust"}`. This liveness endpoint is available before sign-in and workspace initialization. |
-| `GET /api/state` | Returns the active plan, default settings, active and archived projects, terrain filenames, workspace storage, and any saved route summary. On startup, queued, running, or preparing route work is shown as interrupted with fresh process-local route identity. |
-| `POST /api/projects` | Creates and activates a named project with an optional plan. |
-| `POST /api/projects/autosave` | Saves the active project's plan and retains one previous revision. The optional project ID must match the active project. Route input changes invalidate the live route and clear the saved summary. Coverage-only edits retain the route. |
-| `POST /api/projects/recover-previous` | Swaps the current and previous plan and clears the saved route summary. |
-| `POST /api/projects/{id}/activate` | Opens an unarchived project in the current workspace. |
-| `POST /api/projects/{id}/duplicate` | Copies a saved plan and its route and coverage terrain, then opens the copy. |
-| `PATCH /api/projects/{id}` | Renames an unarchived project. Names are unique within a workspace, including archived rows. |
-| `POST /api/projects/{id}/archive` | Archives an inactive project and keeps its files. |
-| `POST /api/projects/{id}/restore` | Restores an archived project under the requested name and opens it. |
-| `DELETE /api/projects/{id}` | Permanently deletes an inactive project and its files. Protects projects stored at the workspace root. |
-| `GET /api/export/project` | Downloads the current saved plan as `route.webplan.json`. The dashboard's file picker imports plans through autosave. |
-| `POST /api/terrain/{dtm,dom}` | Streams one multipart `file` of up to 512 MiB, validates its metadata and every elevation and internal mask block, and publishes a generated filename and geographic bounds. |
-| `DELETE /api/terrain/{dtm,dom}` | Clears the selected terrain product and supplemental coverage terrain, and invalidates the route. |
-| `POST /api/terrain/estimate`, `POST /api/terrain/prepare` | Plan Kartverket DTM and optional DOM for the endpoints, corridor, and eligible fixed sites. Estimates include effective resolution, cache hits, and disk usage. Preparation queues a cancellable job and reports `terrain_ready` through `/api/state`. |
-| `POST /api/meshcore` | Fetches CoreScope repeaters and returns nearby router records with relay activity and freshness for import. |
-| `POST /api/terrain/coverage` | Returns required-site readiness, line gaps, DTM and DOM outlines, and surface availability. `route_only=true` checks route tiles alone. The default includes saved supplemental tiles. |
-| `POST /api/optimize` | Checks RF and candidate settings, selected router policies, and DTM coverage, resolves the search effort, and queues native route search. Optional `project_id` and `input_revision` guard against stale submissions. |
-| `POST /api/cancel`, `POST /api/stop-and-keep` | Cancel an active route job or retain its latest certified snapshot. Both accept an optional `job_id` and reject stale IDs. |
-| `GET /api/result` | Returns live route geometry, directional link budgets, terrain profiles, and certified alternatives. A completed search with no viable route returns `found: false`. Full results remain available during the current project session. After restart, `/api/state` exposes the saved summary and its staleness, and a rerun reconstructs detailed profiles. |
-| `POST /api/alternatives/{id}/select` | Selects an existing certified alternative and increments the snapshot version. |
-| `DELETE /api/cache` | Clears the active project's route RF cache when the workspace is idle. |
-| `GET /api/export/{csv,geojson,html}` | Downloads the active result's link CSV, site and link GeoJSON, or a standalone HTML route report with map, profiles, and eligible saved coverage. |
-| `POST /api/coverage/estimate`, `POST /api/coverage/preview` | Use the current certified snapshot and selected alternative to estimate the grid or return an approximate coverage preview. Preview limits are 256 cells and 4,096 source evaluations. Both can read saved supplemental terrain. Neither creates a saved run. |
-| `POST /api/coverage/terrain/estimate`, `POST /api/coverage/terrain/prepare` | Estimate or queue a supplemental Kartverket download for the certified alternative's coverage area. Installed DTM and DOM footprints are subtracted independently. Job status appears under `coverage_terrain_job` in `/api/state`. |
-| `POST /api/coverage/terrain/{job_id}/cancel` | Cancels the active supplemental terrain job. |
-| `POST /api/coverage/jobs`, `GET /api/coverage/jobs`, `GET /api/coverage/jobs/{job_id}` | Calculate or reuse coverage for the certified snapshot and saved settings, including optional source-height overrides. List the most recent 50 runs or fetch individual manifests. Interrupted work and stale identity are surfaced when reopening a project. |
-| `GET /api/coverage/jobs/{job_id}/cells`, `POST /api/coverage/jobs/{job_id}/cancel` | Page up to 256 stored cells at a time and cancel the active run. Completed chunks remain available after cancellation or interruption. |
-| `POST /api/coverage/inspect`, `GET /api/coverage/inspect/{job_id}`, `POST /api/coverage/inspect/{job_id}/cancel` | Queue and poll exact-point radio evaluation under current settings or a compatible saved run. A newer click supersedes the previous inspection. |
-| `POST /api/coverage/jobs/{job_id}/scenario`, `POST /api/coverage/compare` | Evaluate router failure against the active saved grid or compare aligned saved runs with a shared reference router. |
-| `POST /api/coverage/targets/import`, `PUT /api/coverage/targets` | Validate target GeoJSON for review or save it to the active plan. |
-| `POST /api/coverage/jobs/{job_id}/targets`, `GET /api/coverage/target-reports`, `POST /api/coverage/target-reports/compare` | Assess saved point, road and polygon targets, list saved reports, and compare compatible assessments. |
-| `GET /api/coverage/jobs/{job_id}/export.geojson`, `GET /api/coverage/jobs/{job_id}/export.json`, `GET /api/coverage/jobs/{job_id}/report.html` | Download coverage with optional target reports and scenario comparison on JSON and HTML. Partial and stale exports require explicit opt-ins. |
+| `GET /api/state` | Returns defaults, saved plan, active and archived project lists, storage bytes, historical route summary, route and supplemental terrain filenames, RF cache statistics, and `job`, `coverage_job` and `coverage_terrain_job` status. |
+| `POST /api/projects` | `{name, plan?}` creates and opens a project. Returns `{id, name, plan}`. |
+| `POST /api/projects/autosave` | `{plan, project_id?}` saves the active plan and keeps one previous revision when the plan changes. Returns `ok`, `project_id`, `updated_at` and `has_previous_revision`. Route input changes invalidate the result. Coverage-only edits keep it. |
+| `POST /api/projects/recover-previous` | Swaps current and previous plans and clears the route result. Returns `{id, name, plan}`. |
+| `POST /api/projects/{id}/activate` | Opens an unarchived project and returns `{id, name, plan}`. |
+| `POST /api/projects/{id}/duplicate` | `{name}` copies the current plan and route and coverage terrain trees. Opens the copy and returns `{id, name, plan}`. |
+| `PATCH /api/projects/{id}` | `{name}` renames an unarchived project. Returns `{id, name}`. Names are unique within a workspace across active and archived projects. |
+| `POST /api/projects/{id}/archive` | Archives an inactive project, retains its files and returns `{ok:true}`. |
+| `POST /api/projects/{id}/restore` | `{name}` restores an archived project, opens it and returns `{id, name, plan}`. |
+| `DELETE /api/projects/{id}` | Deletes an inactive project and its files and returns `{ok:true}`. Legacy projects stored at the workspace root are protected. |
 
-The optional `RF_PLANNER_TOKEN` gates the dashboard, assets, discovery, and API. Both cookies use `HttpOnly` and `SameSite=Strict`. The workspace cookie has a one-year lifetime. Mutating requests carrying an `Origin` header must match the effective request origin. A direct request to a loopback listener must use a loopback IP or localhost in `Host`.
+### Terrain
 
-For HTTPS, terminate TLS at the reverse proxy and set `--trusted-proxy <peer-IP>` or `RF_PLANNER_TRUSTED_PROXY` to the proxy's socket IP. Configure the proxy to overwrite `X-Forwarded-Host` with the public authority and `X-Forwarded-Proto` with the public scheme, using one value per header. Use this setting for a peer controlled by the operator. The server accepts those headers from the configured peer, checks writes against the forwarded origin, and adds `Secure` to both cookies when the scheme is HTTPS. Use `--no-browser` for a reverse-proxy deployment.
+| Method and path | Request and response |
+| --- | --- |
+| `POST /api/terrain/{kind}` | One multipart `file` of up to 512 MiB. `kind` is `dtm` or `dom`. Validates metadata, elevation blocks and internal mask blocks. Returns `{name, bounds}`, with bounds in latitude/longitude order. Invalidates the route and clears supplemental terrain on success. |
+| `DELETE /api/terrain/{kind}` | For `dtm` or `dom`, clears that product from route terrain and clears supplemental terrain. Invalidates the route and returns an acknowledgement. |
+| `POST /api/terrain/coverage` | Takes endpoints, candidate settings and router inputs for readiness. Returns `covered`, `uncovered_sites`, `line_gaps`, DTM and DOM outlines, and `surface_available`. Query `route_only=true` excludes supplemental terrain. |
+| `POST /api/terrain/estimate` | Takes endpoints, eligible fixed sites, candidate settings and optional `terrain: {requested_resolution_m, auto_resolution, include_dom}` (defaults 10 m, true, true). Returns Kartverket tile counts, effective resolution, expected cache hits, transfer and disk estimates. |
+| `POST /api/terrain/prepare` | Same inputs as the estimate. Returns job status with a terrain estimate. Poll `job` in `/api/state` for progress and `terrain_ready`. Use `POST /api/cancel` to cancel. The dashboard submits route search separately after readiness. |
+| `POST /api/coverage/terrain/estimate` | Takes the coverage request below. Returns supplemental tile and storage estimates after subtracting installed footprints independently for DTM and DOM. Includes DOM when route DOM is installed. |
+| `POST /api/coverage/terrain/prepare` | Same inputs. Returns a job to poll under `coverage_terrain_job` in `/api/state`, or a complete status with a null job ID if no download is needed. |
+| `POST /api/coverage/terrain/{id}/cancel` | Signals cancellation of the matching active supplemental download and returns `{ok:true}`. |
 
-## Terrain and road providers
+The [terrain crate guide](crates/terrain/README.md) lists GeoTIFF and CRS
+support. Tiles in a mosaic use one CRS. Route readiness samples required sites
+separately from gaps along the endpoint line. Certification checks the terrain
+along each RF link. Coverage reads route terrain first, followed by
+supplemental terrain. Kartverket preparation stages requested products before
+publishing a generation. Failed or cancelled transfers can leave reusable
+validated tiles in the shared cache.
 
-Kartverket and Overpass reuse validated downloads under `<data>/shared-cache` or `RF_PLANNER_CACHE_DIR`. Preparation stages both requested products before publishing a generation. Failed or cancelled jobs leave existing terrain available. Successful route terrain preparation adds a route generation and clears supplemental terrain. Clear existing route terrain before preparing a generation in a different CRS. Supplemental preparation retains the certified route and existing generations. `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` defaults to 25 m before automatic coarsening.
+### MeshCore and road providers
 
-Enable road access in candidate settings to limit generated sites by proximity to Overpass roads. Fixed sites remain eligible under their existing policy. Alternatives include indices into shared road polylines and nearest-road distances per router. Use `RF_PLANNER_OVERPASS_URL` to select an Overpass endpoint.
+| Method and path | Request and response |
+| --- | --- |
+| `POST /api/meshcore` | Takes `{a, b, corridor_width_m?}`. Filters CoreScope repeaters by corridor half-width in metres (1 through 500,000, default 15,000) and returns `{routers, count}` with relay activity and freshness on each router. The dashboard imports selected records into the plan. |
 
-Provider cancellation is cooperative and may wait for an upstream read or timeout. Supplemental downloads require Kartverket service for the route terrain CRS whenever the selected area has missing terrain.
+Road access is part of route search. It queries Overpass tiles to filter
+generated candidate sites by distance to mapped roads. Fixed sites follow
+their router policy. Route alternatives can reference shared road polylines
+and carry nearest-road distances for display.
+[Provider APIs and limits](crates/providers/README.md)
 
-## Saved coverage compatibility and release limits
+### Route jobs
 
-Native saved coverage becomes eligible for reuse after the server certifies the matching route again. Python coverage remains historical. It can be paged and exported with the applicable stale and partial opt-ins. Python-to-Python comparison requires complete compatible grids, verified embedded fingerprints, and an exact match to the current terrain paths, sizes, and nanosecond timestamps. Native and Python coverage models are compared within their respective formats. Paging retains saved footprints for custom CRSs. An export needing to transform custom coordinates requires the original fingerprint-matched terrain.
+| Method and path | Request and response |
+| --- | --- |
+| `POST /api/optimize` | Takes a route plan with `a`, `b`, and optional `rf`, `candidates`, `known_routers`, `manual_routers` and `search_effort`. Optional `project_id` and `input_revision` guard against stale submissions. Validates readiness, saves the plan and returns queued or running job status. Poll `job` in `/api/state`. |
+| `POST /api/cancel` | Empty body or `{job_id?}`. Cancels route search or route terrain preparation. A supplied ID must match the current job. Returns `{ok:true}`. |
+| `POST /api/stop-and-keep` | Same input and response as cancel. Requires a running search with a certified snapshot. Retains that snapshot and marks the search stopped and incomplete. |
+| `GET /api/result` | Latest certified snapshot or terminal result, including route geometry, directional link budgets, profiles, alternatives and snapshot version. A search with no viable route returns `found:false`. A matching completed or stopped native snapshot can be restored after reopening the project or restarting the server. |
+| `POST /api/alternatives/{id}/select` | Selects a certified alternative while idle, increments the snapshot version and returns the updated route result. Persists the selection. |
+| `DELETE /api/cache` | Clears this project's route RF metric cache while idle. Returns `{ok:true, deleted_entries}`. |
 
-The terrain crate documents the supported GeoTIFF and CRS subset. Live route details and both RF caches are process-local. Project-store startup reconciles pending catalog publication through a journal beside the SQLite catalog. Live provider tests, clean-machine Windows launch, interactive browser workflows, and broader performance validation remain release gates. [Terrain support](crates/terrain/README.md) · [Coverage benchmark](crates/coverage/README.md#cache-benchmark) · [Project-store recovery](crates/project-store/README.md) · [Migration inventory](../docs/history/RUST_MIGRATION.md) · [Release validation](../docs/RELEASE_VALIDATION.md)
+The server bounds route candidate grids at two million points and link profiles
+at 65,536 samples. `candidates.parallel_workers` accepts 0 through 64.
+Zero selects the optimizer's automatic worker count. See the
+[optimizer guide](crates/optimizer/README.md) for certification and cache details.
 
-The server runs raster decoding and search outside the workspace lock. It verifies project, job, route input and terrain identity before publishing certified snapshots. It saves the certified summary and terminal run state through `ProjectStore` before exposing the terminal status. The server caps candidate grids at two million points and link profiles at 65,536 samples to bound allocations during search.
+### Coverage
 
-## Release notices
+A coverage request supplies `snapshot_version`, the selected `alternative_id`
+and optional `settings` (defaults to coverage engine settings). `map_bounds` supplies `[south, west, north, east]` for the
+map-extent area mode. The server ties the request to the certified route
+and effective terrain. To start a saved run, save matching coverage settings
+to the plan first.
 
-The embedded CRS catalog includes data from the EPSG Geodetic Parameter Dataset v12.029, maintained by the International Association of Oil & Gas Producers (IOGP), as distributed with PyProj 3.8.0 and PROJ 9.8.1. [IOGP EPSG Dataset Terms of Use](https://iogp.georepository.com/terms-of-use.html) · [IOGP EPSG Dataset overview](https://www.iogp.org/workstreams/engineering/geomatics/geodesy/)
+| Method and path | Request and response |
+| --- | --- |
+| `POST /api/coverage/estimate` | Coverage request. Returns grid, source and terrain-availability counts and effective grid size without RF evaluation. |
+| `POST /api/coverage/preview` | Coverage request. Returns approximate cells and counts with a limit of 256 cells and 4,096 source evaluations. Estimate and preview leave saved runs unchanged. |
+| `POST /api/coverage/jobs` | Coverage request with optional `source_height_overrides` keyed by site ID. Returns job status and a `reused` flag when replaying a matching saved run. New runs stream ordered result chunks to disk. |
+| `GET /api/coverage/jobs` | Returns `{jobs}` with up to 50 saved run summaries for this project, including staleness and terrain compatibility. |
+| `GET /api/coverage/jobs/{job_id}` | Returns the saved manifest and current status, including stale reasons where applicable. |
+| `GET /api/coverage/jobs/{job_id}/cells` | Query `cursor` defaults to 0 and counts stored rows. `limit` defaults to 128 and accepts 1 through 256. Returns ordered cells, the next cursor, counts, and run state and staleness. |
+| `POST /api/coverage/jobs/{job_id}/cancel` | Cancels the matching active run and returns `{ok:true}`. Committed rows can still be paged after cancellation or interruption. |
+| `POST /api/coverage/inspect` | Takes `latitude`, `longitude` and either live coverage settings and route identity or `coverage_job_id` for a compatible completed run. Returns an inspection job. An accepted newer inspection supersedes the previous job. |
+| `GET /api/coverage/inspect/{job_id}` | Returns inspection status and, when complete, exact-point evaluation including source results and the serving-link profile when available. The server retains only the latest inspection in the workspace session. |
+| `POST /api/coverage/inspect/{job_id}/cancel` | Cancels the matching active inspection and returns `{ok:true}`. |
+
+Native saved coverage can be reused when a live or restored certified route
+matches its saved identity, including model, snapshot, terrain, settings and
+radio. Python coverage remains historical and can be paged and exported.
+Python-to-Python comparisons require matching live terrain provenance and
+compatible historical fingerprints, settings, grid and radio. Custom CRS
+pages can use saved footprints. Exports that need a custom transform require
+the original fingerprint-matched terrain.
+[Coverage store format and compatibility](crates/coverage-store/README.md)
+
+### Scenarios and targets
+
+| Method and path | Request and response |
+| --- | --- |
+| `POST /api/coverage/jobs/{job_id}/scenario` | `{failed_ids?, reference_id}` for the selected current, complete grid. Returns a router-failure connectivity summary and per-cell results. |
+| `POST /api/coverage/compare` | `{baseline_job_id, scenario_job_id, reference_id}`. Requires compatible complete runs and a shared reference router. Returns cell changes and aggregate counts. |
+| `POST /api/coverage/targets/import` | Multipart `file` of up to 5 MiB. Validates and returns normalized target GeoJSON for review. |
+| `PUT /api/coverage/targets` | Takes a GeoJSON FeatureCollection of point, road and polygon targets. Saves it to the active plan and returns `{ok, count, targets}`. |
+| `POST /api/coverage/jobs/{job_id}/targets` | Uses the saved targets and a current, complete run. Takes optional `road_spacing_m` (default 100, range 25 through 5,000). Returns and saves an assessment of target outcomes. |
+| `GET /api/coverage/target-reports` | Returns `{reports}` with up to 100 project report summaries including staleness. |
+| `POST /api/coverage/target-reports/compare` | `{baseline_report_id, scenario_report_id}` for two distinct compatible reports. Returns changes by target. |
+
+### Exports
+
+| Method and path | Request and response |
+| --- | --- |
+| `GET /api/export/{kind}` | `project` downloads the saved plan as `route.webplan.json`. The dashboard imports a plan through autosave. `csv`, `geojson` and `html` download link CSV, site and link GeoJSON or a standalone route report with profiles and eligible saved coverage. |
+| `GET /api/coverage/jobs/{job_id}/export.geojson` | Downloads grid and context features, with an optional target report. |
+| `GET /api/coverage/jobs/{job_id}/export.json` | Downloads manifest metadata and cells with optional target and comparison data. |
+| `GET /api/coverage/jobs/{job_id}/report.html` | Downloads a standalone printable coverage report with optional target and comparison data. |
+
+Coverage downloads accept `include_partial=true` for partial or unresolved
+data and `include_stale=true` for stale runs. Active runs must finish or stop
+before download. `target_report_id` selects an attached report. JSON and HTML
+accept `scenario_job_id` together with `reference_id` for an aligned run
+comparison. [Export formats and limits](crates/exports/README.md)
+
+### Auth, dashboard and discovery
+
+| Method and path | Request and response |
+| --- | --- |
+| `GET /` | Serves the dashboard and issues `planner_workspace` when needed. A visitor without the required access cookie receives the sign-in page. |
+| `POST /login` | URL-encoded or multipart `token` form, up to 16 KiB. Success sets `planner_access` and sends HTTP 303 to `/`. An incorrect token returns 401. |
+| `GET /health` | Returns `{"status":"ok","runtime":"rust"}` before sign-in or workspace initialization. |
+| `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, `GET /redoc` | Embedded discovery resources. Swagger UI and ReDoc load their rendering scripts from external CDNs. |
+| `GET /assets/{file}` | Registered dashboard files. Names are `index.html`, `login.html`, `style.css`, `meshcore.css`, `coverage.css`, `workspace.css`, `map.css`, `main_view_navigation.js`, `app.js` and `coverage_inspection.js`. |
+| `GET /leaflet/{file}` | Registered Leaflet files. Names are `leaflet.css`, `leaflet.js`, `images/marker-icon.png`, `images/marker-icon-2x.png` and `images/marker-shadow.png`. |
+
+Asset and discovery paths are matched in the router fallback. Both cookies use
+`HttpOnly` and `SameSite=Strict`. The workspace cookie lasts one year and
+identifies the project workspace. Keep the same browser profile and host to
+reopen it. A shared token controls instance access. Workspace cookies separate
+project catalogs within that instance. The server requires a loopback
+`Host` for direct requests to a loopback listener. Writes that carry
+`Origin` must match the effective host and scheme.
+
+For HTTPS, terminate TLS at a reverse proxy and configure
+`--trusted-proxy <peer-ip>`. Have the proxy overwrite
+`X-Forwarded-Host` and `X-Forwarded-Proto` with single values for the public
+authority and scheme. Forwarded HTTPS adds `Secure` to both cookies.
+
+## Notices
+
+The embedded CRS catalog includes data from the IOGP EPSG Geodetic Parameter
+Dataset v12.029 as distributed with PyProj 3.8.0 and PROJ 9.8.1.
+[IOGP dataset terms](https://iogp.georepository.com/terms-of-use.html)

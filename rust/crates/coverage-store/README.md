@@ -9,9 +9,8 @@ oracles from the removed Python implementation.
 
 1. Resolve the authorized project directory and ID through the project catalog.
    Call `Store::open(directory, project_id)`. Use a writable data directory
-   controlled by the service. Call `recover_interrupted` after taking exclusive
-   ownership of the project's worker on startup. Calling it during an active
-   worker would interrupt that worker's persisted run.
+   controlled by the service. Call `recover_interrupted` on first use after reopening the project, before starting a worker. An active
+   worker would have its persisted run interrupted by this call.
 2. Derive `CurrentIdentity::new` from the live certified alternative,
    `snapshot_version`, project ID, and current route, terrain, settings, and
    radio. Return no current identity when the certified route is missing or
@@ -76,8 +75,8 @@ oracles from the removed Python implementation.
    `comparison_mismatch` exposes the identity part without disk access.
 8. Wrap disk-backed export generation with `write_export` at a trusted
    server-selected path. It streams through a 100 MiB writer and publishes the
-   file atomically. The HTTP layer owns response streaming and cleanup after
-   a successful export is consumed.
+   file atomically. The HTTP layer owns response streaming. The current server uses the export
+   crate's temporary spool for download responses.
 
 Use blocking workers for store calls in an async server. A visitor runs under
 the project lock and must not call back into the store. The HTTP layer owns
@@ -101,25 +100,6 @@ the first of `persisted_stale`, `legacy_project_changed`,
 `legacy_python_route_not_current`. Older Python model versions report
 `unsupported_legacy_model_or_format`.
 
-### API changes in this revision
-
-These are compatible extensions. Existing signatures used by the server
-(`Store`, `Error`, `CurrentIdentity::{new, matches, route_matches}`, `FORMAT`,
-`fingerprint`, `route_fingerprint`, `page`) are unchanged.
-
-- Added `reason`, `job_stale_reason`, `comparison_mismatch`,
-  `CurrentIdentity::{stale_reason, route_stale_reason, terrain_fingerprint}`,
-  `Store::comparison`, `python_canonical_json`, `python_mtime_ns`,
-  `python_terrain_entry`, and `LegacyIdentity::{from_fingerprint, terrain}`.
-- Behavior changes. `Page::stale_reason` now carries a precise reason instead
-  of `native_current_identity_mismatch`. Native identity, reuse, and `start`
-  reject the Python model version. Python manifests always serialize with
-  `stale: true`.
-- `LegacyIdentity::with_certified_route` and `route_matches` were removed
-  before any release. They never compiled, because of an invalid escape.
-  `LegacyIdentity::stale_reason` now returns `&'static str`, because a Python
-  run is never current (see below).
-
 ## Disk and identity guarantees
 
 - Preserves Python artifact names and field shapes. The current manifest is
@@ -127,7 +107,7 @@ These are compatible extensions. Existing signatures used by the server
   `coverage-jobs/<id>.json` on rollover. The current manifest takes precedence
   over a same-ID archive. Results use `coverage-results/<id>.jsonl` and reports
   use `coverage-target-reports/<job-id>-<report-id>.json`.
-- A project file lock serializes cooperating native readers and writers.
+- The `.coverage-store.lock` project file lock serializes cooperating native readers and writers.
   Result data is synced before atomic manifest replacement. The manifest
   watermark makes a torn or otherwise uncommitted result tail invisible to
   native readers, and the next append or startup recovery truncates it.
@@ -235,18 +215,15 @@ requires `radio_fingerprint` and the embedded hashes, which is stricter.
   represented in Rust. Such manifests fail with `Error::Json`.
 - An unreadable current `coverage-job.json` (corrupt JSON or wrong project)
   returns an error from every operation that reads it. Python ignores a bad
-  manifest on restore. The server should map this error, or quarantine the
-  file, as product policy decides.
+  manifest on restore. The dashboard state handler can omit unavailable saved coverage status.
+  Endpoints that explicitly read the corrupt manifest can still fail.
 - The goldens were generated on Windows only. Linux evidence covers
   re-running the Rust side, not generating new goldens with Python on Linux.
 
 ## Verification
 
-Run `cargo test -p repeaternet-coverage-store` and
-`cargo clippy -p repeaternet-coverage-store --all-targets -- -D warnings`.
-Add `--target x86_64-unknown-linux-gnu` for the Linux lint. To work without
-the shared workspace, copy this crate into a temporary workspace with the
-root `Cargo.lock`. The integration tests include Python-format data, Python
+From `rust/`, run `cargo test --locked -p repeaternet-coverage-store` and
+`cargo clippy --locked -p repeaternet-coverage-store --all-targets -- -D warnings`. The integration tests include Python-format data, Python
 goldens, project and path isolation, a real Windows junction or Unix symlink,
 interrupted and competing writes, reuse identity and corrupt/truncated
 results, legacy/native stale reasons and comparisons, and storage quotas.

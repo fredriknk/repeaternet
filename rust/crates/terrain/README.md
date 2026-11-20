@@ -51,12 +51,21 @@ Run from `rust` using `cargo test --locked -p repeaternet-terrain` and `cargo cl
 
 The optional `kartverket_50m_matches_rasterio` test reads the documented local 50 m NHM cache fixture. Set `REPEATERNET_TERRAIN_KARTVERKET_FIXTURE` to its absolute path and run `cargo test --locked -p repeaternet-terrain kartverket_50m_matches_rasterio -- --ignored`. The source raster stays in the local cache. [Kartverket fixture identity and checksum](../../../docs/fixtures/kartverket-nhm-25832-50m.md)
 
-All 14 tests, including the cached Kartverket test, and Clippy with warnings denied passed in an isolated terrain and RF workspace on Rust 1.100, on Windows x86-64 MSVC and Linux x86-64 (Docker). The Windows test executable used the workspace's static CRT setting. Its PE import table listed only Windows system DLLs. The assembled dashboard still needs clean-machine verification.
+## Server integration
 
-## Server integration handoff
+Use `RasterMetadata::footprint()` for actual raster corners on the map.
+`bounds` gives the axis-aligned envelope. The server stores geographic cell
+footprints for native runs in custom CRSs. If a page or export needs to
+reconstruct a custom transform, it uses the original fingerprint-matched
+terrain. Named runs can reconstruct it from the saved EPSG code.
+[Coverage projection](../web-server/src/coverage_runs.rs)
 
-- Route, preview, and inspection callers that construct `Transformer::new(terrain.crs())` already have the full CRS. For outlines of rotated rasters, use `RasterMetadata::footprint()` for real raster corners. `bounds` describes the axis-aligned envelope.
-- `coverage_runs::transform` currently reconstructs a transform from an EPSG string in the saved manifest. For custom CRSs, compute and persist `footprint_latlng` at evaluation time with `cell_footprint(cell, grid.bounds, grid.effective_cell_size_m, &transform)`, and use those footprints in paging and scenario responses. Keep the existing EPSG-string path for historical named runs. If a historical custom run needs reconstruction, use its fingerprint-matched original raster. Treat a missing or mismatched raster as unavailable for reprojection.
-- Keep Kartverket zone selection and service availability independent of the supported upload CRSs. A supplemental plan that requires tiles in an unsupported WCS CRS must report provider unavailability. Downloaded tiles can enter a mosaic only when their CRS matches the route terrain.
-- The named constants, CRS constructor and transform APIs, and raster APIs remain compatible at current call sites. The resumed `TerrainError::MismatchedCrs` variant stores `actual` as `Box<TerrainCrs>`. Code constructing that error would wrap the value in `Box::new`, and code reading the CRS value can dereference it. No sibling crate currently constructs or destructures that variant.
-- `proj4rs` provides native thread safety and the required projections without optional features. Carry the EPSG dataset acknowledgment and terms link into release notices. [IOGP EPSG Dataset Terms of Use](https://iogp.georepository.com/terms-of-use.html)
+The shared resident-window budget defaults to half the detected RAM or lower
+Linux cgroup limit, with a 1 GiB fallback. When a window cannot fit, the
+sampler reads the required rectangle within a batch. Set
+`RF_PLANNER_TERRAIN_CACHE_MB=0` to disable resident-window retention. The
+per-file decoder block cache still applies. [Memory budget](src/raster/memory.rs)
+
+Kartverket zone selection is independent of upload CRS support. Supplemental
+downloads require service for the route terrain CRS if the area has missing
+tiles. [Provider guide](../providers/README.md)
