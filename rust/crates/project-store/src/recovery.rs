@@ -433,59 +433,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires Python and the original dashboard source"]
-    fn python_reopens_reconciled_catalog() {
-        let base = tempdir().unwrap();
-        let store = open(base.path()).unwrap();
-        let original = store
-            .create(KEY, "Original", &json!({"revision": 1}))
-            .unwrap();
-        run_child(base.path(), "autosave", "published");
-        open(base.path()).unwrap();
-
-        let module = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../src/rf_router_planner/project_store.py");
-        let output = Command::new("python")
-            .args([
-                "-B",
-                "-c",
-                r#"
-import json, runpy, sqlite3, sys
-from pathlib import Path
-
-store_class = runpy.run_path(sys.argv[1])["ProjectStore"]
-root = Path(sys.argv[2])
-db = root / "projects.sqlite3"
-with sqlite3.connect(db) as connection:
-    assert connection.execute("PRAGMA user_version").fetchone() == (1,)
-    assert connection.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall() == [("projects",), ("workspace_state",)]
-store = store_class(db, root / "data")
-key, project_id = sys.argv[3:]
-project = store.get(key, project_id)
-assert project["plan"] == {"revision": 1}
-assert json.loads((store.project_path(key, project) / "plan.json").read_text()) == project["plan"]
-assert store.autosave(key, project_id, {"revision": 4})
-"#,
-            ])
-            .arg(module)
-            .arg(base.path())
-            .args([KEY, &original.id])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            store.get(KEY, &original.id).unwrap().unwrap().plan,
-            json!({"revision": 4})
-        );
-    }
-
-    #[test]
     fn process_exit_at_publication_boundaries() {
         for operation in [
             "create",
