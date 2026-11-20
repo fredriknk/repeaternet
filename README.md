@@ -85,6 +85,8 @@ provider integrations, supported terrain formats and compatibility limits, and
   providers and compatibility limits.
 - [Development and architecture](docs/DEVELOPMENT.md): source layout, tests,
   CI, packaging, deployment, and benchmark reproduction.
+- [UX design rules](docs/UX_DESIGN_RULES.md): binding rules for dashboard and
+  user-facing changes; agents start from [AGENTS.md](AGENTS.md).
 - [Release validation](docs/RELEASE_VALIDATION.md): executable verification,
   packaging and the clean-machine test.
 - [Current roadmap](docs/ROADMAP.md): unfinished acceptance checks and engineering
