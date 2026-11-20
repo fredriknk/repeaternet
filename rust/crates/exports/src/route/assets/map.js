@@ -2,9 +2,11 @@
 const data = JSON.parse(document.getElementById('route-map-data').textContent);
 const map = L.map('route-map', {attributionControl: false, maxZoom: 19});
 L.control.attribution({prefix: false}).addTo(map);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
-  maxZoom: 19
+// OpenStreetMap blocks tile requests without a Referer, which a report opened
+// from disk cannot send. Kartverket's open topographic cache has no such rule.
+L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
+  attribution: '© <a href="https://www.kartverket.no/">Kartverket</a>',
+  maxZoom: 18
 }).addTo(map);
 
 if (data.coverage) {
@@ -15,7 +17,12 @@ if (data.coverage) {
   L.control.layers({}, {'Coverage grid': overlay}, {collapsed: false}).addTo(map);
 }
 
-L.polyline(data.roads, {color: '#525c62', weight: 2, opacity: 0.85}).addTo(map);
+L.polyline(data.roads, {
+  color: '#525c62', weight: 2, opacity: 0.85,
+  attribution: data.roads.length
+    ? 'Roads © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+    : null
+}).addTo(map);
 for (const link of data.links) {
   L.polyline(link.coordinates, {color: link.color, weight: 4, dashArray: link.dashed ? '7 6' : null})
     .addTo(map);

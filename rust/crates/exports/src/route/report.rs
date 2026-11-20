@@ -599,7 +599,7 @@ fn map_section(
     }
     write!(
         out,
-        "<p class=\"muted\">Basemap tiles require internet access.</p></section>"
+        "<p class=\"muted\">Basemap: Kartverket topographic map. Tiles require internet access.</p></section>"
     )?;
     Ok(Some(
         json!({"sites": markers, "links": links, "roads": roads,
