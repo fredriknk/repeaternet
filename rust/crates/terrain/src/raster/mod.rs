@@ -1,6 +1,7 @@
 mod array;
 mod geokeys;
 mod geotiff;
+mod memory;
 
 pub use array::ArrayTerrain;
 pub use geotiff::{GeoTiff, RasterMetadata};

@@ -134,7 +134,7 @@ pub fn router(app: AppState) -> Router {
 }
 
 pub async fn health() -> Json<Value> {
-    Json(json!({"status": "ok", "runtime": "rust", "mode": "preview"}))
+    Json(json!({"status": "ok", "runtime": "rust"}))
 }
 
 pub fn problem(status: StatusCode, detail: &str) -> Response {

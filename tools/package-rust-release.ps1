@@ -124,17 +124,18 @@ $lockHash = (Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash
 $targetTriple = 'x86_64-pc-windows-msvc'
 $cargo = Find-RustTool 'cargo.exe'
 $rustc = Find-RustTool 'rustc.exe'
-$toolchainVersion = & $rustc --version
-if ($LASTEXITCODE -ne 0) { throw 'Could not identify the Rust toolchain.' }
-$sysroot = & $rustc --print sysroot
-if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Rust toolchain license notices.' }
-$rustNotices = Join-Path $sysroot 'share/doc/rust/COPYRIGHT-library.html'
-if (-not (Test-Path -LiteralPath $rustNotices -PathType Leaf)) {
-    throw 'The Rust standard library copyright file is missing. Install the matching rust-docs component.'
-}
 
 Push-Location -LiteralPath (Split-Path -Parent $manifest)
 try {
+    $toolchainVersion = & $rustc --version
+    if ($LASTEXITCODE -ne 0) { throw 'Could not identify the Rust toolchain.' }
+    $sysroot = & $rustc --print sysroot
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Rust toolchain license notices.' }
+    $rustNotices = Join-Path $sysroot 'share/doc/rust/COPYRIGHT-library.html'
+    if (-not (Test-Path -LiteralPath $rustNotices -PathType Leaf)) {
+        throw 'The Rust standard library copyright file is missing. Install the matching rust-docs component.'
+    }
+
     $metadataJson = & $cargo metadata --manifest-path $manifest --locked --offline --format-version 1 --filter-platform $targetTriple
     if ($LASTEXITCODE -ne 0) { throw 'Locked offline Cargo metadata failed. Use the build workspace and prefetch its locked dependencies.' }
     $metadata = $metadataJson | ConvertFrom-Json

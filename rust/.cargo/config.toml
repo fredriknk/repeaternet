@@ -1,2 +1,6 @@
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Rust links the musl CRT statically by default. Use musl-tools on glibc hosts.
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"

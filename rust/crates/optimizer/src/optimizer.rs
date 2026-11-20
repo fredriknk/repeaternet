@@ -1,6 +1,6 @@
 use crate::cache::CacheKey;
 use crate::candidates::{generate, sample};
-use crate::parallel::{for_each_ordered, worker_count};
+use crate::parallel::{for_each_batched, worker_count};
 use crate::screening::screened_pairs;
 use crate::topology::solve_graph;
 use crate::{
@@ -405,6 +405,7 @@ impl<'a> RouteOptimizer<'a> {
         RfEvaluation {
             evaluator: self.evaluator.unwrap_or(builtin),
             cache: self.cache,
+            builtin: self.evaluator.is_none(),
         }
     }
 
@@ -645,9 +646,24 @@ fn validate_search_settings(settings: &CandidateSettings) -> Result<(), Optimiza
 struct RfEvaluation<'a> {
     evaluator: &'a dyn LinkEvaluation,
     cache: Option<(&'a LinkMetricsCache, &'a str, &'a str)>,
+    builtin: bool,
 }
 
 impl RfEvaluation<'_> {
+    fn plausible(
+        &self,
+        sites: &[PlanningSite],
+        (a, b): Pair,
+        max_distance: Option<f64>,
+    ) -> Result<bool, OptimizationError> {
+        let (left, right) = (&sites[a].rf, &sites[b].rf);
+        let distance = left.distance_to(right);
+        if distance == 0.0 || max_distance.is_some_and(|limit| distance > limit) {
+            return Ok(false);
+        }
+        Ok(self.evaluator.optimistic_margin_db(left, right)? >= 0.0)
+    }
+
     fn evaluate(
         &self,
         source: &Site,
@@ -837,10 +853,11 @@ impl Search<'_, '_> {
         let cancellation = self.hooks.cancellation;
         let (rf, sites, links, hooks) = (&self.rf, &self.sites, &mut self.links, &mut self.hooks);
         let step = self.settings.coarse_sample_step_m;
-        for_each_ordered(
+        let cancelled = || cancellation.is_some_and(|poll| poll() != Cancellation::Continue);
+        for_each_batched(
             &plausible,
             worker_count(self.settings.parallel_workers, total),
-            &|| cancellation.is_some_and(|poll| poll() != Cancellation::Continue),
+            (cancellation.is_some() || !rf.builtin).then_some(&cancelled),
             |key, cancelled| rf.search_pair(sites, key, step, false, cancelled),
             |key, link| {
                 if let Some(link) = link.filter(|link| link.valid) {
@@ -852,14 +869,8 @@ impl Search<'_, '_> {
                 hooks.notify(Stage::EvaluatingRfLinks, done, total);
             },
         )?;
-        for key in retry {
-            if self.hooks.cancelled() {
-                return Ok(());
-            }
-            // Coarse/medium classifications cannot safely prove RF failure.
-            self.certify(key, true)?;
-        }
-        Ok(())
+        // Coarse/medium classifications cannot safely prove RF failure.
+        self.certify_pairs(&retry, |_, _, _| {})
     }
 
     fn low_hop(&mut self) -> Result<(), OptimizationError> {
@@ -876,20 +887,23 @@ impl Search<'_, '_> {
             let count = b - 1;
             self.hooks
                 .notify(Stage::CheckingEndpointVisibleCandidates, 0, count);
-            for i in 1..b {
-                if self.hooks.cancelled() {
-                    return Ok(());
+            let pairs: Vec<_> = (1..b).flat_map(|i| [(a, i), (i, b)]).collect();
+            self.certify_pairs(&pairs, |(left, right), valid, hooks| {
+                if left == a {
+                    if valid {
+                        from_a.push(right);
+                    }
+                    return;
                 }
-                if self.certify((a, i), true)? {
-                    from_a.push(i);
+                if valid {
+                    to_b.push(left);
                 }
-                if self.certify((i, b), true)? {
-                    to_b.push(i);
+                if left % 10 == 0 || left == count {
+                    hooks.notify(Stage::CheckingEndpointVisibleCandidates, left, count);
                 }
-                if i % 10 == 0 || i == count {
-                    self.hooks
-                        .notify(Stage::CheckingEndpointVisibleCandidates, i, count);
-                }
+            })?;
+            if self.hooks.cancelled() {
+                return Ok(());
             }
             if maximum >= 2 && !from_a.iter().any(|node| to_b.binary_search(node).is_ok()) {
                 let total = from_a.len().saturating_mul(to_b.len());
@@ -1003,30 +1017,91 @@ impl Search<'_, '_> {
         } else {
             None
         };
+        Ok(Self::store_certification(
+            &mut self.links,
+            &mut self.final_checked,
+            key,
+            link,
+            remember_failure,
+        ))
+    }
+
+    /// Certify distinct pairs and apply their results in input order.
+    fn certify_pairs(
+        &mut self,
+        pairs: &[Pair],
+        mut accept: impl FnMut(Pair, bool, &mut SearchHooks<'_>),
+    ) -> Result<(), OptimizationError> {
+        let workers = worker_count(self.settings.parallel_workers, pairs.len());
+        if workers <= 1 || !self.rf.builtin {
+            for &key in pairs {
+                if self.hooks.cancelled() {
+                    break;
+                }
+                let valid = self.certify(key, true)?;
+                if self.hooks.cancelled() {
+                    break;
+                }
+                accept(key, valid, &mut self.hooks);
+            }
+            return Ok(());
+        }
+
+        let tasks: Vec<_> = pairs
+            .iter()
+            .map(|&key| (key, self.final_checked.contains(&key)))
+            .collect();
+        let cancellation = self.hooks.cancellation;
+        let cancelled = || cancellation.is_some_and(|poll| poll() != Cancellation::Continue);
+        let (rf, sites, hooks) = (&self.rf, &self.sites, &mut self.hooks);
+        let (links, checked) = (&mut self.links, &mut self.final_checked);
+        let max_distance = self.settings.maximum_link_distance_m;
+        let step = self.settings.final_sample_step_m;
+        for_each_batched(
+            &tasks,
+            workers,
+            cancellation.is_some().then_some(&cancelled),
+            |(key, already_checked), cancelled| {
+                if already_checked || !rf.plausible(sites, key, max_distance)? {
+                    return Ok(None);
+                }
+                Ok(rf
+                    .search_pair(sites, key, step, false, cancelled)?
+                    .filter(|link| link.valid))
+            },
+            |(key, already_checked), link| {
+                let valid = if already_checked {
+                    links.contains_key(&key)
+                } else {
+                    Self::store_certification(links, checked, key, link, true)
+                };
+                accept(key, valid, hooks);
+            },
+        )
+    }
+
+    fn store_certification(
+        links: &mut BTreeMap<Pair, LinkResult>,
+        checked: &mut BTreeSet<Pair>,
+        key: Pair,
+        link: Option<LinkResult>,
+        remember_failure: bool,
+    ) -> bool {
         if remember_failure || link.is_some() {
-            self.final_checked.insert(key);
+            checked.insert(key);
         }
         if let Some(link) = link {
-            self.links.insert(key, link);
-            Ok(true)
+            links.insert(key, link);
+            true
         } else {
-            self.links.remove(&key);
-            Ok(false)
+            links.remove(&key);
+            false
         }
     }
 
-    fn plausible(&self, (a, b): Pair) -> Result<bool, OptimizationError> {
-        let (left, right) = (&self.sites[a].rf, &self.sites[b].rf);
-        let distance = left.distance_to(right);
-        if distance == 0.0
-            || self
-                .settings
-                .maximum_link_distance_m
-                .is_some_and(|limit| distance > limit)
-        {
-            return Ok(false);
-        }
-        Ok(self.rf.evaluator.optimistic_margin_db(left, right)? >= 0.0)
+    fn plausible(&self, key: Pair) -> Result<bool, OptimizationError> {
+        self.rf
+            .plausible(&self.sites, key, self.settings.maximum_link_distance_m)
     }
 
     fn evaluate(

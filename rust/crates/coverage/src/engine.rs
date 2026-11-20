@@ -17,9 +17,10 @@ use crate::{
     area_bounds_wgs84,
     cache::{check_cancelled, CacheContext, Metrics, RadioKey},
     grid::{is_endpoint, make_grid},
-    invalid, CoverageArea, CoverageCell, CoverageError, CoverageGrid, CoverageMetricsCache,
-    CoverageMode, CoverageSettings, CoverageSourceResult, CoverageState, MapBounds, Rejection,
-    MAX_SOURCES,
+    invalid,
+    parallel::{for_each_ordered, for_each_serial, worker_count},
+    CoverageArea, CoverageCell, CoverageError, CoverageGrid, CoverageMetricsCache, CoverageMode,
+    CoverageSettings, CoverageSourceResult, CoverageState, MapBounds, Rejection, MAX_SOURCES,
 };
 
 /// Preserve certified solution order, appending optional endpoints in candidate order.
@@ -145,6 +146,7 @@ pub struct CoverageEvaluator<'a, T: TerrainSource + ?Sized> {
     pub(crate) terrain: &'a T,
     pub(crate) rf: &'a RfSettings,
     pub(crate) transform: &'a Transformer,
+    pub(crate) parallel_workers: usize,
     cache: Option<CacheContext<'a>>,
 }
 
@@ -154,8 +156,16 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
             terrain,
             rf,
             transform,
+            parallel_workers: 0,
             cache: None,
         }
+    }
+
+    /// Limit workers for grid and road-sample evaluation. Zero selects automatically.
+    /// One evaluates on the calling thread.
+    pub fn with_parallel_workers(mut self, workers: usize) -> Self {
+        self.parallel_workers = workers;
+        self
     }
 
     /// Attach a cache for this project and terrain snapshot. Callers must
@@ -212,20 +222,60 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
 
     /// Cancellation during grid/terrain preparation returns Cancelled. Once evaluation
     /// begins, cancellation returns the completed prefix and flushes any pending full cells.
+    /// Workers may finish out of order. Callbacks run in cell order on the calling thread.
     pub fn calculate(
         &self,
         sources: &[Site],
         settings: &CoverageSettings,
         area: &CoverageArea,
         options: RunOptions<'_>,
+    ) -> Result<CoverageGrid, CoverageError>
+    where
+        T: Sync,
+    {
+        let (mut run, cells) = self.prepare_grid(sources.len(), settings, area, options)?;
+        let workers = worker_count(
+            self.parallel_workers,
+            cells.len(),
+            run.grid.terrain_available_cells * sources.len(),
+        );
+        for_each_ordered(
+            cells,
+            workers,
+            run.options.cancelled,
+            self.cell_evaluator(sources, settings),
+            |cell| run.accept(cell),
+        )?;
+        run.finish()
+    }
+
+    /// Calculate coverage on the calling thread, including for non-`Sync` terrain.
+    /// Uses the same chunk, progress and cancellation semantics as `calculate`.
+    pub fn calculate_serial(
+        &self,
+        sources: &[Site],
+        settings: &CoverageSettings,
+        area: &CoverageArea,
+        options: RunOptions<'_>,
     ) -> Result<CoverageGrid, CoverageError> {
-        let RunOptions {
-            cancelled,
-            mut progress,
-            mut on_chunk,
-            chunk_size,
-        } = options;
-        if chunk_size == 0 {
+        let (mut run, cells) = self.prepare_grid(sources.len(), settings, area, options)?;
+        for_each_serial(
+            cells,
+            run.options.cancelled,
+            self.cell_evaluator(sources, settings),
+            |cell| run.accept(cell),
+        )?;
+        run.finish()
+    }
+
+    fn prepare_grid<'run>(
+        &self,
+        source_count: usize,
+        settings: &CoverageSettings,
+        area: &CoverageArea,
+        options: RunOptions<'run>,
+    ) -> Result<(GridRun<'run>, impl ExactSizeIterator<Item = CellInput>), CoverageError> {
+        if options.chunk_size == 0 {
             return Err(invalid("Coverage chunk size must be positive"));
         }
         let (mut grid, cells) = make_grid(
@@ -233,20 +283,36 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
             self.transform,
             area,
             settings,
-            sources.len(),
-            cancelled,
+            source_count,
+            options.cancelled,
         )?;
-        let samples = self.ground_samples(&cells, cancelled)?;
+        let samples = self.ground_samples(&cells, options.cancelled)?;
         grid.terrain_available_cells = samples.iter().filter(|value| value.is_finite()).count();
         let mut ground = samples.into_iter();
-        let mut pending = Vec::with_capacity(chunk_size.min(grid.requested_cells));
+        let cells = cells.into_iter().map(move |cell| {
+            let elevation = (cell.state != CoverageState::OutsideArea)
+                .then(|| ground.next().expect("ground sample for every inside cell"));
+            (cell, elevation)
+        });
+        let pending = Vec::with_capacity(options.chunk_size.min(grid.requested_cells));
+        Ok((
+            GridRun {
+                grid,
+                pending,
+                options,
+            },
+            cells,
+        ))
+    }
+
+    fn cell_evaluator<'run>(
+        &'run self,
+        sources: &'run [Site],
+        settings: &'run CoverageSettings,
+    ) -> impl Fn(CellInput, &dyn Fn() -> bool) -> Result<CoverageCell, CoverageError> + 'run {
         let client = settings.client.as_radio_budget();
-        for mut cell in cells {
-            if cancelled() {
-                break;
-            }
-            if cell.state != CoverageState::OutsideArea {
-                let elevation = ground.next().expect("ground sample for every inside cell");
+        move |(mut cell, elevation), cancelled| {
+            if let Some(elevation) = elevation {
                 if elevation.is_finite() {
                     let target = client_site(
                         format!("coverage-cell-{}", cell.index),
@@ -255,38 +321,13 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
                         None,
                         &client,
                     );
-                    match self
-                        .evaluate_cell(&mut cell, sources, &target, settings, &client, cancelled)
-                    {
-                        Err(CoverageError::Cancelled) => break,
-                        result => result?,
-                    }
+                    self.evaluate_cell(&mut cell, sources, &target, settings, &client, cancelled)?;
                 } else {
                     cell.state = CoverageState::UnknownTerrain;
                 }
             }
-            match cell.state {
-                CoverageState::Covered | CoverageState::Uncovered => grid.evaluated_cells += 1,
-                CoverageState::UnknownTerrain => grid.unknown_cells += 1,
-                CoverageState::Unresolved => grid.unresolved_cells += 1,
-                _ => {}
-            }
-            grid.unresolved_source_evaluations += cell.unresolved_sources;
-            grid.completed_cells += 1;
-            pending.push(cell);
-            if pending.len() == chunk_size {
-                publish(&mut pending, &mut grid.cells, &mut on_chunk)?;
-            }
-            if grid.completed_cells.is_multiple_of(20)
-                || grid.completed_cells == grid.requested_cells
-            {
-                if let Some(report) = &mut progress {
-                    report(grid.completed_cells, grid.requested_cells);
-                }
-            }
+            Ok(cell)
         }
-        publish(&mut pending, &mut grid.cells, &mut on_chunk)?;
-        Ok(grid)
     }
 
     fn ground_samples(
@@ -516,20 +557,55 @@ pub(crate) fn profile_limit_detail(sampling: ProfileSampling) -> String {
     )
 }
 
-fn publish(
-    pending: &mut Vec<CoverageCell>,
-    retained: &mut Vec<CoverageCell>,
-    on_chunk: &mut Option<&mut CellChunkSink<'_>>,
-) -> Result<(), CoverageError> {
-    if !pending.is_empty() {
-        if let Some(sink) = on_chunk {
-            sink(pending)?;
-            pending.clear();
-        } else {
-            retained.append(pending);
+type CellInput = (CoverageCell, Option<f64>);
+
+struct GridRun<'a> {
+    grid: CoverageGrid,
+    pending: Vec<CoverageCell>,
+    options: RunOptions<'a>,
+}
+
+impl GridRun<'_> {
+    fn accept(&mut self, cell: CoverageCell) -> Result<(), CoverageError> {
+        match cell.state {
+            CoverageState::Covered | CoverageState::Uncovered => self.grid.evaluated_cells += 1,
+            CoverageState::UnknownTerrain => self.grid.unknown_cells += 1,
+            CoverageState::Unresolved => self.grid.unresolved_cells += 1,
+            _ => {}
         }
+        self.grid.unresolved_source_evaluations += cell.unresolved_sources;
+        self.grid.completed_cells += 1;
+        self.pending.push(cell);
+        if self.pending.len() == self.options.chunk_size {
+            self.publish()?;
+        }
+        let done = self.grid.completed_cells;
+        let total = self.grid.requested_cells;
+        if done.is_multiple_of(20) || done == total {
+            if let Some(report) = &mut self.options.progress {
+                report(done, total);
+            }
+        }
+        Ok(())
     }
-    Ok(())
+
+    fn finish(mut self) -> Result<CoverageGrid, CoverageError> {
+        self.publish()?;
+        Ok(self.grid)
+    }
+
+    fn publish(&mut self) -> Result<(), CoverageError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        if let Some(sink) = &mut self.options.on_chunk {
+            sink(&self.pending)?;
+            self.pending.clear();
+        } else {
+            self.grid.cells.append(&mut self.pending);
+        }
+        Ok(())
+    }
 }
 
 /// Write the Python store's JSONL format, one array of completed cells per line.

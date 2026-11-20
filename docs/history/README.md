@@ -16,6 +16,8 @@ Use the [current roadmap](../ROADMAP.md), [user guide](../USER_GUIDE.md), and
 | [UI simplification plan](UI_SIMPLIFICATION_PLAN.md) | Help disclosures, direct actions, Map/Analysis separation |
 | [UI fix plan](UI_FIX_IMPLEMENTATION_PLAN.md) | Navigation, presets, comparisons, archive/restore and Analysis fixes |
 | [Browser usage report, 2026-09-29](UI_USAGE_REPORT_2026-09-29.md) | Real Oslo terrain observations and explicit acceptance gaps |
+| [Rust migration inventory](RUST_MIGRATION.md) | Python-to-Rust wire contracts, storage formats and parity requirements at baseline `18b7cee` |
+| [Rust release gaps review](RUST_RELEASE_GAPS.md) | Pre-cutover review findings against the Python baseline and their resolution |
 
-Raw [benchmark artifacts](../benchmarks) and [terrain provenance](../REAL_TERRAIN_FIXTURE.md)
+Raw [benchmark artifacts](../benchmarks) (measured with the removed Python tools at `18b7cee`) and [terrain provenance](../REAL_TERRAIN_FIXTURE.md)
 remain outside this folder so new measurements can use the same fixtures.

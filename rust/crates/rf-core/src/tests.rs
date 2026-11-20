@@ -165,6 +165,47 @@ fn site(id: &str, x: f64, y: f64, kind: SiteKind, antenna_height_m: f64) -> Site
 }
 
 #[test]
+fn scalar_link_matches_full_profile_with_and_without_surface() {
+    let a = site("A", 0.0, 0.0, SiteKind::EndpointA, 30.0);
+    let b = site("B", 1200.0, 0.0, SiteKind::EndpointB, 40.0);
+    let settings = RfSettings {
+        clutter_loss_enabled: true,
+        ..RfSettings::default()
+    };
+    let blocked = TestTerrain {
+        surface: Some(|x| {
+            if x < 400.0 {
+                f64::NAN
+            } else if x < 800.0 {
+                80.0
+            } else {
+                4.0
+            }
+        }),
+        ..flat(10.0)
+    };
+    for terrain in [flat(10.0), blocked] {
+        let evaluator = LinkEvaluator::new(&terrain, &settings);
+        let mut full = evaluator
+            .evaluate(&a, &b, EvaluationOptions::default())
+            .unwrap();
+        let scalar = evaluator
+            .evaluate(
+                &a,
+                &b,
+                EvaluationOptions {
+                    include_profile: false,
+                    ..EvaluationOptions::default()
+                },
+            )
+            .unwrap();
+        full.profile = None;
+        assert_eq!(scalar, full);
+        assert_eq!(format!("{scalar:?}"), format!("{full:?}"));
+    }
+}
+
+#[test]
 fn optimistic_screen_uses_peak_pattern_gain() {
     let antenna = AntennaSettings {
         pattern: AntennaPattern::Elevation(

@@ -1,21 +1,70 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-const MIN_AUTO_PARALLEL_PAIRS: usize = 200;
+// Small RF workloads cannot amortize the cost of starting and coordinating many workers.
+const AUTO_PAIRS_PER_WORKER: usize = 256;
+const BATCH_SIZE: usize = 16;
 
 pub(crate) fn worker_count(requested: usize, len: usize) -> usize {
     if requested == 0 {
-        if len < MIN_AUTO_PARALLEL_PAIRS {
+        let useful_workers = len.div_ceil(AUTO_PAIRS_PER_WORKER);
+        if useful_workers <= 1 {
             return 1;
         }
         return thread::available_parallelism()
             .map_or(1, |cpus| cpus.get().saturating_sub(1).max(1))
-            .min(len);
+            .min(useful_workers);
     }
     requested.min(len)
+}
+
+/// For uncancellable work the caller can admit batches instead of sending each
+/// item individually. Results and errors are still consumed in input order.
+pub(crate) fn for_each_batched<T: Copy + Send + Sync, R: Send, E: Send>(
+    items: &[T],
+    workers: usize,
+    cancelled: Option<&dyn Fn() -> bool>,
+    evaluate: impl Fn(T, &dyn Fn() -> bool) -> Result<R, E> + Sync,
+    mut accept: impl FnMut(T, R),
+) -> Result<(), E> {
+    if let Some(cancelled) = cancelled {
+        return for_each_ordered(items, workers, cancelled, evaluate, accept);
+    }
+    if workers <= 1 || items.is_empty() {
+        return for_each_ordered(items, 1, &|| false, evaluate, accept);
+    }
+    let batch_size = BATCH_SIZE.min(items.len().div_ceil(workers));
+    let batches: Vec<_> = items.chunks(batch_size).collect();
+    let error = RefCell::new(None);
+    for_each_ordered(
+        &batches,
+        workers.min(batches.len()),
+        &|| error.borrow().is_some(),
+        |batch, cancelled| {
+            let mut results = Vec::with_capacity(batch.len());
+            for &item in batch {
+                if cancelled() {
+                    break;
+                }
+                match evaluate(item, cancelled) {
+                    Ok(result) => results.push(result),
+                    Err(error) => return Ok::<_, E>((results, Some(error))),
+                }
+            }
+            Ok((results, None))
+        },
+        |batch, (results, failure)| {
+            for (&item, result) in batch.iter().zip(results) {
+                accept(item, result);
+            }
+            error.replace(failure);
+        },
+    )?;
+    error.into_inner().map_or(Ok(()), Err)
 }
 
 struct StopWorkers<'a>(&'a AtomicBool);
@@ -28,7 +77,7 @@ impl Drop for StopWorkers<'_> {
 
 /// Keep one outstanding item per worker. The caller consumes results, runs hooks, and
 /// admits new work in input order while workers can finish sampling in any order.
-pub(crate) fn for_each_ordered<T: Copy + Send, R: Send, E>(
+fn for_each_ordered<T: Copy + Send, R: Send, E>(
     items: &[T],
     workers: usize,
     cancelled: &dyn Fn() -> bool,
@@ -149,5 +198,23 @@ mod tests {
         .unwrap();
         assert_eq!(*finished.lock().unwrap(), [1, 0]);
         assert_eq!(accepted, [(0, 0), (1, 2)]);
+    }
+
+    #[test]
+    fn batched_errors_accept_only_the_input_prefix_before_the_first_error() {
+        let items: Vec<_> = (0..64).collect();
+        let mut accepted = Vec::new();
+        let outcome = for_each_batched(
+            &items,
+            4,
+            None,
+            |item, _| match item {
+                5 | 17 => Err(item),
+                _ => Ok(item),
+            },
+            |_, result| accepted.push(result),
+        );
+        assert_eq!(outcome, Err(5));
+        assert_eq!(accepted, [0, 1, 2, 3, 4]);
     }
 }

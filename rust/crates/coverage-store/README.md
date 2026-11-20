@@ -2,8 +2,8 @@
 
 Project-scoped persistence for bounded coverage runs, result pages, and target
 reports. The crate requires Rust 1.89 or newer for standard-library file
-locking. Python is used only by a developer script that regenerates the
-checked-in goldens. Builds and tests do not need it.
+locking. Builds and tests need no Python; the checked-in goldens are frozen
+oracles from the removed Python implementation.
 
 ## Server integration
 
@@ -160,8 +160,8 @@ These are compatible extensions. Existing signatures used by the server
 
 ### Proven against Python goldens
 
-`tests/fixtures/python-goldens.json` is produced by
-`tests/fixtures/generate_python_goldens.py`, which calls the functions in
+`tests/fixtures/python-goldens.json` was produced by
+`tests/fixtures/generate_python_goldens.py` (removed; see [baseline commit `18b7cee`](https://github.com/fredriknk/repeaternet/tree/18b7cee/rust/crates/coverage-store/tests/fixtures)), which called the functions in
 `rf_router_planner.web` at baseline commit `18b7cee` with CPython 3.13.12 on
 Windows 11. `tests/identity.rs` checks:
 
@@ -250,5 +250,4 @@ root `Cargo.lock`. The integration tests include Python-format data, Python
 goldens, project and path isolation, a real Windows junction or Unix symlink,
 interrupted and competing writes, reuse identity and corrupt/truncated
 results, legacy/native stale reasons and comparisons, and storage quotas.
-Regenerate goldens with
-`PYTHONPATH=src .venv/Scripts/python.exe rust/crates/coverage-store/tests/fixtures/generate_python_goldens.py`.
+The goldens are frozen. Regenerating them requires checking out `18b7cee`, where the Python reference and generator still exist.

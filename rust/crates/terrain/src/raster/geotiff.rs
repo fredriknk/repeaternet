@@ -3,6 +3,10 @@ use std::{
     error::Error,
     io,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
 };
 
 use tiff_reader::{
@@ -12,9 +16,12 @@ use tiff_reader::{
 
 use crate::{Bounds, Point, TerrainCrs, TerrainError};
 
-use super::geokeys;
+use super::{geokeys, memory};
 
 const WINDOW_SIDE: usize = 256;
+/// Decoded window bytes retained by all open GeoTIFFs. Windows beyond the
+/// budget are decoded per sampling batch instead of retained.
+static RESIDENT_BYTES: AtomicUsize = AtomicUsize::new(0);
 const MAX_BLOCK_BYTES: usize = 32 * 1024 * 1024;
 const MODEL_PIXEL_SCALE: u16 = 33550;
 const MODEL_TIEPOINT: u16 = 33922;
@@ -52,6 +59,49 @@ pub struct GeoTiff {
     sample_format: u16,
     bits_per_sample: u16,
     sparse_blocks: Option<SparseBlocks>,
+    window_columns: usize,
+    /// Lazily decoded `WINDOW_SIDE` squares in row-major window order.
+    windows: Box<[OnceLock<Window>]>,
+    resident_bytes: AtomicUsize,
+}
+
+/// Decoded elevations with mask, nodata and sparse-block validity resolved.
+struct Window {
+    cols: usize,
+    values: WindowValues,
+    /// One set bit per invalid pixel; None when every pixel is valid.
+    invalid: Option<Box<[u64]>>,
+}
+
+enum WindowValues {
+    /// Used when every value converts to f32 and back unchanged.
+    F32(Box<[f32]>),
+    F64(Box<[f64]>),
+}
+
+impl Window {
+    fn get(&self, row: usize, col: usize) -> Option<f64> {
+        let index = row * self.cols + col;
+        if self
+            .invalid
+            .as_ref()
+            .is_some_and(|bits| bits[index / 64] >> (index % 64) & 1 != 0)
+        {
+            return None;
+        }
+        Some(match &self.values {
+            WindowValues::F32(values) => f64::from(values[index]),
+            WindowValues::F64(values) => values[index],
+        })
+    }
+
+    fn bytes(&self) -> usize {
+        let values = match &self.values {
+            WindowValues::F32(values) => size_of_val(&**values),
+            WindowValues::F64(values) => size_of_val(&**values),
+        };
+        values + self.invalid.as_ref().map_or(0, |bits| size_of_val(&**bits))
+    }
 }
 
 struct SparseBlocks {
@@ -83,8 +133,10 @@ impl GeoTiff {
         let tiff = TiffFile::open_with_options(
             path,
             OpenOptions {
-                block_cache_bytes: 1024 * 1024,
-                block_cache_slots: 16,
+                // Only window decoding uses the block cache; keep a few
+                // full-width strips so adjacent windows avoid re-decoding.
+                block_cache_bytes: 4 * 1024 * 1024,
+                block_cache_slots: 64,
                 decode_output_bytes: MAX_BLOCK_BYTES,
                 ..OpenOptions::default()
             },
@@ -156,6 +208,10 @@ impl GeoTiff {
             nodata,
             has_internal_mask: mask.is_some(),
         };
+        let window_columns = layout.width.div_ceil(WINDOW_SIDE);
+        let window_count = window_columns
+            .checked_mul(layout.height.div_ceil(WINDOW_SIDE))
+            .ok_or_else(|| invalid_error("GeoTIFF dimensions are too large"))?;
         let raster = Self {
             path: path.into(),
             tiff,
@@ -165,6 +221,9 @@ impl GeoTiff {
             sample_format: sample_type.0,
             bits_per_sample: sample_type.1,
             sparse_blocks,
+            window_columns,
+            windows: (0..window_count).map(|_| OnceLock::new()).collect(),
+            resident_bytes: AtomicUsize::new(0),
         };
         raster.tiff.read_window_bytes(0, 0, 0, 1, 1)?;
         raster.read_mask(0, 0, 1, 1)?;
@@ -220,45 +279,88 @@ impl GeoTiff {
         points: &[Point],
         samples: &mut [Option<f64>],
     ) -> Result<(), TerrainError> {
-        let mut windows = BTreeMap::<_, Vec<_>>::new();
-        for (index, (&point, sample)) in points.iter().zip(samples.iter()).enumerate() {
-            if sample.is_none() {
-                if let Some((row, column)) = self.pixel(point) {
-                    let key = (
-                        row / WINDOW_SIDE * WINDOW_SIDE,
-                        column / WINDOW_SIDE * WINDOW_SIDE,
-                    );
-                    windows.entry(key).or_default().push((index, row, column));
-                }
+        let raster_error = |source| TerrainError::Raster {
+            path: self.path.clone(),
+            source,
+        };
+        // Points in windows that do not fit the resident budget, by window.
+        let mut uncached = BTreeMap::<_, Vec<_>>::new();
+        for (index, (&point, sample)) in points.iter().zip(samples.iter_mut()).enumerate() {
+            if sample.is_some() {
+                continue;
+            }
+            let Some((row, col)) = self.pixel(point) else {
+                continue;
+            };
+            let window = row / WINDOW_SIDE * self.window_columns + col / WINDOW_SIDE;
+            match self.resident_window(window).map_err(raster_error)? {
+                Some(resident) => *sample = resident.get(row % WINDOW_SIDE, col % WINDOW_SIDE),
+                None => uncached.entry(window).or_default().push((index, row, col)),
             }
         }
+        // Read only the requested pixels' bounding box within each window.
         let read = match (self.sample_format, self.bits_per_sample) {
-            (1, 8) => Self::fill_window::<u8>,
-            (1, 16) => Self::fill_window::<u16>,
-            (1, 32) => Self::fill_window::<u32>,
-            (2, 8) => Self::fill_window::<i8>,
-            (2, 16) => Self::fill_window::<i16>,
-            (2, 32) => Self::fill_window::<i32>,
-            (3, 32) => Self::fill_window::<f32>,
-            (3, 64) => Self::fill_window::<f64>,
+            (1, 8) => Self::fill_uncached::<u8>,
+            (1, 16) => Self::fill_uncached::<u16>,
+            (1, 32) => Self::fill_uncached::<u32>,
+            (2, 8) => Self::fill_uncached::<i8>,
+            (2, 16) => Self::fill_uncached::<i16>,
+            (2, 32) => Self::fill_uncached::<i32>,
+            (3, 32) => Self::fill_uncached::<f32>,
+            (3, 64) => Self::fill_uncached::<f64>,
             _ => unreachable!("Validated sample type"),
         };
-        for points in windows.into_values() {
-            read(self, &points, samples).map_err(|source| TerrainError::Raster {
-                path: self.path.clone(),
-                source,
-            })?;
+        for points in uncached.into_values() {
+            read(self, &points, samples).map_err(raster_error)?;
         }
         Ok(())
     }
 
-    fn fill_window<T: TiffSample + Copy + Into<f64>>(
+    /// Return a decoded window, retaining newly decoded windows within the
+    /// process-wide budget. None means the window does not fit the budget.
+    fn resident_window(&self, index: usize) -> RasterResult<Option<&Window>> {
+        let cell = &self.windows[index];
+        if let Some(window) = cell.get() {
+            return Ok(Some(window));
+        }
+        let top = index / self.window_columns * WINDOW_SIDE;
+        let left = index % self.window_columns * WINDOW_SIDE;
+        let rows = WINDOW_SIDE.min(self.metadata.height - top);
+        let cols = WINDOW_SIDE.min(self.metadata.width - left);
+        let budget = memory::resident_budget_bytes();
+        // Skip decoding when even the smallest representation cannot fit.
+        let minimum = rows * cols * size_of::<f32>();
+        if RESIDENT_BYTES
+            .load(Ordering::Relaxed)
+            .saturating_add(minimum)
+            > budget
+        {
+            return Ok(None);
+        }
+        let window = self.decode_window(top, left, rows, cols)?;
+        let bytes = window.bytes();
+        let reserved = RESIDENT_BYTES.fetch_add(bytes, Ordering::Relaxed);
+        if reserved.saturating_add(bytes) > budget {
+            RESIDENT_BYTES.fetch_sub(bytes, Ordering::Relaxed);
+            return Ok(cell.get());
+        }
+        match cell.set(window) {
+            Ok(()) => {
+                self.resident_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
+            // Another thread decoded the same window first.
+            Err(_) => {
+                RESIDENT_BYTES.fetch_sub(bytes, Ordering::Relaxed);
+            }
+        }
+        Ok(cell.get())
+    }
+
+    fn fill_uncached<T: TiffSample + Copy + Into<f64>>(
         &self,
         points: &[(usize, usize, usize)],
         samples: &mut [Option<f64>],
     ) -> RasterResult<()> {
-        // Clip each group to the requested pixels while keeping the 256 × 256
-        // upper bound on temporary window size.
         let (_, row, col) = points[0];
         let (top, left, bottom, right) = points.iter().fold(
             (row, col, row, col),
@@ -266,34 +368,118 @@ impl GeoTiff {
                 (top.min(row), left.min(col), bottom.max(row), right.max(col))
             },
         );
-        let rows = bottom - top + 1;
-        let cols = right - left + 1;
-        // The image has one band. This API copies contiguous TIFF rows and
-        // leaves samples in their source type until a point needs conversion.
+        let (rows, cols) = (bottom - top + 1, right - left + 1);
+        // Keep samples in their source type until a requested point needs one.
         let values = self.tiff.read_window::<T>(0, top, left, rows, cols)?;
         let mask = self.read_mask(top, left, rows, cols)?;
         for &(index, row, col) in points {
-            let sparse = self.sparse_blocks.as_ref().is_some_and(|blocks| {
-                let block = row / blocks.height * blocks.columns + col / blocks.width;
-                blocks.indices.contains(&block)
-            });
-            let value = if sparse {
-                self.metadata.nodata.unwrap_or(0.0)
-            } else {
-                values[[row - top, col - left]].into()
-            };
-            let valid = match &mask {
-                Some(mask) => mask[(row - top) * cols + col - left] != 0,
-                None => !self
-                    .metadata
-                    .nodata
-                    .is_some_and(|nodata| value == nodata || (value.is_nan() && nodata.is_nan())),
-            };
-            if valid {
-                samples[index] = Some(value);
-            }
+            let value = values[[row - top, col - left]].into();
+            let i = (row - top) * cols + col - left;
+            let (value, valid) = self.resolve(value, mask.as_deref(), i, row, col);
+            samples[index] = valid.then_some(value);
         }
         Ok(())
+    }
+
+    /// Decode a window and resolve sparse blocks, mask and nodata per pixel.
+    fn decode_window(
+        &self,
+        top: usize,
+        left: usize,
+        rows: usize,
+        cols: usize,
+    ) -> RasterResult<Window> {
+        let (mut values, mask) = self.decode_values(top, left, rows, cols)?;
+        let mut invalid = vec![0u64; (rows * cols).div_ceil(64)];
+        let mut any_invalid = false;
+        for r in 0..rows {
+            for c in 0..cols {
+                let i = r * cols + c;
+                let (value, valid) = self.resolve(values[i], mask.as_deref(), i, top + r, left + c);
+                values[i] = value;
+                if !valid {
+                    invalid[i / 64] |= 1 << (i % 64);
+                    any_invalid = true;
+                }
+            }
+        }
+        let lossless_f32 = values
+            .iter()
+            .all(|&value| value.is_nan() || f64::from(value as f32) == value);
+        Ok(Window {
+            cols,
+            values: if lossless_f32 {
+                WindowValues::F32(values.iter().map(|&value| value as f32).collect())
+            } else {
+                WindowValues::F64(values.into_boxed_slice())
+            },
+            invalid: any_invalid.then(|| invalid.into_boxed_slice()),
+        })
+    }
+
+    /// Return the stored value and validity of one decoded pixel.
+    fn resolve(
+        &self,
+        value: f64,
+        mask: Option<&[u8]>,
+        index: usize,
+        row: usize,
+        col: usize,
+    ) -> (f64, bool) {
+        let sparse = self.sparse_blocks.as_ref().is_some_and(|blocks| {
+            let block = row / blocks.height * blocks.columns + col / blocks.width;
+            blocks.indices.contains(&block)
+        });
+        let value = if sparse {
+            self.metadata.nodata.unwrap_or(0.0)
+        } else {
+            value
+        };
+        let valid = match mask {
+            Some(mask) => mask[index] != 0,
+            None => !self
+                .metadata
+                .nodata
+                .is_some_and(|nodata| value == nodata || (value.is_nan() && nodata.is_nan())),
+        };
+        (value, valid)
+    }
+
+    /// Decode band 1 and the optional mask for a pixel rectangle.
+    fn decode_values(
+        &self,
+        top: usize,
+        left: usize,
+        rows: usize,
+        cols: usize,
+    ) -> RasterResult<(Vec<f64>, Option<Vec<u8>>)> {
+        let decode = match (self.sample_format, self.bits_per_sample) {
+            (1, 8) => Self::decode_typed::<u8>,
+            (1, 16) => Self::decode_typed::<u16>,
+            (1, 32) => Self::decode_typed::<u32>,
+            (2, 8) => Self::decode_typed::<i8>,
+            (2, 16) => Self::decode_typed::<i16>,
+            (2, 32) => Self::decode_typed::<i32>,
+            (3, 32) => Self::decode_typed::<f32>,
+            (3, 64) => Self::decode_typed::<f64>,
+            _ => unreachable!("Validated sample type"),
+        };
+        Ok((
+            decode(self, top, left, rows, cols)?,
+            self.read_mask(top, left, rows, cols)?,
+        ))
+    }
+
+    fn decode_typed<T: TiffSample + Copy + Into<f64>>(
+        &self,
+        top: usize,
+        left: usize,
+        rows: usize,
+        cols: usize,
+    ) -> RasterResult<Vec<f64>> {
+        // The image has one band; ndarray iteration is row-major.
+        let values = self.tiff.read_window::<T>(0, top, left, rows, cols)?;
+        Ok(values.iter().map(|&value| value.into()).collect())
     }
 
     fn read_mask(
@@ -311,6 +497,12 @@ impl GeoTiff {
                     .read_window_bytes_from_ifd(ifd, row, col, rows, cols)
             })
             .transpose()?)
+    }
+}
+
+impl Drop for GeoTiff {
+    fn drop(&mut self) {
+        RESIDENT_BYTES.fetch_sub(*self.resident_bytes.get_mut(), Ordering::Relaxed);
     }
 }
 

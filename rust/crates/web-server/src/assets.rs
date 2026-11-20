@@ -6,19 +6,13 @@ use axum::{
 
 macro_rules! dashboard {
     ($name:literal) => {
-        include_bytes!(concat!(
-            "../../../../src/rf_router_planner/web_assets/",
-            $name
-        ))
+        include_bytes!(concat!("../assets/dashboard/", $name))
     };
 }
 
 macro_rules! leaflet {
     ($name:literal) => {
-        include_bytes!(concat!(
-            "../../../../src/rf_router_planner/data/leaflet/",
-            $name
-        ))
+        include_bytes!(concat!("../assets/leaflet/", $name))
     };
 }
 

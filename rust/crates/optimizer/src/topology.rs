@@ -1,10 +1,10 @@
 use crate::{
-    compare_scores, CandidateSettings, OptimizationError, OptimizationPriority, PlanningSite,
+    compare_scores, pair, CandidateSettings, OptimizationError, OptimizationPriority, PlanningSite,
     RoutingGraph, SiteOrigin,
 };
 use repeaternet_rf_core::LinkResult;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 const EXACT_LIMIT: usize = 100_000;
 const BEAM_WIDTH: usize = 64;
@@ -679,18 +679,24 @@ fn beam_layers(
         }
         pool.insert(node);
     }
+    let mut scorer = BeamScorer::new(graph, clients, required, &pool);
     let mut layers = vec![vec![Vec::new()]];
     for _ in 0..maximum {
-        let mut expanded = BTreeSet::new();
+        let mut expanded = HashSet::new();
+        let mut trial = Vec::new();
         for selection in layers.last().expect("base beam layer") {
             for &node in &pool {
                 if cancelled() {
                     return Vec::new();
                 }
                 if let Err(index) = selection.binary_search(&node) {
-                    let mut trial = selection.clone();
-                    trial.insert(index, node);
-                    expanded.insert(trial);
+                    trial.clear();
+                    trial.extend_from_slice(&selection[..index]);
+                    trial.push(node);
+                    trial.extend_from_slice(&selection[index..]);
+                    if !expanded.contains(trial.as_slice()) {
+                        expanded.insert(trial.clone());
+                    }
                 }
             }
         }
@@ -699,64 +705,140 @@ fn beam_layers(
             if cancelled() {
                 return Vec::new();
             }
-            let nodes: Vec<_> = clients
-                .iter()
-                .chain(required)
-                .chain(&selection)
-                .copied()
-                .collect();
-            let score = partial_score(graph, &nodes, clients.len());
+            let score = scorer.score(&selection);
             ranked.push((selection, score));
         }
-        ranked.sort_unstable_by(|a, b| compare_scores(&b.1, &a.1).then_with(|| a.0.cmp(&b.0)));
         if ranked.is_empty() {
             break;
         }
-        layers.push(
-            ranked
-                .into_iter()
-                .take(BEAM_WIDTH)
-                .map(|(selection, _)| selection)
-                .collect(),
-        );
+        let compare = |a: &(Vec<usize>, [f64; 6]), b: &(Vec<usize>, [f64; 6])| {
+            compare_scores(&b.1, &a.1).then_with(|| a.0.cmp(&b.0))
+        };
+        if ranked.len() > BEAM_WIDTH {
+            ranked.select_nth_unstable_by(BEAM_WIDTH, compare);
+            ranked.truncate(BEAM_WIDTH);
+        }
+        ranked.sort_unstable_by(compare);
+        layers.push(ranked.into_iter().map(|(selection, _)| selection).collect());
     }
     layers
 }
 
-fn partial_score(graph: &RoutingGraph<'_>, nodes: &[usize], clients: usize) -> [f64; 6] {
-    let induced = graph.induced(nodes);
-    let mut seen = vec![false; nodes.len()];
-    let mut connected_pairs = 0;
-    let mut largest_client_component = 0;
-    for node in 0..clients {
-        if seen[node] {
-            continue;
+struct BeamScorer<'g, 'a> {
+    graph: &'g RoutingGraph<'a>,
+    clients: usize,
+    terminal_count: usize,
+    nodes: Vec<usize>,
+    parents: Vec<usize>,
+    client_counts: Vec<usize>,
+    // Cache only the beam pool and terminals. Large pools use the sparse graph.
+    margins: Vec<Vec<Option<f64>>>,
+    positions: Vec<usize>,
+}
+
+impl<'g, 'a> BeamScorer<'g, 'a> {
+    fn new(
+        graph: &'g RoutingGraph<'a>,
+        clients: &[usize],
+        required: &[usize],
+        pool: &BTreeSet<usize>,
+    ) -> Self {
+        let nodes: Vec<_> = clients.iter().chain(required).copied().collect();
+        let mut margins = Vec::new();
+        let mut positions = Vec::new();
+        let size = nodes.len() + pool.len();
+        if size <= 512 {
+            positions.resize(graph.sites.len(), usize::MAX);
+            for (index, &node) in nodes.iter().chain(pool).enumerate() {
+                positions[node] = index;
+            }
+            margins = vec![vec![None; size]; size];
+            for (&(left, right), link) in &graph.edges {
+                let (a, b) = (positions[left], positions[right]);
+                if a != usize::MAX && b != usize::MAX {
+                    let margin = Some(link.worst_margin_db());
+                    margins[a][b] = margin;
+                    margins[b][a] = margin;
+                }
+            }
         }
-        let (_, component) = induced.bfs(node, |_, _, _| true);
-        let count = component.iter().filter(|&&i| i < clients).count();
-        for i in component {
-            seen[i] = true;
+        Self {
+            graph,
+            clients: clients.len(),
+            terminal_count: nodes.len(),
+            nodes,
+            parents: Vec::new(),
+            client_counts: Vec::new(),
+            margins,
+            positions,
         }
-        connected_pairs += count * (count - 1) / 2;
-        largest_client_component = largest_client_component.max(count);
     }
-    let edges = induced.edges.len();
-    let boundary = nodes
-        .iter()
-        .map(|&i| graph.neighbors[i].len())
-        .sum::<usize>()
-        - 2 * edges;
-    [
-        connected_pairs as f64,
-        largest_client_component as f64,
-        edges as f64,
-        boundary as f64,
-        induced.edges.values().map(|l| l.worst_margin_db()).sum(),
-        nodes[clients..]
+
+    fn score(&mut self, selection: &[usize]) -> [f64; 6] {
+        self.nodes.truncate(self.terminal_count);
+        self.nodes.extend_from_slice(selection);
+        self.parents.clear();
+        self.parents.extend(0..self.nodes.len());
+        self.client_counts.clear();
+        self.client_counts.resize(self.clients, 1);
+        self.client_counts.resize(self.nodes.len(), 0);
+        let mut connected_pairs = 0;
+        let mut largest_client_component = 1;
+        let mut edges = 0;
+        let mut margin_sum = -0.0;
+        for (left, &a) in self.nodes.iter().enumerate() {
+            let row = (!self.margins.is_empty()).then(|| &self.margins[self.positions[a]]);
+            // Match the (local left, local right) order used by the induced graph.
+            for (offset, &b) in self.nodes[left + 1..].iter().enumerate() {
+                let margin = match row {
+                    Some(row) => row[self.positions[b]],
+                    None => self
+                        .graph
+                        .edges
+                        .get(&pair(a, b))
+                        .map(|l| l.worst_margin_db()),
+                };
+                if let Some(margin) = margin {
+                    edges += 1;
+                    margin_sum += margin;
+                    let root_a = component_root(&mut self.parents, left);
+                    let root_b = component_root(&mut self.parents, left + 1 + offset);
+                    if root_a != root_b {
+                        self.parents[root_b] = root_a;
+                        connected_pairs += self.client_counts[root_a] * self.client_counts[root_b];
+                        self.client_counts[root_a] += self.client_counts[root_b];
+                        largest_client_component =
+                            largest_client_component.max(self.client_counts[root_a]);
+                    }
+                }
+            }
+        }
+        let boundary = self
+            .nodes
             .iter()
-            .map(|&i| graph.sites[i].site_quality)
-            .sum(),
-    ]
+            .map(|&i| self.graph.neighbors[i].len())
+            .sum::<usize>()
+            - 2 * edges;
+        [
+            connected_pairs as f64,
+            largest_client_component as f64,
+            edges as f64,
+            boundary as f64,
+            margin_sum,
+            self.nodes[self.clients..]
+                .iter()
+                .map(|&i| self.graph.sites[i].site_quality)
+                .sum(),
+        ]
+    }
+}
+
+fn component_root(parents: &mut [usize], mut node: usize) -> usize {
+    while parents[node] != node {
+        parents[node] = parents[parents[node]];
+        node = parents[node];
+    }
+    node
 }
 
 fn shortest_tree(

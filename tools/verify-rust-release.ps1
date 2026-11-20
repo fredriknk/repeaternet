@@ -72,7 +72,7 @@ function Get-ListenUrl($Child) {
             throw "Server exited with $($Child.Process.ExitCode). $(Get-Content -LiteralPath $Child.Stderr -Raw)"
         }
         $log = Get-Content -LiteralPath $Child.Stdout -Raw
-        if ($log -match '\blistening at (http://127\.0\.0\.1:[1-9][0-9]*/)(?:\s|$)') {
+        if ($log -match '(?m)^RepeaterNet is listening at (http://127\.0\.0\.1:[1-9][0-9]*/)\r?$') {
             return [uri] $Matches[1]
         }
         Start-Sleep -Milliseconds 100
@@ -244,7 +244,8 @@ try {
     $origin = $base.GetLeftPart([UriPartial]::Authority)
     $session = New-ReleaseClient
     $health = (Invoke-ReleaseRequest -Path '/health').Body | ConvertFrom-Json
-    Assert-Release ($health.status -eq 'ok' -and $health.runtime -eq 'rust') 'Unexpected health payload.'
+    Assert-Release ($health.status -eq 'ok' -and $health.runtime -eq 'rust' -and
+        @($health.PSObject.Properties).Count -eq 2) 'Unexpected health payload.'
     Add-Check 'passed' $health
 
     $phase = 'authentication and workspace cookie'

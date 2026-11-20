@@ -1,6 +1,6 @@
 # Current roadmap
 
-Updated 2026-09-30. This is the active work list. Earlier implementation plans
+Updated 2026-11-20. This is the active work list. Earlier implementation plans
 are [historical records](history/README.md); their completed features and
 unfinished acceptance checks have been consolidated here.
 
@@ -81,6 +81,24 @@ Mark each acceptance item pass, fail, blocked, or not tested with build revision
 and evidence. Automated tests complement these checks; historical test counts
 are not current release approval.
 
+### Native release gates — 2026-11-20
+
+The Rust executable passed the automated workspace suite, the isolated Windows
+release verifier and a container smoke test on the development PC. Still
+required before the first tagged release:
+
+- **Clean-machine launch:** the manual Explorer, terminal and browser test in
+  [release validation](RELEASE_VALIDATION.md) on a clean Windows install.
+- **Hosted pipeline:** a first run of the GitHub Actions release and GHCR jobs.
+- **Live providers:** Kartverket and Overpass checks against the public services.
+- **Linux notices:** a full dependency license inventory for the Linux archive and
+  container image; the Windows packager already produces one.
+- **Terrain breadth and recovery:** broader GeoTIFF/CRS compatibility and recovery
+  from a corrupt current coverage manifest.
+
+The browser acceptance items above were recorded against the Python runtime and
+must be repeated against the native executable.
+
 ## Engineering follow-up
 
 1. **Search quality:** candidate-density/adversarial bridge sweeps, exact-oracle
@@ -105,6 +123,7 @@ are not current release approval.
 | --- | --- | --- |
 | C1 | Remove desktop UI, desktop files/tests/dependencies, alternate launcher, unused contour/logging code, duplicate configs, Deygout dispatch, old workspace adoption, and renamed tile-limit alias; resolve type ambiguities and refresh inspection test fixtures | Complete: `f0420d9` |
 | C2 | Publish current web-only README/guide/development docs; consolidate open work here; archive dated plans and reports with corrected links | Complete: this documentation commit |
+| R1 | Replace the Python runtime with the native Rust executable; embed the dashboard; remove the Python source, tests and tools; ship a static Linux binary and a `scratch` container; add CI, tagged Windows/Linux releases and GHCR images | Complete: `rust-only-release` branch, 2026-11-20 |
 
 The current catalog, terrain data, and saved results are not reset by cleanup.
 Removed source remains recoverable in Git. Desktop-specific tests are retired;

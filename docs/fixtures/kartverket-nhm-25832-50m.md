@@ -72,7 +72,7 @@ positions, not existing MeshCore routers or proposed installation sites.
 - `reference_route`: not applicable; this measures the area-coverage engine,
   without a route search or an asserted radio-connected backbone.
 
-Reproduce from the repository root (the exact local raster must be present):
+These artifacts were produced by the Python benchmark tool, which was removed with the Python runtime. To reproduce them, check out baseline commit `18b7cee` and run from its repository root (the exact local raster must be present). Native measurements use the Rust [coverage cache benchmark](../../rust/crates/coverage/README.md#cache-benchmark) and the optional terrain parity test described in the [terrain crate guide](../../rust/crates/terrain/README.md).
 
 ```powershell
 python tools/benchmark_mesh_coverage.py --dtm cache/wcs_large_smoke/kartverket_dtm_ee927a9a60cf36b4ef38.tif --sources 2 --cells 256 --repeats 3 --output docs/benchmarks/coverage-raster-preview.json

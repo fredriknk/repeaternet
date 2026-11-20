@@ -1,12 +1,12 @@
-# RepeaterNet Rust preview
+# RepeaterNet application guide
 
 The native launcher serves the existing dashboard and its bundled Leaflet assets from one executable. It opens the dashboard in the default browser. Python, a separate asset directory, and a development server are unnecessary at runtime. The map's remote basemap tiles still need network access.
 
-The dashboard runs route planning from uploaded GeoTIFF or Kartverket terrain using the native terrain sampler, RF model, and optimizer. It supports terrain readiness, certified alternatives and link profiles, MeshCore repeater import, road access, saved coverage, exact-point inspection, failure and height scenarios, target assessments, and route and coverage downloads. It opens the Python application's v1 project catalog in place.
+The dashboard runs route planning from uploaded GeoTIFF or Kartverket terrain using the native terrain sampler, RF model, and optimizer. It supports terrain readiness, certified alternatives and link profiles, MeshCore repeater import, road access, saved coverage, exact-point inspection, failure and height scenarios, target assessments, and route and coverage downloads. It opens project catalogs created by the retired Python application in place.
 
 ## Build and launch
 
-Windows builds use Rust 1.100, the MSVC C++ Build Tools, and a Windows SDK. Run these commands in PowerShell from the repository root.
+`rust-toolchain.toml` pins Rust 1.100.0. Windows builds also need the MSVC C++ Build Tools, and a Windows SDK. Run these commands in PowerShell from the repository root.
 
 ```powershell
 .\tools\build-rust.ps1
@@ -15,7 +15,7 @@ Windows builds use Rust 1.100, the MSVC C++ Build Tools, and a Windows SDK. Run 
 
 The build script places the executable under `rust\target\release` and uses the workspace's static MSVC runtime configuration. You can copy the executable out of the checkout.
 
-Linux builds use Rust 1.100 and a system linker. Start in the repository root.
+Linux builds need a system linker. Start in the repository root.
 
 ```sh
 cd rust
@@ -23,13 +23,15 @@ cargo build --locked --release -p repeaternet
 ./target/release/repeaternet
 ```
 
+For a fully static binary that runs on any x86-64 distribution, install `musl-tools`, run `rustup target add x86_64-unknown-linux-musl`, and build with `--target x86_64-unknown-linux-musl`. The repository `Dockerfile` performs this build on Alpine and ships the binary in a `scratch` image.
+
 Run Cargo from `rust/` to pick up its Cargo configuration. Use `cargo test --workspace --locked` for the workspace tests and add `--release` to test the optimized binaries. The executable integration test starts the binary on loopback, uploads a checked-in terrain fixture, calculates a route and coverage, exercises paging, inspection and downloads, and reopens the project after restart.
 
-The debug and release workspace suites ran on Windows x64 and in a `rust:1.100-slim` Linux x86-64 container. The Windows verifier copied the executable alone into a scratch directory and exercised headless launch, authentication, upload, routing, export, port contention, and restart. It reported only Windows system DLLs in the direct PE import table. [Windows verification workflow](../docs/RUST_RELEASE_VALIDATION.md)
+The debug and release workspace suites ran on Windows x64 and in a `rust:1.100-slim` Linux x86-64 container. The Windows verifier copied the executable alone into a scratch directory and exercised headless launch, authentication, upload, routing, export, port contention, and restart. It reported only Windows system DLLs in the direct PE import table. [Windows verification workflow](../docs/RELEASE_VALIDATION.md)
 
 The default address is `http://127.0.0.1:8000/`. The launcher prints the actual URL once it has bound the socket. Use `--host` for another listen address, `--port` to select a port, `--port 0` for an OS-assigned port, and `--no-browser` for a headless launch. Use Ctrl+C to stop the server gracefully. It also handles Ctrl+Break on Windows and SIGTERM on Linux.
 
-Use `--data <directory>` or `RF_PLANNER_DATA` to select a data directory. The flag takes precedence. The default is `%LOCALAPPDATA%\RepeaterNet\rust-preview` on Windows and `${XDG_DATA_HOME:-$HOME/.local/share}/repeaternet/rust-preview` on Linux, with `web-data/rust-preview` as a fallback if the relevant environment variables are missing.
+Use `--data <directory>` or `RF_PLANNER_DATA` to select a data directory. The flag takes precedence. The default is `%LOCALAPPDATA%\RepeaterNet\data` on Windows and `${XDG_DATA_HOME:-$HOME/.local/share}/repeaternet` on Linux, with `web-data` as a fallback if the relevant environment variables are missing. If the default holds no `projects.sqlite3` but the earlier preview location (the `rust-preview` folder beside it on Windows, or inside it on Linux) does, the launcher keeps using the preview location and prints its path.
 
 To reopen Python projects, stop the Python server, start the Rust executable with `--data` pointing at the same data directory, and use the same browser profile and host so it sends its existing `planner_workspace` cookie. The Rust server opens `projects.sqlite3` and its project directories directly. A new workspace cookie starts a new catalog workspace. Run one planner server at a time per data directory since project operations and active job state are coordinated within each process.
 
@@ -39,6 +41,8 @@ Upload a DTM or approve a Kartverket download before starting a route. A DOM is 
 
 `RF_PLANNER_COVERAGE_CACHE_ENTRIES` sets the capacity of a separate process-local coverage RF cache and defaults to 50,000 entries. It reuses scalar link evaluations across previews, saved runs, exact-point inspection, target assessment, and height-scenario backbone checks. Entries are scoped to the project, terrain file revision, RF settings, site geometry, client radio, and effective profile spacing. Terrain revisions follow the dashboard's paths, sizes, and modification timestamps, so out-of-band edits must change that metadata. The coverage cache excludes serving-link profiles and missing-terrain results. Saved-run replay remains a separate disk-backed operation.
 
+GeoTIFF terrain is decoded once per 256 × 256 pixel window and kept in memory while a job runs, so repeated profile sampling does not reread the file. `RF_PLANNER_TERRAIN_CACHE_MB` caps the decoded terrain retained by all open rasters; it defaults to half of physical memory, or half of the container memory limit under cgroups. Beyond the cap, terrain is read from disk for each sampling batch, which is slower but gives identical results. `0` disables retention.
+
 ## HTTP endpoints
 
 | Method and path | Behavior |
@@ -47,7 +51,7 @@ Upload a DTM or approve a Kartverket download before starting a route. A DOM is 
 | `GET /assets/…`, `GET /leaflet/…` | Serves the dashboard HTML, CSS, JavaScript, Leaflet CSS and JavaScript, and the three checked-in Leaflet marker PNGs. Supports HEAD for these assets. |
 | `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, `GET /redoc` | Serves the embedded Python-baseline OpenAPI contract and discovery pages. Swagger UI and ReDoc load their rendering scripts from external CDNs. |
 | `POST /login` | Checks the `token` form field against `RF_PLANNER_TOKEN`. On success, issues the `planner_access` cookie and redirects to `/` with HTTP 303. An incorrect token returns 401. |
-| `GET /health` | Returns `{"status":"ok","runtime":"rust","mode":"preview"}`. This liveness endpoint is available before sign-in and workspace initialization. |
+| `GET /health` | Returns `{"status":"ok","runtime":"rust"}`. This liveness endpoint is available before sign-in and workspace initialization. |
 | `GET /api/state` | Returns the active plan, default settings, active and archived projects, terrain filenames, workspace storage, and any saved route summary. On startup, queued, running, or preparing route work is shown as interrupted with fresh process-local route identity. |
 | `POST /api/projects` | Creates and activates a named project with an optional plan. |
 | `POST /api/projects/autosave` | Saves the active project's plan and retains one previous revision. The optional project ID must match the active project. Route input changes invalidate the live route and clear the saved summary. Coverage-only edits retain the route. |
@@ -97,7 +101,7 @@ Provider cancellation is cooperative and may wait for an upstream read or timeou
 
 Native saved coverage becomes eligible for reuse after the server certifies the matching route again. Python coverage remains historical. It can be paged and exported with the applicable stale and partial opt-ins. Python-to-Python comparison requires complete compatible grids, verified embedded fingerprints, and an exact match to the current terrain paths, sizes, and nanosecond timestamps. Native and Python coverage models are compared within their respective formats. Paging retains saved footprints for custom CRSs. An export needing to transform custom coordinates requires the original fingerprint-matched terrain.
 
-The terrain crate documents the supported GeoTIFF and CRS subset. Live route details and both RF caches are process-local. Project-store startup reconciles pending catalog publication through a journal beside the SQLite catalog. Live provider tests, clean-machine Windows launch, interactive browser workflows, and broader performance validation remain release gates. [Terrain support](crates/terrain/README.md) · [Coverage benchmark](crates/coverage/README.md#cache-benchmark) · [Project-store recovery](crates/project-store/README.md) · [Migration inventory](../docs/RUST_MIGRATION.md) · [Release validation](../docs/RUST_RELEASE_VALIDATION.md)
+The terrain crate documents the supported GeoTIFF and CRS subset. Live route details and both RF caches are process-local. Project-store startup reconciles pending catalog publication through a journal beside the SQLite catalog. Live provider tests, clean-machine Windows launch, interactive browser workflows, and broader performance validation remain release gates. [Terrain support](crates/terrain/README.md) · [Coverage benchmark](crates/coverage/README.md#cache-benchmark) · [Project-store recovery](crates/project-store/README.md) · [Migration inventory](../docs/history/RUST_MIGRATION.md) · [Release validation](../docs/RELEASE_VALIDATION.md)
 
 The server runs raster decoding and search outside the workspace lock. It verifies project, job, route input and terrain identity before publishing certified snapshots. It saves the certified summary and terminal run state through `ProjectStore` before exposing the terminal status. The server caps candidate grids at two million points and link profiles at 65,536 samples to bound allocations during search.
 
