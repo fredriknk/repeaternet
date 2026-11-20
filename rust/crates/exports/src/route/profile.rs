@@ -152,7 +152,7 @@ pub(super) fn write_profile(
     };
     let x = |d: f64| 66.0 + 663.0 * (d / length);
     let y = |z: f64| 230.0 - 210.0 * ((z - low) / (high - low));
-    write!(out, "<figure><svg class=\"profile-chart\" viewBox=\"0 0 760 264\" role=\"img\" aria-label=\"Elevation profile for {}\" data-profile-points=\"{}\">", escape(&hop.name()), indices.len())?;
+    write!(out, "<figure><div class=\"profile-scroll\"><svg class=\"profile-chart\" viewBox=\"0 0 760 264\" role=\"img\" aria-label=\"Elevation profile for {}\" data-profile-points=\"{}\">", escape(&hop.name()), indices.len())?;
     for i in 0..5 {
         let fraction = f64::from(i) / 4.0;
         let elevation = low + fraction * (high - low);
@@ -205,7 +205,7 @@ pub(super) fn write_profile(
             labels.push((label, color, shape));
         }
     }
-    write!(out, "</svg>")?;
+    write!(out, "</svg></div>")?;
     legend(out, labels, "figcaption")?;
     write!(out, "</figure>")?;
     Ok(())
