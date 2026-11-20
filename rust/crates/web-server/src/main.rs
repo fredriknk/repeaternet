@@ -18,14 +18,17 @@ mod terrain_http;
 
 use std::{
     env,
+    ffi::OsString,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use repeaternet_project_store::ProjectStore;
 use tokio::net::TcpListener;
+
+const PROJECT_CATALOG: &str = "projects.sqlite3";
 
 #[derive(Parser)]
 #[command(version, about = "Run the native RepeaterNet dashboard")]
@@ -50,7 +53,15 @@ struct Options {
 #[tokio::main]
 async fn main() -> Result<()> {
     let options = Options::parse();
-    let data = options.data.unwrap_or_else(default_data_dir);
+    let (data, using_legacy_data) = resolve_data_dir(
+        options.data,
+        cfg!(windows),
+        |key| env::var_os(key),
+        Path::is_file,
+    );
+    if using_legacy_data {
+        eprintln!("Using existing RepeaterNet data at {}.", data.display());
+    }
     let token = env::var("RF_PLANNER_TOKEN")
         .or_else(|error| match error {
             env::VarError::NotPresent => Ok(String::new()),
@@ -64,7 +75,7 @@ async fn main() -> Result<()> {
     let address = listener.local_addr()?;
     let url = format!("http://{}/", browser_address(address));
     let store = tokio::task::spawn_blocking(move || {
-        ProjectStore::new(data.join("projects.sqlite3"), &data)
+        ProjectStore::new(data.join(PROJECT_CATALOG), &data)
             .with_context(|| format!("Could not open project catalog in {}", data.display()))
     })
     .await??;
@@ -74,7 +85,7 @@ async fn main() -> Result<()> {
         is_loopback(address.ip()),
         options.trusted_proxy,
     );
-    println!("RepeaterNet dashboard preview is listening at {url}");
+    println!("RepeaterNet is listening at {url}");
     if !options.no_browser
         && let Err(error) = open::that_detached(&url)
     {
@@ -98,20 +109,43 @@ fn parse_host(host: &str) -> Result<IpAddr, String> {
         .map_err(|_| "expected an IPv4 or IPv6 address or localhost".to_owned())
 }
 
-fn default_data_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(base) = env::var_os("LOCALAPPDATA").filter(|base| !base.is_empty()) {
-            return PathBuf::from(base).join("RepeaterNet").join("rust-preview");
+fn resolve_data_dir(
+    explicit: Option<PathBuf>,
+    windows: bool,
+    env: impl Fn(&str) -> Option<OsString>,
+    is_file: impl Fn(&Path) -> bool,
+) -> (PathBuf, bool) {
+    if let Some(directory) = explicit {
+        return (directory, false);
+    }
+    let env_path = |key| {
+        env(key)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let (default, legacy) = if windows {
+        if let Some(base) = env_path("LOCALAPPDATA") {
+            let base = base.join("RepeaterNet");
+            (base.join("data"), base.join("rust-preview"))
+        } else {
+            let base = PathBuf::from("web-data");
+            (base.clone(), base.join("rust-preview"))
         }
     } else {
-        if let Some(base) = env::var_os("XDG_DATA_HOME").filter(|base| !base.is_empty()) {
-            return PathBuf::from(base).join("repeaternet").join("rust-preview");
-        }
-        if let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) {
-            return PathBuf::from(home).join(".local/share/repeaternet/rust-preview");
-        }
+        let base = env_path("XDG_DATA_HOME")
+            .or_else(|| env_path("HOME").map(|home| home.join(".local/share")))
+            .map_or_else(
+                || PathBuf::from("web-data"),
+                |base| base.join("repeaternet"),
+            );
+        let legacy = base.join("rust-preview");
+        (base, legacy)
+    };
+    if !is_file(&default.join(PROJECT_CATALOG)) && is_file(&legacy.join(PROJECT_CATALOG)) {
+        (legacy, true)
+    } else {
+        (default, false)
     }
-    PathBuf::from("web-data").join("rust-preview")
 }
 
 fn is_loopback(ip: IpAddr) -> bool {
@@ -172,4 +206,96 @@ async fn shutdown_signal() {
     }
     #[cfg(not(any(unix, windows)))]
     interrupt.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_data_bypasses_default_resolution() {
+        let explicit = PathBuf::from("custom");
+        assert_eq!(
+            resolve_data_dir(
+                Some(explicit.clone()),
+                true,
+                |_| panic!("explicit data should bypass environment lookup"),
+                |_| panic!("explicit data should bypass catalog lookup"),
+            ),
+            (explicit, false)
+        );
+    }
+
+    #[test]
+    fn default_data_dir_uses_platform_environment_and_fallbacks() {
+        for (windows, environment, expected) in [
+            (
+                true,
+                &[("LOCALAPPDATA", "appdata")][..],
+                "appdata/RepeaterNet/data",
+            ),
+            (
+                true,
+                &[("LOCALAPPDATA", ""), ("HOME", "home")][..],
+                "web-data",
+            ),
+            (
+                false,
+                &[("XDG_DATA_HOME", "xdg"), ("HOME", "home")][..],
+                "xdg/repeaternet",
+            ),
+            (
+                false,
+                &[("XDG_DATA_HOME", ""), ("HOME", "home")][..],
+                "home/.local/share/repeaternet",
+            ),
+            (false, &[][..], "web-data"),
+        ] {
+            let env = |key: &str| {
+                environment
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| OsString::from(value))
+            };
+            assert_eq!(
+                resolve_data_dir(None, windows, env, |_| false),
+                (PathBuf::from(expected), false)
+            );
+        }
+    }
+
+    #[test]
+    fn uses_legacy_data_only_when_its_catalog_is_the_only_one_present() {
+        for (windows, key, default, legacy) in [
+            (
+                true,
+                "LOCALAPPDATA",
+                "base/RepeaterNet/data",
+                "base/RepeaterNet/rust-preview",
+            ),
+            (
+                false,
+                "XDG_DATA_HOME",
+                "base/repeaternet",
+                "base/repeaternet/rust-preview",
+            ),
+            (false, "", "web-data", "web-data/rust-preview"),
+        ] {
+            let env = |name: &str| (name == key).then(|| OsString::from("base"));
+            let default = PathBuf::from(default);
+            let legacy = PathBuf::from(legacy);
+            let legacy_catalog = legacy.join(PROJECT_CATALOG);
+            let default_catalog = default.join(PROJECT_CATALOG);
+            assert_eq!(
+                resolve_data_dir(None, windows, env, |path| path == legacy_catalog),
+                (legacy, true)
+            );
+            assert_eq!(
+                resolve_data_dir(None, windows, env, |path| {
+                    path == legacy_catalog || path == default_catalog
+                }),
+                (default, false)
+            );
+        }
+    }
 }
