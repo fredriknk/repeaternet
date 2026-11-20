@@ -392,3 +392,145 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .project-bar > #project-storage { grid-column: 1 / -1; white-space: normal; }
   .project-bar > #project-transition-status { grid-column: 1 / -1; }
 }
+
+/* ── App shell (2026-11 usability pass) ─────────────────────────────── */
+header.app-bar {
+  position: relative;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 18px;
+  height: 56px;
+  padding: 0 14px;
+}
+.app-bar .brand { flex: 0 0 auto; gap: 9px; font-size: 18px; }
+.app-bar .logo { width: 32px; height: 32px; border-radius: 9px; font-size: 22px; }
+.app-bar .project-bar {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  flex-wrap: nowrap;
+}
+.app-bar .project-select-label { flex: 0 1 300px; min-width: 140px; margin: 0; }
+.project-select-label select { margin: 0; min-height: 38px; font-weight: 650; background: #fff; }
+.new-project-button { flex: 0 0 auto; min-height: 38px; padding: 6px 12px; color: var(--accent); font-weight: 650; }
+.app-bar .project-menu { margin-left: 0; }
+.project-menu > summary {
+  list-style: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: #294b42;
+  font-size: 20px;
+  line-height: 1;
+}
+.project-menu > summary::-webkit-details-marker { display: none; }
+.project-menu > summary:hover, .project-menu[open] > summary { background: #edf5ef; }
+.project-menu-actions { left: 0; right: auto; min-width: 250px; border-top: 1px solid var(--border); margin: 0; }
+.project-menu-actions button { min-height: 36px; font-size: 14px; border-color: transparent; }
+.project-menu-actions button:hover { border-color: var(--border); }
+.project-menu-actions hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--border); }
+.project-menu-actions details { margin-top: 4px; padding-top: 6px; }
+.project-menu-actions summary { font-size: 13px; }
+.count-pill { display: inline-block; min-width: 20px; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: #e8ece9; color: var(--text); font-size: 11px; text-align: center; }
+.save-state { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.save-state[data-save-state="saved"]::before { content: "✓ "; }
+.app-bar .project-transition-status { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+main { height: calc(100dvh - 56px); }
+
+/* Workspace tabs read as an ordered flow. */
+.workspace-nav button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.nav-step { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #e1e9e3; color: var(--text); font-size: 11px; font-weight: 700; }
+.workspace-nav button[aria-pressed="true"] .nav-step { background: #ffffff33; color: #fff; }
+
+/* Plan steps: every step is always visible; its content opens directly under its header. */
+.readiness-card { display: flex; align-items: center; gap: 10px; margin: 10px 12px 4px; padding: 9px 12px; }
+.readiness-card p { flex: 1 1 auto; margin: 0; font-size: 13px; color: var(--text); }
+.readiness-card button { flex: 0 0 auto; min-height: 34px; padding: 5px 10px; font-size: 13px; }
+.readiness-card[data-readiness="ready"] { display: none; }
+.plan-steps { display: grid; gap: 6px; padding: 8px 12px 14px; }
+.plan-step { border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.plan-step.open { border-color: #9fc2ad; box-shadow: 0 2px 10px #243b3a10; }
+.plan-step-header {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 54px;
+  padding: 8px 12px;
+  text-align: left;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+.plan-step.open .plan-step-header { border-bottom-left-radius: 0; border-bottom-right-radius: 0; background: var(--surface-accent); }
+.step-copy { display: grid; gap: 1px; min-width: 0; }
+.step-copy strong { display: flex; align-items: baseline; gap: 6px; color: var(--text); font-size: 14px; }
+.step-copy small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.step-optional { color: var(--muted); font-size: 11px; font-style: normal; font-weight: 500; }
+.step-index { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 2px solid #c5d3ca; color: var(--muted); font-size: 12px; font-weight: 700; }
+.step-index[data-step-state="done"] { border-color: var(--accent); background: var(--accent); color: #fff; }
+.step-index[data-step-state="blocked"] { border-color: #c77a2a; background: #fff3e3; color: #8a4b0f; }
+.step-chevron { width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg) translateY(-3px); transition: transform .15s; }
+.plan-step.open .step-chevron { transform: rotate(-135deg) translate(-2px, -1px); }
+.plan-step-body { padding: 4px 14px 14px; border-top: 0; }
+.plan-step-body > .hint:first-child { margin-top: 8px; }
+.plan-step-body h3 { margin: 16px 0 8px; font-size: 14px; }
+.plan-step-body .help-disclosure + h3 { margin-top: 8px; }
+.plan-step-body .intent-controls { padding: 10px; }
+
+/* Finished job status floats instead of pushing the map down. */
+.workspace { position: relative; }
+.icon-button { min-width: 30px; min-height: 30px; padding: 0 6px; border-color: transparent; background: transparent; color: var(--muted); font-size: 20px; line-height: 1; }
+.icon-button:hover { color: var(--text); }
+.job-card-heading { gap: 8px; }
+.job-card-heading strong { flex: 1 1 auto; }
+.shared-job-card:is([data-state="complete"], [data-state="stopped"], [data-state="cancelled"], [data-state="terrain_ready"], [data-state="interrupted"]) {
+  position: absolute;
+  z-index: 800;
+  top: 54px;
+  right: 14px;
+  max-width: min(460px, calc(100% - 28px));
+  margin: 0;
+  box-shadow: 0 10px 30px #12251e2e;
+}
+.shared-job-card[data-state="complete"] { display: flex; }
+
+/* Scenarios empty state and section headings. */
+.compare-panel > h2, .coverage-panel > h2 { margin-bottom: 10px; }
+.coverage-empty-state { padding: 12px; border: 1px solid #e4cfa8; border-radius: 10px; background: #fff8ec; }
+.coverage-empty-state p { margin: 0 0 10px; color: var(--text); font-size: 13px; }
+#coverage-export-controls { margin-top: 16px; }
+
+@media (max-width: 900px) {
+  .save-state { display: none; }
+}
+@media (max-width: 650px) {
+  header.app-bar { height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px; padding: 8px 10px; }
+  .app-bar .brand-name { display: none; }
+  .app-bar .project-bar { display: flex; flex: 1 1 0; }
+  .app-bar .project-select-label { flex: 1 1 auto; }
+  .new-project-button { padding-inline: 9px; }
+  .project-menu-actions { left: auto; right: 0; }
+  main { height: auto; }
+}
+header.app-bar { z-index: 1100; }
+.app-bar .project-menu { margin: 0; padding: 0; border: 0; }
+aside .wide-button { font-size: 13px; }
+aside .text-button { font-size: 12px; }
+aside summary { font-size: 13px; }
+.help-disclosure summary { font-size: 12px; }
+.pin { cursor: crosshair; }
