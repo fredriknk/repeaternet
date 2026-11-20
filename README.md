@@ -63,17 +63,19 @@ provider integrations, supported terrain formats and compatibility limits, and
 
 ## Plan a connection
 
-1. Set endpoints A and B on the map or enter coordinates.
+1. Set endpoints A and B with the map toolbar, the map's right-click menu, or
+   coordinates.
 2. Upload ground DTM GeoTIFFs, or let the planner prepare Kartverket corridor
    terrain. Add surface DOM tiles when available.
 3. Optionally load nearby MeshCore routers and mark them Optional, Required, or
-   Excluded. Add proposed sites and choose the search objective.
+   Excluded (from the list or by clicking them on the map). Add proposed sites and
+   choose the search objective.
 4. Select **Find repeater route**. Ready terrain starts the search directly;
    missing terrain presents a combined download-and-search confirmation.
 5. Open **Analysis** to compare alternatives, inspect link profiles, and export
    results. Use **Map** for a full map view.
-6. Calculate **Predicted mesh coverage**, inspect locations, assess targets, and
-   compare saved height or router-failure scenarios.
+6. In **Coverage**, calculate predicted handheld coverage and inspect locations.
+   In **Scenarios**, assess targets and compare height or router-failure scenarios.
 
 ## Documentation
 
