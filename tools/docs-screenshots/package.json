@@ -1,0 +1,14 @@
+{
+  "name": "repeaternet-docs-screenshots",
+  "private": true,
+  "scripts": {
+    "capture": "node capture.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "playwright-core": "1.65.1",
+    "sharp": "0.35.5"
+  }
+}
