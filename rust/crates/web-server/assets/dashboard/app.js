@@ -17,7 +17,7 @@ let coverageRunReused=false,coverageEstimate=null,coverageEstimateRequest=0,cove
 let coverageTerrainCheck=null,coverageTerrainUnknownKey=null,coverageTerrainJobId=null;
 let coverageDrawingPoints=[];
 const map = L.map('map').setView([60, 10.8], 9);
-const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap contributors'}).addTo(map);
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap contributors'}).addTo(map);
 const topo = L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {maxZoom:18, attribution:'© Kartverket'});
 map.createPane('coveragePane');map.getPane('coveragePane').style.zIndex=350;
 const coverageRenderer=L.canvas({pane:'coveragePane',padding:0.25});
