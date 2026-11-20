@@ -149,6 +149,8 @@ fn alternative(solution: &NetworkSolution, transform: &Transformer, complete: bo
             "id": alternative_id(solution), "name": solution.name,
             "router_count": solution.router_count(), "existing_router_count": solution.existing_router_count(),
             "proposed_router_count": solution.proposed_router_count(), "minimum_margin_db": solution.minimum_margin_db(),
+            "primary_minimum_margin_db": solution.primary_links().map(LinkResult::worst_margin_db).reduce(f64::min),
+            "primary_los_blocked_hops": solution.primary_links().filter(|link| !link.los_clear).count(),
             "total_link_distance_m": solution.total_link_distance_m(), "primary_distance_m": solution.primary_distance_m(),
             "requested_path_count": solution.requested_path_count, "achieved_path_count": solution.achieved_path_count,
             "resilient": solution.resilient(), "search_complete": complete,

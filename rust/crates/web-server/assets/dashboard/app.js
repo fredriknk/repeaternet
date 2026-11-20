@@ -44,7 +44,7 @@ function invalidate(reason='planning inputs'){
   updatePlanReadiness();
   if($('coverage-job-status'))setCoverageStatus('Route inputs changed. Recalculate coverage after validating the new route.');
   if(result){resultStale=true;resultStaleReason=reason;$('result-title').textContent='Previous certified route · stale';$('status').textContent=`${reason} changed. This route is for the previous settings; run a new search to validate the current plan.`;$('status').className='stale';$('exports').hidden=true;for(const layer of routeLayer.getLayers()){if(layer.setStyle)layer.setStyle({color:'#9b8e6b',dashArray:'5 6'});if(layer.dragging)layer.dragging.disable();}$('alternative-select').disabled=true;syncAnalysisBadge();updateCoverageActions();return;}
-  routeLayer.clearLayers();candidateLayer.clearLayers();showRepeaterRoads();$('metrics').replaceChildren();$('hops').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('alternatives').hidden=true;$('road-access-diagnostic').hidden=true;$('result-title').textContent='Ready for a new route';
+  routeLayer.clearLayers();candidateLayer.clearLayers();showRepeaterRoads();$('metrics').replaceChildren();$('hops').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('alternatives').hidden=true;$('candidate-search-diagnostic').hidden=true;$('result-title').textContent='Ready for a new route';
 }
 function updatePlanReadiness(report=terrainReadiness){
   const card=$('plan-readiness');if(!card)return;
@@ -1044,11 +1044,14 @@ function renderAlternativeChoices(){
   const alternatives=result?.alternatives||[],panel=$('alternatives'),selector=$('alternative-select'),cards=$('alternative-cards');selector.replaceChildren();cards.replaceChildren();
   if(!alternatives.length){panel.hidden=true;return;}
   selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;
-  const objective={minimum_routers:'fewest routers',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'highest reliability'}[candidates.priority]||'configured objective';
+  const objective={minimum_routers:'fewest routers',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'independent paths and RF quality before router count'}[candidates.priority]||'configured objective';
   for(const [index,item] of alternatives.entries()){
     const option=document.createElement('option');option.value=item.id;option.textContent=item.name||`Alternative ${index+1} · ${item.router_count} ${item.router_count===1?'router':'routers'}`;selector.append(option);
     const button=document.createElement('button');button.type='button';button.className='alternative-card'+(item.id===selector.value?' selected':'');button.dataset.alternativeId=item.id;button.setAttribute('aria-pressed',String(item.id===selector.value));
-    const title=document.createElement('strong'),meta=document.createElement('span'),summary=document.createElement('small');title.textContent=item.name||`Alternative ${index+1}`;meta.textContent=`${item.router_count} total · ${item.existing_router_count} existing · ${item.proposed_router_count} proposed · ${(item.primary_distance_m/1000).toFixed(2)} km · ${Number.isFinite(item.minimum_margin_db)?item.minimum_margin_db.toFixed(1)+' dB bottleneck':'no margin'}`;summary.textContent=`${item.achieved_path_count}/${item.requested_path_count} independent paths · ${item.resilient?'redundancy met':'redundancy not met'} · ${item.search_complete?'search complete':'search incomplete'}`;button.append(title,meta,summary);button.onclick=()=>{selector.value=item.id;void chooseAlternative();};cards.append(button);
+    const title=document.createElement('strong'),meta=document.createElement('span'),summary=document.createElement('small');title.textContent=item.name||`Alternative ${index+1}`;meta.textContent=`${item.router_count} total · ${item.existing_router_count} existing · ${item.proposed_router_count} proposed · ${(item.primary_distance_m/1000).toFixed(2)} km · ${Number.isFinite(item.minimum_margin_db)?item.minimum_margin_db.toFixed(1)+' dB network bottleneck':'no margin'}`;if(Number.isFinite(item.primary_minimum_margin_db)){
+      meta.textContent += ` · ${item.primary_minimum_margin_db.toFixed(1)} dB primary · ${item.primary_los_blocked_hops} LOS-blocked primary hops`;
+    }
+    summary.textContent=`${item.achieved_path_count}/${item.requested_path_count} independent paths · ${item.resilient?'redundancy met':'redundancy not met'} · ${item.search_complete?'search complete':'search incomplete'}`;button.append(title,meta,summary);button.onclick=()=>{selector.value=item.id;void chooseAlternative();};cards.append(button);
   }
   selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;selector.hidden=false;const active=alternatives.find(item=>item.id===selector.value);$('alternative-summary').textContent=active?`Ranked for ${objective} · ${(active.primary_distance_m/1000).toFixed(2)} km primary · ${active.achieved_path_count}/${active.requested_path_count} independent paths${active.resilient?' met':' · shortfall'}.`:'';$('alternative-comparison-summary').textContent=`Compare all ${alternatives.length} route alternatives`;panel.hidden=false;syncAlternativeControls();
 }
@@ -1074,9 +1077,9 @@ $('show-repeater-roads').onchange=showRepeaterRoads;
 function render(){
   routeLayer.clearLayers();routeLinkLayers=[];$('metrics').replaceChildren();$('hops').querySelector('tbody').replaceChildren();$('profile').hidden=true;$('analysis-link-picker').hidden=true;$('hops-disclosure').hidden=true;$('rf-validation-note').hidden=true;
   syncAnalysisBadge();showRepeaterRoads();$('route-show-map').disabled=!result?.links?.length;
-  const roadDiagnostic=$('road-access-diagnostic');
-  roadDiagnostic.textContent=result.found?(result.diagnostics||[]).find(line=>line.startsWith('Road access filter kept '))||'':'';
-  roadDiagnostic.hidden=!roadDiagnostic.textContent;
+  const candidateDiagnostic=$('candidate-search-diagnostic');
+  candidateDiagnostic.textContent=result.found?(result.diagnostics||[]).filter(line=>line.startsWith('Road access filter kept ')||line.startsWith('Effective candidate grid spacing:')).join(' '):'';
+  candidateDiagnostic.hidden=!candidateDiagnostic.textContent;
   $('result-title').textContent=resultStale?'Previous certified route · stale':!result.found?'No viable route found':result.search_complete?'Your connection, mapped.':'Certified route · search incomplete';renderAlternativeChoices();
   if(!result.found){$('hops').hidden=true;$('exports').hidden=true;status(resultStale?'Previous search result is stale.':result.diagnostics.join(' · ')||'Try a wider corridor or different antenna heights.');return;}$('rf-validation-note').hidden=false;
   const links=result.links,active=(result.alternatives||[]).find(item=>item.id===result.active_alternative_id),margin=active?.minimum_margin_db??Math.min(...links.map(link=>link.worst_margin_db)),distance=active?.primary_distance_m??links.reduce((sum,link)=>sum+link.distance_m,0);
