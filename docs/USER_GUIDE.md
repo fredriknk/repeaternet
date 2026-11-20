@@ -276,9 +276,10 @@ close the finished notice.
 ![Active route search job with elapsed time and stop or cancel controls](images/route-search-job.png)
 
 Edits to endpoints, radio, terrain, sites or search settings can make the route
-stale. **Analysis** shows a stale badge and an explanation, and the old link lines
-turn grey and dashed. Run **Find repeater route** again to validate the new inputs
-and restore route export. Coverage must also be recalculated for the new route.
+stale. The **Analysis** badge and grey verdict mark the result as stale, and the
+old link lines turn grey and dashed. Use **Undo** to return to the certified
+inputs, or run **Find repeater route** again to validate the new inputs and
+restore route export. Recalculate coverage for a changed route.
 
 ![Analysis marking the previous route stale after an input edit](images/route-stale.png)
 
@@ -350,7 +351,8 @@ In **Area & detail**, set **Area**.
 | **Draw a custom boundary** | Use **Draw area on map**, click at least three vertices and choose **Finish polygon**. Use **Cancel drawing**, **Cancel** or Esc to leave placement mode. **Clear drawn area** removes the saved boundary and returns to the route area. |
 
 In **Advanced sampling and limits**, **Cell spacing · m** defaults to 1,000 m
-(100–100,000 m), **Mesh buffer · m** to 5,000 m (0–100,000 m), **Profile step · m**
+(100–100,000 m), **Mesh buffer · m** to 5,000 m (any positive value up to
+500,000 m, including decimals), **Profile step · m**
 to 200 m (10–10,000 m) and **Maximum profile samples** to 4,096 (3–16,384).
 Cell spacing controls map detail. Profile step controls the distance between
 terrain samples along each RF path. If a profile hits the sample cap, it remains
@@ -412,7 +414,7 @@ Read the **Coverage legend** with the map and hover over a cell for its summary.
 **Outside requested area** represent different outcomes. Unevaluated work in a
 partial run is also separate. For an individual place, use location inspection.
 
-![Full calculated coverage grid around the route with the signal margin legend](images/coverage-map.png)
+![Completed coverage grid on synthetic terrain with the signal margin legend](images/coverage-map.png)
 
 ### Additional terrain and saved runs
 
@@ -435,7 +437,8 @@ tiles and no-data pixels can still produce unknown results.
 In **Runs**, **Analysis context** identifies the selected mesh and client
 assumptions. Select a **Saved coverage run** to use for inspection, targets and
 exports. **Show saved run on map** loads its cells incrementally without new RF
-work. The run label includes the time, grid, height overrides and state.
+work. The progress bar clears when the last stored page arrives. The run label
+includes the time, grid, height overrides and state.
 An identical completed run can be reused when route, terrain, sources, grid,
 radio and model metadata match. Otherwise, calculate again. A stored result is
 limited to 100 MiB. A result larger than the limit fails to save.
@@ -474,8 +477,9 @@ completed, current run with a repeater source. Back in **3 Scenarios**, pick a
 **Analyze failures**. The result reports surviving components and cells that
 lost local access or a connection to the reference. A handheld can still
 reach a surviving router in a disconnected component. Keep the reference
-enabled to measure connectivity to that router. **Reset scenario** clears
-the failure selection. Analyze again to see the baseline.
+enabled to measure connectivity to that router. The boxes stay checked after
+analysis for the selected run. **Reset scenario** clears the failure selection.
+Analyze again to see the baseline.
 
 ![Router failure analysis showing lost local and reference-connected coverage](images/scenario-router-failure.png)
 
