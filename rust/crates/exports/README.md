@@ -1,6 +1,6 @@
 ﻿# RepeaterNet exports
 
-This crate renders saved coverage manifests and the active route wire DTO using Rust. Python is used only to regenerate the checked-in test oracles.
+This crate renders saved coverage manifests and the active route wire DTO using Rust. The checked-in test oracles were captured from the removed Python implementation at `18b7cee`.
 
 ## Coverage downloads
 
@@ -19,4 +19,4 @@ This crate renders saved coverage manifests and the active route wire DTO using 
 
 The server owns workspace and project access, manifest and report selection, snapshot consistency, stale/partial opt-ins, comparison compatibility, HTTP details and dashboard wiring. The renderer only sees the DTOs it is given. The route wire DTO exposes the primary path. Pass additional paths and alternative diagnostics separately when available. Scenario and target assessments are computed upstream. The optional failure summary extends the Python JSON export, which only takes a scenario comparison.
 
-The integration tests use captured Python JSON, GeoJSON, CSV and route map data. They also exercise escaped HTML and script data, partial/empty grids, nonfinite numbers, embedded route coverage, large profile sampling and rejection at the 100 MiB export limit. To refresh fixtures from the repository root, run `python rust/crates/exports/tests/generate_oracles.py` in the development environment with `src` on `PYTHONPATH`. Run `cargo test -p repeaternet-exports` and `cargo clippy -p repeaternet-exports --all-targets -- -D warnings` once the crate is registered in the workspace. Before registration, the crate can be copied out of the workspace and tested using its own manifest.
+The integration tests use captured Python JSON, GeoJSON, CSV and route map data. They also exercise escaped HTML and script data, partial/empty grids, nonfinite numbers, embedded route coverage, large profile sampling and rejection at the 100 MiB export limit. The oracle generator remains available at commit `18b7cee`. Run `cargo test -p repeaternet-exports` and `cargo clippy -p repeaternet-exports --all-targets -- -D warnings` from `rust`.
