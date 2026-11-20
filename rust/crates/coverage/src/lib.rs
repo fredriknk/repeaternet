@@ -6,6 +6,7 @@ mod engine;
 mod grid;
 mod model;
 mod network;
+mod parallel;
 mod point;
 mod target_compare;
 mod targets;

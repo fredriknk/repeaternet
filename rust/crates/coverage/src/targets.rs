@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     analyze_node_failures,
     grid::{clipped_cell_bounds, drawn_polygon},
-    invalid, AreaMode, CoverageArea, CoverageCell, CoverageError, CoverageEvaluator, CoverageGrid,
+    invalid,
+    parallel::{for_each_ordered, worker_count},
+    AreaMode, CoverageArea, CoverageCell, CoverageError, CoverageEvaluator, CoverageGrid,
     CoverageNetwork, CoverageSettings, CoverageSourceResult, CoverageState, ExactPointOptions,
     PointState, Rejection, MAX_CELLS,
 };
@@ -489,7 +491,10 @@ impl<T: TerrainSource + ?Sized> CoverageEvaluator<'_, T> {
     pub fn assess_targets(
         &self,
         input: TargetAssessmentInput<'_>,
-    ) -> Result<TargetAssessment, CoverageError> {
+    ) -> Result<TargetAssessment, CoverageError>
+    where
+        T: Sync,
+    {
         input.targets.validate()?;
         input.settings.validate()?;
         if !(25.0..=5000.0).contains(&input.road_spacing_m) {
@@ -748,7 +753,10 @@ impl<T: TerrainSource + ?Sized> CoverageEvaluator<'_, T> {
         area: &geo::MultiPolygon<f64>,
         input: &TargetAssessmentInput<'_>,
         selection: &TargetSelection<'_>,
-    ) -> Result<(RoadTargetStats, TargetState, &'static str), CoverageError> {
+    ) -> Result<(RoadTargetStats, TargetState, &'static str), CoverageError>
+    where
+        T: Sync,
+    {
         let mut stats = RoadTargetStats {
             total_length_m: samples.iter().map(|(_, weight)| weight).sum(),
             covered_length_m: 0.0,
@@ -760,37 +768,67 @@ impl<T: TerrainSource + ?Sized> CoverageEvaluator<'_, T> {
             sample_count: samples.len(),
             worst_passing_margin_db: None,
         };
-        for &(point, weight) in samples {
-            if (input.cancelled)() {
-                return Err(CoverageError::Cancelled);
-            }
-            if !area.intersects(&geo::Point::new(point.x, point.y)) {
-                stats.outside_analysed_area_length_m += weight;
-                continue;
-            }
-            let location = self.transform.reverse(point)?;
-            let evaluated = self
-                .evaluate_projected_point(
-                    point,
-                    location,
-                    input.sources,
-                    input.settings,
-                    input.point_options(),
-                )?
-                .coverage;
-            let rows = evaluated.sources.iter().map(|row| &row.result);
-            match selection.classify(rows.clone(), evaluated.state.into()) {
-                TargetState::Pass => {
-                    stats.covered_length_m += weight;
-                    stats.worst_passing_margin_db = rows
-                        .filter_map(|row| selection.passing_margin(row))
-                        .chain(stats.worst_passing_margin_db)
-                        .reduce(f64::min);
+        let sources = input.sources;
+        let settings = input.settings;
+        let final_sample_step_m = input.final_sample_step_m;
+        let workers = worker_count(
+            self.parallel_workers,
+            samples.len(),
+            samples.len() * sources.len(),
+        );
+        let complete = for_each_ordered(
+            samples.iter().copied(),
+            workers,
+            input.cancelled,
+            |(point, weight), cancelled| {
+                if !area.intersects(&geo::Point::new(point.x, point.y)) {
+                    return Ok((weight, TargetState::OutsideAnalysedArea, None));
                 }
-                TargetState::Unresolved => stats.unresolved_length_m += weight,
-                TargetState::Unknown => stats.unknown_length_m += weight,
-                _ => stats.failed_length_m += weight,
-            }
+                let location = self.transform.reverse(point)?;
+                let evaluated = self
+                    .evaluate_projected_point(
+                        point,
+                        location,
+                        sources,
+                        settings,
+                        ExactPointOptions {
+                            final_sample_step_m,
+                            include_serving_profile: false,
+                            cancelled,
+                        },
+                    )?
+                    .coverage;
+                let rows = evaluated.sources.iter().map(|row| &row.result);
+                let state = selection.classify(rows.clone(), evaluated.state.into());
+                let worst_margin = if state == TargetState::Pass {
+                    rows.filter_map(|row| selection.passing_margin(row))
+                        .reduce(f64::min)
+                } else {
+                    None
+                };
+                Ok((weight, state, worst_margin))
+            },
+            |(weight, state, worst_margin)| {
+                match state {
+                    TargetState::Pass => {
+                        stats.covered_length_m += weight;
+                        stats.worst_passing_margin_db = worst_margin
+                            .into_iter()
+                            .chain(stats.worst_passing_margin_db)
+                            .reduce(f64::min);
+                    }
+                    TargetState::Unresolved => stats.unresolved_length_m += weight,
+                    TargetState::Unknown => stats.unknown_length_m += weight,
+                    TargetState::OutsideAnalysedArea => {
+                        stats.outside_analysed_area_length_m += weight
+                    }
+                    _ => stats.failed_length_m += weight,
+                }
+                Ok(())
+            },
+        )?;
+        if !complete {
+            return Err(CoverageError::Cancelled);
         }
         let tolerance = (stats.total_length_m * 1e-9).max(1e-6);
         let unknown = stats.unknown_length_m + stats.outside_analysed_area_length_m;

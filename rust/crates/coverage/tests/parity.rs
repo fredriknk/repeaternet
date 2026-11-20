@@ -210,7 +210,7 @@ fn grid_mask_orientation_estimate_and_preview_limits() {
     let area = resolve_area(&settings, &transform, &sources, &[], 100.0, None).unwrap();
     let terrain = terrain(0.0, origin);
     let rf = RfSettings::default();
-    let evaluator = CoverageEvaluator::new(&terrain, &rf, &transform);
+    let evaluator = CoverageEvaluator::new(&terrain, &rf, &transform).with_parallel_workers(4);
     let estimate = evaluator
         .estimate(&sources, &settings, &area, &|| false)
         .unwrap();
@@ -275,7 +275,7 @@ fn profile_caps_avoid_sampling_and_interrupted_cells_never_stream() {
         ..CoverageSettings::default()
     };
     let capped = evaluator
-        .calculate(&sources, &settings, &area, RunOptions::default())
+        .calculate_serial(&sources, &settings, &area, RunOptions::default())
         .unwrap();
     assert_eq!(terrain.samples.get(), 1);
     assert_eq!(capped.unresolved_cells, 2);
@@ -283,11 +283,11 @@ fn profile_caps_avoid_sampling_and_interrupted_cells_never_stream() {
     settings.maximum_profile_samples = 32;
     settings.maximum_evaluations = 1;
     assert!(evaluator
-        .calculate(&sources, &settings, &area, RunOptions::default())
+        .calculate_serial(&sources, &settings, &area, RunOptions::default())
         .is_err());
     settings.maximum_evaluations = 10;
     let full = evaluator
-        .calculate(&sources, &settings, &area, RunOptions::default())
+        .calculate_serial(&sources, &settings, &area, RunOptions::default())
         .unwrap();
 
     let terrain = CountingTerrain {
@@ -299,7 +299,7 @@ fn profile_caps_avoid_sampling_and_interrupted_cells_never_stream() {
     let cancel = || terrain.cancelled();
     let mut sink = |cells: &[CoverageCell]| write_cell_chunk(&mut stream, cells);
     let prefix = evaluator
-        .calculate(
+        .calculate_serial(
             &sources,
             &settings,
             &area,
@@ -321,6 +321,84 @@ fn profile_caps_avoid_sampling_and_interrupted_cells_never_stream() {
         .next()
         .unwrap()
         .is_err());
+}
+
+#[test]
+fn parallel_grid_stream_matches_serial_bytes_and_cancellation_prefix() {
+    let terrain = terrain(f64::NAN, Point::default());
+    let rf = RfSettings::default();
+    let transform = Transformer::new(CRS).unwrap();
+    let settings = CoverageSettings {
+        cell_size_m: 100.0,
+        profile_step_m: 100.0,
+        maximum_profile_samples: 8,
+        ..CoverageSettings::default()
+    };
+    let sources = [router("B", 1850.0, 1700.0), router("A", 200.0, 1700.0)];
+    let area = CoverageArea::rectangle([0.0, 0.0, 1900.0, 1800.0]).unwrap();
+    let run = |workers, cancel_at| {
+        let mut bytes = Vec::new();
+        let mut reports = Vec::new();
+        let stop = Cell::new(false);
+        let grid = CoverageEvaluator::new(&terrain, &rf, &transform)
+            .with_parallel_workers(workers)
+            .calculate(
+                &sources,
+                &settings,
+                &area,
+                RunOptions {
+                    cancelled: &|| stop.get(),
+                    progress: Some(&mut |done, total| {
+                        reports.push((done, total));
+                        if Some(done) == cancel_at {
+                            stop.set(true);
+                        }
+                    }),
+                    on_chunk: Some(&mut |cells| write_cell_chunk(&mut bytes, cells)),
+                    chunk_size: 7,
+                },
+            )
+            .unwrap();
+        (grid, bytes, reports)
+    };
+    let serial = run(1, None);
+    let parallel = run(4, None);
+    assert_eq!(parallel, serial);
+    assert_eq!(parallel.2.last(), Some(&(342, 342)));
+    assert!(parallel.2.windows(2).all(|pair| pair[0].0 < pair[1].0));
+
+    let (prefix, bytes, reports) = run(4, Some(20));
+    assert_eq!(reports, [(20, 342)]);
+    let serial_prefix = run(1, Some(20));
+    assert_eq!(prefix, serial_prefix.0);
+    assert_eq!(bytes, serial_prefix.1);
+    assert_eq!(reports, serial_prefix.2);
+    let chunks: Vec<Vec<CoverageCell>> = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), [7, 7, 6]);
+    let full_cells: Vec<_> = read_cell_stream(Cursor::new(parallel.1), 64 * 1024)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let cells = chunks.concat();
+    assert_eq!(cells, full_cells[..20]);
+    let count = |state| cells.iter().filter(|cell| cell.state == state).count();
+    assert_eq!(prefix.completed_cells, cells.len());
+    assert_eq!(
+        prefix.evaluated_cells,
+        count(CoverageState::Covered) + count(CoverageState::Uncovered)
+    );
+    assert_eq!(prefix.unknown_cells, count(CoverageState::UnknownTerrain));
+    assert_eq!(prefix.unresolved_cells, count(CoverageState::Unresolved));
+    assert_eq!(
+        prefix.unresolved_source_evaluations,
+        cells
+            .iter()
+            .map(|cell| cell.unresolved_sources)
+            .sum::<usize>()
+    );
 }
 
 fn ids(ids: &[&str]) -> Vec<String> {
@@ -640,20 +718,26 @@ fn exact_point_inspection_and_all_target_geometries_share_rf_and_limits() {
     assert_eq!(exact.coverage.selected_source_id.as_deref(), Some("A"));
     assert!(exact.profile_link.unwrap().profile.is_some());
 
-    let assess = |settings: &CoverageSettings, grid: &CoverageGrid| {
-        evaluator.assess_targets(TargetAssessmentInput {
-            targets: &targets,
-            grid,
-            cells: &grid.cells,
-            network: &network,
-            sources: &sources,
-            settings,
-            final_sample_step_m: 100.0,
-            road_spacing_m: 100.0,
-            cancelled: &|| false,
-        })
+    let assess = |settings: &CoverageSettings, grid: &CoverageGrid, workers| {
+        CoverageEvaluator::new(&terrain, &rf, &transform)
+            .with_parallel_workers(workers)
+            .assess_targets(TargetAssessmentInput {
+                targets: &targets,
+                grid,
+                cells: &grid.cells,
+                network: &network,
+                sources: &sources,
+                settings,
+                final_sample_step_m: 100.0,
+                road_spacing_m: 100.0,
+                cancelled: &|| false,
+            })
     };
-    let first = assess(&settings, &grid).unwrap();
+    let first = assess(&settings, &grid, 4).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&assess(&settings, &grid, 1).unwrap()).unwrap()
+    );
     assert_eq!(
         first
             .targets
@@ -692,7 +776,7 @@ fn exact_point_inspection_and_all_target_geometries_share_rf_and_limits() {
     let capped_grid = evaluator
         .calculate(&sources, &settings, &area, RunOptions::default())
         .unwrap();
-    let second = assess(&settings, &capped_grid).unwrap();
+    let second = assess(&settings, &capped_grid, 4).unwrap();
     for target in &second.targets[..3] {
         assert_eq!(target.state, TargetState::Unresolved);
     }

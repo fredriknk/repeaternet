@@ -37,7 +37,10 @@ current call before cancellation is observed.
    projected bounds use `[min_x, min_y, max_x, max_y]` in metres.
    `CoverageArea::geometry` exposes the actual masked region for terrain planning.
 3. Use `estimate` for the bounded grid and ground-availability counts without RF.
-   Use `calculate` for the full grid. Pass `settings.preview_settings()` for
+   Use `calculate` for the full grid with `Sync` terrain. It uses scoped
+   workers for larger runs. Use `with_parallel_workers(1)` to select one
+   thread or `calculate_serial` for a non-`Sync` terrain backend. Pass
+   `settings.preview_settings()` for
    the 256-cell and 4,096-pair preview limits while retaining the original
    settings for the HTTP response. `area_bounds_wgs84` and `cell_footprint`
    provide the rendering geometry. The caller supplies route identity, search
@@ -48,8 +51,9 @@ current call before cancellation is observed.
    `read_cell_stream` use the Python JSONL format with one array per line.
    Supply a per-line byte limit when reading. A sink error propagates to the
    caller. A cancellation before evaluation returns `CoverageError::Cancelled`.
-   During evaluation the engine discards the interrupted cell and returns the
-   completed prefix. The caller owns job state and can choose whether to commit
+   During evaluation the engine returns the ordered prefix accepted before
+   cancellation and flushes any pending complete cells on the calling thread.
+   The caller owns job state and can choose whether to commit
    a final partial chunk. Cancellation is polled between sources and terrain
    batches, with one bounded RF profile evaluation per source call.
 5. Use `analyze_node_failures` with a `CoverageNetwork` built from certified
@@ -65,7 +69,9 @@ current call before cancellation is observed.
    metadata and mesh component labels come from the caller's route snapshot.
 7. Use `normalize_targets` on GeoJSON, `assess_targets` with the immutable
    coverage grid and rows, and `compare_target_reports` with typed saved-report
-   metadata. Assessment computes exact point and length-weighted road metrics
+   metadata. Assessment uses `Sync` terrain to evaluate larger sets of
+   independent road samples in parallel and accumulates their lengths in road
+   order. It computes exact point and length-weighted road metrics
    and intersects polygon targets with clipped grid cells. It tracks passing,
    failed, unknown, unresolved and outside measures and enforces target,
    sample, evaluation and scan limits. As in Python, assessment clips to the

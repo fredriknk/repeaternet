@@ -1,6 +1,13 @@
 //! Local engine benchmark matching the Python tool's 8-source, 1,024-cell flat
 //! or GeoTIFF case. Both timed phases stream and hash JSON chunks.
-use std::{cell::Cell, path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
+    time::Instant,
+};
 
 use repeaternet_coverage::{
     write_cell_chunk, CoverageArea, CoverageEvaluator, CoverageMetricsCache, CoverageSettings,
@@ -18,10 +25,10 @@ const SIDE: usize = 32;
 const CELLS: usize = SIDE * SIDE;
 
 struct Metered<'a> {
-    terrain: &'a dyn TerrainSource,
-    reads: Cell<usize>,
-    cancel_at: Cell<usize>,
-    cancelled_at: Cell<Option<Instant>>,
+    terrain: &'a (dyn TerrainSource + Sync),
+    reads: AtomicUsize,
+    cancel_at: Option<usize>,
+    cancelled_at: OnceLock<Instant>,
 }
 
 impl TerrainSource for Metered<'_> {
@@ -35,9 +42,9 @@ impl TerrainSource for Metered<'_> {
 
     fn sample(&self, points: &[Point], layer: TerrainLayer) -> Result<Vec<f64>, RfError> {
         let result = self.terrain.sample(points, layer);
-        self.reads.set(self.reads.get() + 1);
-        if self.reads.get() == self.cancel_at.get() {
-            self.cancelled_at.set(Some(Instant::now()));
+        let reads = self.reads.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.cancel_at == Some(reads) {
+            let _ = self.cancelled_at.set(Instant::now());
         }
         result
     }
@@ -78,19 +85,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(
-    terrain: &dyn TerrainSource,
+    terrain: &(dyn TerrainSource + Sync),
     crs: TerrainCrs,
     left: f64,
     bottom: f64,
     width: f64,
     fixture: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let terrain = Metered {
-        terrain,
-        reads: Cell::new(0),
-        cancel_at: Cell::new(0),
-        cancelled_at: Cell::new(None),
-    };
     let sources: Vec<_> = (0..SOURCES)
         .map(|index| {
             let mut site = Site::new(
@@ -116,15 +117,15 @@ fn run(
     };
     let transform = Transformer::new(crs)?;
     let cache = CoverageMetricsCache::new(50_000);
-    let measure = |revision, cancel| -> Result<Value, repeaternet_coverage::CoverageError> {
+    let measure = |revision, cancel: bool| -> Result<Value, repeaternet_coverage::CoverageError> {
         let start = Instant::now();
+        let terrain = Metered {
+            terrain,
+            reads: AtomicUsize::new(0),
+            cancel_at: cancel.then_some(CELLS.div_ceil(512) + SOURCES * 2),
+            cancelled_at: OnceLock::new(),
+        };
         let eval = CoverageEvaluator::new(&terrain, &rf, &transform).with_cache(&cache, revision);
-        terrain.reads.set(0);
-        terrain.cancel_at.set(if cancel {
-            CELLS.div_ceil(512) + SOURCES * 2
-        } else {
-            0
-        });
         let mut covered = 0;
         let mut encoded = Vec::new();
         let mut hash = Sha256::new();
@@ -155,14 +156,14 @@ fn run(
             "seconds": (finished - start).as_secs_f64(),
             "first_chunk_seconds": first_chunk,
             "peak_working_set_mib": peak_working_set_mib(),
-            "terrain_reads": terrain.reads.get(),
+            "terrain_reads": terrain.reads.load(Ordering::Relaxed),
             "covered_cells": covered,
             "evaluated_cells": grid.evaluated_cells,
             "unknown_cells": grid.unknown_cells,
             "completed_cells": grid.completed_cells,
             "result_sha256": format!("{:x}", hash.finalize()),
             "cache": { "entries": stats.entries, "hits": stats.hits, "misses": stats.misses },
-            "cancel_ack_seconds": terrain.cancelled_at.get().map(|at| (finished - at).as_secs_f64()),
+            "cancel_ack_seconds": terrain.cancelled_at.get().map(|&at| (finished - at).as_secs_f64()),
         }))
     };
     let cold = measure([1; 32], false)?;
