@@ -1,0 +1,12 @@
+[package]
+name = "repeaternet-terrain"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Offline terrain sampling, projection and corridor geometry for RepeaterNet"
+
+[dependencies]
+geo = { version = "0.33.1", default-features = false }
+proj4rs = { version = "0.1.10", default-features = false, features = ["multi-thread", "esri"] }
+repeaternet-rf-core = { path = "../rf-core" }
+tiff-reader = { version = "0.11.1", default-features = false, features = ["zstd"] }

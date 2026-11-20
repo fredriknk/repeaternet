@@ -7,6 +7,26 @@ estimate mesh coverage using the configured radio and terrain data.
 RepeaterNet is a pre-release web application. RF results are planning predictions;
 validate important links with site surveys and field measurements.
 
+## Native Windows application (Rust)
+
+The native Rust application embeds the dashboard and runs without Python.
+Build it from PowerShell with the Rust MSVC toolchain, C++ Build Tools and Windows SDK:
+
+```powershell
+.\tools\build-rust.ps1
+.\rust\target\release\repeaternet.exe
+```
+
+The executable opens the dashboard in your default browser. Use `--no-browser`
+for headless operation. Projects default to a user-writable application data directory;
+use `--data` to select an existing data root. Preserve the browser origin and workspace
+cookie when reopening existing projects.
+
+See the [Rust application guide](rust/README.md) for Linux builds, configuration,
+provider integrations, supported terrain formats and compatibility limits, and
+[release validation](docs/RUST_RELEASE_VALIDATION.md) for verification and packaging.
+The Python implementation below remains available as the reference runtime.
+
 ## Start with Docker
 
 ```sh

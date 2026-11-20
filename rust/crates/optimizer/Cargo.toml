@@ -1,0 +1,8 @@
+[package]
+name = "repeaternet-optimizer"
+version = "0.1.0"
+edition = "2021"
+description = "Terrain candidate selection and certified RF mesh optimization"
+
+[dependencies]
+repeaternet-rf-core = { path = "../rf-core" }

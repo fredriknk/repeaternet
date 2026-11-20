@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/coverage",
+    "crates/coverage-store",
+    "crates/exports",
+    "crates/optimizer",
+    "crates/project-store",
+    "crates/providers",
+    "crates/rf-core",
+    "crates/terrain",
+    "crates/web-server",
+]
+resolver = "2"

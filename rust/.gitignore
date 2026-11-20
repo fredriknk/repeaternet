@@ -1,0 +1,4 @@
+target/
+/crates/*/Cargo.lock
+*.sqlite3-shm
+*.sqlite3-wal

@@ -1,0 +1,8 @@
+[package]
+name = "repeaternet-rf-core"
+version = "0.1.0"
+edition = "2021"
+description = "Terrain-aware RF propagation and bidirectional link budgets"
+
+[dependencies]
+csv = "1.3"

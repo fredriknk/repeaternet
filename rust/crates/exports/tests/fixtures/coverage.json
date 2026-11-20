@@ -1,0 +1,697 @@
+{
+  "job": {
+    "job_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "project_id": "project-1",
+    "alternative_id": "alternative-1",
+    "snapshot_version": 3,
+    "input_revision": 2,
+    "state": "cancelled",
+    "created_at": 10,
+    "finished_at": 12,
+    "route_fingerprint": "route-fingerprint",
+    "terrain_fingerprint": [
+      [
+        "dtm/tile.tif",
+        100,
+        123
+      ]
+    ],
+    "terrain_crs": "EPSG:25833",
+    "grid_bounds_projected": [
+      500000,
+      6650000,
+      500100,
+      6650100
+    ],
+    "area_bounds_wgs84": [
+      59.98732854033941,
+      14.999999999999982,
+      59.98822645609,
+      15.001792195021434
+    ],
+    "rows": 2,
+    "columns": 2,
+    "requested_cells": 4,
+    "total": 4,
+    "effective_cell_size_m": 50,
+    "settings": {
+      "mode": "two_way",
+      "cell_size_m": 50,
+      "profile_step_m": 100,
+      "maximum_profile_samples": 128,
+      "client": {
+        "height_agl_m": 1.5,
+        "tx_power_dbm": 20
+      }
+    },
+    "radio_settings": {
+      "rf": {
+        "frequency_mhz": 915
+      },
+      "candidates": {}
+    },
+    "source_ids": [
+      "R-1"
+    ],
+    "source_sites": [],
+    "router_ids": [
+      "R-1"
+    ],
+    "network_sites": [
+      {
+        "id": "R-1",
+        "latitude": 60.0,
+        "longitude": 10.0,
+        "origin": "known"
+      },
+      {
+        "id": "R-2",
+        "latitude": 60.001,
+        "longitude": 10.001,
+        "origin": "known"
+      }
+    ],
+    "report_links": [
+      {
+        "source_id": "R-1",
+        "target_id": "R-2",
+        "distance_m": 100,
+        "worst_margin_db": 4.5,
+        "valid": true,
+        "los_clear": true,
+        "fresnel_clear": true
+      }
+    ],
+    "network_links": [],
+    "model_version": "coverage-v1",
+    "surface_available": false
+  },
+  "cells": [
+    {
+      "index": 0,
+      "x": 500025,
+      "y": 6650075,
+      "longitude": 10,
+      "latitude": 60,
+      "state": "covered",
+      "source_count": 1,
+      "unknown_sources": 0,
+      "best_margin_db": 12,
+      "best_source_id": "R-1",
+      "sources": [
+        {
+          "source_id": "R-1",
+          "two_way_margin_db": 12,
+          "valid_two_way": true
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "x": 500025,
+      "y": 6650025,
+      "longitude": 10,
+      "latitude": 60,
+      "state": "unknown_terrain",
+      "source_count": 0,
+      "unknown_sources": 1,
+      "best_margin_db": null,
+      "best_source_id": null,
+      "sources": []
+    }
+  ],
+  "targets": {
+    "report_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "targets": [
+      {
+        "id": "T-1",
+        "name": "<script>alert(1)</script>",
+        "state": "pass",
+        "message": "ok"
+      }
+    ],
+    "target_features": [
+      {
+        "type": "Feature",
+        "id": "T-1",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            10.0,
+            60.0
+          ]
+        },
+        "properties": {
+          "name": "<script>alert(1)</script>",
+          "minimum_margin_db": 5
+        }
+      }
+    ]
+  },
+  "json": {
+    "metadata": {
+      "schema": "repeaternet-coverage-export-v1",
+      "job_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "project_id": "project-1",
+      "alternative_id": "alternative-1",
+      "route_search_complete": null,
+      "achieved_path_count": null,
+      "requested_path_count": null,
+      "snapshot_version": 3,
+      "input_revision": 2,
+      "job_state": "cancelled",
+      "complete": false,
+      "partial": true,
+      "stale": true,
+      "created_at": 10,
+      "finished_at": 12,
+      "route_fingerprint": "route-fingerprint",
+      "terrain_fingerprint": [
+        [
+          "dtm/tile.tif",
+          100,
+          123
+        ]
+      ],
+      "terrain_crs": "EPSG:25833",
+      "coordinate_reference_system": "OGC:CRS84",
+      "terrain_inputs": [
+        {
+          "kind": "ground",
+          "filename": "tile.tif",
+          "size_bytes": 100,
+          "modified_ns": 123
+        }
+      ],
+      "area_bounds_wgs84": [
+        59.98732854033941,
+        14.999999999999982,
+        59.98822645609,
+        15.001792195021434
+      ],
+      "grid_bounds_projected": [
+        500000,
+        6650000,
+        500100,
+        6650100
+      ],
+      "rows": 2,
+      "columns": 2,
+      "requested_cell_size_m": 50,
+      "effective_cell_size_m": 50,
+      "profile_step_m": 100,
+      "maximum_profile_samples": 128,
+      "surface_available": false,
+      "mode": "two_way",
+      "settings": {
+        "mode": "two_way",
+        "cell_size_m": 50,
+        "profile_step_m": 100,
+        "maximum_profile_samples": 128,
+        "client": {
+          "height_agl_m": 1.5,
+          "tx_power_dbm": 20
+        }
+      },
+      "radio_settings": {
+        "rf": {
+          "frequency_mhz": 915
+        },
+        "candidates": {}
+      },
+      "source_ids": [
+        "R-1"
+      ],
+      "source_sites": [],
+      "router_ids": [
+        "R-1"
+      ],
+      "network_sites": [
+        {
+          "id": "R-1",
+          "latitude": 60.0,
+          "longitude": 10.0,
+          "origin": "known"
+        },
+        {
+          "id": "R-2",
+          "latitude": 60.001,
+          "longitude": 10.001,
+          "origin": "known"
+        }
+      ],
+      "network_links": [
+        {
+          "source_id": "R-1",
+          "target_id": "R-2",
+          "distance_m": 100,
+          "worst_margin_db": 4.5,
+          "valid": true,
+          "los_clear": true,
+          "fresnel_clear": true
+        }
+      ],
+      "counts": {
+        "requested_cells": 4,
+        "stored_cells": 2,
+        "evaluated_cells": 1,
+        "covered_cells": 1,
+        "unknown_cells": 1,
+        "unresolved_cells": 0,
+        "not_evaluated_cells": 2,
+        "outside_area_cells": 0,
+        "unknown_source_evaluations": 1,
+        "unresolved_source_evaluations": 0,
+        "state_counts": {
+          "covered": 1,
+          "uncovered": 0,
+          "unknown_terrain": 1,
+          "unresolved": 0,
+          "not_evaluated": 2,
+          "outside_area": 0
+        }
+      },
+      "coverage_model_version": "coverage-v1",
+      "prediction_warning": "Terrain-based RF planning estimate; not measured field coverage or a delivery guarantee.",
+      "target_report_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "target_count": 1
+    },
+    "target_report": {
+      "report_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "targets": [
+        {
+          "id": "T-1",
+          "name": "<script>alert(1)</script>",
+          "state": "pass",
+          "message": "ok"
+        }
+      ],
+      "target_features": [
+        {
+          "type": "Feature",
+          "id": "T-1",
+          "geometry": {
+            "type": "Point",
+            "coordinates": [
+              10.0,
+              60.0
+            ]
+          },
+          "properties": {
+            "name": "<script>alert(1)</script>",
+            "minimum_margin_db": 5
+          }
+        }
+      ]
+    },
+    "scenario_comparison": null,
+    "cells": [
+      {
+        "index": 0,
+        "x": 500025,
+        "y": 6650075,
+        "longitude": 10,
+        "latitude": 60,
+        "state": "covered",
+        "source_count": 1,
+        "unknown_sources": 0,
+        "best_margin_db": 12,
+        "best_source_id": "R-1",
+        "sources": [
+          {
+            "source_id": "R-1",
+            "two_way_margin_db": 12,
+            "valid_two_way": true
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "x": 500075.0,
+        "y": 6650075.0,
+        "longitude": 15.001344137164491,
+        "latitude": 59.98800197944406,
+        "state": "not_evaluated",
+        "source_count": 0,
+        "unknown_sources": 0,
+        "unresolved_sources": 0,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": []
+      },
+      {
+        "index": 2,
+        "x": 500025,
+        "y": 6650025,
+        "longitude": 10,
+        "latitude": 60,
+        "state": "unknown_terrain",
+        "source_count": 0,
+        "unknown_sources": 1,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": []
+      },
+      {
+        "index": 3,
+        "x": 500075.0,
+        "y": 6650025.0,
+        "longitude": 15.001344118961427,
+        "latitude": 59.9875530154886,
+        "state": "not_evaluated",
+        "source_count": 0,
+        "unknown_sources": 0,
+        "unresolved_sources": 0,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": []
+      }
+    ]
+  },
+  "geojson": {
+    "type": "FeatureCollection",
+    "name": "coverage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "metadata": {
+      "schema": "repeaternet-coverage-export-v1",
+      "job_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "project_id": "project-1",
+      "alternative_id": "alternative-1",
+      "route_search_complete": null,
+      "achieved_path_count": null,
+      "requested_path_count": null,
+      "snapshot_version": 3,
+      "input_revision": 2,
+      "job_state": "cancelled",
+      "complete": false,
+      "partial": true,
+      "stale": true,
+      "created_at": 10,
+      "finished_at": 12,
+      "route_fingerprint": "route-fingerprint",
+      "terrain_fingerprint": [
+        [
+          "dtm/tile.tif",
+          100,
+          123
+        ]
+      ],
+      "terrain_crs": "EPSG:25833",
+      "coordinate_reference_system": "OGC:CRS84",
+      "terrain_inputs": [
+        {
+          "kind": "ground",
+          "filename": "tile.tif",
+          "size_bytes": 100,
+          "modified_ns": 123
+        }
+      ],
+      "area_bounds_wgs84": [
+        59.98732854033941,
+        14.999999999999982,
+        59.98822645609,
+        15.001792195021434
+      ],
+      "grid_bounds_projected": [
+        500000,
+        6650000,
+        500100,
+        6650100
+      ],
+      "rows": 2,
+      "columns": 2,
+      "requested_cell_size_m": 50,
+      "effective_cell_size_m": 50,
+      "profile_step_m": 100,
+      "maximum_profile_samples": 128,
+      "surface_available": false,
+      "mode": "two_way",
+      "settings": {
+        "mode": "two_way",
+        "cell_size_m": 50,
+        "profile_step_m": 100,
+        "maximum_profile_samples": 128,
+        "client": {
+          "height_agl_m": 1.5,
+          "tx_power_dbm": 20
+        }
+      },
+      "radio_settings": {
+        "rf": {
+          "frequency_mhz": 915
+        },
+        "candidates": {}
+      },
+      "source_ids": [
+        "R-1"
+      ],
+      "source_sites": [],
+      "router_ids": [
+        "R-1"
+      ],
+      "network_sites": [
+        {
+          "id": "R-1",
+          "latitude": 60.0,
+          "longitude": 10.0,
+          "origin": "known"
+        },
+        {
+          "id": "R-2",
+          "latitude": 60.001,
+          "longitude": 10.001,
+          "origin": "known"
+        }
+      ],
+      "network_links": [
+        {
+          "source_id": "R-1",
+          "target_id": "R-2",
+          "distance_m": 100,
+          "worst_margin_db": 4.5,
+          "valid": true,
+          "los_clear": true,
+          "fresnel_clear": true
+        }
+      ],
+      "counts": {
+        "requested_cells": 4,
+        "stored_cells": 2,
+        "evaluated_cells": 1,
+        "covered_cells": 1,
+        "unknown_cells": 1,
+        "unresolved_cells": 0,
+        "not_evaluated_cells": 2,
+        "outside_area_cells": 0,
+        "unknown_source_evaluations": 1,
+        "unresolved_source_evaluations": 0,
+        "state_counts": {
+          "covered": 1,
+          "uncovered": 0,
+          "unknown_terrain": 1,
+          "unresolved": 0,
+          "not_evaluated": 2,
+          "outside_area": 0
+        }
+      },
+      "coverage_model_version": "coverage-v1",
+      "prediction_warning": "Terrain-based RF planning estimate; not measured field coverage or a delivery guarantee.",
+      "target_report_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "target_count": 1
+    },
+    "features": [
+      {
+        "type": "Feature",
+        "id": "cell-0",
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                14.999999999999982,
+                59.98777750431035
+              ],
+              [
+                15.000896085375333,
+                59.98777750127025
+              ],
+              [
+                15.0008960975109,
+                59.9882264652104
+              ],
+              [
+                14.999999999999982,
+                59.98822646825054
+              ],
+              [
+                14.999999999999982,
+                59.98777750431035
+              ]
+            ]
+          ]
+        },
+        "properties": {
+          "feature_kind": "coverage_cell",
+          "index": 0,
+          "state": "covered",
+          "source_count": 1,
+          "unknown_sources": 0,
+          "unresolved_sources": 0,
+          "best_margin_db": 12,
+          "best_source_id": "R-1",
+          "sources": [
+            {
+              "source_id": "R-1",
+              "two_way_margin_db": 12,
+              "valid_two_way": true
+            }
+          ]
+        }
+      },
+      {
+        "type": "Feature",
+        "id": "cell-1",
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                15.000896085375333,
+                59.98777750127025
+              ],
+              [
+                15.001792170750296,
+                59.98777749215002
+              ],
+              [
+                15.001792195021434,
+                59.98822645609
+              ],
+              [
+                15.0008960975109,
+                59.9882264652104
+              ],
+              [
+                15.000896085375333,
+                59.98777750127025
+              ]
+            ]
+          ]
+        },
+        "properties": {
+          "feature_kind": "coverage_cell",
+          "index": 1,
+          "state": "not_evaluated",
+          "source_count": 0,
+          "unknown_sources": 0,
+          "unresolved_sources": 0,
+          "best_margin_db": null,
+          "best_source_id": null,
+          "sources": []
+        }
+      },
+      {
+        "type": "Feature",
+        "id": "cell-2",
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                14.999999999999982,
+                59.98732854033941
+              ],
+              [
+                15.000896073240146,
+                59.987328537299376
+              ],
+              [
+                15.000896085375333,
+                59.98777750127025
+              ],
+              [
+                14.999999999999982,
+                59.98777750431035
+              ],
+              [
+                14.999999999999982,
+                59.98732854033941
+              ]
+            ]
+          ]
+        },
+        "properties": {
+          "feature_kind": "coverage_cell",
+          "index": 2,
+          "state": "unknown_terrain",
+          "source_count": 0,
+          "unknown_sources": 1,
+          "unresolved_sources": 0,
+          "best_margin_db": null,
+          "best_source_id": null,
+          "sources": []
+        }
+      },
+      {
+        "type": "Feature",
+        "id": "cell-3",
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                15.000896073240146,
+                59.987328537299376
+              ],
+              [
+                15.001792146479925,
+                59.98732852817931
+              ],
+              [
+                15.001792170750296,
+                59.98777749215002
+              ],
+              [
+                15.000896085375333,
+                59.98777750127025
+              ],
+              [
+                15.000896073240146,
+                59.987328537299376
+              ]
+            ]
+          ]
+        },
+        "properties": {
+          "feature_kind": "coverage_cell",
+          "index": 3,
+          "state": "not_evaluated",
+          "source_count": 0,
+          "unknown_sources": 0,
+          "unresolved_sources": 0,
+          "best_margin_db": null,
+          "best_source_id": null,
+          "sources": []
+        }
+      },
+      {
+        "type": "Feature",
+        "id": "target-T-1",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            10.0,
+            60.0
+          ]
+        },
+        "properties": {
+          "name": "<script>alert(1)</script>",
+          "minimum_margin_db": 5,
+          "feature_kind": "coverage_target",
+          "target_id": "T-1",
+          "coverage_state": "pass",
+          "coverage_message": "ok"
+        }
+      }
+    ]
+  }
+}

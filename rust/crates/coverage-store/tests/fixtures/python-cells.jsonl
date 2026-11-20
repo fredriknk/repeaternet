@@ -1,0 +1,2 @@
+[{"index":0,"x":0.5,"y":0.5,"latitude":60.0,"longitude":10.0,"state":"uncovered","source_count":0,"unknown_sources":0,"unresolved_sources":0,"best_margin_db":null,"best_source_id":null,"sources":[]}]
+[{"index":1,"x":1.5,"y":0.5,"latitude":60.0,"longitude":10.0,"state":"outside_area","source_count":0,"unknown_sources":0,"unresolved_sources":0,"best_margin_db":null,"best_source_id":null,"sources":[]}]

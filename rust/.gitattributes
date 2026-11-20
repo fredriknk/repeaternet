@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.tif binary
+*.tiff binary
+*.sqlite3 binary
+*.png binary
+crates/web-server/src/discovery/*.html -whitespace

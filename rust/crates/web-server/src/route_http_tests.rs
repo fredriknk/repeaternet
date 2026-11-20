@@ -1,0 +1,1708 @@
+use std::{
+    io::Write,
+    path::Path,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
+
+use axum::{body::to_bytes, extract::State};
+use repeaternet_terrain::{LonLat, Point, TerrainCrs, Transformer};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+use super::*;
+use crate::route_http::{Scheduler, SnapshotGate};
+
+const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccc";
+const TILE: &[u8] = include_bytes!("../../terrain/tests/fixtures/fallback.tif");
+const ROTATED: &[u8] = include_bytes!("../../terrain/tests/fixtures/rotated.tif");
+const BOUNDARY: &str = "rr-terrain-test";
+
+fn plan() -> Value {
+    let coord = |x, y| {
+        let transform = Transformer::new(TerrainCrs::from_epsg(25833).unwrap()).unwrap();
+        let LonLat {
+            latitude,
+            longitude,
+        } = transform.reverse(Point { x, y }).unwrap();
+        json!([latitude, longitude])
+    };
+    let manual = coord(500170.0, 6650850.0);
+    json!({
+        "format": "repeaternet-web", "version": 1,
+        "a": coord(500050.0, 6650850.0), "b": coord(500290.0, 6650850.0),
+        "rf": {"lora": {"enabled": true, "manual_sensitivity_override": false}},
+        "candidates": {"maximum_candidates": 10, "refine_radius_m": 0, "maximum_solution_routers": 2},
+        "manual_routers": [{"id": "M-alternative", "name": "Manual site", "latitude": manual[0], "longitude": manual[1]}],
+        "search_effort": "quick", "unknown_future_field": {"keep": true},
+    })
+}
+
+fn app(root: &Path, token: &str) -> (Router, AppState) {
+    let store = ProjectStore::new(root.join("projects.sqlite3"), root).unwrap();
+    let mut app = AppState::new(store);
+    app.scheduler = Arc::new(Scheduler::new(1));
+    (router_with_state(app.clone(), token, true), app)
+}
+
+async fn request(
+    app: &Router,
+    cookie: Option<&str>,
+    method: Method,
+    path: &str,
+    content_type: &str,
+    body: Body,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "127.0.0.1:8000")
+        .header("content-type", content_type);
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", cookie);
+    }
+    let response = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let (parts, body) = response.into_parts();
+    (
+        parts.status,
+        parts.headers,
+        to_bytes(body, 16 * 1024 * 1024).await.unwrap().to_vec(),
+    )
+}
+
+async fn api(
+    app: &Router,
+    cookie: &str,
+    method: Method,
+    path: &str,
+    data: Value,
+    status: StatusCode,
+) -> Value {
+    let (actual, _, body) = request(
+        app,
+        Some(cookie),
+        method,
+        path,
+        "application/json",
+        Body::from(data.to_string()),
+    )
+    .await;
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(actual, status, "{path}: {body}");
+    body
+}
+
+fn multipart(tile: &[u8], filename: &str) -> Vec<u8> {
+    let mut body = format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: image/tiff\r\n\r\n").into_bytes();
+    body.extend(tile);
+    write!(body, "\r\n--{BOUNDARY}--\r\n").unwrap();
+    body
+}
+
+async fn upload(app: &Router, cookie: &str, kind: &str, tile: &[u8], status: StatusCode) -> Value {
+    let (actual, _, body) = request(
+        app,
+        Some(cookie),
+        Method::POST,
+        &format!("/api/terrain/{kind}"),
+        &format!("multipart/form-data; boundary={BOUNDARY}"),
+        Body::from(multipart(tile, "../../user-supplied.tif")),
+    )
+    .await;
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(actual, status, "{body}");
+    body
+}
+
+async fn state(app: &Router, cookie: &str) -> Value {
+    api(
+        app,
+        cookie,
+        Method::GET,
+        "/api/state",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await
+}
+
+async fn terminal(app: &Router, cookie: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = state(app, cookie).await;
+            if !matches!(
+                state["job"]["state"].as_str(),
+                Some("queued" | "running" | "preparing")
+            ) {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+fn cookie(key: &str) -> String {
+    format!("planner_workspace={key}")
+}
+
+fn set_cookie(headers: &HeaderMap) -> &str {
+    headers[axum::http::header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+}
+
+async fn coverage_terminal(app: &Router, cookie: &str, path: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let job = api(app, cookie, Method::GET, path, Value::Null, StatusCode::OK).await;
+            if !matches!(job["state"].as_str(), Some("queued" | "running")) {
+                return job;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn saved_coverage_queue_scenarios_targets_and_staleness() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, state_handle) = app(root.path(), "");
+    let cookie = cookie(A);
+    upload(&app, &cookie, "dtm", TILE, StatusCode::OK).await;
+    let mut plan = plan();
+    plan["manual_routers"][0]["policy"] = json!("required");
+    let point = geographic(500135.0, 6650840.0);
+    let settings = json!({"area_buffer_m": 60.0, "area_includes_clients": false, "cell_size_m": 35.0, "maximum_cells": 80});
+    plan["coverage"] = settings.clone();
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/optimize",
+        plan.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(terminal(&app, &cookie).await["job"]["state"], "complete");
+    let route = api(
+        &app,
+        &cookie,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(route["router_count"], 1, "{route}");
+    let request = json!({"snapshot_version": route["snapshot_version"], "alternative_id": route["active_alternative_id"],
+        "settings": settings});
+    let send = |method, path: &str, data, status| {
+        let path = path.to_owned();
+        let app = app.clone();
+        let cookie = cookie.clone();
+        async move { api(&app, &cookie, method, &path, data, status).await }
+    };
+    let targets = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "id": "T-test", "geometry": {"type": "Point", "coordinates": [point.longitude, point.latitude]},
+         "properties": {"name": "Calibration point", "reference_id": "M-alternative"}}
+    ]});
+    send(
+        Method::PUT,
+        "/api/coverage/targets",
+        targets,
+        StatusCode::OK,
+    )
+    .await;
+
+    let route_cache = state(&app, &cookie).await["rf_cache"].clone();
+    let cold = send(
+        Method::POST,
+        "/api/coverage/preview",
+        request.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let cold_cache = state_handle.coverage_cache.stats();
+    assert!(cold_cache.entries > 0, "{cold}");
+    let warm = send(
+        Method::POST,
+        "/api/coverage/preview",
+        request.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let warm_cache = state_handle.coverage_cache.stats();
+    assert_eq!(cold["cells"], warm["cells"]);
+    assert!(warm_cache.hits > cold_cache.hits);
+    assert_eq!(warm_cache.misses, cold_cache.misses);
+    assert_eq!(state(&app, &cookie).await["rf_cache"], route_cache);
+
+    let worker = state_handle.scheduler.reserve_worker().unwrap();
+    let queued = send(
+        Method::POST,
+        "/api/coverage/jobs",
+        request.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let queued_path = format!("/api/coverage/jobs/{}", queued["job_id"].as_str().unwrap());
+    assert_eq!(queued["state"], "queued");
+    send(
+        Method::POST,
+        &format!("{queued_path}/cancel"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        coverage_terminal(&app, &cookie, &queued_path).await["state"],
+        "cancelled"
+    );
+    send(
+        Method::GET,
+        &format!("{queued_path}/export.json"),
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let partial = send(
+        Method::GET,
+        &format!("{queued_path}/export.json?include_partial=true"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(partial["metadata"]["partial"], true);
+    drop(worker);
+
+    let baseline = send(
+        Method::POST,
+        "/api/coverage/jobs",
+        request.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let baseline_id = baseline["job_id"].as_str().unwrap();
+    let baseline_path = format!("/api/coverage/jobs/{baseline_id}");
+    let complete = coverage_terminal(&app, &cookie, &baseline_path).await;
+    assert_eq!(complete["state"], "complete", "{complete}");
+    assert_eq!(complete["source_ids"], json!(["M-alternative"]));
+    assert!(state_handle.coverage_cache.stats().hits > warm_cache.hits);
+    let scenario = send(
+        Method::POST,
+        &format!("{baseline_path}/scenario"),
+        json!({"reference_id":"M-alternative","failed_ids":["M-alternative"]}),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(scenario["reference_available"], false);
+    assert_eq!(scenario["baseline_reference_available"], true);
+    assert_eq!(
+        scenario["cells"].as_array().unwrap().len() as u64,
+        complete["requested_cells"].as_u64().unwrap()
+    );
+    let old_report = send(
+        Method::POST,
+        &format!("{baseline_path}/targets"),
+        json!({}),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(old_report["targets"][0]["id"], "T-test", "{old_report}");
+
+    let mut changed = request.clone();
+    changed["source_height_overrides"] = json!({"M-alternative": 19.0});
+    let adjusted = send(Method::POST, "/api/coverage/jobs", changed, StatusCode::OK).await;
+    let adjusted_id = adjusted["job_id"].as_str().unwrap();
+    assert_ne!(baseline_id, adjusted_id);
+    let adjusted_path = format!("/api/coverage/jobs/{adjusted_id}");
+    assert_eq!(
+        coverage_terminal(&app, &cookie, &adjusted_path).await["state"],
+        "complete"
+    );
+    let comparison = send(Method::POST, "/api/coverage/compare",
+        json!({"baseline_job_id":baseline_id,"scenario_job_id":adjusted_id,"reference_id":"M-alternative"}),
+        StatusCode::OK).await;
+    assert_eq!(comparison["baseline_job_id"], baseline_id);
+    assert!(
+        comparison["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cell| cell["footprint_latlng"].is_array())
+    );
+    let new_report = send(
+        Method::POST,
+        &format!("{adjusted_path}/targets"),
+        json!({}),
+        StatusCode::OK,
+    )
+    .await;
+    let reports = send(
+        Method::GET,
+        "/api/coverage/target-reports",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(reports["reports"].as_array().unwrap().len(), 2);
+    let diff = send(Method::POST, "/api/coverage/target-reports/compare",
+        json!({"baseline_report_id":old_report["report_id"],"scenario_report_id":new_report["report_id"]}),
+        StatusCode::OK).await;
+    assert_eq!(diff["targets"][0]["id"], "T-test");
+    let download_query = format!(
+        "scenario_job_id={adjusted_id}&reference_id=M-alternative&target_report_id={}",
+        old_report["report_id"].as_str().unwrap()
+    );
+    let download = send(
+        Method::GET,
+        &format!("{baseline_path}/export.json?{download_query}"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        download["scenario_comparison"]["scenario_job_id"],
+        adjusted_id
+    );
+    assert_eq!(
+        download["metadata"]["target_report_id"],
+        old_report["report_id"]
+    );
+    let geojson = send(
+        Method::GET,
+        &format!("{adjusted_path}/export.geojson"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(geojson["type"], "FeatureCollection");
+    let (status, headers, bytes) = self::request(
+        &app,
+        Some(&cookie),
+        Method::GET,
+        &format!("{baseline_path}/report.html?{download_query}"),
+        "text/plain",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "text/html");
+    assert!(
+        String::from_utf8(bytes)
+            .unwrap()
+            .contains("Calibration point")
+    );
+
+    let worker = state_handle.scheduler.reserve_worker().unwrap();
+    let click = json!({"latitude":point.latitude,"longitude":point.longitude,"coverage_job_id":adjusted_id});
+    let earlier = send(
+        Method::POST,
+        "/api/coverage/inspect",
+        click.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let recent = send(Method::POST, "/api/coverage/inspect", click, StatusCode::OK).await;
+    let inspect =
+        |job: &Value| format!("/api/coverage/inspect/{}", job["job_id"].as_str().unwrap());
+    send(
+        Method::GET,
+        &inspect(&earlier),
+        Value::Null,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    drop(worker);
+    let inspection = coverage_terminal(&app, &cookie, &inspect(&recent)).await;
+    assert_eq!(inspection["state"], "complete", "{inspection}");
+    assert_eq!(
+        inspection["result"]["selected_source"]["antenna_height_m"],
+        19.0
+    );
+
+    let reused = send(Method::POST, "/api/coverage/jobs", request, StatusCode::OK).await;
+    assert_eq!(reused["job_id"], baseline_id);
+    assert_eq!(reused["reused"], true);
+    let (reopened, _) = self::app(root.path(), "");
+    let restored = state(&reopened, &cookie).await;
+    assert_eq!(restored["coverage_job"]["job_id"], baseline_id);
+    assert_eq!(restored["coverage_job"]["stale"], true);
+
+    let mut plan = state(&app, &cookie).await["plan"].clone();
+    plan["coverage"]["cell_size_m"] = json!(70.0);
+    send(
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"plan":plan}),
+        StatusCode::OK,
+    )
+    .await;
+    let stale = send(Method::GET, &adjusted_path, Value::Null, StatusCode::OK).await;
+    assert_eq!(stale["stale"], true);
+    assert_eq!(stale["route_current"], true);
+    send(
+        Method::GET,
+        &format!("{adjusted_path}/export.geojson"),
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let stale_export = send(
+        Method::GET,
+        &format!("{adjusted_path}/export.json?include_stale=1"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(stale_export["metadata"]["stale"], true);
+    api(
+        &app,
+        &self::cookie(B),
+        Method::GET,
+        &adjusted_path,
+        Value::Null,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn terrain_upload_admission_releases_after_disconnect_and_keeps_state_responsive() {
+    use tokio::io::AsyncWriteExt;
+    use tokio_util::io::ReaderStream;
+
+    let root = tempfile::tempdir().unwrap();
+    let (router, app) = app(root.path(), "");
+    let hold_upload = |key: &str| {
+        let (producer, consumer) = tokio::io::duplex(4096);
+        let router = router.clone();
+        let cookie = cookie(key);
+        let response = tokio::spawn(async move {
+            request(
+                &router,
+                Some(&cookie),
+                Method::POST,
+                "/api/terrain/dtm",
+                &format!("multipart/form-data; boundary={BOUNDARY}"),
+                Body::from_stream(ReaderStream::new(consumer)),
+            )
+            .await
+        });
+        (producer, response)
+    };
+    let wait_for_stage = |key: &'static str| {
+        let app = app.clone();
+        async move {
+            let project = app.store.active(key).unwrap();
+            let directory = app.store.project_path(key, &project).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !std::fs::read_dir(&directory)
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".terrain-upload-")
+                    })
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    let (mut first, aborted) = hold_upload(A);
+    let truncated = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"terrain.tif\"\r\n\r\n"
+    );
+    first.write_all(truncated.as_bytes()).await.unwrap();
+    wait_for_stage(A).await;
+    let (mut second, other) = hold_upload(B);
+    second.write_all(truncated.as_bytes()).await.unwrap();
+    wait_for_stage(B).await;
+    assert_eq!(state(&router, &cookie(A)).await["job"]["state"], "idle");
+    upload(
+        &router,
+        &cookie(A),
+        "dtm",
+        TILE,
+        StatusCode::TOO_MANY_REQUESTS,
+    )
+    .await;
+    upload(
+        &router,
+        &cookie(C),
+        "dtm",
+        TILE,
+        StatusCode::TOO_MANY_REQUESTS,
+    )
+    .await;
+    drop(first);
+    assert_eq!(aborted.await.unwrap().0, StatusCode::BAD_REQUEST);
+    upload(&router, &cookie(A), "dtm", TILE, StatusCode::OK).await;
+    second.write_all(TILE).await.unwrap();
+    second
+        .write_all(format!("\r\n--{BOUNDARY}--\r\n").as_bytes())
+        .await
+        .unwrap();
+    drop(second);
+    assert_eq!(other.await.unwrap().0, StatusCode::OK);
+    upload(&router, &cookie(C), "dtm", TILE, StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn custom_crs_coverage_keeps_saved_footprints_and_limits_kartverket() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    let tile = include_bytes!("../../terrain/tests/fixtures/custom_tm.tif");
+    upload(&app, &cookie, "dtm", tile, StatusCode::OK).await;
+    let transform = Transformer::new(
+        repeaternet_terrain::GeoTiff::open(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../terrain/tests/fixtures/custom_tm.tif"),
+        )
+        .unwrap()
+        .metadata()
+        .crs,
+    )
+    .unwrap();
+    let center = transform
+        .forward(LonLat {
+            latitude: 60.1,
+            longitude: 14.9,
+        })
+        .unwrap();
+    let endpoint = |offset| {
+        let p = transform
+            .reverse(Point {
+                x: center.x + offset,
+                y: center.y,
+            })
+            .unwrap();
+        [p.latitude, p.longitude]
+    };
+    let settings = json!({"include_endpoints":true,"area_includes_clients":false,"area_buffer_m":1.0,"cell_size_m":2.0});
+    let plan = json!({"a":endpoint(-2.0),"b":endpoint(2.0),"coverage":settings,
+        "candidates":{"infrastructure_policy":"existing_only", "refine_radius_m":0}});
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/optimize",
+        plan,
+        StatusCode::OK,
+    )
+    .await;
+    let state = terminal(&app, &cookie).await;
+    assert_eq!(state["job"]["state"], "complete", "{state}");
+    let route = api(
+        &app,
+        &cookie,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    let mut coverage = json!({"snapshot_version":route["snapshot_version"],
+        "alternative_id":route["active_alternative_id"],"settings":settings});
+    let ready = api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/coverage/terrain/prepare",
+        coverage.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(ready["state"], "complete");
+    assert_eq!(ready["terrain_estimate"]["tile_count"], 0);
+    let job = api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/coverage/jobs",
+        coverage.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let path = format!("/api/coverage/jobs/{}", job["job_id"].as_str().unwrap());
+    let complete = coverage_terminal(&app, &cookie, &path).await;
+    assert_eq!(complete["state"], "complete", "{complete}");
+    coverage["settings"]["area_buffer_m"] = json!(100.0);
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/coverage/terrain/estimate",
+        coverage,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    let page = api(
+        &app,
+        &cookie,
+        Method::GET,
+        &format!("{path}/cells"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(page["cells"][0]["footprint_latlng"].is_array());
+    api(
+        &app,
+        &cookie,
+        Method::DELETE,
+        "/api/terrain/dtm",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    let after = api(
+        &app,
+        &cookie,
+        Method::GET,
+        &format!("{path}/cells"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(after["stale"], true);
+    assert_eq!(after["cells"], page["cells"]);
+    let error = api(
+        &app,
+        &cookie,
+        Method::GET,
+        &format!("{path}/export.json?include_stale=true"),
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap()
+            .contains("CRS is unavailable")
+    );
+}
+
+#[tokio::test]
+async fn verified_python_runs_compare_without_a_live_route_until_terrain_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, handle) = app(root.path(), "");
+    let cookie = cookie(A);
+    upload(&app, &cookie, "dtm", TILE, StatusCode::OK).await;
+    let project = handle.store.active(A).unwrap();
+    let directory = handle.store.project_path(A, &project).unwrap();
+    let files = crate::catalog::TerrainFiles::read(&directory, false);
+    let fingerprint = files.fingerprint(&directory, None).unwrap();
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../coverage-store/tests/fixtures/python-job.json"
+    ))
+    .unwrap();
+    let mut previous = golden["job"].clone();
+    previous["project_id"] = json!(project.id);
+    previous["terrain_fingerprint"] = fingerprint;
+    previous["router_ids"] = previous["source_ids"].clone();
+    previous["area_bounds_wgs84"] = json!([60.0, 10.0, 60.1, 10.1]);
+    let mut later = previous.clone();
+    later["job_id"] = json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    later["result_file"] = json!("coverage-results/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jsonl");
+    std::fs::create_dir(directory.join("coverage-jobs")).unwrap();
+    std::fs::create_dir(directory.join("coverage-results")).unwrap();
+    for job in [&previous, &later] {
+        let id = job["job_id"].as_str().unwrap();
+        std::fs::write(
+            directory.join("coverage-jobs").join(format!("{id}.json")),
+            job.to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join(job["result_file"].as_str().unwrap()),
+            include_bytes!("../../coverage-store/tests/fixtures/python-cells.jsonl"),
+        )
+        .unwrap();
+    }
+    let path = format!(
+        "/api/coverage/jobs/{}",
+        previous["job_id"].as_str().unwrap()
+    );
+    let status = api(
+        &app,
+        &cookie,
+        Method::GET,
+        &path,
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(status["stale_reason"], "legacy_python_route_not_current");
+    let request = json!({"baseline_job_id":previous["job_id"],"scenario_job_id":later["job_id"],"reference_id":"R-coverage"});
+    let report = api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/coverage/compare",
+        request.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(report["counts"]["outside_area_cells"], 1);
+    upload(&app, &cookie, "dom", TILE, StatusCode::OK).await;
+    let changed = api(
+        &app,
+        &cookie,
+        Method::GET,
+        &path,
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(changed["stale_reason"], "legacy_terrain_changed");
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/coverage/compare",
+        request,
+        StatusCode::CONFLICT,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "test-pass");
+    let (status, _, _) = request(
+        &app,
+        Some(&cookie(A)),
+        Method::POST,
+        "/api/optimize",
+        "application/json",
+        Body::from(plan().to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, cookies, _) = request(
+        &app,
+        None,
+        Method::POST,
+        "/login",
+        "application/x-www-form-urlencoded",
+        Body::from("token=test-pass"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let access = set_cookie(&cookies);
+    let (status, _, _) = request(
+        &app,
+        Some(access),
+        Method::POST,
+        "/api/optimize",
+        "application/json",
+        Body::from(plan().to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, cookies, _) = request(
+        &app,
+        Some(access),
+        Method::GET,
+        "/",
+        "text/html",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let authenticated = format!("{access}; {}", set_cookie(&cookies));
+    let initial = state(&app, &authenticated).await;
+    let project_id = initial["projects"]["active_id"].as_str().unwrap();
+    let missing = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(missing["detail"], "Prepare or upload ground terrain first");
+    let mut wrong_rf = plan();
+    wrong_rf["rf"]["router"] = json!({"pattern_csv": "../unsafe.csv"});
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/optimize",
+        wrong_rf,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    let uploaded = upload(&app, &authenticated, "dtm", TILE, StatusCode::OK).await;
+    let name = uploaded["name"].as_str().unwrap();
+    assert_eq!(name.len(), 20);
+    assert!(name.ends_with(".tif"));
+    assert!(
+        uploaded["bounds"][0][0].as_f64().unwrap() < uploaded["bounds"][1][0].as_f64().unwrap()
+    );
+    upload(&app, &authenticated, "dom", TILE, StatusCode::OK).await;
+    let readiness = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/terrain/coverage?route_only=true",
+        plan(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(readiness["covered"], true);
+    assert_eq!(readiness["surface_available"], true);
+    assert_eq!(readiness["dtm_outlines"].as_array().unwrap().len(), 1);
+    assert_eq!(readiness["line_gaps"], json!([]));
+    let mut outside = plan();
+    outside["b"] = json!([59, 15]);
+    let readiness = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/terrain/coverage",
+        outside.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        readiness["uncovered_sites"][0]["reason"],
+        "outside_coverage"
+    );
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/optimize",
+        outside,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+
+    let job = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::OK,
+    )
+    .await;
+    let completed = terminal(&app, &authenticated).await;
+    assert_eq!(completed["job"]["state"], "complete", "{completed}");
+    assert_eq!(completed["projects"]["previous_result"]["found"], true);
+    let result = api(
+        &app,
+        &authenticated,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(result["job_id"], job["job_id"]);
+    assert_eq!(result["input_revision"], job["input_revision"]);
+    assert_eq!(
+        result["snapshot_version"],
+        completed["job"]["snapshot_version"]
+    );
+    assert_eq!(result["router_count"], 0);
+    assert_eq!(result["rf_settings"]["frequency_mhz"], 869.5);
+    assert!(
+        result["links"][0]["profile"]["distances_m"]
+            .as_array()
+            .unwrap()
+            .len()
+            > 2
+    );
+    assert_eq!(result["links"][0]["profile"]["surface_available"], true);
+    assert!(
+        result["links"][0]["forward"]["usable_margin_db"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
+    let alternatives = result["alternatives"].as_array().unwrap();
+    let alternative = alternatives
+        .iter()
+        .find(|item| item["selected"] == false)
+        .expect("second certified topology");
+    let id = alternative["id"].as_str().unwrap();
+    let selected = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        &format!("/api/alternatives/{id}/select"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(selected["active_alternative_id"], id);
+    assert_ne!(selected["route"], result["route"]);
+    assert_eq!(
+        selected["snapshot_version"].as_u64().unwrap(),
+        result["snapshot_version"].as_u64().unwrap() + 1
+    );
+    assert_eq!(
+        state(&app, &authenticated).await["rf_cache"]["misses"],
+        completed["rf_cache"]["misses"]
+    );
+    for (kind, needle) in [
+        ("csv", "hop,from,to"),
+        ("geojson", "FeatureCollection"),
+        ("html", "Terrain resolution"),
+        ("project", "unknown_future_field"),
+    ] {
+        let (status, headers, body) = request(
+            &app,
+            Some(&authenticated),
+            Method::GET,
+            &format!("/api/export/{kind}"),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            headers["content-disposition"]
+                .to_str()
+                .unwrap()
+                .starts_with("attachment;")
+        );
+        assert!(String::from_utf8(body).unwrap().contains(needle));
+    }
+
+    let (restarted, _) = self::app(root.path(), "test-pass");
+    let revived = state(&restarted, &authenticated).await;
+    assert_eq!(revived["projects"]["active_id"], project_id);
+    assert_eq!(
+        revived["projects"]["previous_result"]["active_alternative_id"],
+        id
+    );
+    assert_eq!(revived["projects"]["previous_result"]["stale"], false);
+    api(
+        &restarted,
+        &authenticated,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+
+    let mut coverage_only = completed["plan"].clone();
+    coverage_only["coverage"] = json!({"cell_size_m": 250});
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"project_id": project_id, "plan": coverage_only}),
+        StatusCode::OK,
+    )
+    .await;
+    api(
+        &app,
+        &authenticated,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    coverage_only["rf"]["frequency_mhz"] = json!(868.1);
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"project_id": project_id, "plan": coverage_only}),
+        StatusCode::OK,
+    )
+    .await;
+    api(
+        &app,
+        &authenticated,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    let mut stale = plan();
+    stale["input_revision"] = job["input_revision"].clone();
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/optimize",
+        stale,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    api(
+        &app,
+        &authenticated,
+        Method::DELETE,
+        "/api/terrain/dtm",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    api(
+        &app,
+        &authenticated,
+        Method::DELETE,
+        "/api/cache",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(state(&app, &authenticated).await["rf_cache"]["entries"], 0);
+}
+
+fn gate(app: &AppState) -> (tokio::sync::oneshot::Receiver<()>, mpsc::Sender<()>) {
+    let (published, ready) = tokio::sync::oneshot::channel();
+    let (resume, receiver) = mpsc::channel();
+    *app.scheduler.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+        published,
+        resume: receiver,
+    });
+    (ready, resume)
+}
+
+#[tokio::test]
+async fn cancellation_keep_and_capacity_share_workspace_guards() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, state_app) = app(root.path(), "");
+    let [a, b, c] = [cookie(A), cookie(B), cookie(C)];
+    for cookie in [&a, &b, &c] {
+        upload(&app, cookie, "dtm", TILE, StatusCode::OK).await;
+    }
+
+    let (ready, resume) = gate(&state_app);
+    let job = api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::OK,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    let before = api(
+        &app,
+        &a,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(before["found"], true);
+    assert_eq!(before["search_complete"], false);
+    let queued = api(
+        &app,
+        &b,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(queued["state"], "queued");
+    api(
+        &app,
+        &c,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::TOO_MANY_REQUESTS,
+    )
+    .await;
+    api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/projects",
+        json!({"name": "Busy"}),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"plan": {}}),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    api(
+        &app,
+        &a,
+        Method::DELETE,
+        "/api/terrain/dtm",
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/cancel",
+        json!({"job_id": queued["job_id"]}),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    api(
+        &app,
+        &b,
+        Method::POST,
+        "/api/stop-and-keep",
+        json!({"job_id": queued["job_id"]}),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    api(
+        &app,
+        &b,
+        Method::POST,
+        "/api/cancel",
+        json!({"job_id": queued["job_id"]}),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(terminal(&app, &b).await["job"]["state"], "cancelled");
+    api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/stop-and-keep",
+        json!({"job_id": job["job_id"]}),
+        StatusCode::OK,
+    )
+    .await;
+    resume.send(()).unwrap();
+    let stopped = terminal(&app, &a).await;
+    assert_eq!(stopped["job"]["state"], "stopped");
+    assert_eq!(
+        stopped["job"]["snapshot_version"],
+        before["snapshot_version"]
+    );
+    assert_eq!(
+        stopped["projects"]["previous_result"]["search_complete"],
+        false
+    );
+    assert_eq!(
+        api(
+            &app,
+            &a,
+            Method::GET,
+            "/api/result",
+            Value::Null,
+            StatusCode::OK
+        )
+        .await,
+        before
+    );
+    assert_eq!(state_app.store.active(A).unwrap().run_state, "stopped");
+
+    let (ready, resume) = gate(&state_app);
+    let job = api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::OK,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/cancel",
+        json!({"job_id": job["job_id"]}),
+        StatusCode::OK,
+    )
+    .await;
+    resume.send(()).unwrap();
+    assert_eq!(terminal(&app, &a).await["job"]["state"], "cancelled");
+    api(
+        &app,
+        &a,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    assert!(state_app.store.active(A).unwrap().result_summary.is_none());
+
+    let (ready, resume) = gate(&state_app);
+    api(
+        &app,
+        &a,
+        Method::POST,
+        "/api/optimize",
+        plan(),
+        StatusCode::OK,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    let project = state_app.store.active(A).unwrap();
+    let directory = state_app.store.project_path(A, &project).unwrap();
+    std::fs::write(directory.join("dtm/new-tile.tif"), TILE).unwrap();
+    api(
+        &app,
+        &a,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    resume.send(()).unwrap();
+    assert_eq!(terminal(&app, &a).await["job"]["state"], "failed");
+    assert!(state_app.store.active(A).unwrap().result_summary.is_none());
+}
+
+#[tokio::test]
+async fn terrain_validation_rejects_late_corruption_and_bounds_multipart_streams() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, state_app) = app(root.path(), "");
+    let cookie = cookie(A);
+    let masked = include_bytes!("../../terrain/tests/fixtures/masked.tif");
+    upload(&app, &cookie, "dtm", masked, StatusCode::OK).await;
+    let mut corrupt = ROTATED.to_vec();
+    let tif = tiff_reader::TiffFile::from_bytes(ROTATED.to_vec()).unwrap();
+    let image = tif.ifd(0).unwrap();
+    let offset = *image.tile_offsets().unwrap().last().unwrap() as usize;
+    let size = *image.tile_byte_counts().unwrap().last().unwrap() as usize;
+    corrupt[offset..offset + size].fill(0);
+    upload(&app, &cookie, "dtm", &corrupt, StatusCode::BAD_REQUEST).await;
+    upload(
+        &app,
+        &cookie,
+        "dtm",
+        include_bytes!("../../terrain/tests/fixtures/unprojected.tif"),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let padded = {
+        let mut padded = TILE.to_vec();
+        padded.resize(17 * 1024 * 1024, 0);
+        padded
+    };
+    upload(&app, &cookie, "dom", &padded, StatusCode::OK).await;
+
+    async fn small_upload(
+        State(app): State<AppState>,
+        workspace: api::Workspace,
+        multipart: Result<axum::extract::Multipart, axum::extract::multipart::MultipartRejection>,
+    ) -> api::ApiResult<axum::Json<Value>> {
+        crate::terrain_http::upload_bounded(app, workspace, "dtm", multipart, 1024).await
+    }
+    let limited = Router::new()
+        .route("/api/terrain/dtm", post(small_upload))
+        .with_state(state_app.clone());
+    upload(
+        &limited,
+        &cookie,
+        "dtm",
+        &vec![b'0'; 1025],
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let after = state(&app, &cookie).await;
+    assert_eq!(after["terrain"]["dtm"].as_array().unwrap().len(), 1);
+    assert_eq!(after["terrain"]["dom"].as_array().unwrap().len(), 1);
+    let project = state_app.store.active(A).unwrap();
+    let directory = state_app.store.project_path(A, &project).unwrap();
+    assert!(std::fs::read_dir(directory).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".terrain-")
+    }));
+}
+
+async fn coverage_terrain_terminal(app: &Router, cookie: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = state(app, cookie).await;
+            if !matches!(
+                current["coverage_terrain_job"]["state"].as_str(),
+                Some("queued" | "preparing")
+            ) {
+                break current;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn mock_upstream(router: Router) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    (
+        endpoint,
+        tokio::spawn(async { axum::serve(listener, router).await.unwrap() }),
+    )
+}
+
+fn geographic(x: f64, y: f64) -> LonLat {
+    Transformer::new(TerrainCrs::Etrs89Utm33)
+        .unwrap()
+        .reverse(Point { x, y })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_and_failure() {
+    use axum::{response::IntoResponse, routing::get};
+    use repeaternet_providers::kartverket::WcsService;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const WCS_TILE: &[u8] = include_bytes!("../../providers/tests/fixtures/tile-west.tif");
+    const EAST_TILE: &[u8] = include_bytes!("../../providers/tests/fixtures/tile-east.tif");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let requested = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let (upstream, task) = mock_upstream(Router::new().route(
+        "/wcs",
+        get({
+            let (calls, requested, resume) = (calls.clone(), requested.clone(), resume.clone());
+            move |axum::extract::Query(query): axum::extract::Query<
+                std::collections::HashMap<String, String>,
+            >| {
+                let (calls, requested, resume) = (calls.clone(), requested.clone(), resume.clone());
+                async move {
+                    if query.values().any(|value| value.starts_with("500100.0,")) {
+                        return ([("content-type", "image/tiff")], EAST_TILE).into_response();
+                    }
+                    match calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => ([("content-type", "image/tiff")], WCS_TILE).into_response(),
+                        1 => {
+                            requested.notify_one();
+                            resume.notified().await;
+                            ([("content-type", "image/tiff")], WCS_TILE).into_response()
+                        }
+                        _ => StatusCode::FORBIDDEN.into_response(),
+                    }
+                }
+            }
+        }),
+    ))
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let (_, mut runtime) = app(root.path(), "");
+    runtime.wcs_limits.maximum_tile_area_km2 = 0.01;
+    runtime.coverage_terrain_resolution = Some(10.0);
+    runtime.wcs_config.services.insert(
+        "EPSG:25833".into(),
+        WcsService {
+            dtm_endpoint: format!("{upstream}/wcs"),
+            dom_endpoint: format!("{upstream}/wcs"),
+            dtm_coverage: "ground".into(),
+            dom_coverage: "surface".into(),
+        },
+    );
+    let app = router_with_state(runtime.clone(), "", true);
+    let cookie = cookie(A);
+    let a = geographic(500025.0, 6650050.0);
+    let b = geographic(500075.0, 6650050.0);
+    let mut body = json!({
+        "a": [a.latitude,a.longitude], "b": [b.latitude,b.longitude],
+        "candidates": {"corridor_width_m": 10},
+        "terrain": {"requested_resolution_m": 10, "include_dom": false},
+    });
+    let post = |url, data| api(&app, &cookie, Method::POST, url, data, StatusCode::OK);
+    let estimate = post("/api/terrain/estimate", body.clone()).await;
+    assert_eq!(estimate["tile_count"], 1);
+    assert_eq!(estimate["cache_hits"], 0);
+    let job = post("/api/terrain/prepare", body.clone()).await;
+    let finished = terminal(&app, &cookie).await;
+    assert_eq!(finished["job"]["state"], "terrain_ready", "{finished}");
+    assert_eq!(finished["job"]["job_id"], job["job_id"]);
+    assert_eq!(finished["terrain"]["dtm"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        post("/api/terrain/coverage?route_only=true", body.clone()).await["covered"],
+        true
+    );
+
+    assert_eq!(
+        post("/api/terrain/estimate", body.clone()).await["cache_hits"],
+        1
+    );
+    post("/api/terrain/prepare", body.clone()).await;
+    let finished = terminal(&app, &cookie).await;
+    assert_eq!(finished["job"]["state"], "terrain_ready");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    post("/api/optimize", body.clone()).await;
+    assert_eq!(terminal(&app, &cookie).await["job"]["state"], "complete");
+    let result = api(
+        &app,
+        &cookie,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    let sw = geographic(500120.0, 6650020.0);
+    let ne = geographic(500180.0, 6650080.0);
+    let extension = json!({
+        "snapshot_version": result["snapshot_version"],
+        "alternative_id": result["active_alternative_id"],
+        "map_bounds": [sw.latitude, sw.longitude, ne.latitude, ne.longitude],
+        "settings": {"area_mode":"view", "include_endpoints":true},
+    });
+    let estimate = post("/api/coverage/terrain/estimate", extension.clone()).await;
+    assert_eq!(estimate["tile_count"], 1, "{estimate}");
+    let worker = runtime.scheduler.reserve_worker().unwrap();
+    let queued = post("/api/coverage/terrain/prepare", extension.clone()).await;
+    assert_eq!(queued["state"], "queued");
+    let cancel = format!(
+        "/api/coverage/terrain/{}/cancel",
+        queued["job_id"].as_str().unwrap()
+    );
+    post(&cancel, Value::Null).await;
+    assert_eq!(
+        coverage_terrain_terminal(&app, &cookie).await["coverage_terrain_job"]["state"],
+        "cancelled"
+    );
+    drop(worker);
+
+    post("/api/coverage/terrain/prepare", extension.clone()).await;
+    let extended = coverage_terrain_terminal(&app, &cookie).await;
+    assert_eq!(
+        extended["coverage_terrain_job"]["state"], "complete",
+        "{extended}"
+    );
+    assert_eq!(
+        extended["coverage_terrain"]["dtm"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        post("/api/coverage/terrain/estimate", extension).await["tile_count"],
+        0
+    );
+    assert_eq!(
+        api(
+            &app,
+            &cookie,
+            Method::GET,
+            "/api/result",
+            Value::Null,
+            StatusCode::OK
+        )
+        .await,
+        result
+    );
+
+    let worker = runtime.scheduler.reserve_worker().unwrap();
+    let queued = post("/api/terrain/prepare", body.clone()).await;
+    assert_eq!(queued["state"], "queued");
+    post("/api/cancel", json!({"job_id": queued["job_id"]})).await;
+    assert_eq!(terminal(&app, &cookie).await["job"]["state"], "cancelled");
+    drop(worker);
+
+    body["terrain"]["include_dom"] = json!(true);
+    let job = post("/api/terrain/prepare", body.clone()).await;
+    tokio::time::timeout(Duration::from_secs(5), requested.notified())
+        .await
+        .unwrap();
+    post("/api/cancel", json!({"job_id": job["job_id"]})).await;
+    resume.notify_one();
+    let cancelled = terminal(&app, &cookie).await;
+    assert_eq!(cancelled["job"]["state"], "cancelled", "{cancelled}");
+    assert_eq!(cancelled["terrain"], finished["terrain"]);
+
+    post("/api/terrain/prepare", body.clone()).await;
+    let failed = terminal(&app, &cookie).await;
+    assert_eq!(failed["job"]["state"], "failed", "{failed}");
+    assert!(
+        failed["job"]["stage"]
+            .as_str()
+            .unwrap()
+            .contains("Kartverket")
+    );
+    assert_eq!(failed["terrain"], finished["terrain"]);
+    assert_eq!(failed["coverage_terrain"], extended["coverage_terrain"]);
+    assert_eq!(post("/api/terrain/estimate", body).await["cache_hits"], 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn meshcore_records_can_be_routed_with_overpass_overlay() {
+    use axum::{
+        Json,
+        response::IntoResponse,
+        routing::{get, post},
+    };
+    let location = geographic(500170.0, 6650850.0);
+    let left = geographic(500020.0, 6650850.0);
+    let right = geographic(500310.0, 6650850.0);
+    let roads = json!({"elements":[{"type":"way","id":1,"geometry":[
+        {"lat":left.latitude,"lon":left.longitude},{"lat":right.latitude,"lon":right.longitude}
+    ]}]});
+    let (endpoint, task) = mock_upstream(
+        Router::new()
+            .route(
+                "/api/nodes",
+                get(move || async move {
+                    Json(json!({"total":1,"nodes":[{
+                        "public_key":"abcdef123456", "role":"repeater", "name":"Hill test",
+                        "lat": location.latitude, "lon":location.longitude
+                    }]}))
+                }),
+            )
+            .route(
+                "/api/interpreter",
+                post(move |body: String| {
+                    let roads = roads.clone();
+                    async move {
+                        assert!(body.contains("highway"));
+                        Json(roads)
+                    }
+                }),
+            )
+            .route(
+                "/failed/api/nodes",
+                get(|| async { StatusCode::BAD_REQUEST.into_response() }),
+            ),
+    )
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let (_, mut runtime) = app(root.path(), "");
+    runtime.corescope_endpoint = endpoint.clone();
+    runtime.overpass_endpoint = Some(format!("{endpoint}/api/interpreter"));
+    let router = router_with_state(runtime.clone(), "", true);
+    let cookie = cookie(A);
+    upload(&router, &cookie, "dtm", TILE, StatusCode::OK).await;
+    let mut inputs = plan();
+    inputs["manual_routers"] = json!([]);
+    let imported = api(
+        &router,
+        &cookie,
+        Method::POST,
+        "/api/meshcore",
+        inputs.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(imported["count"], 1);
+    assert_eq!(imported["routers"][0]["name"], "Hill test");
+    assert_eq!(imported["routers"][0]["provenance"], "CoreScope");
+    let mut repeater = imported["routers"][0].clone();
+    repeater["policy"] = json!("required");
+    inputs["known_routers"] = json!([repeater]);
+    inputs["candidates"]["road_access_enabled"] = json!(true);
+    inputs["candidates"]["maximum_road_distance_m"] = json!(25);
+    api(
+        &router,
+        &cookie,
+        Method::POST,
+        "/api/optimize",
+        inputs.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let finished = terminal(&router, &cookie).await;
+    assert_eq!(finished["job"]["state"], "complete", "{finished}");
+    let result = api(
+        &router,
+        &cookie,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(
+        result["road_polylines"]
+            .as_array()
+            .is_some_and(|lines| !lines.is_empty()),
+        "{result}"
+    );
+    let active = result["alternatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|alt| alt["selected"] == true)
+        .unwrap();
+    assert_eq!(active["existing_router_count"], 1);
+    assert!(
+        active["nearest_road_distance_m"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|distance| distance.as_f64().is_some_and(|d| d < 1.0))
+    );
+    assert_eq!(
+        finished["projects"]["previous_result"]["road_polylines"],
+        result["road_polylines"]
+    );
+
+    runtime.corescope_endpoint = format!("{endpoint}/failed");
+    let bad = router_with_state(runtime, "", true);
+    let problem = api(
+        &bad,
+        &cookie,
+        Method::POST,
+        "/api/meshcore",
+        inputs,
+        StatusCode::BAD_GATEWAY,
+    )
+    .await;
+    assert!(problem["detail"].as_str().unwrap().contains("CoreScope"));
+    task.abort();
+}

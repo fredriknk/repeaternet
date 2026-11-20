@@ -1,0 +1,13 @@
+[package]
+name = "repeaternet-coverage-store"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Project-scoped coverage run and target report persistence"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"

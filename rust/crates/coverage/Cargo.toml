@@ -1,0 +1,17 @@
+[package]
+name = "repeaternet-coverage"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Terrain-aware coverage grids and scenario analysis for RepeaterNet"
+
+[dependencies]
+geo = { version = "0.33.1", default-features = false }
+getrandom = "0.4"
+lru = "0.19"
+repeaternet-rf-core = { path = "../rf-core" }
+repeaternet-terrain = { path = "../terrain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+thiserror = "2"

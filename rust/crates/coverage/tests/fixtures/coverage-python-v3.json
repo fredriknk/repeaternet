@@ -1,0 +1,376 @@
+{
+  "defaults": {
+    "mode": "two_way",
+    "area_mode": "mesh",
+    "area_polygon_wgs84": null,
+    "cell_size_m": 1000.0,
+    "area_buffer_m": 5000.0,
+    "profile_step_m": 200.0,
+    "maximum_profile_samples": 4096,
+    "maximum_cells": 4096,
+    "maximum_sources": 64,
+    "maximum_evaluations": 250000,
+    "include_endpoints": false,
+    "area_includes_clients": true,
+    "source_ids": [],
+    "client": {
+      "name": "Handheld · 1.5 m",
+      "height_agl_m": 1.5,
+      "tx_power_dbm": 20.0,
+      "gain_dbi": 2.15,
+      "feed_loss_db": 0.0,
+      "sensitivity_dbm": -130.0,
+      "miscellaneous_loss_db": 0.0
+    }
+  },
+  "flat": {
+    "bounds": [
+      1250.0,
+      750,
+      1750.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 1,
+    "unknown_cells": 0,
+    "unresolved_cells": 0,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1500.0,
+        "y": 1000.0,
+        "latitude": 0.009019542758700228,
+        "longitude": 10.524694679874246,
+        "state": "covered",
+        "source_count": 1,
+        "unknown_sources": 0,
+        "best_margin_db": 51.24675457006089,
+        "best_source_id": "router",
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": 53.24675457006089,
+            "uplink_margin_db": 51.24675457006089,
+            "two_way_margin_db": 51.24675457006089,
+            "valid_downlink": true,
+            "valid_uplink": true,
+            "valid_two_way": true,
+            "rejection": null,
+            "rejection_detail": null
+          }
+        ],
+        "unresolved_sources": 0
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 0
+  },
+  "ridge": {
+    "bounds": [
+      1250.0,
+      750,
+      1750.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 1,
+    "unknown_cells": 0,
+    "unresolved_cells": 0,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1500.0,
+        "y": 1000.0,
+        "latitude": 0.009019542758700228,
+        "longitude": 10.524694679874246,
+        "state": "uncovered",
+        "source_count": 0,
+        "unknown_sources": 0,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": 3.33774053839943,
+            "uplink_margin_db": 1.33774053839943,
+            "two_way_margin_db": 1.33774053839943,
+            "valid_downlink": false,
+            "valid_uplink": false,
+            "valid_two_way": false,
+            "rejection": "validation",
+            "rejection_detail": null
+          }
+        ],
+        "unresolved_sources": 0
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 0
+  },
+  "valley": {
+    "bounds": [
+      1250.0,
+      750,
+      1750.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 1,
+    "unknown_cells": 0,
+    "unresolved_cells": 0,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1500.0,
+        "y": 1000.0,
+        "latitude": 0.009019542758700228,
+        "longitude": 10.524694679874246,
+        "state": "covered",
+        "source_count": 1,
+        "unknown_sources": 0,
+        "best_margin_db": 51.24675457006089,
+        "best_source_id": "router",
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": 53.24675457006089,
+            "uplink_margin_db": 51.24675457006089,
+            "two_way_margin_db": 51.24675457006089,
+            "valid_downlink": true,
+            "valid_uplink": true,
+            "valid_two_way": true,
+            "rejection": null,
+            "rejection_detail": null
+          }
+        ],
+        "unresolved_sources": 0
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 0
+  },
+  "path_nodata": {
+    "bounds": [
+      1250.0,
+      750,
+      1750.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 0,
+    "unknown_cells": 1,
+    "unresolved_cells": 0,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1500.0,
+        "y": 1000.0,
+        "latitude": 0.009019542758700228,
+        "longitude": 10.524694679874246,
+        "state": "unknown_terrain",
+        "source_count": 0,
+        "unknown_sources": 1,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": null,
+            "uplink_margin_db": null,
+            "two_way_margin_db": null,
+            "valid_downlink": false,
+            "valid_uplink": false,
+            "valid_two_way": false,
+            "rejection": "unknown_terrain",
+            "rejection_detail": null
+          }
+        ],
+        "unresolved_sources": 0
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 0
+  },
+  "ground_nodata": {
+    "bounds": [
+      850.0,
+      750,
+      1350.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 0,
+    "unknown_cells": 1,
+    "unresolved_cells": 0,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1100.0,
+        "y": 1000.0,
+        "latitude": 0.009019498287244243,
+        "longitude": 10.521111023658865,
+        "state": "unknown_terrain",
+        "source_count": 0,
+        "unknown_sources": 1,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": null,
+            "uplink_margin_db": null,
+            "two_way_margin_db": null,
+            "valid_downlink": false,
+            "valid_uplink": false,
+            "valid_two_way": false,
+            "rejection": "unknown_terrain",
+            "rejection_detail": null
+          }
+        ],
+        "unresolved_sources": 0
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 0
+  },
+  "capped": {
+    "bounds": [
+      1250.0,
+      750,
+      1750.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 0,
+    "unknown_cells": 0,
+    "unresolved_cells": 1,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1500.0,
+        "y": 1000.0,
+        "latitude": 0.009019542758700228,
+        "longitude": 10.524694679874246,
+        "state": "unresolved",
+        "source_count": 0,
+        "unknown_sources": 0,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": null,
+            "uplink_margin_db": null,
+            "two_way_margin_db": null,
+            "valid_downlink": false,
+            "valid_uplink": false,
+            "valid_two_way": false,
+            "rejection": "profile_sample_limit",
+            "rejection_detail": "This link requires 12 terrain-profile samples at 100 m spacing; the configured maximum is 8. Increase the profile step explicitly or raise the profile sample limit."
+          }
+        ],
+        "unresolved_sources": 1
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 1
+  },
+  "asymmetric": {
+    "bounds": [
+      1250.0,
+      750,
+      1750.0,
+      1250
+    ],
+    "requested_cell_size_m": 500.0,
+    "effective_cell_size_m": 500.0,
+    "rows": 1,
+    "columns": 1,
+    "requested_cells": 1,
+    "terrain_available_cells": 1,
+    "evaluated_cells": 1,
+    "unknown_cells": 0,
+    "unresolved_cells": 0,
+    "inside_area_cells": 1,
+    "outside_area_cells": 0,
+    "completed_cells": 1,
+    "cells": [
+      {
+        "index": 0,
+        "x": 1500.0,
+        "y": 1000.0,
+        "latitude": 0.009019542758700228,
+        "longitude": 10.524694679874246,
+        "state": "uncovered",
+        "source_count": 0,
+        "unknown_sources": 0,
+        "best_margin_db": null,
+        "best_source_id": null,
+        "sources": [
+          {
+            "source_id": "router",
+            "downlink_margin_db": -4.903245429939119,
+            "uplink_margin_db": 40.09675457006088,
+            "two_way_margin_db": -4.903245429939119,
+            "valid_downlink": false,
+            "valid_uplink": true,
+            "valid_two_way": false,
+            "rejection": null,
+            "rejection_detail": null
+          }
+        ],
+        "unresolved_sources": 0
+      }
+    ],
+    "surface_available": false,
+    "unresolved_source_evaluations": 0
+  }
+}

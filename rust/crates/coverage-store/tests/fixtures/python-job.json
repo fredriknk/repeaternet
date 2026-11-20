@@ -1,0 +1,58 @@
+{
+  "plan": {
+    "tx": 1e-07,
+    "name": "Bl\u00e5b\u00e6r \ud83c\udfd4",
+    "zero": -0.0
+  },
+  "job": {
+    "job_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "project_id": "bbbbbbbbbbbbbbbbbbbb",
+    "state": "complete",
+    "stale": false,
+    "result_file": "coverage-results/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl",
+    "route_fingerprint": "bbca7e997dd6b9b02a41be28e74f95d75340b37d6776c0cdc905f80b2216d62e",
+    "terrain_fingerprint": [
+      [
+        "dtm/local.tif",
+        9214,
+        1734567890123456789
+      ]
+    ],
+    "terrain_crs": "EPSG:25833",
+    "settings_fingerprint": "aba05a023f80df1c0bbd791e2fc3f18ca8f2535f6bab7312dbd958bcdb0433cd",
+    "radio_fingerprint": "e2dc47b612ef27ca22e4fe5cf624ee5dd2e13cb56cdd46c49caa768b24f7929c",
+    "source_ids": [
+      "R-coverage"
+    ],
+    "source_sites": [
+      {
+        "id": "R-coverage",
+        "name": "Bl\u00e5b\u00e6r \ud83c\udfd4"
+      }
+    ],
+    "source_height_overrides": {},
+    "alternative_id": "alt-1",
+    "snapshot_version": 4,
+    "grid_bounds_projected": [
+      0.0,
+      0.0,
+      2.0,
+      1.0
+    ],
+    "rows": 1,
+    "columns": 2,
+    "requested_cells": 2,
+    "effective_cell_size_m": 1.0,
+    "settings": {
+      "client": {
+        "height_m": 1.0
+      },
+      "cell_size_m": 1.0
+    },
+    "radio_settings": {
+      "frequency_mhz": 868.0
+    },
+    "model_version": "coverage-v3"
+  },
+  "python_reuse_fingerprint": "967e85dfb35f34248432124dcd48e94f1ec5db009f09cc86d2166f60c45d733f"
+}

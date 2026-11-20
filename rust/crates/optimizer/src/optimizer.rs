@@ -1,0 +1,1202 @@
+use crate::cache::CacheKey;
+use crate::candidates::{generate, sample};
+use crate::parallel::{for_each_ordered, worker_count};
+use crate::screening::screened_pairs;
+use crate::topology::solve_graph;
+use crate::{
+    backbone_site_indices, pair, select_active_solution_index, CandidateSettings,
+    InfrastructurePolicy, LinkMetricsCache, NetworkSolution, OptimizationError,
+    OptimizationPriority, PlanningSite, RoutingGraph, SiteFilter, SiteOrigin,
+};
+use repeaternet_rf_core::{
+    EvaluationOptions, LinkEvaluator, LinkResult, Point, RfError, RfSettings, Site, SiteKind,
+    TerrainLayer, TerrainSource,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
+
+const BACKBONE_LIMIT: usize = 64;
+const ROUTER_HEADROOM: usize = 2;
+type Pair = (usize, usize);
+
+/// RF evaluation seam for specialized adapters and deterministic tests. Independent
+/// evaluations may run concurrently during coarse screening.
+pub trait LinkEvaluation: Sync {
+    fn optimistic_margin_db(&self, source: &Site, target: &Site) -> Result<f64, RfError>;
+    fn evaluate(
+        &self,
+        source: &Site,
+        target: &Site,
+        step_m: f64,
+        include_profile: bool,
+    ) -> Result<LinkResult, RfError>;
+}
+
+impl<T: TerrainSource + Sync + ?Sized> LinkEvaluation for LinkEvaluator<'_, T> {
+    fn optimistic_margin_db(&self, source: &Site, target: &Site) -> Result<f64, RfError> {
+        LinkEvaluator::optimistic_margin_db(self, source, target)
+    }
+
+    fn evaluate(
+        &self,
+        source: &Site,
+        target: &Site,
+        step_m: f64,
+        include_profile: bool,
+    ) -> Result<LinkResult, RfError> {
+        LinkEvaluator::evaluate(
+            self,
+            source,
+            target,
+            EvaluationOptions {
+                sample_step_m: Some(step_m),
+                include_profile,
+                ..EvaluationOptions::default()
+            },
+        )
+    }
+}
+
+#[derive(Default)]
+pub struct OptimizationRequest {
+    pub clients: Vec<PlanningSite>,
+    pub fixed_routers: Vec<PlanningSite>,
+    /// Supplied candidate pool. None requests generation from the terrain.
+    pub candidates: Option<Vec<PlanningSite>>,
+    /// Projected [min x, min y, max x, max y]. Required for automatic generation.
+    pub terrain_bounds: Option<[f64; 4]>,
+    pub exclusions: Vec<Vec<Point>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Cancellation {
+    #[default]
+    Continue,
+    Discard,
+    KeepCertified,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchStatus {
+    Searching,
+    Complete,
+    Cancelled,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stage {
+    GeneratingCandidates,
+    ScreeningPossibleLinks,
+    CheckingEndpointVisibleCandidates,
+    CheckingTwoRepeaterSummitLinks,
+    EvaluatingRfLinks,
+    SearchingTopologies,
+    ValidatingSolutionAlternatives,
+    PreparingSolutionProfiles,
+}
+
+impl Stage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GeneratingCandidates => "Generating candidates",
+            Self::ScreeningPossibleLinks => "Screening possible links",
+            Self::CheckingEndpointVisibleCandidates => "Checking endpoint-visible candidates",
+            Self::CheckingTwoRepeaterSummitLinks => "Checking two-repeater summit links",
+            Self::EvaluatingRfLinks => "Evaluating RF links",
+            Self::SearchingTopologies => "Searching topologies",
+            Self::ValidatingSolutionAlternatives => "Validating solution alternatives",
+            Self::PreparingSolutionProfiles => "Preparing solution profiles",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Progress {
+    pub stage: Stage,
+    pub done: usize,
+    pub total: usize,
+}
+
+#[derive(Default)]
+pub struct SearchHooks<'a> {
+    pub cancellation: Option<&'a dyn Fn() -> Cancellation>,
+    pub progress: Option<&'a mut dyn FnMut(Progress)>,
+    /// Receives an owned, detached snapshot of a certified result.
+    pub solution_progress: Option<&'a mut dyn FnMut(OptimizationResult)>,
+}
+
+impl SearchHooks<'_> {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation
+            .map_or(Cancellation::Continue, |poll| poll())
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancellation() != Cancellation::Continue
+    }
+
+    fn notify(&mut self, stage: Stage, done: usize, total: usize) {
+        if let Some(progress) = self.progress.as_deref_mut() {
+            progress(Progress { stage, done, total });
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OptimizationResult {
+    pub candidates: Vec<PlanningSite>,
+    /// Scalar valid links in the search graph; links outside selected alternatives may be provisional.
+    pub search_links: Vec<LinkResult>,
+    pub alternatives: Vec<NetworkSolution>,
+    pub active_index: Option<usize>,
+    pub diagnostics: Vec<String>,
+    pub elapsed: Duration,
+    pub search_complete: bool,
+    pub status: SearchStatus,
+}
+
+impl OptimizationResult {
+    pub fn found(&self) -> bool {
+        self.active_solution().is_some()
+    }
+    pub fn router_count(&self) -> usize {
+        self.active_solution()
+            .map_or(0, NetworkSolution::router_count)
+    }
+    pub fn active_solution(&self) -> Option<&NetworkSolution> {
+        self.alternatives.get(self.active_index?)
+    }
+
+    pub fn links(&self) -> &[LinkResult] {
+        self.active_solution()
+            .map_or(&[], |solution| &solution.links)
+    }
+
+    pub fn primary_route(&self) -> Vec<&PlanningSite> {
+        self.active_solution()
+            .map_or_else(Vec::new, NetworkSolution::primary_route)
+    }
+
+    pub fn select_solution(&mut self, index: usize) -> Option<&NetworkSolution> {
+        let solution = self.alternatives.get(index)?;
+        self.active_index = Some(index);
+        Some(solution)
+    }
+}
+
+pub struct RouteOptimizer<'a> {
+    terrain: &'a (dyn TerrainSource + Sync),
+    rf: &'a RfSettings,
+    settings: &'a CandidateSettings,
+    evaluator: Option<&'a dyn LinkEvaluation>,
+    cache: Option<(&'a LinkMetricsCache, &'a str, &'a str)>,
+    site_filter: Option<&'a SiteFilter<'a>>,
+}
+
+impl<'a> RouteOptimizer<'a> {
+    pub fn new(
+        terrain: &'a (dyn TerrainSource + Sync),
+        rf: &'a RfSettings,
+        settings: &'a CandidateSettings,
+    ) -> Self {
+        Self {
+            terrain,
+            rf,
+            settings,
+            evaluator: None,
+            cache: None,
+            site_filter: None,
+        }
+    }
+
+    pub fn with_link_evaluation(mut self, evaluator: &'a dyn LinkEvaluation) -> Self {
+        self.evaluator = Some(evaluator);
+        self
+    }
+
+    /// `revision` must change whenever terrain, RF settings or evaluation implementation change.
+    pub fn with_cache(
+        mut self,
+        cache: &'a LinkMetricsCache,
+        namespace: &'a str,
+        revision: &'a str,
+    ) -> Self {
+        self.cache = Some((cache, namespace, revision));
+        self
+    }
+
+    pub fn with_site_filter(mut self, filter: &'a SiteFilter<'a>) -> Self {
+        self.site_filter = Some(filter);
+        self
+    }
+
+    /// Search the local disk around a movable generated site at medium resolution.
+    /// This helper is opt-in; `optimize` does not move certified sites.
+    pub fn refine_site(
+        &self,
+        previous: &PlanningSite,
+        site: &PlanningSite,
+        following: &PlanningSite,
+    ) -> Result<PlanningSite, OptimizationError> {
+        if site.rf.kind != SiteKind::Candidate
+            || site.origin != SiteOrigin::Optimized
+            || site.locked
+            || site.is_required()
+        {
+            return Ok(site.clone());
+        }
+        let radius = self.settings.refine_radius_m;
+        let step = self.settings.refine_step_m.max(self.terrain.resolution_m());
+        let offsets = steps(-radius, radius + step * 0.5, step)?;
+        let builtin = LinkEvaluator::new(self.terrain, self.rf);
+        let rf = self.rf_evaluation(&builtin);
+        let evaluate = |a: &Site, b: &Site| match rf.evaluate(
+            a,
+            b,
+            self.settings.medium_sample_step_m,
+            false,
+            &|| false,
+        ) {
+            Err(RfError::InvalidInput(_)) => Ok(None),
+            result => result,
+        };
+        let mut best = site.clone();
+        let mut best_score = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for dx in offsets.clone() {
+            let x = site.rf.position.x + dx;
+            let points: Vec<_> = offsets
+                .clone()
+                .filter(|dy| dx * dx + dy * dy <= radius * radius)
+                .map(|dy| Point {
+                    x,
+                    y: site.rf.position.y + dy,
+                })
+                .collect();
+            let ground = sample(self.terrain, &points, TerrainLayer::GroundDtm)?;
+            let (points, ground): (Vec<_>, Vec<_>) = points
+                .into_iter()
+                .zip(ground)
+                .filter(|(_, elevation)| elevation.is_finite())
+                .unzip();
+            let keep = if let Some(filter) = self.site_filter.filter(|_| !points.is_empty()) {
+                let keep = filter(&points)?;
+                if keep.len() != points.len() {
+                    return Err(OptimizationError::InvalidInput(
+                        "Site filter returned the wrong number of points".into(),
+                    ));
+                }
+                Some(keep)
+            } else {
+                None
+            };
+            for (index, (point, ground)) in points.into_iter().zip(ground).enumerate() {
+                if keep.as_ref().is_some_and(|keep| !keep[index]) {
+                    continue;
+                }
+                let mut trial = site.clone();
+                trial.rf.position = point;
+                trial.rf.ground_elevation_m = ground;
+                trial.rf.surface_elevation_m = if self.terrain.has_surface() {
+                    let surface = sample(self.terrain, &[point], TerrainLayer::SurfaceDom)?[0];
+                    surface.is_finite().then_some(surface)
+                } else {
+                    None
+                };
+                let Some(left) = evaluate(&previous.rf, &trial.rf)? else {
+                    continue;
+                };
+                let Some(right) = evaluate(&trial.rf, &following.rf)? else {
+                    continue;
+                };
+                if !left.valid || !right.valid {
+                    continue;
+                }
+                let score = (
+                    left.worst_margin_db().min(right.worst_margin_db()),
+                    left.minimum_fresnel_clearance_ratio
+                        .min(right.minimum_fresnel_clearance_ratio),
+                );
+                if score > best_score {
+                    best = trial;
+                    best_score = score;
+                }
+            }
+        }
+        Ok(best)
+    }
+
+    /// Try the configured mast heights in ascending order for each interior route site.
+    /// The caller supplies the route to adjust; `optimize` does not call this helper.
+    pub fn reduce_mast_heights(&self, route: &mut [PlanningSite]) -> Result<(), OptimizationError> {
+        let settings = self.settings;
+        let step = settings.router_height_step_m;
+        let heights = steps(
+            settings.minimum_router_height_m,
+            settings.maximum_router_height_m + step * 0.5,
+            step,
+        )?;
+        let builtin = LinkEvaluator::new(self.terrain, self.rf);
+        let evaluator = self.evaluator.unwrap_or(&builtin);
+        for index in 1..route.len().saturating_sub(1) {
+            let mut trial = route[index].rf.clone();
+            for height in heights.clone() {
+                trial.antenna_height_m = height;
+                let step = settings.final_sample_step_m;
+                let left = evaluator.evaluate(&route[index - 1].rf, &trial, step, false)?;
+                let right = evaluator.evaluate(&trial, &route[index + 1].rf, step, false)?;
+                if left.valid && right.valid {
+                    route[index].rf.antenna_height_m = height;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn optimize(
+        &self,
+        request: OptimizationRequest,
+        hooks: SearchHooks<'_>,
+    ) -> Result<OptimizationResult, OptimizationError> {
+        let builtin = LinkEvaluator::new(self.terrain, self.rf);
+        let mut search = Search {
+            settings: self.settings,
+            rf: self.rf_evaluation(&builtin),
+            hooks,
+            started: Instant::now(),
+            sites: Vec::new(),
+            by_id: BTreeMap::new(),
+            links: BTreeMap::new(),
+            final_checked: BTreeSet::new(),
+            snapshot: None,
+            diagnostics: Vec::new(),
+            seeds: Vec::new(),
+        };
+        if search.hooks.cancelled() {
+            return Ok(search.interrupted());
+        }
+        validate_search_settings(self.settings)?;
+        search.hooks.notify(Stage::GeneratingCandidates, 0, 1);
+        if search.hooks.cancelled() {
+            return Ok(search.interrupted());
+        }
+        let (sites, filter_counts) = self.prepare_sites(request, &|| search.hooks.cancelled())?;
+        search.sites = sites;
+        if let Some([kept, checked]) = filter_counts {
+            search.diagnostics.push(format!(
+                "Road access filter kept {kept} of {checked} grid points."
+            ));
+        }
+        search.hooks.notify(Stage::GeneratingCandidates, 1, 1);
+        if search.hooks.cancelled() {
+            return Ok(search.interrupted());
+        }
+        search.by_id = search
+            .sites
+            .iter()
+            .enumerate()
+            .map(|(i, site)| (site.rf.id.clone(), i))
+            .collect();
+        search.run()
+    }
+
+    fn rf_evaluation<'b>(&'b self, builtin: &'b dyn LinkEvaluation) -> RfEvaluation<'b> {
+        RfEvaluation {
+            evaluator: self.evaluator.unwrap_or(builtin),
+            cache: self.cache,
+        }
+    }
+
+    fn prepare_sites(
+        &self,
+        request: OptimizationRequest,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(Vec<PlanningSite>, Option<[usize; 2]>), OptimizationError> {
+        let OptimizationRequest {
+            clients,
+            fixed_routers,
+            candidates,
+            terrain_bounds,
+            exclusions,
+        } = request;
+        let policy = self.settings.infrastructure_policy;
+        let permitted = |site: &PlanningSite| match policy {
+            InfrastructurePolicy::ProposedOnly => site.origin != SiteOrigin::Known,
+            InfrastructurePolicy::ExistingOnly => site.origin == SiteOrigin::Known,
+            InfrastructurePolicy::ExistingAndProposed => true,
+        };
+        if clients.len() < 2
+            || clients
+                .iter()
+                .any(|site| !site.is_client() || !site.included())
+        {
+            return Err(OptimizationError::InvalidInput(
+                "At least two enabled clients are required".into(),
+            ));
+        }
+        if clients.iter().enumerate().any(|(i, site)| {
+            clients[..i]
+                .iter()
+                .any(|other| other.rf.position == site.rf.position)
+        }) {
+            return Err(OptimizationError::InvalidInput(
+                "Client coordinates must be distinct".into(),
+            ));
+        }
+        let mut sites = clients;
+        let mut ids = BTreeSet::new();
+        for site in &sites {
+            if !ids.insert(site.rf.id.clone()) {
+                return Err(duplicate_site());
+            }
+        }
+        let mut fixed_count = 0;
+        let mut fixed_ids = BTreeSet::new();
+        for site in fixed_routers.into_iter().filter(permitted) {
+            if site.is_client() {
+                return Err(OptimizationError::InvalidInput(
+                    "Fixed routers must have a router or candidate site kind".into(),
+                ));
+            }
+            if ids.contains(&site.rf.id) || !fixed_ids.insert(site.rf.id.clone()) {
+                return Err(duplicate_site());
+            }
+            if site.is_required() && !site.enabled {
+                return Err(disabled_required(&site));
+            }
+            if !site.included() {
+                continue;
+            }
+            if !ids.insert(site.rf.id.clone()) {
+                return Err(duplicate_site());
+            }
+            fixed_count += 1;
+            sites.push(site);
+        }
+        let mut filter_counts = None;
+        if let Some(candidates) = candidates {
+            let mut explicit_ids = BTreeSet::new();
+            for site in candidates
+                .into_iter()
+                .filter(|site| site.is_client() || permitted(site))
+            {
+                if !explicit_ids.insert(site.rf.id.clone()) {
+                    return Err(duplicate_site());
+                }
+                if fixed_ids.contains(&site.rf.id) && !ids.contains(&site.rf.id) {
+                    continue;
+                }
+                if site.is_required() && !site.enabled {
+                    return Err(disabled_required(&site));
+                }
+                if !site.included() {
+                    continue;
+                }
+                if !ids.insert(site.rf.id.clone()) {
+                    // Clients and fixed sites may also be included in a complete supplied pool.
+                    if sites
+                        .iter()
+                        .any(|existing| existing.rf == site.rf && existing.origin == site.origin)
+                    {
+                        continue;
+                    }
+                    return Err(duplicate_site());
+                }
+                fixed_count +=
+                    usize::from(!site.is_client() && site.origin != SiteOrigin::Optimized);
+                sites.push(site);
+            }
+        } else if policy != InfrastructurePolicy::ExistingOnly {
+            let mut settings = self.settings.clone();
+            settings.maximum_candidates = settings.maximum_candidates.saturating_sub(fixed_count);
+            let terminals: Vec<_> = sites
+                .iter()
+                .filter(|s| s.is_client() || s.is_required())
+                .collect();
+            let network = terminals.len() > 2;
+            let (mut low, mut high) = (terminals[0].rf.position, terminals[1].rf.position);
+            if network {
+                for site in &terminals {
+                    let point = site.rf.position;
+                    low = Point {
+                        x: low.x.min(point.x),
+                        y: low.y.min(point.y),
+                    };
+                    high = Point {
+                        x: high.x.max(point.x),
+                        y: high.y.max(point.y),
+                    };
+                }
+                settings.unrestricted_bounding_area = true;
+            }
+            if self.site_filter.is_some() {
+                filter_counts = Some([0; 2]);
+            }
+            if settings.maximum_candidates > 0 {
+                let bounds = terrain_bounds.ok_or_else(|| {
+                    OptimizationError::InvalidInput(
+                        "Terrain bounds are required for candidate generation".into(),
+                    )
+                })?;
+                let (generated, counts) = generate(
+                    self.terrain,
+                    bounds,
+                    [low, high],
+                    &settings,
+                    &exclusions,
+                    self.site_filter,
+                    cancelled,
+                )?;
+                if self.site_filter.is_some() {
+                    filter_counts = Some(counts);
+                }
+                for (i, mut site) in generated.into_iter().enumerate() {
+                    if network {
+                        site.rf.id = format!("N{}", i + 1);
+                    }
+                    while !ids.insert(site.rf.id.clone()) {
+                        site.rf.id.insert(0, if network { 'N' } else { 'C' });
+                    }
+                    sites.push(site);
+                }
+            }
+        }
+        if cancelled() {
+            return Ok((sites, filter_counts));
+        }
+        if fixed_count > self.settings.maximum_candidates {
+            return Err(OptimizationError::InvalidInput(format!(
+                "{fixed_count} fixed routers exceed the candidate budget of {}",
+                self.settings.maximum_candidates
+            )));
+        }
+        let required = sites.iter().filter(|site| site.is_required()).count();
+        if required > self.settings.maximum_solution_routers {
+            return Err(OptimizationError::InvalidInput(format!(
+                "{required} routers are required, but the solution limit is {}",
+                self.settings.maximum_solution_routers
+            )));
+        }
+        for site in &mut sites {
+            if !site.is_client() && !site.height_override {
+                site.rf.antenna_height_m = if self.settings.optimize_heights {
+                    self.settings.maximum_router_height_m
+                } else {
+                    self.rf.router.height_agl_m
+                };
+            }
+            if !site.rf.position.x.is_finite()
+                || !site.rf.position.y.is_finite()
+                || !site.rf.ground_elevation_m.is_finite()
+            {
+                return Err(OptimizationError::InvalidInput(format!(
+                    "Site {} has invalid coordinates or ground elevation",
+                    site.rf.id
+                )));
+            }
+        }
+        // Keep the traditional A/candidate/B order for a two-terminal search.
+        if sites.iter().filter(|site| site.is_client()).count() == 2 {
+            let end = sites.remove(1);
+            sites.push(end);
+        }
+        Ok((sites, filter_counts))
+    }
+}
+
+fn duplicate_site() -> OptimizationError {
+    OptimizationError::InvalidInput(
+        "Site IDs must be unique, including fixed and optional routers".into(),
+    )
+}
+
+fn disabled_required(site: &PlanningSite) -> OptimizationError {
+    OptimizationError::InvalidInput(format!("Required site {} cannot be disabled", site.rf.id))
+}
+
+fn steps(
+    start: f64,
+    stop: f64,
+    step: f64,
+) -> Result<impl Iterator<Item = f64> + Clone, OptimizationError> {
+    let count = ((stop - start) / step).ceil();
+    if !count.is_finite() || count >= usize::MAX as f64 || !step.is_finite() || step <= 0.0 {
+        return Err(OptimizationError::InvalidInput(
+            "Local search requires a finite range and positive step".into(),
+        ));
+    }
+    Ok((0..count.max(0.0) as usize).map(move |i| start + i as f64 * step))
+}
+
+fn validate_search_settings(settings: &CandidateSettings) -> Result<(), OptimizationError> {
+    if [settings.coarse_sample_step_m, settings.final_sample_step_m]
+        .into_iter()
+        .chain(settings.maximum_link_distance_m)
+        .any(|value| !value.is_finite() || value <= 0.0)
+    {
+        return Err(OptimizationError::InvalidInput(
+            "RF sample steps and maximum distance must be positive and finite".into(),
+        ));
+    }
+    Ok(())
+}
+
+struct RfEvaluation<'a> {
+    evaluator: &'a dyn LinkEvaluation,
+    cache: Option<(&'a LinkMetricsCache, &'a str, &'a str)>,
+}
+
+impl RfEvaluation<'_> {
+    fn evaluate(
+        &self,
+        source: &Site,
+        target: &Site,
+        step: f64,
+        profile: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<LinkResult>, RfError> {
+        let compute = || {
+            if cancelled() {
+                return Ok(None);
+            }
+            let mut link = match self.evaluator.evaluate(source, target, step, profile) {
+                Ok(link) => link,
+                Err(RfError::MissingTerrain) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            if !profile {
+                link.profile = None;
+                link.dominant_obstacles.clear();
+            }
+            Ok(Some(link))
+        };
+        if let Some((cache, namespace, revision)) = self.cache.filter(|_| !profile) {
+            cache.get_or_compute(
+                CacheKey::new(namespace, revision, source, target, step),
+                cancelled,
+                compute,
+            )
+        } else {
+            compute()
+        }
+    }
+
+    fn search_pair(
+        &self,
+        sites: &[PlanningSite],
+        (a, b): Pair,
+        step: f64,
+        profile: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<LinkResult>, OptimizationError> {
+        let (mut source, mut target) = (&sites[a].rf, &sites[b].rf);
+        if source.id > target.id {
+            std::mem::swap(&mut source, &mut target);
+        }
+        Ok(self.evaluate(source, target, step, profile, cancelled)?)
+    }
+}
+
+struct Search<'a, 'b> {
+    settings: &'a CandidateSettings,
+    rf: RfEvaluation<'a>,
+    hooks: SearchHooks<'b>,
+    started: Instant,
+    sites: Vec<PlanningSite>,
+    by_id: BTreeMap<String, usize>,
+    links: BTreeMap<Pair, LinkResult>,
+    final_checked: BTreeSet<Pair>,
+    snapshot: Option<OptimizationResult>,
+    diagnostics: Vec<String>,
+    seeds: Vec<Vec<String>>,
+}
+
+impl Search<'_, '_> {
+    fn run(mut self) -> Result<OptimizationResult, OptimizationError> {
+        let terminals: BTreeSet<_> = self
+            .sites
+            .iter()
+            .enumerate()
+            .filter_map(|(i, site)| (site.is_client() || site.is_required()).then_some(i))
+            .collect();
+        let low_hop_eligible =
+            terminals.len() == 2 && self.sites.iter().all(|site| !site.is_required());
+        let mut checked_low_hop =
+            low_hop_eligible && self.settings.priority == OptimizationPriority::MinimumRouters;
+        if checked_low_hop {
+            self.low_hop()?;
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+        }
+        self.screen(&terminals)?;
+        let mut exploration = self.settings.clone();
+        exploration.maximum_solution_routers = exploration
+            .maximum_solution_routers
+            .saturating_add(ROUTER_HEADROOM);
+        loop {
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            self.hooks.notify(Stage::SearchingTopologies, 0, 1);
+            let explored = self.solve(&exploration)?;
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            self.hooks.notify(Stage::SearchingTopologies, 1, 1);
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            let pending = self.pending_pairs(&explored);
+            if !pending.is_empty() {
+                self.validate_pairs(pending)?;
+                self.publish_certified(&explored)?;
+                continue;
+            }
+            let mut alternatives = self.solve(self.settings)?;
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            let pending = self.pending_pairs(&alternatives);
+            if !pending.is_empty() {
+                self.validate_pairs(pending)?;
+                self.publish_certified(&alternatives)?;
+                continue;
+            }
+            if alternatives.is_empty()
+                && low_hop_eligible
+                && !checked_low_hop
+                && self.settings.priority == OptimizationPriority::MinimumInfrastructure
+            {
+                checked_low_hop = true;
+                self.low_hop()?;
+                continue;
+            }
+            self.restore_profiles(&mut alternatives)?;
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            let result = self.result(alternatives, true);
+            if result.found() {
+                if let Some(publish) = self.hooks.solution_progress.as_deref_mut() {
+                    publish(OptimizationResult {
+                        search_links: Vec::new(),
+                        candidates: result.candidates.clone(),
+                        alternatives: result.alternatives.clone(),
+                        diagnostics: result.diagnostics.clone(),
+                        ..result
+                    });
+                }
+            }
+            return Ok(result);
+        }
+    }
+
+    fn solve(
+        &self,
+        settings: &CandidateSettings,
+    ) -> Result<Vec<NetworkSolution>, OptimizationError> {
+        let graph = RoutingGraph::from_links(&self.sites, self.links.values())?;
+        solve_graph(&graph, settings, &|| self.hooks.cancelled(), &self.seeds)
+    }
+
+    fn screen(&mut self, terminals: &BTreeSet<usize>) -> Result<(), OptimizationError> {
+        let mut pairs = screened_pairs(
+            &self.sites,
+            self.settings.maximum_neighbors_per_site,
+            terminals,
+            &|| self.hooks.cancelled(),
+        );
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        let backbone = backbone_site_indices(&self.sites, BACKBONE_LIMIT, terminals);
+        for (i, &left) in backbone.iter().enumerate() {
+            pairs.extend(backbone[i + 1..].iter().map(|&right| (left, right)));
+        }
+        let total = pairs.len();
+        self.hooks.notify(Stage::ScreeningPossibleLinks, 0, total);
+        let mut plausible = Vec::new();
+        for (i, key) in pairs.into_iter().enumerate() {
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            if !self.final_checked.contains(&key) && self.plausible(key)? {
+                plausible.push(key);
+            }
+            if (i + 1) % 20 == 0 || i + 1 == total {
+                self.hooks
+                    .notify(Stage::ScreeningPossibleLinks, i + 1, total);
+            }
+        }
+        let total = plausible.len();
+        self.hooks.notify(Stage::EvaluatingRfLinks, 0, total);
+        let mut retry = Vec::new();
+        let mut done = 0;
+        let cancellation = self.hooks.cancellation;
+        let (rf, sites, links, hooks) = (&self.rf, &self.sites, &mut self.links, &mut self.hooks);
+        let step = self.settings.coarse_sample_step_m;
+        for_each_ordered(
+            &plausible,
+            worker_count(self.settings.parallel_workers, total),
+            &|| cancellation.is_some_and(|poll| poll() != Cancellation::Continue),
+            |key, cancelled| rf.search_pair(sites, key, step, false, cancelled),
+            |key, link| {
+                if let Some(link) = link.filter(|link| link.valid) {
+                    links.insert(key, link);
+                } else {
+                    retry.push(key);
+                }
+                done += 1;
+                hooks.notify(Stage::EvaluatingRfLinks, done, total);
+            },
+        )?;
+        for key in retry {
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            // Coarse/medium classifications cannot safely prove RF failure.
+            self.certify(key, true)?;
+        }
+        Ok(())
+    }
+
+    fn low_hop(&mut self) -> Result<(), OptimizationError> {
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        let (a, b) = (0, self.sites.len() - 1);
+        self.certify((a, b), true)?;
+        let maximum = self.settings.maximum_solution_routers;
+        let direct = self.links.contains_key(&(a, b));
+        if !direct && maximum > 0 {
+            let mut from_a = Vec::new();
+            let mut to_b = Vec::new();
+            let count = b - 1;
+            self.hooks
+                .notify(Stage::CheckingEndpointVisibleCandidates, 0, count);
+            for i in 1..b {
+                if self.hooks.cancelled() {
+                    return Ok(());
+                }
+                if self.certify((a, i), true)? {
+                    from_a.push(i);
+                }
+                if self.certify((i, b), true)? {
+                    to_b.push(i);
+                }
+                if i % 10 == 0 || i == count {
+                    self.hooks
+                        .notify(Stage::CheckingEndpointVisibleCandidates, i, count);
+                }
+            }
+            if maximum >= 2 && !from_a.iter().any(|node| to_b.binary_search(node).is_ok()) {
+                let total = from_a.len().saturating_mul(to_b.len());
+                self.hooks
+                    .notify(Stage::CheckingTwoRepeaterSummitLinks, 0, total);
+                let mut done = 0;
+                // Failed unscreened cross-pairs are streamed and never accumulated.
+                for left in from_a {
+                    for &right in &to_b {
+                        if self.hooks.cancelled() {
+                            return Ok(());
+                        }
+                        self.certify(pair(left, right), false)?;
+                        done += 1;
+                        if done % 10 == 0 || done == total {
+                            self.hooks
+                                .notify(Stage::CheckingTwoRepeaterSummitLinks, done, total);
+                        }
+                    }
+                }
+            }
+        }
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        let path = {
+            let graph = RoutingGraph::from_links(
+                &self.sites,
+                self.links
+                    .iter()
+                    .filter(|(key, _)| self.final_checked.contains(key))
+                    .map(|(_, link)| link),
+            )?;
+            graph.select_path(
+                &self.sites[a].rf.id,
+                &self.sites[b].rf.id,
+                self.settings.priority,
+            )
+        };
+        let Some(path) = path.filter(|path| path.len() <= maximum.min(2) + 2) else {
+            return Ok(());
+        };
+        let routers = path[1..path.len() - 1].to_vec();
+        let nodes: Vec<_> = path.iter().map(|id| self.by_id[id]).collect();
+        let mut pending = BTreeSet::new();
+        for (i, &left) in nodes.iter().enumerate() {
+            pending.extend(
+                nodes[i + 1..]
+                    .iter()
+                    .map(|&right| pair(left, right))
+                    .filter(|key| !self.final_checked.contains(key)),
+            );
+        }
+        self.validate_pairs(pending)?;
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        self.seeds.push(routers);
+        let selected: Vec<_> = nodes.iter().map(|&i| self.sites[i].clone()).collect();
+        let graph = RoutingGraph::from_links(&selected, self.links.values())?;
+        let mut settings = self.settings.clone();
+        settings.maximum_solution_routers = nodes.len() - 2;
+        let alternatives = solve_graph(&graph, &settings, &|| self.hooks.cancelled(), &self.seeds)?;
+        self.publish_certified(&alternatives)
+    }
+
+    fn pending_pairs(&self, alternatives: &[NetworkSolution]) -> BTreeSet<Pair> {
+        let mut pairs = BTreeSet::new();
+        for solution in alternatives {
+            for (i, site) in solution.sites.iter().enumerate() {
+                let left = self.by_id[&site.rf.id];
+                for other in &solution.sites[i + 1..] {
+                    let key = pair(left, self.by_id[&other.rf.id]);
+                    if !self.final_checked.contains(&key) {
+                        pairs.insert(key);
+                    }
+                }
+            }
+        }
+        pairs
+    }
+
+    fn validate_pairs(&mut self, pending: BTreeSet<Pair>) -> Result<(), OptimizationError> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let count = pending.len();
+        self.hooks
+            .notify(Stage::ValidatingSolutionAlternatives, 0, count);
+        for (i, key) in pending.into_iter().enumerate() {
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            self.certify(key, true)?;
+            self.hooks
+                .notify(Stage::ValidatingSolutionAlternatives, i + 1, count);
+        }
+        Ok(())
+    }
+
+    fn certify(&mut self, key: Pair, remember_failure: bool) -> Result<bool, OptimizationError> {
+        if self.final_checked.contains(&key) {
+            return Ok(self.links.contains_key(&key));
+        }
+        let link = if self.plausible(key)? {
+            let evaluated = self.evaluate(key, self.settings.final_sample_step_m, false);
+            if self.hooks.cancelled() {
+                return Ok(false);
+            }
+            evaluated?.filter(|link| link.valid)
+        } else {
+            None
+        };
+        if remember_failure || link.is_some() {
+            self.final_checked.insert(key);
+        }
+        if let Some(link) = link {
+            self.links.insert(key, link);
+            Ok(true)
+        } else {
+            self.links.remove(&key);
+            Ok(false)
+        }
+    }
+
+    fn plausible(&self, (a, b): Pair) -> Result<bool, OptimizationError> {
+        let (left, right) = (&self.sites[a].rf, &self.sites[b].rf);
+        let distance = left.distance_to(right);
+        if distance == 0.0
+            || self
+                .settings
+                .maximum_link_distance_m
+                .is_some_and(|limit| distance > limit)
+        {
+            return Ok(false);
+        }
+        Ok(self.rf.evaluator.optimistic_margin_db(left, right)? >= 0.0)
+    }
+
+    fn evaluate(
+        &self,
+        key: Pair,
+        step: f64,
+        profile: bool,
+    ) -> Result<Option<LinkResult>, OptimizationError> {
+        self.rf
+            .search_pair(&self.sites, key, step, profile, &|| self.hooks.cancelled())
+    }
+
+    fn publish_certified(&mut self, previous: &[NetworkSolution]) -> Result<(), OptimizationError> {
+        if self.snapshot.is_some() || previous.is_empty() || self.hooks.cancelled() {
+            return Ok(());
+        }
+        let mut certified = Vec::new();
+        for solution in previous
+            .iter()
+            .filter(|s| s.router_count() <= self.settings.maximum_solution_routers)
+        {
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            if !self
+                .pending_pairs(std::slice::from_ref(solution))
+                .is_empty()
+            {
+                continue;
+            }
+            let graph = RoutingGraph::from_links(&solution.sites, self.links.values())?;
+            let mut settings = self.settings.clone();
+            settings.maximum_solution_routers = solution.router_count();
+            let mut alternatives = solve_graph(&graph, &settings, &|| self.hooks.cancelled(), &[])?;
+            if let Some(topology) = alternatives
+                .pop()
+                .filter(|s| s.router_count() == solution.router_count())
+            {
+                certified.push(topology);
+            }
+        }
+        if certified.is_empty() || self.hooks.cancelled() {
+            return Ok(());
+        }
+        for solution in &mut certified {
+            solution
+                .diagnostics
+                .push("Certified route snapshot; broader search is still running.".into());
+        }
+        self.restore_profiles(&mut certified)?;
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        let result = self.result(certified, false);
+        self.snapshot = Some(result.clone());
+        if let Some(publish) = self.hooks.solution_progress.as_deref_mut() {
+            publish(result);
+        }
+        Ok(())
+    }
+
+    fn restore_profiles(
+        &mut self,
+        alternatives: &mut [NetworkSolution],
+    ) -> Result<(), OptimizationError> {
+        if alternatives.is_empty() {
+            return Ok(());
+        }
+        let keys: BTreeSet<_> = alternatives
+            .iter()
+            .flat_map(|solution| &solution.links)
+            .map(|link| pair(self.by_id[&link.source_id], self.by_id[&link.target_id]))
+            .collect();
+        let mut detailed = BTreeMap::new();
+        let count = keys.len();
+        self.hooks
+            .notify(Stage::PreparingSolutionProfiles, 0, count);
+        for (i, key) in keys.into_iter().enumerate() {
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            let evaluated = self.evaluate(key, self.settings.final_sample_step_m, true);
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            let link = evaluated?.filter(|link| link.valid).ok_or_else(|| {
+                OptimizationError::CertificationChanged {
+                    source: self.sites[key.0].rf.id.clone(),
+                    target: self.sites[key.1].rf.id.clone(),
+                }
+            })?;
+            detailed.insert(key, link);
+            self.hooks
+                .notify(Stage::PreparingSolutionProfiles, i + 1, count);
+        }
+        if self.hooks.cancelled() {
+            return Ok(());
+        }
+        for link in alternatives
+            .iter_mut()
+            .flat_map(|solution| &mut solution.links)
+        {
+            *link =
+                detailed[&pair(self.by_id[&link.source_id], self.by_id[&link.target_id])].clone();
+        }
+        Ok(())
+    }
+
+    fn result(
+        &self,
+        alternatives: Vec<NetworkSolution>,
+        search_complete: bool,
+    ) -> OptimizationResult {
+        let active_index = select_active_solution_index(&alternatives, self.settings.priority);
+        let mut diagnostics = if let Some(index) = active_index {
+            alternatives[index].diagnostics.clone()
+        } else {
+            let mut diagnostics = vec![
+                "No connected mesh was found within the configured router-count limit.".into(),
+            ];
+            let required: Vec<_> = self
+                .sites
+                .iter()
+                .filter(|site| site.is_required())
+                .map(|site| site.rf.id.as_str())
+                .collect();
+            if !required.is_empty() {
+                diagnostics.push(format!("Required routers checked: {}", required.join(", ")));
+            }
+            diagnostics.push("Try showing more router-count solutions, widening the corridor, or increasing candidate density.".into());
+            diagnostics
+        };
+        diagnostics.extend(self.diagnostics.clone());
+        OptimizationResult {
+            candidates: self.sites.clone(),
+            search_links: if search_complete {
+                self.links.values().cloned().collect()
+            } else {
+                Vec::new()
+            },
+            alternatives,
+            active_index,
+            diagnostics,
+            elapsed: self.started.elapsed(),
+            search_complete,
+            status: if search_complete {
+                SearchStatus::Complete
+            } else {
+                SearchStatus::Searching
+            },
+        }
+    }
+
+    fn interrupted(&mut self) -> OptimizationResult {
+        if self.hooks.cancellation() == Cancellation::KeepCertified {
+            if let Some(mut snapshot) = self.snapshot.take() {
+                snapshot.elapsed = self.started.elapsed();
+                snapshot.status = SearchStatus::Stopped;
+                return snapshot;
+            }
+        }
+        OptimizationResult {
+            candidates: std::mem::take(&mut self.sites),
+            search_links: Vec::new(),
+            alternatives: Vec::new(),
+            active_index: None,
+            diagnostics: vec!["Optimization cancelled".into()],
+            elapsed: self.started.elapsed(),
+            search_complete: false,
+            status: SearchStatus::Cancelled,
+        }
+    }
+}

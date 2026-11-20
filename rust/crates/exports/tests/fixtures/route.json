@@ -1,0 +1,873 @@
+{
+  "route": {
+    "found": true,
+    "router_count": 2,
+    "existing_router_count": 1,
+    "proposed_router_count": 1,
+    "route": [
+      {
+        "id": "A",
+        "x": 0,
+        "y": 1,
+        "latitude": 60.0,
+        "longitude": 10.0,
+        "kind": "endpoint_a",
+        "ground_elevation_m": 140,
+        "surface_elevation_m": null,
+        "antenna_height_m": 6,
+        "height_reference": "ground_dtm",
+        "terrain_slope": 0.0,
+        "site_quality": 0.0,
+        "locked": false,
+        "origin": "optimized",
+        "required": false,
+        "enabled": true,
+        "height_override": false
+      },
+      {
+        "id": "R-1",
+        "x": 1200,
+        "y": 1,
+        "latitude": 60.002,
+        "longitude": 10.018,
+        "kind": "router",
+        "ground_elevation_m": 140.54664705838354,
+        "surface_elevation_m": null,
+        "antenna_height_m": 6,
+        "height_reference": "ground_dtm",
+        "terrain_slope": 0.0,
+        "site_quality": 0.0,
+        "locked": false,
+        "origin": "known",
+        "required": false,
+        "enabled": true,
+        "height_override": false
+      },
+      {
+        "id": "R-2</script><img src=x onerror=\"alert(1)\">",
+        "x": 2400,
+        "y": 1,
+        "latitude": 60.001,
+        "longitude": 10.039,
+        "kind": "router",
+        "ground_elevation_m": 143.18470796621455,
+        "surface_elevation_m": null,
+        "antenna_height_m": 6,
+        "height_reference": "ground_dtm",
+        "terrain_slope": 0.0,
+        "site_quality": 0.0,
+        "locked": false,
+        "origin": "optimized",
+        "required": false,
+        "enabled": true,
+        "height_override": false
+      },
+      {
+        "id": "B",
+        "x": 3600,
+        "y": 1,
+        "latitude": 60.005,
+        "longitude": 10.06,
+        "kind": "endpoint_b",
+        "ground_elevation_m": 141.20232642953556,
+        "surface_elevation_m": null,
+        "antenna_height_m": 6,
+        "height_reference": "ground_dtm",
+        "terrain_slope": 0.0,
+        "site_quality": 0.0,
+        "locked": false,
+        "origin": "optimized",
+        "required": false,
+        "enabled": true,
+        "height_override": false
+      }
+    ],
+    "links": [
+      {
+        "source_id": "R-2</script><img src=x onerror=\"alert(1)\">",
+        "target_id": "B",
+        "distance_m": 1200.0,
+        "forward": {
+          "source_id": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "target_id": "B",
+          "distance_m": 1200.0,
+          "fspl_db": 92.80901664772712,
+          "diffraction_loss_db": 3.971655585450883,
+          "clutter_loss_db": 0.0,
+          "total_path_loss_db": 96.78067223317801,
+          "tx_gain_dbi": 2.15,
+          "rx_gain_dbi": 2.15,
+          "received_power_dbm": -80.48067223317801,
+          "sensitivity_dbm": -130.0,
+          "raw_margin_db": 49.51932776682199,
+          "usable_margin_db": 39.51932776682199,
+          "departure_angle_deg": -0.09465166009389557,
+          "arrival_angle_deg": 0.09465166009389557,
+          "valid": true,
+          "tx_power_dbm": 14,
+          "tx_feed_loss_db": 1.0,
+          "rx_feed_loss_db": 1.0,
+          "miscellaneous_loss_db": 0.0
+        },
+        "reverse": {
+          "source_id": "B",
+          "target_id": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "distance_m": 1200.0,
+          "fspl_db": 92.80901664772712,
+          "diffraction_loss_db": 3.971655585450883,
+          "clutter_loss_db": 0.0,
+          "total_path_loss_db": 96.78067223317801,
+          "tx_gain_dbi": 2.15,
+          "rx_gain_dbi": 2.15,
+          "received_power_dbm": -80.48067223317801,
+          "sensitivity_dbm": -130.0,
+          "raw_margin_db": 49.51932776682199,
+          "usable_margin_db": 39.51932776682199,
+          "departure_angle_deg": 0.09465166009389557,
+          "arrival_angle_deg": -0.09465166009389557,
+          "valid": true,
+          "tx_power_dbm": 14,
+          "tx_feed_loss_db": 1.0,
+          "rx_feed_loss_db": 1.0,
+          "miscellaneous_loss_db": 0.0
+        },
+        "valid": true,
+        "los_clear": true,
+        "fresnel_clear": false,
+        "minimum_clearance_m": 2.20963725549791,
+        "minimum_fresnel_clearance_ratio": 0.38695443016973113,
+        "minimum_clearance_distance_m": 114.0,
+        "maximum_fresnel_radius_m": 10.170356715557185,
+        "diffraction_loss_db": 3.971655585450883,
+        "dominant_obstacles": [
+          {
+            "distance_m": 114.0,
+            "elevation_m": 146.6885077083912,
+            "v": -0.5472362031663865,
+            "loss_db": 3.971655585450883
+          }
+        ],
+        "profile": null,
+        "worst_margin_db": 39.51932776682199
+      },
+      {
+        "source_id": "R-2</script><img src=x onerror=\"alert(1)\">",
+        "target_id": "R-1",
+        "distance_m": 1200.0,
+        "forward": {
+          "source_id": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "target_id": "R-1",
+          "distance_m": 1200.0,
+          "fspl_db": 92.80901664772712,
+          "diffraction_loss_db": 36.62629103285815,
+          "clutter_loss_db": 0.0,
+          "total_path_loss_db": 129.43530768058525,
+          "tx_gain_dbi": 2.15,
+          "rx_gain_dbi": 2.15,
+          "received_power_dbm": -113.13530768058524,
+          "sensitivity_dbm": -130.0,
+          "raw_margin_db": 16.864692319414758,
+          "usable_margin_db": 1.0,
+          "departure_angle_deg": -0.12595792718418902,
+          "arrival_angle_deg": 0.12595792718418902,
+          "valid": true,
+          "tx_power_dbm": 14,
+          "tx_feed_loss_db": 1.0,
+          "rx_feed_loss_db": 1.0,
+          "miscellaneous_loss_db": 0.0
+        },
+        "reverse": {
+          "source_id": "R-1",
+          "target_id": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "distance_m": 1200.0,
+          "fspl_db": 92.80901664772712,
+          "diffraction_loss_db": 36.62629103285815,
+          "clutter_loss_db": 0.0,
+          "total_path_loss_db": 129.43530768058525,
+          "tx_gain_dbi": 2.15,
+          "rx_gain_dbi": 2.15,
+          "received_power_dbm": -113.13530768058524,
+          "sensitivity_dbm": -130.0,
+          "raw_margin_db": 16.864692319414758,
+          "usable_margin_db": 2.0,
+          "departure_angle_deg": 0.12595792718418902,
+          "arrival_angle_deg": -0.12595792718418902,
+          "valid": true,
+          "tx_power_dbm": 14,
+          "tx_feed_loss_db": 1.0,
+          "rx_feed_loss_db": 1.0,
+          "miscellaneous_loss_db": 0.0
+        },
+        "valid": true,
+        "los_clear": false,
+        "fresnel_clear": false,
+        "minimum_clearance_m": -34.4840420827982,
+        "minimum_fresnel_clearance_ratio": -3.4972270529274456,
+        "minimum_clearance_distance_m": 747.0,
+        "maximum_fresnel_radius_m": 10.170356715557185,
+        "diffraction_loss_db": 36.62629103285815,
+        "dominant_obstacles": [
+          {
+            "distance_m": 747.0,
+            "elevation_m": 182.02655713388793,
+            "v": 4.945825928948083,
+            "loss_db": 36.62629103285815
+          }
+        ],
+        "profile": null,
+        "worst_margin_db": 1.0
+      },
+      {
+        "source_id": "A",
+        "target_id": "R-1",
+        "distance_m": 1200.0,
+        "forward": {
+          "source_id": "A",
+          "target_id": "R-1",
+          "distance_m": 1200.0,
+          "fspl_db": 92.80901664772712,
+          "diffraction_loss_db": 12.340101970932421,
+          "clutter_loss_db": 0.0,
+          "total_path_loss_db": 105.14911861865954,
+          "tx_gain_dbi": 2.15,
+          "rx_gain_dbi": 2.15,
+          "received_power_dbm": -88.84911861865953,
+          "sensitivity_dbm": -130.0,
+          "raw_margin_db": 41.15088138134047,
+          "usable_margin_db": 31.15088138134047,
+          "departure_angle_deg": 0.02610047263509378,
+          "arrival_angle_deg": -0.02610047263509378,
+          "valid": true,
+          "tx_power_dbm": 14,
+          "tx_feed_loss_db": 1.0,
+          "rx_feed_loss_db": 1.0,
+          "miscellaneous_loss_db": 0.0
+        },
+        "reverse": {
+          "source_id": "R-1",
+          "target_id": "A",
+          "distance_m": 1200.0,
+          "fspl_db": 92.80901664772712,
+          "diffraction_loss_db": 12.340101970932421,
+          "clutter_loss_db": 0.0,
+          "total_path_loss_db": 105.14911861865954,
+          "tx_gain_dbi": 2.15,
+          "rx_gain_dbi": 2.15,
+          "received_power_dbm": -88.84911861865953,
+          "sensitivity_dbm": -130.0,
+          "raw_margin_db": 41.15088138134047,
+          "usable_margin_db": 31.15088138134047,
+          "departure_angle_deg": -0.02610047263509378,
+          "arrival_angle_deg": 0.02610047263509378,
+          "valid": true,
+          "tx_power_dbm": 14,
+          "tx_feed_loss_db": 1.0,
+          "rx_feed_loss_db": 1.0,
+          "miscellaneous_loss_db": 0.0
+        },
+        "valid": true,
+        "los_clear": true,
+        "fresnel_clear": false,
+        "minimum_clearance_m": 0.01676575472561126,
+        "minimum_fresnel_clearance_ratio": 0.002499445554104175,
+        "minimum_clearance_distance_m": 149.0,
+        "maximum_fresnel_radius_m": 10.170356715557185,
+        "diffraction_loss_db": 12.340101970932421,
+        "dominant_obstacles": [
+          {
+            "distance_m": 149.0,
+            "elevation_m": 146.051109588357,
+            "v": -0.00353474980102726,
+            "loss_db": 12.340101970932421
+          }
+        ],
+        "profile": null,
+        "worst_margin_db": 31.15088138134047
+      }
+    ],
+    "diagnostics": [
+      "Corridor search complete"
+    ],
+    "elapsed_seconds": 1.3,
+    "search_complete": true,
+    "requested_path_count": 2,
+    "achieved_path_count": 1,
+    "job_id": "route-job",
+    "input_revision": 1,
+    "snapshot_version": 2,
+    "rf_settings": {
+      "frequency_mhz": 869.5,
+      "tx_power_dbm": 14,
+      "receiver_sensitivity_dbm": -130.0,
+      "fade_margin_db": 10.0,
+      "miscellaneous_loss_db": 0.0,
+      "k_factor": 1.0,
+      "required_fresnel_clearance": 0.6,
+      "validation_mode": "rf_propagation",
+      "endpoint_a": {
+        "gain_dbi": 2.15,
+        "feed_loss_db": 1.0,
+        "height_agl_m": 3.0,
+        "pattern_csv": null
+      },
+      "endpoint_b": {
+        "gain_dbi": 2.15,
+        "feed_loss_db": 1.0,
+        "height_agl_m": 3.0,
+        "pattern_csv": null
+      },
+      "router": {
+        "gain_dbi": 2.15,
+        "feed_loss_db": 1.0,
+        "height_agl_m": 3.0,
+        "pattern_csv": null
+      },
+      "lora": {
+        "enabled": false,
+        "bandwidth_hz": 125000.0,
+        "spreading_factor": 12,
+        "coding_rate": "4/5",
+        "noise_figure_db": 6.0,
+        "manual_sensitivity_override": true,
+        "snr_thresholds_db": {
+          "7": -7.5,
+          "8": -10.0,
+          "9": -12.5,
+          "10": -15.0,
+          "11": -17.5,
+          "12": -20.0
+        }
+      },
+      "clutter_loss_enabled": false,
+      "clutter_loss_db_per_m": 0.0,
+      "diffraction_model": "bullington",
+      "effective_sensitivity_dbm": -130.0
+    },
+    "candidates": [],
+    "active_alternative_id": "alt-175fc073f6e79ca7",
+    "alternatives": [
+      {
+        "id": "alt-cd1803c6c160781c",
+        "name": "Fallback <north>",
+        "router_count": 1,
+        "existing_router_count": 1,
+        "proposed_router_count": 0,
+        "minimum_margin_db": 1.76099028164316,
+        "total_link_distance_m": 3600.0,
+        "primary_distance_m": 3600.0,
+        "requested_path_count": 1,
+        "achieved_path_count": 1,
+        "resilient": true,
+        "search_complete": true,
+        "selected": false,
+        "route": [
+          {
+            "id": "A",
+            "x": 0,
+            "y": 1,
+            "latitude": 60.0,
+            "longitude": 10.0,
+            "kind": "endpoint_a",
+            "ground_elevation_m": 140,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "optimized",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          },
+          {
+            "id": "R-1",
+            "x": 1200,
+            "y": 1,
+            "latitude": 60.002,
+            "longitude": 10.018,
+            "kind": "router",
+            "ground_elevation_m": 140.54664705838354,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "known",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          },
+          {
+            "id": "B",
+            "x": 3600,
+            "y": 1,
+            "latitude": 60.005,
+            "longitude": 10.06,
+            "kind": "endpoint_b",
+            "ground_elevation_m": 141.20232642953556,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "optimized",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          }
+        ],
+        "road_polyline_indices": [
+          1
+        ],
+        "nearest_road_distance_m": {}
+      },
+      {
+        "id": "alt-175fc073f6e79ca7",
+        "name": "Two repeaters",
+        "router_count": 2,
+        "existing_router_count": 1,
+        "proposed_router_count": 1,
+        "minimum_margin_db": 1.0,
+        "total_link_distance_m": 3600.0,
+        "primary_distance_m": 3600.0,
+        "requested_path_count": 2,
+        "achieved_path_count": 1,
+        "resilient": false,
+        "search_complete": true,
+        "selected": true,
+        "route": [
+          {
+            "id": "A",
+            "x": 0,
+            "y": 1,
+            "latitude": 60.0,
+            "longitude": 10.0,
+            "kind": "endpoint_a",
+            "ground_elevation_m": 140,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "optimized",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          },
+          {
+            "id": "R-1",
+            "x": 1200,
+            "y": 1,
+            "latitude": 60.002,
+            "longitude": 10.018,
+            "kind": "router",
+            "ground_elevation_m": 140.54664705838354,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "known",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          },
+          {
+            "id": "R-2</script><img src=x onerror=\"alert(1)\">",
+            "x": 2400,
+            "y": 1,
+            "latitude": 60.001,
+            "longitude": 10.039,
+            "kind": "router",
+            "ground_elevation_m": 143.18470796621455,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "optimized",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          },
+          {
+            "id": "B",
+            "x": 3600,
+            "y": 1,
+            "latitude": 60.005,
+            "longitude": 10.06,
+            "kind": "endpoint_b",
+            "ground_elevation_m": 141.20232642953556,
+            "surface_elevation_m": null,
+            "antenna_height_m": 6,
+            "height_reference": "ground_dtm",
+            "terrain_slope": 0.0,
+            "site_quality": 0.0,
+            "locked": false,
+            "origin": "optimized",
+            "required": false,
+            "enabled": true,
+            "height_override": false
+          }
+        ],
+        "road_polyline_indices": [
+          0
+        ],
+        "nearest_road_distance_m": {
+          "R-1": 100.0,
+          "R-2</script><img src=x onerror=\"alert(1)\">": 162.0
+        },
+        "diagnostics": [
+          "One independent path passed validation"
+        ]
+      }
+    ],
+    "road_polylines": [
+      [
+        [
+          60.0004,
+          10.013
+        ],
+        [
+          60.0005,
+          10.043
+        ]
+      ],
+      [
+        [
+          60.01,
+          10.0
+        ],
+        [
+          60.02,
+          10.0
+        ]
+      ]
+    ]
+  },
+  "candidates": {
+    "infrastructure_policy": "existing_and_proposed",
+    "corridor_width_m": 15000.0,
+    "unrestricted_bounding_area": false,
+    "grid_spacing_m": 1000.0,
+    "cell_size_m": 2000.0,
+    "candidates_per_cell": 3,
+    "maximum_candidates": 800,
+    "maximum_neighbors_per_site": 16,
+    "maximum_solution_routers": 6,
+    "reliability_paths": 2,
+    "parallel_workers": 0,
+    "coarse_sample_step_m": 200.0,
+    "medium_sample_step_m": 50.0,
+    "final_sample_step_m": 10.0,
+    "maximum_link_distance_m": 3000,
+    "refine_radius_m": 250.0,
+    "refine_step_m": 50.0,
+    "optimize_heights": false,
+    "minimum_router_height_m": 2.0,
+    "maximum_router_height_m": 10.0,
+    "router_height_step_m": 1.0,
+    "priority": "minimum_routers",
+    "road_access_enabled": false,
+    "maximum_road_distance_m": 1000.0,
+    "road_access_classes": "all_drivable"
+  },
+  "stamp": "2026-01-01T00:00:00+00:00",
+  "csv": "hop,from,to,distance_km,fspl_db,diffraction_loss_db,total_path_loss_db,rx_power_dbm,sensitivity_dbm,raw_margin_db,fade_adjusted_margin_db,reverse_margin_db,worst_margin_db,minimum_fresnel_clearance_percent,los_clear,valid\r\n1,\"R-2</script><img src=x onerror=\"\"alert(1)\"\">\",B,1.200,92.81,3.97,96.78,-80.48,-130.00,49.52,39.52,39.52,39.52,38.7,True,True\r\n2,\"R-2</script><img src=x onerror=\"\"alert(1)\"\">\",R-1,1.200,92.81,36.63,129.44,-113.14,-130.00,16.86,1.00,2.00,1.00,-349.7,False,True\r\n3,A,R-1,1.200,92.81,12.34,105.15,-88.85,-130.00,41.15,31.15,31.15,31.15,0.2,True,True\r\n",
+  "geojson": {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            10.0,
+            60.0
+          ]
+        },
+        "properties": {
+          "id": "A",
+          "kind": "endpoint_a",
+          "dtm_elevation_m": 140,
+          "dom_elevation_m": null,
+          "antenna_height_m": 6,
+          "antenna_absolute_elevation_m": 146,
+          "terrain_slope": 0.0,
+          "site_quality": 0.0
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            10.018,
+            60.002
+          ]
+        },
+        "properties": {
+          "id": "R-1",
+          "kind": "router",
+          "dtm_elevation_m": 140.54664705838354,
+          "dom_elevation_m": null,
+          "antenna_height_m": 6,
+          "antenna_absolute_elevation_m": 146.54664705838354,
+          "terrain_slope": 0.0,
+          "site_quality": 0.0
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            10.039,
+            60.001
+          ]
+        },
+        "properties": {
+          "id": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "kind": "router",
+          "dtm_elevation_m": 143.18470796621455,
+          "dom_elevation_m": null,
+          "antenna_height_m": 6,
+          "antenna_absolute_elevation_m": 149.18470796621455,
+          "terrain_slope": 0.0,
+          "site_quality": 0.0
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            10.06,
+            60.005
+          ]
+        },
+        "properties": {
+          "id": "B",
+          "kind": "endpoint_b",
+          "dtm_elevation_m": 141.20232642953556,
+          "dom_elevation_m": null,
+          "antenna_height_m": 6,
+          "antenna_absolute_elevation_m": 147.20232642953556,
+          "terrain_slope": 0.0,
+          "site_quality": 0.0
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [
+            [
+              10.039,
+              60.001
+            ],
+            [
+              10.06,
+              60.005
+            ]
+          ]
+        },
+        "properties": {
+          "from": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "to": "B",
+          "distance_m": 1200.0,
+          "worst_margin_db": 39.51932776682199,
+          "forward_margin_db": 39.51932776682199,
+          "reverse_margin_db": 39.51932776682199,
+          "fresnel_clearance_percent": 38.695443016973115,
+          "diffraction_loss_db": 3.971655585450883,
+          "los_clear": true,
+          "valid": true
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [
+            [
+              10.039,
+              60.001
+            ],
+            [
+              10.018,
+              60.002
+            ]
+          ]
+        },
+        "properties": {
+          "from": "R-2</script><img src=x onerror=\"alert(1)\">",
+          "to": "R-1",
+          "distance_m": 1200.0,
+          "worst_margin_db": 1.0,
+          "forward_margin_db": 1.0,
+          "reverse_margin_db": 2.0,
+          "fresnel_clearance_percent": -349.72270529274454,
+          "diffraction_loss_db": 36.62629103285815,
+          "los_clear": false,
+          "valid": true
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [
+            [
+              10.0,
+              60.0
+            ],
+            [
+              10.018,
+              60.002
+            ]
+          ]
+        },
+        "properties": {
+          "from": "A",
+          "to": "R-1",
+          "distance_m": 1200.0,
+          "worst_margin_db": 31.15088138134047,
+          "forward_margin_db": 31.15088138134047,
+          "reverse_margin_db": 31.15088138134047,
+          "fresnel_clearance_percent": 0.24994455541041752,
+          "diffraction_loss_db": 12.340101970932421,
+          "los_clear": true,
+          "valid": true
+        }
+      }
+    ]
+  },
+  "map": {
+    "sites": [
+      {
+        "id": "A",
+        "coordinates": [
+          60.0,
+          10.0
+        ],
+        "endpoint": true,
+        "details": [
+          "Endpoint A",
+          "60.00000, 10.00000",
+          "Ground elevation \u00b7 140.0 m",
+          "Mast height \u00b7 6.0 m",
+          "Nearest road \u00b7 \u2014"
+        ]
+      },
+      {
+        "id": "R-1",
+        "coordinates": [
+          60.002,
+          10.018
+        ],
+        "endpoint": false,
+        "details": [
+          "Repeater",
+          "60.00200, 10.01800",
+          "Ground elevation \u00b7 140.5 m",
+          "Mast height \u00b7 6.0 m",
+          "Nearest road \u00b7 100 m"
+        ]
+      },
+      {
+        "id": "R-2</script><img src=x onerror=\"alert(1)\">",
+        "coordinates": [
+          60.001,
+          10.039
+        ],
+        "endpoint": false,
+        "details": [
+          "Repeater",
+          "60.00100, 10.03900",
+          "Ground elevation \u00b7 143.2 m",
+          "Mast height \u00b7 6.0 m",
+          "Nearest road \u00b7 162 m"
+        ]
+      },
+      {
+        "id": "B",
+        "coordinates": [
+          60.005,
+          10.06
+        ],
+        "endpoint": true,
+        "details": [
+          "Endpoint B",
+          "60.00500, 10.06000",
+          "Ground elevation \u00b7 141.2 m",
+          "Mast height \u00b7 6.0 m",
+          "Nearest road \u00b7 \u2014"
+        ]
+      }
+    ],
+    "roads": [
+      [
+        [
+          60.0004,
+          10.013
+        ],
+        [
+          60.0005,
+          10.043
+        ]
+      ]
+    ],
+    "links": [
+      {
+        "coordinates": [
+          [
+            60.0,
+            10.0
+          ],
+          [
+            60.002,
+            10.018
+          ]
+        ],
+        "color": "#217250",
+        "dashed": false
+      },
+      {
+        "coordinates": [
+          [
+            60.002,
+            10.018
+          ],
+          [
+            60.001,
+            10.039
+          ]
+        ],
+        "color": "#ae4037",
+        "dashed": true
+      },
+      {
+        "coordinates": [
+          [
+            60.001,
+            10.039
+          ],
+          [
+            60.005,
+            10.06
+          ]
+        ],
+        "color": "#217250",
+        "dashed": false
+      }
+    ],
+    "coverage": null
+  }
+}
