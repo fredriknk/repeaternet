@@ -24,12 +24,17 @@ test('applying blank router coordinates preserves the saved site, while zero is 
   const context = vm.createContext({
     $: () => list, document: { createElement: element },
     manualRouters: [router], manualLayer: { clearLayers() {} }, selectedManualRouterId: null,
-    L: { divIcon() {}, marker: () => ({ bindTooltip() { return this; }, on() {}, addTo() {} }) },
+    L: { divIcon() {}, marker: () => ({ bindTooltip() { return this; }, bindPopup() { return this; }, on() {}, addTo() {} }) },
     busy: false, coverageBusy: false, switchingProject: false,
+    mapEditsLocked: () => false, mapEditControl: control => control, mapPoint: site => [site.latitude, site.longitude],
+    updateManualMarker() {}, mapText: () => element(), coordinateLabel: () => '', mapPopupOptions: () => ({}),
+    manualRouterControls: () => () => ({ heightLabel: element(), policyLabel: element(), remove: element() }),
+    focusManualRouter() {}, syncMapEditControls() {},
     recordEdit() { edits++; }, invalidate() {}, scheduleCoverageCheck() {},
     status(message, isError) { if (isError) errors.push(message); },
   });
-  vm.runInContext(section('function parseCoordinates(', 'function mark(') +
+  vm.runInContext(section('function parseCoordinates(', 'function validEndpointCoords(') +
+    section('function moveManualRouter(', 'function renderManualRouters(') +
     section('function renderManualRouters(', 'function focusManualRouter('), context);
   context.renderManualRouters();
   const [, coordinates, apply] = list.children[0].children;
