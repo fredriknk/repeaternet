@@ -285,6 +285,10 @@ pub struct TiledRoadAccess {
     lines: Vec<LineString<f64>>,
     line_keys: HashSet<Vec<[u64; 2]>>,
     index: Option<RoadAccessIndex>,
+    /// Tiles requested for download across all batches; progress is cumulative
+    /// so it never runs backwards when later batches need more tiles.
+    tiles_requested: usize,
+    tiles_fetched: usize,
 }
 
 impl TiledRoadAccess {
@@ -328,6 +332,8 @@ impl TiledRoadAccess {
             lines: Vec::new(),
             line_keys: HashSet::new(),
             index: None,
+            tiles_requested: 0,
+            tiles_fetched: 0,
         })
     }
 
@@ -431,11 +437,16 @@ impl TiledRoadAccess {
         mut progress: impl FnMut(&str, usize, usize),
     ) -> Result<()> {
         let tiles = tiles_for_points(points, radius, &self.transform, cancelled)?;
-        if tiles.iter().all(|tile| self.loaded.contains(tile)) {
+        let missing = tiles
+            .iter()
+            .filter(|tile| !self.loaded.contains(tile))
+            .count();
+        if missing == 0 {
             return Ok(());
         }
-        progress(LOADING_STAGE, 0, tiles.len());
-        for (done, &tile) in tiles.iter().enumerate() {
+        self.tiles_requested += missing;
+        progress(LOADING_STAGE, self.tiles_fetched, self.tiles_requested);
+        for &tile in &tiles {
             transport::check(cancelled)?;
             if !self.loaded.contains(&tile) {
                 let lines = self
@@ -461,8 +472,9 @@ impl TiledRoadAccess {
                     }
                 }
                 self.loaded.insert(tile);
+                self.tiles_fetched += 1;
+                progress(LOADING_STAGE, self.tiles_fetched, self.tiles_requested);
             }
-            progress(LOADING_STAGE, done + 1, tiles.len());
         }
         transport::check(cancelled)
     }

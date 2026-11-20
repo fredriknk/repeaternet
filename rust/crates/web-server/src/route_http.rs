@@ -604,7 +604,13 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
                 .map(|alt| {
                     alt.rf_sites
                         .iter()
-                        .filter(|site| site.kind == repeaternet_rf_core::SiteKind::Router)
+                        .filter(|site| {
+                            matches!(
+                                site.kind,
+                                repeaternet_rf_core::SiteKind::Router
+                                    | repeaternet_rf_core::SiteKind::Candidate
+                            )
+                        })
                         .map(|site| (site.id.clone(), site.position))
                         .collect()
                 })

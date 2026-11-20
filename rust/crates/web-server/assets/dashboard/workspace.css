@@ -592,3 +592,10 @@ aside summary { font-size: 13px; }
   .result-actions { flex-wrap: wrap; }
   .alternative-table { font-size: 12px; }
 }
+.action-status.error { white-space: normal; overflow: visible; }
+@media (max-width: 650px) {
+  .analysis-pane .results, .results { max-height: none; }
+  .shared-job-card:is([data-state="complete"], [data-state="stopped"], [data-state="cancelled"], [data-state="terrain_ready"], [data-state="interrupted"]) {
+    position: fixed; top: auto; bottom: 12px; left: 12px; right: 12px; max-width: none;
+  }
+}

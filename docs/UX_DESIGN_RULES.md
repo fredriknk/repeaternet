@@ -91,7 +91,8 @@ The layout has one owner per job. Put new features where users already look:
   require explicit opt-in.
 - Long jobs use the shared job card with progress and cancel. Once finished it
   becomes a small dismissible toast (bottom-right). Never leave a finished job
-  occupying layout space or showing a running clock.
+  occupying layout space or showing a running clock. Don't show the toast over
+  the view it points to (Analysis), and never over navigation on mobile.
 - Validate raw input **strings** before converting (`parseCoordinates`,
   `validEndpointCoords`). `Number('')` is `0`; a blank field must never silently
   become a coordinate or a value.
@@ -105,7 +106,9 @@ The layout has one owner per job. Put new features where users already look:
   **Retry save**. Flush pending autosaves before starting a job that locks
   inputs.
 - Switching project, alternative or view must never discard computed results or
-  start an RF job by itself.
+  start an RF job by itself. Switching to a project without a result must clear
+  every trace of the previous project's result (verdict, figures, badge, map
+  layers, exports) via `resetRouteResultView()`.
 
 ## 5. Layout and sizing
 
@@ -130,8 +133,11 @@ The layout has one owner per job. Put new features where users already look:
 
 - Every control is reachable and operable by keyboard, with visible
   `:focus-visible` outlines.
-- Re-rendering a list must restore focus to the equivalent control (see the
-  MeshCore policy select). Focus must never fall back to `<body>` after an action.
+- Re-rendering a list or popup must restore focus to the equivalent control (see
+  the MeshCore policy select and map policy buttons). Focus must never fall back to
+  `<body>` after an action. Dialogs return focus to their opener, or to the menu
+  that contained it. Use `element.checkVisibility()` to test whether a target can
+  take focus, because content inside a closed `<details>` still reports layout boxes.
 - Esc closes menus, popups and map modes. Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo and
   redo, but are ignored while focus is in a text field or a dialog is open.
 - Accordions use `aria-expanded` and `aria-controls`. Tabs use `role="tab"` and
