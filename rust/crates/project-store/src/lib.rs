@@ -249,7 +249,7 @@ impl ProjectStore {
         Ok(true)
     }
 
-    /// Swap current and previous revisions and clear the saved result summary.
+    /// Swap current and previous revisions and clear the saved route result.
     pub fn recover_previous(&self, key: &str, project_id: &str) -> Result<Option<Project>> {
         validate_workspace(key)?;
         let mut connection = self.connect()?;
@@ -266,6 +266,7 @@ impl ProjectStore {
              result_summary_json=NULL, updated_at=? WHERE workspace_key=? AND id=?",
             params![now(), key, project_id],
         )?;
+        transaction.execute("DELETE FROM route_results WHERE project_id=?", [project_id])?;
         let recovered = required_project(&transaction, key, project_id)?;
         self.publish_plan(transaction, &project, previous)?;
         Ok(Some(recovered))
@@ -394,11 +395,60 @@ impl ProjectStore {
         summary: Option<&Value>,
     ) -> Result<()> {
         let encoded = summary.map(serde_json::to_string).transpose()?;
-        self.workspace_connection(key)?.execute(
+        let mut connection = self.workspace_connection(key)?;
+        let transaction = write_transaction(&mut connection)?;
+        transaction.execute(
             "UPDATE projects SET result_summary_json=?, updated_at=? WHERE workspace_key=? AND id=?",
             params![encoded, now(), key, project_id],
         )?;
+        transaction.execute(
+            "DELETE FROM route_results WHERE project_id IN
+             (SELECT id FROM projects WHERE workspace_key=? AND id=?)",
+            params![key, project_id],
+        )?;
+        transaction.commit()?;
         Ok(())
+    }
+
+    pub fn save_route_result(
+        &self,
+        key: &str,
+        project_id: &str,
+        state: &str,
+        summary: &Value,
+        snapshot: &impl Serialize,
+    ) -> Result<()> {
+        let summary = serde_json::to_string(summary)?;
+        let snapshot = serde_json::to_string(snapshot)?;
+        let mut connection = self.workspace_connection(key)?;
+        let transaction = write_transaction(&mut connection)?;
+        if transaction.execute(
+            "UPDATE projects SET result_summary_json=?, run_state=?, updated_at=?
+             WHERE workspace_key=? AND id=?",
+            params![summary, state, now(), key, project_id],
+        )? != 1
+        {
+            return Err(Error::ProjectNotFound);
+        }
+        transaction.execute(
+            "INSERT INTO route_results (project_id, snapshot_json) VALUES (?, ?)
+             ON CONFLICT(project_id) DO UPDATE SET snapshot_json=excluded.snapshot_json",
+            params![project_id, snapshot],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn route_result(&self, key: &str, project_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .workspace_connection(key)?
+            .query_row(
+                "SELECT snapshot_json FROM route_results JOIN projects ON projects.id=project_id
+                 WHERE workspace_key=? AND projects.id=?",
+                params![key, project_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// Resolve and create a catalog-owned directory, using the current row.

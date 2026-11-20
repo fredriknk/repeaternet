@@ -1,9 +1,11 @@
 use repeaternet_optimizer::{NetworkSolution, OptimizationResult, PlanningSite, SiteOrigin};
 use repeaternet_rf_core::{DirectionResult, HeightReference, LinkResult, SiteKind, TerrainProfile};
 use repeaternet_terrain::Transformer;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[derive(Serialize, Deserialize)]
 pub struct Alternative {
     pub rf_sites: Vec<repeaternet_rf_core::Site>,
     pub client_paths: Vec<Vec<String>>,

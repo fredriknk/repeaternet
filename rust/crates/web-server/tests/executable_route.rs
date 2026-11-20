@@ -100,7 +100,7 @@ fn send(
 }
 
 #[test]
-fn binary_serves_an_uploaded_terrain_route_and_recovers_its_summary() {
+fn binary_serves_an_uploaded_terrain_route_and_restores_its_snapshot() {
     let root = tempfile::tempdir().unwrap();
     let (server, address) = Server::start(root.path());
     assert_eq!(
@@ -281,14 +281,18 @@ fn binary_serves_an_uploaded_terrain_route_and_recovers_its_summary() {
     assert_eq!(state["projects"]["previous_result"]["stale"], false);
     assert_eq!(state["projects"]["previous_result"]["found"], true);
     assert_eq!(state["coverage_job"]["job_id"], id);
-    assert_eq!(state["coverage_job"]["stale"], true);
+    assert_eq!(state["coverage_job"]["stale"], false);
+    assert_eq!(state["coverage_job"]["route_current"], true);
     let get = |path: &str| send(address, "GET", path, &cookie, "application/json", &[]);
-    assert_eq!(get(&format!("{job_path}/export.json")).status, 409);
-    assert_eq!(
-        get(&format!("{job_path}/export.json?include_stale=true")).status,
-        200
-    );
-    assert_eq!(get(&job_path).json()["stale"], true);
+    let response = get("/api/result");
+    assert_eq!(response.status, 200);
+    let restored = response.json();
+    assert_eq!(restored["input_revision"], state["job"]["input_revision"]);
+    let mut expected = route;
+    expected["input_revision"] = state["job"]["input_revision"].clone();
+    assert_eq!(restored, expected);
+    assert_eq!(get(&format!("{job_path}/export.json")).status, 200);
+    assert_eq!(get(&job_path).json()["stale"], false);
     let rerun = send(
         address,
         "POST",

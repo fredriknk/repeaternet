@@ -1,4 +1,5 @@
 use std::{
+    path::Path as FsPath,
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -16,18 +17,87 @@ use repeaternet_optimizer::{
     Cancellation, InfrastructurePolicy, OptimizationRequest, PlanningSite, Progress,
     RouteOptimizer, RouterPolicy, SearchHooks, SiteOrigin, candidate_grid_spacing,
 };
+use repeaternet_project_store::{Project, ProjectStore};
 use repeaternet_rf_core::{HeightReference, Site};
 use repeaternet_terrain::{RasterTerrain, TerrainLayer, TerrainSource, Transformer};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     api::{ApiError, ApiResult, ObjectBody, Workspace, ensure_idle, save_plan},
-    catalog::{self, AppState, Session},
+    catalog::{self, AppState, Session, TerrainFiles},
     route_inputs::{self, RouteInputs},
     route_output::{self, RouteOutput},
     terrain_http::{self, TerrainContext},
 };
+
+#[derive(Serialize, Deserialize)]
+struct SavedRoute<P, A> {
+    payload: P,
+    alternatives: A,
+    job: Value,
+    resolution_m: Option<f64>,
+    surface_available: Option<bool>,
+}
+
+pub(crate) fn restore(
+    store: &ProjectStore,
+    key: &str,
+    project: &Project,
+    directory: &FsPath,
+    session: &mut Session,
+) -> ApiResult<()> {
+    let Some(summary) = &project.result_summary else {
+        return Ok(());
+    };
+    if !matches!(project.run_state.as_str(), "complete" | "stopped") {
+        return Ok(());
+    }
+    let plan = catalog::plan_fingerprint(&project.plan, true);
+    if summary["plan_fingerprint"].as_str() != Some(plan.as_str()) {
+        return Ok(());
+    }
+    let terrain = TerrainFiles::read(directory, false);
+    let Some(fingerprint) = terrain.fingerprint(directory, None) else {
+        return Ok(());
+    };
+    if summary["terrain_fingerprint"] != fingerprint {
+        return Ok(());
+    }
+    let Some(encoded) = store.route_result(key, &project.id)? else {
+        return Ok(());
+    };
+    let SavedRoute {
+        mut payload,
+        alternatives,
+        job,
+        resolution_m,
+        surface_available,
+    } = match serde_json::from_str::<SavedRoute<Value, Vec<route_output::Alternative>>>(&encoded) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("Could not read the saved route snapshot: {error}");
+            return Ok(());
+        }
+    };
+    let (Some(version), Some(job_id)) = (
+        payload["snapshot_version"].as_u64(),
+        payload["job_id"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    session.job_id = Some(job_id.to_owned());
+    session.snapshot_version = version;
+    payload["input_revision"] = json!(session.input_revision);
+    session.route_job = job;
+    session.route_result = Some(payload);
+    session.route_alternatives = alternatives;
+    session.route_identity = Some((plan, fingerprint));
+    session.route_resolution_m = resolution_m;
+    session.route_surface_available = surface_available;
+    Ok(())
+}
 
 pub struct Scheduler {
     available: Arc<Semaphore>,
@@ -670,13 +740,35 @@ fn finish(
     } else {
         0
     };
-    let summary = payload.as_mut().map(|payload| {
+    let mut terminal_job = session.route_job.clone();
+    terminal_job["state"] = json!(state);
+    terminal_job["stage"] = json!(stage);
+    terminal_job["search_complete"] = json!(state == "complete");
+    if state == "complete" {
+        terminal_job["done"] = terminal_job["total"].clone();
+    }
+    if let Some(payload) = &mut payload {
         job.stamp(payload, version);
-        route_output::summary(payload, &job.plan_fingerprint, &job.context.fingerprint)
-    });
-    app.store
-        .save_result_summary(key, &session.project_id, summary.as_ref())?;
-    app.store.set_run_state(key, &session.project_id, state)?;
+        let summary =
+            route_output::summary(payload, &job.plan_fingerprint, &job.context.fingerprint);
+        app.store.save_route_result(
+            key,
+            &session.project_id,
+            state,
+            &summary,
+            &SavedRoute {
+                payload: &*payload,
+                alternatives: &alternatives,
+                job: terminal_job.clone(),
+                resolution_m: session.route_resolution_m,
+                surface_available: session.route_surface_available,
+            },
+        )?;
+    } else {
+        app.store
+            .save_result_summary(key, &session.project_id, None)?;
+        app.store.set_run_state(key, &session.project_id, state)?;
+    }
     session.snapshot_version = version;
     session.route_identity = payload.as_ref().map(|_| {
         (
@@ -687,12 +779,7 @@ fn finish(
     session.route_result = payload;
     session.route_alternatives = alternatives;
     session.route_control = None;
-    session.route_job["state"] = json!(state);
-    session.route_job["stage"] = json!(stage);
-    session.route_job["search_complete"] = json!(state == "complete");
-    if state == "complete" {
-        session.route_job["done"] = session.route_job["total"].clone();
-    }
+    session.route_job = terminal_job;
     Ok(())
 }
 
@@ -787,8 +874,19 @@ pub async fn select(
             result["snapshot_version"] = json!(version);
             let (plan, terrain) = session.route_identity.as_ref().unwrap();
             let summary = route_output::summary(&result, plan, terrain);
-            app.store
-                .save_result_summary(key, &session.project_id, Some(&summary))?;
+            app.store.save_route_result(
+                key,
+                &session.project_id,
+                session.route_job["state"].as_str().unwrap_or("complete"),
+                &summary,
+                &SavedRoute {
+                    payload: &result,
+                    alternatives: &session.route_alternatives,
+                    job: session.route_job.clone(),
+                    resolution_m: session.route_resolution_m,
+                    surface_available: session.route_surface_available,
+                },
+            )?;
             session.snapshot_version = version;
             session.route_result = Some(result.clone());
             Ok(Json(result))
