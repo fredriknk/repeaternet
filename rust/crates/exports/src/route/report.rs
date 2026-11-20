@@ -608,14 +608,14 @@ fn map_section(
 }
 
 fn link_table(out: &mut dyn Write, links: &[Hop<'_>], primary: usize) -> Result<(), ExportError> {
-    write!(out, "<section><h2>Links</h2><p class=\"muted\">")?;
+    write!(
+        out,
+        "<section class=\"link-summary\"><h2>Links</h2><p class=\"muted\">"
+    )?;
     if primary > 0 {
         write!(out, "Primary route first ({primary} hops). ")?;
     }
-    write!(
-        out,
-        "Paired values show forward / reverse.</p>"
-    )?;
+    write!(out, "Paired values show forward / reverse.</p>")?;
     table_start(
         out,
         &[

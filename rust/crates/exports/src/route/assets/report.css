@@ -17,6 +17,7 @@ ul{padding-left:1.5em}a{color:#215d81;overflow-wrap:anywhere}button{font:inherit
 .table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:6px 8px;vertical-align:top;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 thead th{background:#f1f5f2}tbody th{font-weight:600}caption{text-align:left;font-weight:700;margin:6px 0}
+.link-summary thead th,.link-summary td{overflow-wrap:break-word}
 .weak-hop th,.weak-hop td{background:#fff0ea}.weak-hop th{border-left:3px solid #ae4037}
 figure{margin:0}.profile-chart{display:block;width:100%;height:auto;border:1px solid var(--line);background:#f9fbfa}
 .profile-chart text{font:12px "Segoe UI",Arial,sans-serif;fill:#43574d}
