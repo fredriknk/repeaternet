@@ -117,7 +117,7 @@ jobs:
           $report = $json | ConvertFrom-Json
           New-Item -ItemType Directory -Path dist
           ./tools/package-rust-release.ps1 -ExePath $exe -ExpectedSha256 $report.sha256
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: dist/repeaternet-windows-x64.zip
@@ -159,7 +159,7 @@ jobs:
           cp notices/texts/leaflet-1.9.4/LICENSE linux-package/LEAFLET-LICENSE.txt
           (cd linux-package && sha256sum repeaternet > SHA256SUMS.txt)
           tar -C linux-package -czf ../dist/repeaternet-linux-x64.tar.gz .
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x64
           path: dist/repeaternet-linux-x64.tar.gz
