@@ -14,14 +14,19 @@ const deferred = () => {
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function harness({ autosaveNow = async () => {}, onStart, onPoll } = {}) {
-  const events = [], rendered = [], errors = [], views = [];
+  const events = [], rendered = [], errors = [], views = [], navigation = [];
   const context = vm.createContext({
     AbortController, DOMException, setTimeout, clearTimeout,
     activeInspectionId: null, interactionMode: 'inspect-coverage', inspectionRequest: 0,
     coverageDisplayInfo: null, coverageJob: null, coverageHeightOverrides: {},
     inspectionController: null, inspectionLayer: { clearLayers() {} },
     coverageSettings: { client: { height_agl_m: 1.5 } },
-    $: () => ({ value: '', selectedOptions: [] }), readCoverageInputs() {}, coveragePayload: () => ({}),
+    $: id => ({
+      value: '', selectedOptions: [],
+      scrollIntoView() { navigation.push(`scroll:${id}`); },
+      focus() { navigation.push(`focus:${id}`); },
+    }),
+    readCoverageInputs() {}, coveragePayload: () => ({}),
     setMainView(view) { views.push(view); },
     autosaveNow, invalidate() {}, coverageSettingsChanged() {}, coverageBusyState() {},
     async installProject() {},
@@ -43,7 +48,7 @@ function harness({ autosaveNow = async () => {}, onStart, onPoll } = {}) {
   });
   vm.runInContext(source, context);
   context.renderCoverageInspection = value => rendered.push(value.point);
-  return { context, events, rendered, errors, views,
+  return { context, events, rendered, errors, views, navigation,
     click: latitude => context.inspectAt({ lat: latitude, lng: 10 }),
   };
 }
@@ -59,6 +64,7 @@ test('a delayed autosave cannot submit an older click after a newer result', asy
   assert.deepEqual(h.events.filter(value => value.startsWith('start:')), ['start:2']);
   assert.deepEqual(h.rendered, ['2']);
   assert.deepEqual(h.views, ['view-analysis']);
+  assert.deepEqual(h.navigation, ['scroll:coverage-inspection', 'focus:inspection-title']);
   assert.deepEqual(h.errors, []);
 });
 

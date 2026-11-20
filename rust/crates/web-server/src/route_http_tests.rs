@@ -436,7 +436,8 @@ async fn saved_coverage_queue_scenarios_targets_and_staleness() {
     let (reopened, _) = self::app(root.path(), "");
     let restored = state(&reopened, &cookie).await;
     assert_eq!(restored["coverage_job"]["job_id"], baseline_id);
-    assert_eq!(restored["coverage_job"]["stale"], true);
+    assert_eq!(restored["coverage_job"]["stale"], false);
+    assert_eq!(restored["coverage_job"]["route_current"], true);
 
     let mut plan = state(&app, &cookie).await["plan"].clone();
     plan["coverage"]["cell_size_m"] = json!(70.0);
@@ -990,6 +991,51 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         assert!(String::from_utf8(body).unwrap().contains(needle));
     }
 
+    let other = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/projects",
+        json!({"name": "Another project"}),
+        StatusCode::OK,
+    )
+    .await;
+    assert_ne!(other["id"], project_id);
+    api(
+        &app,
+        &authenticated,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    api(
+        &app,
+        &authenticated,
+        Method::POST,
+        &format!("/api/projects/{project_id}/activate"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    let reopened_job = state(&app, &authenticated).await["job"].clone();
+    let mut expected = selected.clone();
+    expected["input_revision"] = reopened_job["input_revision"].clone();
+    assert_ne!(expected["input_revision"], selected["input_revision"]);
+    assert_eq!(
+        api(
+            &app,
+            &authenticated,
+            Method::GET,
+            "/api/result",
+            Value::Null,
+            StatusCode::OK
+        )
+        .await,
+        expected
+    );
+
     let (restarted, _) = self::app(root.path(), "test-pass");
     let revived = state(&restarted, &authenticated).await;
     assert_eq!(revived["projects"]["active_id"], project_id);
@@ -998,15 +1044,43 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         id
     );
     assert_eq!(revived["projects"]["previous_result"]["stale"], false);
-    api(
+    expected["input_revision"] = revived["job"]["input_revision"].clone();
+    let restored = api(
         &restarted,
         &authenticated,
         Method::GET,
         "/api/result",
         Value::Null,
-        StatusCode::NOT_FOUND,
+        StatusCode::OK,
     )
     .await;
+    assert_eq!(restored, expected);
+    let (status, _, report) = request(
+        &restarted,
+        Some(&authenticated),
+        Method::GET,
+        "/api/export/html",
+        "text/plain",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        String::from_utf8(report)
+            .unwrap()
+            .contains("Terrain resolution")
+    );
+    let first = result["active_alternative_id"].as_str().unwrap();
+    let reselected = api(
+        &restarted,
+        &authenticated,
+        Method::POST,
+        &format!("/api/alternatives/{first}/select"),
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(reselected["links"], result["links"]);
 
     let mut coverage_only = completed["plan"].clone();
     coverage_only["coverage"] = json!({"cell_size_m": 250});
@@ -1239,6 +1313,19 @@ async fn cancellation_keep_and_capacity_share_workspace_guards() {
         before
     );
     assert_eq!(state_app.store.active(A).unwrap().run_state, "stopped");
+    let (restarted, _) = self::app(root.path(), "");
+    assert_eq!(state(&restarted, &a).await["job"]["state"], "stopped");
+    let restored = api(
+        &restarted,
+        &a,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(restored["links"], before["links"]);
+    assert_eq!(restored["snapshot_version"], before["snapshot_version"]);
 
     let (ready, resume) = gate(&state_app);
     let job = api(
