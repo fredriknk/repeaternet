@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use repeaternet_providers::corescope::capture::Endpoint;
 use serde_json::{Value, json};
 
 use super::*;
@@ -182,6 +183,112 @@ fn resumes_capped_scan_and_honors_backoff() {
     assert!(calls[3].1.duration_since(calls[2].1) >= Duration::from_secs(2));
     assert!(calls[4].0.contains("since="));
     assert!(calls[4].0.contains("offset=0"));
+    assert_eq!(
+        db::requests_today(&db, &base, chrono::Utc::now().timestamp_millis()).unwrap(),
+        5
+    );
+}
+
+#[test]
+fn watch_defers_retries_and_uses_server_validators() {
+    let body = json!({"observers": []});
+    let (base, server) = mock(vec![
+        (200, "ETag: \"observers-v1\"\r\n", body.clone()),
+        (304, "", Value::Null),
+        (429, "Retry-After: 270\r\n", Value::Null),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let db = db::open(&dir.path().join("watch.sqlite3")).unwrap();
+    let mut client = CaptureClient::new(&base, Duration::from_millis(10)).unwrap();
+    client.defer_retries();
+    for _ in 0..2 {
+        assert_eq!(
+            capture::get(&db, &mut client, Endpoint::Observers, &[], &|| false).unwrap(),
+            body
+        );
+    }
+    assert!(capture::get(&db, &mut client, Endpoint::Observers, &[], &|| false).is_err());
+    assert_eq!(client.retry_after(), Duration::from_secs(270));
+    let calls = server.join().unwrap();
+    assert!(
+        calls[1]
+            .0
+            .to_ascii_lowercase()
+            .contains("if-none-match: \"observers-v1\"")
+    );
+    assert_eq!(client.requests(), 3);
+    assert_eq!(
+        db::requests_today(&db, &base, chrono::Utc::now().timestamp_millis()).unwrap(),
+        3
+    );
+}
+
+#[test]
+fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("neighbors.sqlite3");
+    let mut db = db::open(&path).unwrap();
+    let run = db::Run::start(&db, "sample", "watch-topology").unwrap();
+    let inside = json!({"lat": 56, "lon": 11});
+    let outside = json!({"lat": 52, "lon": 11});
+    db::save_snapshot(
+        &mut db,
+        db::Snapshot::Nodes,
+        run.id,
+        [
+            ("a", &inside),
+            ("b", &inside),
+            ("c", &inside),
+            ("d", &inside),
+            ("e", &outside),
+        ],
+    )
+    .unwrap();
+    run.finish(&db, 0, false).unwrap();
+    let bbox = "54,71.5,4,31.7".parse().unwrap();
+    let day = 86_400_000;
+    let start = 10 * day;
+    assert_eq!(
+        db::neighbor_batch(&db, "sample", bbox, start, 2).unwrap(),
+        ["a", "b"]
+    );
+    for (key, sent) in [
+        ("a", start + 10),
+        ("b", start + 20),
+        ("c", start - day),
+        ("d", start - 2 * day),
+    ] {
+        db.execute(
+            "INSERT INTO request_log VALUES ('sample', ?, ?)",
+            rusqlite::params![sent, key],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let db = db::open(&path).unwrap();
+    assert_eq!(
+        db::neighbor_batch(&db, "sample", bbox, start + 20, 20).unwrap(),
+        ["d", "c"]
+    );
+    assert_eq!(
+        db::neighbor_batch(&db, "sample", bbox, start + day + 9, 20).unwrap(),
+        ["d", "c"]
+    );
+    assert_eq!(
+        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20).unwrap(),
+        ["d", "c", "a"]
+    );
+    db.execute(
+        "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < 599)
+         INSERT INTO request_log SELECT 'sample', ?, 'other-' || n FROM numbers",
+        [start + day],
+    )
+    .unwrap();
+    assert!(
+        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn mock(

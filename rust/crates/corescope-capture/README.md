@@ -15,45 +15,97 @@ contain private communications and are unnecessary for link validation. The
 tool only makes GET requests to the capture endpoints. Backups, channels and
 administrative controls are outside its scope.
 
-## Usage
+## Start a continuous capture
 
-From `rust/`:
+From `rust/`, start the capture and leave the terminal open.
 
 ```sh
-cargo build --locked -p corescope-capture
-cargo run --locked -p corescope-capture -- snapshot
-cargo run --locked -p corescope-capture -- packets --max-pages 3
-cargo run --locked -p corescope-capture -- run --loop 15
+cargo run --release --locked -p corescope-capture -- watch
 ```
 
-- `snapshot` captures the node inventory, observer inventory and global
-  neighbor graph. It fetches per-node neighbors for known nodes within
-  `--bbox <south,north,west,east>`. The default box is
-  `57.5,71.5,4,31.5` in WGS84 degrees. Use a tighter box for a small
-  exploratory snapshot. The per-node request count scales with the box.
-- `packets` captures expanded receptions from all regions. The first scan
-  starts at the latest packet page and walks backward through the available
-  feed. Capped and interrupted scans resume from the last committed page.
-- `run` captures packets and takes a snapshot. With `--loop <minutes>` it
-  repeats both after waiting at least the given interval after each run. The
-  minimum is five minutes. Ctrl+C ends the run after the current bounded
-  request or SQLite operation and records its status.
+On Windows, you can build once with
+`cargo build --release --locked -p corescope-capture` and run
+`.\target\release\corescope-capture.exe watch` from PowerShell. On Linux or macOS,
+run `./target/release/corescope-capture watch`.
+
+The terminal prints the database path and the dashboard URL. Each cycle reports
+new receptions, distinct directed pairs, requests this cycle and in the last
+24 hours, the next packet poll and any backoff. Press **Ctrl+C** to finish the
+current bounded request or SQLite write, close the dashboard and save the
+cursor. Restart with the same database to resume.
+
+Open [the local dashboard](http://127.0.0.1:8790/) to see measured last hops from
+the final resolved relay or a zero-hop advert sender to an observer. Click a
+line to see its direction, observation count, median SNR and RSSI, distance,
+and last seen time. Filter by sample count, time window and last-hop type.
+Capture totals cover the whole database for the selected CoreScope endpoint.
+Lines require a position for each endpoint. The dashboard refreshes every
+minute using SQLite. It serves Leaflet locally and loads OpenStreetMap tiles
+from OSM. Use `--dashboard-port <port>` to change the loopback port or
+`--no-dashboard` to run the terminal capture alone.
+
+Packet capture covers all regions reported by CoreScope, including
+Scandinavia and Finland. Per-node neighbor lookups default to
+`--bbox 54,71.5,4,31.7` (south, north, west, east in WGS84 degrees), covering
+Scandinavia, including Denmark, and Finland. The bounds set the initial map
+view until measured links are available, and define the within-bounds pair
+count. RepeaterNet currently supplies terrain for Norway only. Analysis
+elsewhere requires other terrain data, such as Copernicus GLO-30 or a
+national DEM.
+
+## Request pacing
+
+CoreScope is volunteer-run. Watch uses one HTTP client, sends requests
+sequentially, and identifies itself as RepeaterNet.
+
+- Packets are polled every 15 minutes by default (`--packet-minutes`, minimum 5).
+  A fresh watch starts with the last 15 minutes. Subsequent polls resume the
+  cursor and overlap recent traffic to pick up late receptions.
+- Nodes, observers and the global neighbor graph are captured every 6 hours
+  (`--snapshot-minutes`, minimum 60). A failed topology cycle can try again
+  after an hour. A restart reuses a recent complete snapshot. The client uses
+  conditional requests during the session when CoreScope supplies validators.
+- Cycle intervals vary by ±10% while respecting the minimums. The default
+  `--rate 0.5` spaces request starts at least two seconds apart. The fastest
+  accepted setting is `--rate 1`.
+- Watch attempts up to 20 in-bounds node neighbor requests at the end of each
+  packet cycle (`--neighbor-batch 0..20`). It tries nodes with no prior attempt
+  first, then the oldest attempts. A node gets at most one lookup per 24 hours.
+  There is also a rolling cap of 600 per-node lookups per day to bound traffic
+  as the inventory grows.
+- A failed cycle pauses upstream requests. Consecutive failures back off from
+  one minute to an hour. A longer server `Retry-After` takes precedence.
+  This covers HTTP 429, 5xx, timeouts and other request failures.
+
+Expect **about 800 requests per day** at defaults with the observed inventory
+and packet volume. Budget roughly 200 packet requests, 20 topology requests and
+up to 600 neighbor lookups. The packet estimate assumes two 250-packet pages
+per poll, including the overlap. Traffic and page counts vary. With the
+default eight-page packet cap, even sustained capped polls and full neighbor
+batches stay around 1,500 requests per day at the observed topology size.
+
+## Database and one-shot captures
+
 - `--db <file>` overrides the default capture file. The default is
   `%LOCALAPPDATA%/RepeaterNet/corescope-capture.sqlite3` on Windows and
   `$XDG_DATA_HOME/RepeaterNet/corescope-capture.sqlite3` on Unix
   (`~/.local/share` if XDG is unset). The file must live outside the
-  RepeaterNet checkout and Windows planner data directory.
+  RepeaterNet checkout and `%LOCALAPPDATA%/RepeaterNet/data`. Run one
+  capture process per file.
+- `snapshot` takes one topology snapshot and one bounded batch of node
+  neighbor lookups. `packets` does one packet scan. On a fresh file, it
+  starts at the latest packet page and walks backward through the available
+  feed. `run` does both once.
 - `--base-url <url>` overrides `https://corescope.eth0.no`.
-- `--rate <requests-per-second>` defaults to one, including retries. The
-  tool identifies itself as RepeaterNet in the User-Agent, retries HTTP 429
-  and 5xx up to three times with exponential delays of one, two and four
-  seconds, and waits longer when requested by `Retry-After`.
-- `--max-pages <count>` defaults to 40 per paginated endpoint per run.
-  Packets request 250 transmissions per page and nodes request 500.
+- `--max-pages <count>` defaults to eight for watch packet cycles and 40 for
+  node snapshots and one-shot packet scans. Packets request 250 transmissions
+  per page and nodes request 500. Capped packet scans resume from the last
+  committed page.
 
 ## SQLite schema
 
-The database uses `PRAGMA user_version = 1`.
+The database uses `PRAGMA user_version = 2` and WAL mode so the dashboard
+can read while capture writes. Existing version 1 files are upgraded in place.
 
 | Table | Contents |
 | --- | --- |
@@ -62,6 +114,9 @@ The database uses `PRAGMA user_version = 1`.
 | `neighbors_snapshot` | Timestamped JSON responses keyed by capture run and source public key. An empty source key denotes the global graph. |
 | `capture_runs` | CoreScope endpoint and version, mode, start and end, status, request and row counts, page-cap flag and errors. |
 | `packet_cursor` | Per-endpoint time window and last committed packet ID/offset. The cursor and observations advance together in a SQLite transaction. |
+| `request_log` | One row per outbound HTTP attempt, with a timestamp and a node key for neighbor lookups. The rolling 24-hour count begins when version 2 is installed. |
+| `watch_state` | Per-endpoint poll and backoff status. |
+| `measured_hops` | View of received last hops used to aggregate directed pairs for the dashboard. |
 
 Packet time filters use the transmission's first-seen time. CoreScope
 v3.12.0 orders the results by ingest ID. The capture freezes the upper time

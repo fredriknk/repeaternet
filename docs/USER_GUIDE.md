@@ -144,6 +144,10 @@ explains what the feed and saved entries mean.
 
 ![CoreScope router rows with Required, Optional and Excluded policies](images/route-meshcore.png)
 
+To record observed MeshCore links over time, run the separate CoreScope
+capture utility. It saves receptions in SQLite and shows them on a local live
+map. See the [CoreScope capture guide](../rust/crates/corescope-capture/README.md).
+
 For a site you want to try, use **Place proposed router on map** or expand
 **Add a proposed router by coordinates**. Enter **Latitude**, **Longitude** and
 **Antenna height · m**, then choose **Add router at coordinates**. A site placed

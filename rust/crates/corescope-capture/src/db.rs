@@ -6,7 +6,10 @@ use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
 
-use crate::model::{Packet, number, observer_key, snapshot_json};
+use crate::{
+    Bbox,
+    model::{Packet, number, observer_key, snapshot_json},
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
@@ -18,6 +21,7 @@ pub struct Cursor {
 
 pub struct Run {
     pub id: i64,
+    pub mode: &'static str,
     pub version: Option<String>,
     pub packet_pages: usize,
     pub observations: usize,
@@ -54,23 +58,28 @@ pub fn open(path: &Path) -> Result<Connection> {
             ensure!(objects == 0, "Select an empty CoreScope capture database");
             transaction.execute_batch(include_str!("schema.sql"))?;
         }
-        1 => {
+        1 | 2 => {
             transaction.prepare("SELECT endpoint, window_until FROM packet_cursor")?;
         }
         _ => anyhow::bail!("Unsupported CoreScope capture schema version {version}"),
     }
+    if version < 2 {
+        transaction.execute_batch(include_str!("watch_schema.sql"))?;
+    }
     transaction.commit()?;
+    db.pragma_update(None, "journal_mode", "WAL")?;
     Ok(db)
 }
 
 impl Run {
-    pub fn start(db: &Connection, endpoint: &str, mode: &str) -> Result<Self> {
+    pub fn start(db: &Connection, endpoint: &str, mode: &'static str) -> Result<Self> {
         db.execute(
             "INSERT INTO capture_runs(endpoint, mode, started_at) VALUES (?, ?, ?)",
             params![endpoint, mode, now()],
         )?;
         Ok(Self {
             id: db.last_insert_rowid(),
+            mode,
             version: None,
             packet_pages: 0,
             observations: 0,
@@ -113,6 +122,19 @@ impl Run {
         )?;
         Ok(status)
     }
+}
+
+pub fn latest_topology(db: &Connection, endpoint: &str) -> Result<Option<i64>> {
+    Ok(db
+        .query_row(
+            "SELECT unixepoch(ended_at) FROM capture_runs WHERE endpoint = ?
+         AND mode IN ('watch-topology', 'snapshot', 'run') AND status = 'complete'
+         ORDER BY id DESC LIMIT 1",
+            [endpoint],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 pub fn cursor(db: &Connection, endpoint: &str) -> Result<Cursor> {
@@ -245,6 +267,81 @@ pub fn save_page(
     )?;
     transaction.commit()?;
     Ok(added)
+}
+
+pub fn log_request(db: &Connection, endpoint: &str, neighbor: Option<&str>) -> Result<()> {
+    db.execute(
+        "INSERT INTO request_log VALUES (?, ?, ?)",
+        params![endpoint, Utc::now().timestamp_millis(), neighbor],
+    )?;
+    Ok(())
+}
+
+pub fn requests_today(db: &Connection, endpoint: &str, now_ms: i64) -> Result<i64> {
+    Ok(db.query_row(
+        "SELECT count(*) FROM request_log WHERE endpoint = ? AND sent_ms > ?",
+        params![endpoint, now_ms - 86_400_000],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn pair_count(db: &Connection, endpoint: &str) -> Result<i64> {
+    Ok(db.query_row(
+        "SELECT count(*) FROM (
+            SELECT last_hop, observer_id FROM measured_hops WHERE endpoint = ?
+            GROUP BY last_hop, observer_id
+        )",
+        [endpoint],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn neighbor_batch(
+    db: &Connection,
+    endpoint: &str,
+    bbox: Bbox,
+    now_ms: i64,
+    limit: usize,
+) -> Result<Vec<String>> {
+    const DAILY_NEIGHBOR_LIMIT: usize = 600;
+    let threshold = now_ms - 86_400_000;
+    let used: i64 = db.query_row(
+        "SELECT count(*) FROM request_log WHERE endpoint = ? AND sent_ms > ? AND neighbor IS NOT NULL",
+        params![endpoint, threshold],
+        |row| row.get(0),
+    )?;
+    let limit = limit.min(DAILY_NEIGHBOR_LIMIT.saturating_sub(used as usize));
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut query = db.prepare(
+        "SELECT n.pubkey, MAX(
+             COALESCE((SELECT max(q.sent_ms) FROM request_log q
+                       WHERE q.endpoint = :endpoint AND q.neighbor = n.pubkey
+                         AND q.neighbor IS NOT NULL), 0),
+             COALESCE((SELECT unixepoch(max(h.captured_at), 'subsec') * 1000
+                       FROM neighbors_snapshot h JOIN capture_runs r ON r.id = h.run_id
+                       WHERE r.endpoint = :endpoint AND h.source_pubkey = n.pubkey), 0)
+         ) AS refreshed
+         FROM nodes_snapshot n
+         WHERE n.run_id = (
+             SELECT id FROM capture_runs WHERE endpoint = :endpoint
+               AND mode IN ('watch-topology', 'snapshot', 'run')
+               AND status = 'complete' ORDER BY id DESC LIMIT 1
+         ) AND n.lat BETWEEN :south AND :north AND n.lon BETWEEN :west AND :east
+           AND (n.lat <> 0 OR n.lon <> 0)
+           AND refreshed <= :threshold
+         ORDER BY refreshed, n.pubkey LIMIT :limit",
+    )?;
+    let rows = query.query_map(
+        rusqlite::named_params! {
+            ":endpoint": endpoint, ":south": bbox.south, ":north": bbox.north,
+            ":west": bbox.west, ":east": bbox.east,
+            ":threshold": threshold, ":limit": limit as i64,
+        },
+        |row| row.get(0),
+    )?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn save_snapshot<'a>(
