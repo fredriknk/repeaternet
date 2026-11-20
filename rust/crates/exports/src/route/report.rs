@@ -58,7 +58,7 @@ fn table_start(
     columns: &[&str],
     caption: Option<&str>,
 ) -> Result<(), ExportError> {
-    write!(out, "<table>")?;
+    write!(out, "<div class=\"table-scroll\"><table>")?;
     if let Some(caption) = caption {
         write!(out, "<caption>{}</caption>", escape(caption))?;
     }
@@ -310,7 +310,7 @@ fn render(
                 .message()
         )?;
     }
-    write!(out, "<section><h2>Sites</h2><div class=\"table-scroll\">")?;
+    write!(out, "<section><h2>Sites</h2>")?;
     table_start(
         out,
         &[
@@ -375,7 +375,7 @@ fn render(
                 ],
             )?;
         }
-        write!(out, "</tbody></table>")?;
+        write!(out, "</tbody></table></div>")?;
     } else {
         write!(out, "<p class=\"muted\">No other solutions recorded.</p>")?;
     }
@@ -500,7 +500,7 @@ fn assumptions(
             ],
         )?;
     }
-    write!(out, "</tbody></table></section>")?;
+    write!(out, "</tbody></table></div></section>")?;
     Ok(())
 }
 
@@ -608,14 +608,14 @@ fn map_section(
 }
 
 fn link_table(out: &mut dyn Write, links: &[Hop<'_>], primary: usize) -> Result<(), ExportError> {
-    write!(out, "<section><h2>Links</h2><p class=\"muted\">")?;
+    write!(
+        out,
+        "<section class=\"link-summary\"><h2>Links</h2><p class=\"muted\">"
+    )?;
     if primary > 0 {
         write!(out, "Primary route first ({primary} hops). ")?;
     }
-    write!(
-        out,
-        "Paired values show forward / reverse.</p><div class=\"table-scroll\">"
-    )?;
+    write!(out, "Paired values show forward / reverse.</p>")?;
     table_start(
         out,
         &[
@@ -739,6 +739,6 @@ fn budget(out: &mut dyn Write, hop: &Hop<'_>) -> Result<(), ExportError> {
     });
     write!(out, "<tr>")?;
     cells(out, ["Usable".into(), a, b])?;
-    write!(out, "</tbody></table>")?;
+    write!(out, "</tbody></table></div>")?;
     Ok(())
 }

@@ -17,11 +17,25 @@ ul{padding-left:1.5em}a{color:#215d81;overflow-wrap:anywhere}button{font:inherit
 .table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:6px 8px;vertical-align:top;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 thead th{background:#f1f5f2}tbody th{font-weight:600}caption{text-align:left;font-weight:700;margin:6px 0}
+.link-summary thead th,.link-summary td{overflow-wrap:break-word}
 .weak-hop th,.weak-hop td{background:#fff0ea}.weak-hop th{border-left:3px solid #ae4037}
 figure{margin:0}.profile-chart{display:block;width:100%;height:auto;border:1px solid var(--line);background:#f9fbfa}
 .profile-chart text{font:12px "Segoe UI",Arial,sans-serif;fill:#43574d}
 .hop:target h2{color:#215d81}.hop table{max-width:760px}.hop td,.hop th{padding:3px 8px}
-@media(max-width:640px){main{padding:16px;margin:0}h1{font-size:24px}#route-map{height:300px}}
+@media screen and (max-width:760px){
+  main{padding:16px;margin:0;overflow-wrap:anywhere}
+  header{flex-wrap:wrap;align-items:center}
+  h1{font-size:24px}
+  button.print{min-height:44px}
+  dl{grid-template-columns:repeat(auto-fit,minmax(min(135px,100%),1fr))}
+  #route-map{height:clamp(240px,55vh,390px)}
+  .table-scroll,.profile-scroll{overflow-x:auto;overscroll-behavior-x:contain}
+  .table-scroll table:has(th:nth-child(4)){min-width:30rem}
+  .table-scroll table:has(th:nth-child(8)){min-width:48rem}
+  .table-scroll table:has(th:nth-child(11)){min-width:62rem}
+  .profile-chart{min-width:42rem}
+  .legend{row-gap:8px}
+}
 @media print{
   @page{margin:11mm}body{background:white}main{padding:0;margin:0;max-width:none;box-shadow:none}
   #route-map{height:74mm;print-color-adjust:exact}.leaflet-control-zoom,.leaflet-control-layers,.print{display:none}
