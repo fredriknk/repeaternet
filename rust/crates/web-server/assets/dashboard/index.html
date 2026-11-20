@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/assets/meshcore.css">
     <link rel="stylesheet" href="/assets/coverage.css">
     <link rel="stylesheet" href="/assets/workspace.css?v=map-grid-2">
+    <link rel="stylesheet" href="/assets/map.css">
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/main_view_navigation.js"></script>
     <script defer src="/assets/app.js"></script>
@@ -417,6 +418,25 @@
         <div class="main-view-pane map-pane" id="view-map" role="tabpanel" aria-labelledby="view-map-tab" tabindex="0">
         <div class="map-wrap">
           <div id="map"></div>
+          <div class="map-top">
+          <div class="map-tools" role="group" aria-label="Map tools">
+            <div class="map-tool-group" role="group" aria-label="Place sites">
+              <button type="button" data-place="a" aria-pressed="false">Set A</button>
+              <button type="button" data-place="b" aria-pressed="false">Set B</button>
+              <button type="button" data-place="router" aria-pressed="false">Add router</button>
+              <button type="button" id="cancel-map-mode" hidden>Cancel</button>
+            </div>
+            <div class="map-tool-group" role="group" aria-label="Map view and history">
+              <button type="button" id="fit">Fit all</button>
+              <button type="button" id="undo" disabled>Undo</button>
+              <button type="button" id="redo" disabled>Redo</button>
+            </div>
+            <div class="map-tool-group" role="group" aria-label="Map overlays">
+              <label><input type="checkbox" id="show-candidates"> Candidates</label>
+              <label id="show-repeater-roads-control" hidden><input type="checkbox" id="show-repeater-roads" checked> Roads near repeaters</label>
+            </div>
+          </div>
+          <div id="map-hint" role="status" aria-live="polite" hidden></div>
           <section id="coverage-map-legend" class="coverage-map-legend" aria-label="Coverage estimate legend" hidden>
             <h3>Coverage legend</h3>
             <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search" placeholder="Router name or ID"></label>
@@ -429,15 +449,24 @@
               <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
             </div>
           </section>
-          <div class="map-tools">
-            <button id="fit">Fit endpoints</button>
-            <button id="cancel-map-mode" hidden>Cancel map action</button>
-            <button id="undo" disabled>Undo</button>
-            <button id="redo" disabled>Redo</button>
-            <label><input type="checkbox" id="show-candidates"> Candidates</label>
-            <label id="show-repeater-roads-control" hidden><input type="checkbox" id="show-repeater-roads" checked> Roads near repeaters</label>
           </div>
-          <div id="map-hint" role="status" aria-live="polite">Set your endpoints to start planning</div>
+          <details class="route-map-legend">
+            <summary>Map legend</summary>
+            <div class="map-legend-grid">
+              <span><i class="legend-endpoints"></i> Endpoints A / B</span>
+              <span><i class="legend-strong"></i> Strong ≥ 10 dB</span>
+              <span><i class="legend-proposed"></i> Proposed route site</span>
+              <span><i class="legend-good"></i> Good 5–&lt;10 dB</span>
+              <span><i class="legend-existing"></i> Existing route site</span>
+              <span><i class="legend-marginal"></i> Marginal 0–&lt;5 dB</span>
+              <span><i class="legend-manual"></i> Manual router</span>
+              <span><i class="legend-invalid"></i> Invalid link</span>
+              <span><i class="legend-required"></i> Required known router</span>
+              <span><i class="legend-stale"></i> Stale link</span>
+              <span><i class="legend-optional"></i> Optional known router</span>
+              <span><i class="legend-excluded"></i> Excluded known router</span>
+            </div>
+          </details>
         </div>
         </div>
         <div class="main-view-pane analysis-pane" id="view-analysis" role="tabpanel" aria-labelledby="view-analysis-tab" tabindex="0" hidden>
