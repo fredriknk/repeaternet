@@ -196,6 +196,11 @@ candidate. For container changes, rebuild and check the supplied Compose
 service with a disposable volume. Track open acceptance work in the
 [roadmap](ROADMAP.md).
 
+## Documentation screenshots
+
+Before opening a PR for a major dashboard change, regenerate the user-guide
+images with the [manual Playwright capture tool](../tools/docs-screenshots/README.md).
+
 ## Benchmarks
 
 The [coverage cache benchmark](../rust/crates/coverage/README.md#cache-benchmark)

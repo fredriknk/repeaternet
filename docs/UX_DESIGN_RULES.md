@@ -187,3 +187,4 @@ The layout has one owner per job. Put new features where users already look:
    `cargo clippy --workspace --all-targets --locked -- -D warnings` and
    `cargo test --workspace --locked` from `rust/`.
 5. Update `docs/USER_GUIDE.md` when names, locations or workflows change.
+6. For major UI changes, regenerate the [guide screenshots](../tools/docs-screenshots/README.md) and update the guide.
