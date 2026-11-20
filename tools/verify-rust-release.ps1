@@ -271,7 +271,7 @@ try {
     Assert-Release ($dashboard.Type -like 'text/html*' -and $dashboard.Body -match '/assets/app\.js') 'Unexpected dashboard HTML.'
     $assets = [ordered]@{
         '/assets/style.css' = 'text/css*'; '/assets/meshcore.css' = 'text/css*'; '/assets/coverage.css' = 'text/css*'
-        '/assets/workspace.css' = 'text/css*'; '/leaflet/leaflet.css' = 'text/css*'; '/leaflet/leaflet.js' = '*javascript*'
+        '/assets/workspace.css' = 'text/css*'; '/assets/map.css' = 'text/css*'; '/leaflet/leaflet.css' = 'text/css*'; '/leaflet/leaflet.js' = '*javascript*'
         '/assets/main_view_navigation.js' = '*javascript*'; '/assets/app.js' = '*javascript*'
         '/assets/coverage_inspection.js' = '*javascript*'; '/leaflet/images/marker-icon.png' = 'image/png'
         '/leaflet/images/marker-icon-2x.png' = 'image/png'; '/leaflet/images/marker-shadow.png' = 'image/png'

@@ -1,37 +1,58 @@
-# Real terrain benchmark fixture manifest
 
-No redistribution-approved DTM is currently checked into this repository.
-An existing local Kartverket cache is now documented in the
-[50 m NHM fixture manifest](fixtures/kartverket-nhm-25832-50m.md), with its verified
-checksum, reconstructed request and provenance limitations. That file is used for
-optional coverage benchmarks; CI does not require it.
+# Real terrain benchmark fixtures
 
-Keep terrain data outside Git unless its provider explicitly permits it. Before
-using a real raster as a release benchmark, copy this manifest and record:
+The repository checks in synthetic rasters for routine tests. Real Kartverket
+rasters used for local measurements stay outside Git.
 
-```yaml
-fixture_id: # stable name, e.g. region-resolution-v1
-provider: # source organization and product name
-source_url: # exact dataset landing page or download URL
-license: # license name and terms URL
-retrieved_at: # UTC date
-sha256: # checksum of each exact file
-files:
-  - path: # local path, never a credential-bearing URL
-    kind: dtm # dtm or dom
-    sha256:
-    crs: # raster CRS
-    bounds: [left, bottom, right, top]
-    resolution_m:
-area_description: # terrain characteristics and route coverage
-endpoints: # fixed [latitude, longitude] pairs inside the fixture
-router_heights_m: # heights used for the benchmark
-rf_profile: # frequency, model, validation and margins
-reference_route: # expected route IDs/coordinates or no-route assertion
-known_limitations: # nodata, interpolation, licensing/access notes
+- The [50 m NHM fixture manifest](fixtures/kartverket-nhm-25832-50m.md)
+  records the checksum, reconstructed request and provenance of the
+  2,000 × 400 raster used for historical coverage measurements and optional
+  Rust regression tests.
+- The native coverage benchmark also documents measurements with a separate
+  400 × 400 Kartverket DTM. It accepts an optional local raster path as its
+  first argument and uses synthetic terrain when called without one.
+  [Cache benchmark and raster checksum](../rust/crates/coverage/README.md#cache-benchmark)
+
+## Run the optional NHM regressions
+
+Verify the full-width fixture against the NHM manifest. Set
+`REPEATERNET_TERRAIN_KARTVERKET_FIXTURE` to its absolute local path. From
+`rust/`, run:
+
+```sh
+cargo test --locked -p repeaternet-terrain kartverket_50m_matches_rasterio -- --ignored
+cargo test --locked -p repeaternet-optimizer --test kartverket_routes strict_route_across_95_km_fits_the_router_budget -- --ignored
 ```
 
-Record the completed manifest with the benchmark output outside the engine's
-timed section. Use the same checksum, endpoint coordinates, RF settings and
-candidate seed to compare cold and warm terrain access. A live provider must not
-be required by automated tests or routine benchmark reproduction.
+The terrain test checks samples against frozen Rasterio values. The
+optimizer test checks a 95 km route against a fixed router budget.
+Both read the local file. Routine CI skips them.
+[Terrain test](../rust/crates/terrain/tests/parity.rs) · [Route test](../rust/crates/optimizer/tests/kartverket_routes.rs)
+
+## Record a new fixture
+
+Keep terrain outside Git unless its terms permit redistribution. Record the
+exact files and the experiment with the benchmark output, outside the timed
+section. Keep the file checksum, route coordinates, RF settings, source
+positions and any random seed fixed when comparing runs.
+
+```yaml
+fixture_id: # stable name such as region-resolution-v1
+provider: # source organization and product
+source_url: # dataset page or exact request without credentials
+license: # name and terms URL
+retrieved_at: # UTC date or unknown
+files:
+  - path: # local path
+    kind: dtm # dtm or dom
+    sha256:
+    crs:
+    bounds: [left, bottom, right, top]
+    resolution_m:
+area_description: # terrain characteristics and sampled area
+endpoints: # fixed [latitude, longitude] pairs for route tests
+router_heights_m:
+rf_profile: # frequency, model, validation and margins
+reference_route: # expected result, when testing route search
+known_limitations: # nodata, resampling and provenance
+```
