@@ -1102,16 +1102,18 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         StatusCode::OK,
     )
     .await;
-    coverage_only["rf"]["frequency_mhz"] = json!(868.1);
-    api(
+    let mut changed = coverage_only.clone();
+    changed["rf"]["frequency_mhz"] = json!(868.1);
+    let edited = api(
         &app,
         &authenticated,
         Method::POST,
         "/api/projects/autosave",
-        json!({"project_id": project_id, "plan": coverage_only}),
+        json!({"project_id": project_id, "plan": changed}),
         StatusCode::OK,
     )
     .await;
+    assert_eq!(edited["route_result_available"], false);
     api(
         &app,
         &authenticated,
@@ -1121,6 +1123,31 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         StatusCode::NOT_FOUND,
     )
     .await;
+    let undone = api(
+        &app,
+        &authenticated,
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"project_id": project_id, "plan": coverage_only}),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(undone["route_result_available"], true);
+    let recovered = api(
+        &app,
+        &authenticated,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(recovered["job_id"], reselected["job_id"]);
+    assert_eq!(
+        recovered["snapshot_version"],
+        reselected["snapshot_version"]
+    );
+    assert_eq!(recovered["links"], reselected["links"]);
     let mut stale = plan();
     stale["input_revision"] = job["input_revision"].clone();
     api(

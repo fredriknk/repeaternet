@@ -227,7 +227,7 @@
             <p class="hint">Grid spacing controls map detail; profile spacing controls terrain detail along each radio path. Limits bound memory and compute.</p>
             <div class="fields">
             <label>Cell spacing · m<input id="coverage-cell-size" type="number" min="100" max="100000" step="100" value="1000"></label>
-            <label>Mesh buffer · m<input id="coverage-buffer" type="number" min="0" max="100000" step="500" value="5000"></label>
+            <label>Mesh buffer · m<input id="coverage-buffer" type="number" min="5e-324" max="500000" step="any" value="5000" required></label>
             <label>Profile step · m<input id="coverage-profile-step" type="number" min="10" max="10000" step="10" value="200"></label>
             <label>Maximum profile samples<input id="coverage-profile-limit" type="number" min="3" max="16384" step="1" value="4096"></label>
             </div>

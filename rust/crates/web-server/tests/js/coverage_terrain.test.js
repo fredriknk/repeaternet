@@ -24,6 +24,7 @@ test('coverage terrain approval cannot start a download for an outdated map exte
     },
     coveragePayload: () => ({ settings: { area_mode: 'view' }, map_bounds: extent }),
     coverageReviewKey: JSON.stringify,
+    validateMeshBuffer: () => true,
     readCoverageInputs() {},
     syncCoverageLocks() {},
     async autosaveNow() {},

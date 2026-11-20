@@ -14,6 +14,7 @@
   --state-error: #a7352c;
   --state-warning: #8a5b18;
   --state-success: #176750;
+  --map-stale: #68737b;
 }
 
 body { color: var(--text); background: #edf1ed; }
@@ -542,8 +543,8 @@ aside summary { font-size: 13px; }
 .route-verdict[data-state="warn"]::before { content: "! "; color: #9a5b0b; }
 .route-verdict[data-state="fail"] { border-color: #e2a59c; background: #fdf0ee; }
 .route-verdict[data-state="fail"]::before { content: "✕ "; color: var(--state-error); }
-.route-verdict[data-state="stale"] { border-color: #d9c9a4; background: #f8f3e6; }
-.route-verdict[data-state="stale"]::before { content: "⟳ "; color: var(--state-warning); }
+.route-verdict[data-state="stale"] { border-color: var(--map-stale); background: #f0f2f3; }
+.route-verdict[data-state="stale"]::before { content: "⟳ "; color: var(--map-stale); }
 #metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 #metrics .metric { border-top: 3px solid transparent; }
 #metrics .metric.margin-strong, #metrics .metric.margin-good { border-top-color: #2f8f6b; }

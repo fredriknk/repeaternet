@@ -458,15 +458,21 @@ async fn autosave(
             session.cancel_inspection();
             let current = active_project(&app.store, key, session)?;
             save_plan(&app.store, key, &current.id, &plan)?;
+            let saved = active_project(&app.store, key, session)?;
             if catalog::route_inputs_changed(&current.plan, &plan) {
                 session.invalidate_route();
-                app.store.save_result_summary(key, &current.id, None)?;
+                if matches!(saved.run_state.as_str(), "complete" | "stopped") {
+                    // Keep the last snapshot so undo can restore it if plan and terrain match.
+                    restore_project_route(app, key, &saved, session)?;
+                } else if saved.result_summary.is_some() {
+                    app.store.save_result_summary(key, &saved.id, None)?;
+                }
             }
-            let saved = active_project(&app.store, key, session)?;
             Ok(Json(json!({
                 "ok": true, "project_id": saved.id,
                 "updated_at": UNIX_EPOCH.elapsed().unwrap_or_default().as_secs_f64(),
                 "has_previous_revision": saved.previous_plan.is_some(),
+                "route_result_available": session.route_result.is_some(),
             })))
         })
         .await
