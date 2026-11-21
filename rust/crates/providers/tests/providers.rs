@@ -646,7 +646,8 @@ fn roads_mock_cross_tile_cache_retry_and_shared_clipped_overlay() {
     assert!(query(&requests[2]).ends_with("(60.0,15.2,60.1,15.4);out skel geom;"));
     assert!(requests.iter().all(|req| req.method == "POST"
         && req.path == "/api/interpreter"
-        && req.headers["user-agent"] == "RepeaterNet (road access planner)"));
+        && req.headers["user-agent"].starts_with("RepeaterNet/")
+        && req.headers["user-agent"].contains("road access planner")));
 
     let alternatives = [
         BTreeMap::from([("K-one".into(), point)]),
@@ -781,7 +782,8 @@ fn corescope_mock_pagination_normalization_and_corridor_wire_format() {
     );
     let requests = mock.finish();
     assert!(requests.iter().all(|req| req.method == "GET"
-        && req.headers["user-agent"].contains("interactive read-only import")));
+        && req.headers["user-agent"].starts_with("RepeaterNet/")
+        && req.headers["user-agent"].contains("read-only CoreScope router import")));
     assert_eq!(
         requests
             .iter()
