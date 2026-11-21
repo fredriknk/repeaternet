@@ -4,6 +4,7 @@ members = [
     "crates/coverage",
     "crates/coverage-store",
     "crates/exports",
+    "crates/meshtastic-capture",
     "crates/optimizer",
     "crates/project-store",
     "crates/providers",

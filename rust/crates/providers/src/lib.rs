@@ -4,6 +4,7 @@ pub mod kartverket;
 pub mod roads;
 
 mod transport;
+pub use transport::user_agent;
 
 use repeaternet_terrain::TerrainError;
 use std::{

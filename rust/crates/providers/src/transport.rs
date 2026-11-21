@@ -22,7 +22,7 @@ pub(crate) fn client_builder(connect: u64, timeout: u64) -> ClientBuilder {
 
 /// Descriptive User-Agent for every upstream request, with a project link so
 /// service operators can see what is calling them.
-pub(crate) fn user_agent(purpose: &str) -> String {
+pub fn user_agent(purpose: &str) -> String {
     format!(
         "RepeaterNet/{} ({purpose}; +https://github.com/fredriknk/repeaternet)",
         env!("CARGO_PKG_VERSION")

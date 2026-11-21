@@ -1,0 +1,21 @@
+{
+  "nodes": {
+    "037a09a8": {
+      "id": "037a09a8", "hardware": "95", "role": 0, "last_seen": "2026-11-21T11:41:23.279986+00:00",
+      "position": {"latitude_i": 377700000, "longitude_i": -1224500000, "time": 1795261213}
+    }
+  },
+  "traceroutes": [
+    {
+      "from": "d1cc9b3b", "to": "69856e88", "id": 1790284944, "packet_id": 1854199623,
+      "snr": 5.5, "created_at": 1795261172, "route_ids": ["7a31efe8", "4357ec1c"],
+      "route_back_ids": ["bb661928"], "payload": {"snr_towards": [-29, 5, -75], "snr_back": [22]}
+    },
+    {
+      "from": "69856e88", "to": "d1cc9b3b", "id": 1854199623, "packet_id": null,
+      "snr": -12.75, "created_at": 1795261168, "route_ids": ["7a31efe8", "f6709bd4"],
+      "route_back_ids": [], "payload": {"snr_towards": [-29, -51], "snr_back": []}
+    }
+  ],
+  "next_cursor": null
+}

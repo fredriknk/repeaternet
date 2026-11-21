@@ -1,0 +1,24 @@
+{
+  "nodes": [{
+    "num": 67150764,
+    "identity": {"hw_model": "HELTEC_V3", "role": "CLIENT", "observed_at": "2026-11-21T11:31:24.674721Z"},
+    "position": {"lat": 61.1188736, "lon": 10.4726528, "alt": 0, "precision_bits": 14, "precision_known": true, "source": "position", "observed_at": "2026-11-21T11:32:22.905809Z"}
+  }],
+  "rows": [
+    {
+      "t": 1795257825743, "g": 501821116, "s": 1299288895, "d": 1144615257, "p": 1042470692,
+      "y": "traceroute", "l": "bb1578ef4a9d6fc0", "o": "99fccb6179c656b3",
+      "sn": -1.25, "rs": -117, "hs": 3, "hl": 2, "r": 120, "rr": "relayed",
+      "tr": {"valid": true, "is_reply": true, "route": [{"id": 2798376056}],
+             "snr_towards": [-1, 11.5], "route_back": [{"id": 2798376056}, {"id": 501821116}],
+             "snr_back": [5.25, -1.25], "request_id": 809909058}
+    },
+    {
+      "t": 1795257638925, "g": 501821116, "s": 2796546090, "p": 1001397684, "y": "position",
+      "l": "627be57dccf66b9e", "o": "e639e1875bd0f44d", "sn": -2.5, "rs": -118, "hs": 2,
+      "hl": 0, "r": 120, "rr": "relayed",
+      "po": {"lat": 59.899904, "lon": 10.4595456, "alt": 51, "precision_bits": 13, "precision_known": true}
+    }
+  ],
+  "more": false
+}
