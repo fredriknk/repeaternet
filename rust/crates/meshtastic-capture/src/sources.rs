@@ -568,8 +568,10 @@ pub fn meshview_seen(body: &Value, base: &MeshviewPacket, band: Option<&str>) ->
         let packet = Packet {
             id: format!("{}:{gateway}:{recorded}", base.id),
             logical_id: base.logical_id.clone(),
-            time: timestamp(&v["rx_time"])
-                .or_else(|| timestamp(&v["import_time_us"]))
+            // Prefer the server's import clock: gateway rx_time comes from the
+            // gateway's own clock, which is sometimes hours or days off.
+            time: timestamp(&v["import_time_us"])
+                .or_else(|| timestamp(&v["rx_time"]))
                 .unwrap_or(base.time),
             gateway: Some(gateway),
             hop_start,
