@@ -197,6 +197,34 @@ impl TerrainCrs {
             Self::Etrs89Utm35
         })
     }
+
+    pub fn utm_zone(self) -> Option<u16> {
+        utm(self.code).map(|(zone, _, _)| zone)
+    }
+
+    pub fn for_wgs84_location(point: LonLat) -> Result<Self, TerrainError> {
+        if !(-180.0..=180.0).contains(&point.longitude) || !(-90.0..=90.0).contains(&point.latitude)
+        {
+            return Err(TerrainError::InvalidInput("Invalid geographic coordinates"));
+        }
+        let zone = if (18.0..=19.5).contains(&point.longitude)
+            && (58.5..=60.2).contains(&point.latitude)
+        {
+            // Keep the Stockholm area in the same download zone as eastern Sweden.
+            33
+        } else {
+            (((point.longitude + 180.0) / 6.0).floor() as u16 + 1).min(60)
+        };
+        Self::from_epsg(if point.latitude > 84.0 {
+            3413
+        } else if point.latitude < -84.0 {
+            3031
+        } else if point.latitude < 0.0 {
+            32700 + zone
+        } else {
+            32600 + zone
+        })
+    }
 }
 
 impl fmt::Display for TerrainCrs {

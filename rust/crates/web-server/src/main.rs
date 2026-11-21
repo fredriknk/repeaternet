@@ -13,6 +13,7 @@ mod route_inputs;
 mod route_output;
 mod security;
 mod server;
+mod source_http;
 mod targets;
 mod terrain_http;
 
@@ -74,13 +75,15 @@ async fn main() -> Result<()> {
         .with_context(|| format!("Could not listen on {address}"))?;
     let address = listener.local_addr()?;
     let url = format!("http://{}/", browser_address(address));
-    let store = tokio::task::spawn_blocking(move || {
-        ProjectStore::new(data.join(PROJECT_CATALOG), &data)
-            .with_context(|| format!("Could not open project catalog in {}", data.display()))
+    let (store, data) = tokio::task::spawn_blocking(move || {
+        let store = ProjectStore::new(data.join(PROJECT_CATALOG), &data)
+            .with_context(|| format!("Could not open project catalog in {}", data.display()))?;
+        Ok::<_, anyhow::Error>((store, data))
     })
     .await??;
     let app = server::router(
         store,
+        &data,
         &token,
         is_loopback(address.ip()),
         options.trusted_proxy,

@@ -6,7 +6,10 @@ pub mod profile;
 mod raster;
 
 pub use coordinates::{norway_utm_epsg, LonLat, TerrainCrs, Transformer};
-pub use raster::{ArrayTerrain, GeoTiff, RasterMetadata, RasterTerrain};
+pub use raster::{
+    write_elevation_tiff, ArrayTerrain, BytesSource, FileSource, GeoTiff, RasterMetadata,
+    RasterTerrain, SourceCrs, SourceRaster, TiffError, TiffSource,
+};
 pub use repeaternet_rf_core::{Point, TerrainLayer, TerrainSource};
 
 use std::{error::Error, fmt, path::PathBuf};

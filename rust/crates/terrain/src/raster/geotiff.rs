@@ -104,11 +104,18 @@ impl Window {
     }
 }
 
-struct SparseBlocks {
+pub(super) struct SparseBlocks {
     width: usize,
     height: usize,
     columns: usize,
     indices: HashSet<usize>,
+}
+
+impl SparseBlocks {
+    pub(super) fn contains(&self, row: usize, col: usize) -> bool {
+        self.indices
+            .contains(&(row / self.height * self.columns + col / self.width))
+    }
 }
 
 pub(super) type RasterResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -147,20 +154,8 @@ impl GeoTiff {
                 "Expected a full-resolution elevation image in the first TIFF directory",
             );
         }
-        let layout = image.raster_layout()?;
-        if layout.samples_per_pixel != 1
-            || !matches!(image.photometric_interpretation(), Some(0 | 1))
-            || !image.extra_samples()?.is_empty()
-        {
-            return invalid("Expected a single-band grayscale elevation TIFF");
-        }
+        let (layout, sparse_blocks) = elevation_layout(&tiff, image)?;
         let sample_type = (layout.sample_format, layout.bits_per_sample);
-        if !matches!(sample_type, (1 | 2, 8 | 16 | 32) | (3, 32 | 64)) {
-            return invalid(format!(
-                "Unsupported elevation sample format/depth {sample_type:?}"
-            ));
-        }
-        let sparse_blocks = validate_storage(&tiff, image, layout.bytes_per_sample)?;
         let (crs, pixel_is_point) = geokeys::projected_crs(image)?;
         let transform = geotransform(image, pixel_is_point)?;
         let [_, a, b, _, d, e] = transform;
@@ -179,25 +174,8 @@ impl GeoTiff {
             return invalid("Invalid or singular GeoTIFF affine transform");
         }
         let bounds = bounds_of(footprint(transform, layout.width, layout.height))?;
-        let nodata = match image.tag(GDAL_NODATA) {
-            None => None,
-            Some(tag) => {
-                let value = tag
-                    .value
-                    .as_str()
-                    .ok_or_else(|| invalid_error("GDAL nodata must be numeric text"))?
-                    .trim_matches(|c: char| c.is_whitespace() || c == '\0')
-                    .parse::<f64>()
-                    .map_err(|_| invalid_error("GDAL nodata must be numeric text"))?;
-                // GDAL compares Float32 nodata after converting it to the band's type.
-                Some(if sample_type == (3, 32) {
-                    f64::from(value as f32)
-                } else {
-                    value
-                })
-            }
-        };
-        let mask = find_mask(&tiff, image)?;
+        let nodata = nodata(image, sample_type)?;
+        let mask = find_mask(&tiff, image, false)?;
         let metadata = RasterMetadata {
             crs,
             width: layout.width,
@@ -236,6 +214,25 @@ impl GeoTiff {
 
     pub fn metadata(&self) -> &RasterMetadata {
         &self.metadata
+    }
+
+    /// Decode every storage block before publishing a generated raster.
+    pub fn validate_pixels(&self, cancelled: &dyn Fn() -> bool) -> Result<(), TerrainError> {
+        for top in (0..self.metadata.height).step_by(WINDOW_SIDE) {
+            for left in (0..self.metadata.width).step_by(WINDOW_SIDE) {
+                if cancelled() {
+                    return Err(TerrainError::InvalidInput("Raster validation cancelled"));
+                }
+                let rows = WINDOW_SIDE.min(self.metadata.height - top);
+                let cols = WINDOW_SIDE.min(self.metadata.width - left);
+                self.decode_values(top, left, rows, cols)
+                    .map_err(|source| TerrainError::Raster {
+                        path: self.path.clone(),
+                        source,
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     /// Sample band 1 with pixel-floor semantics. Outside or masked pixels are NaN.
@@ -426,10 +423,10 @@ impl GeoTiff {
         row: usize,
         col: usize,
     ) -> (f64, bool) {
-        let sparse = self.sparse_blocks.as_ref().is_some_and(|blocks| {
-            let block = row / blocks.height * blocks.columns + col / blocks.width;
-            blocks.indices.contains(&block)
-        });
+        let sparse = self
+            .sparse_blocks
+            .as_ref()
+            .is_some_and(|blocks| blocks.contains(row, col));
         let value = if sparse {
             self.metadata.nodata.unwrap_or(0.0)
         } else {
@@ -504,6 +501,48 @@ impl Drop for GeoTiff {
     fn drop(&mut self) {
         RESIDENT_BYTES.fetch_sub(*self.resident_bytes.get_mut(), Ordering::Relaxed);
     }
+}
+
+pub(super) fn elevation_layout(
+    tiff: &TiffFile,
+    image: &Ifd,
+) -> RasterResult<(tiff_reader::RasterLayout, Option<SparseBlocks>)> {
+    let layout = image.raster_layout()?;
+    if layout.samples_per_pixel != 1
+        || !matches!(image.photometric_interpretation(), Some(0 | 1))
+        || !image.extra_samples()?.is_empty()
+    {
+        return invalid("Expected a single-band grayscale elevation TIFF");
+    }
+    let sample_type = (layout.sample_format, layout.bits_per_sample);
+    if !matches!(sample_type, (1 | 2, 8 | 16 | 32) | (3, 32 | 64)) {
+        return invalid(format!(
+            "Unsupported elevation sample format/depth {sample_type:?}"
+        ));
+    }
+    let sparse_blocks = validate_storage(tiff, image, layout.bytes_per_sample)?;
+    Ok((layout, sparse_blocks))
+}
+
+pub(super) fn nodata(image: &Ifd, sample_type: (u16, u16)) -> RasterResult<Option<f64>> {
+    Ok(match image.tag(GDAL_NODATA) {
+        None => None,
+        Some(tag) => {
+            let value = tag
+                .value
+                .as_str()
+                .ok_or_else(|| invalid_error("GDAL nodata must be numeric text"))?
+                .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+                .parse::<f64>()
+                .map_err(|_| invalid_error("GDAL nodata must be numeric text"))?;
+            // GDAL compares Float32 nodata after converting it to the band's type.
+            Some(if sample_type == (3, 32) {
+                f64::from(value as f32)
+            } else {
+                value
+            })
+        }
+    })
 }
 
 fn validate_storage(
@@ -584,19 +623,24 @@ fn validate_storage(
     }))
 }
 
-fn find_mask(tiff: &TiffFile, image: &Ifd) -> RasterResult<Option<Ifd>> {
+pub(super) fn find_mask(
+    tiff: &TiffFile,
+    image: &Ifd,
+    overviews: bool,
+) -> RasterResult<Option<Ifd>> {
     let mut mask = None;
     let mut inspect = |ifd: &Ifd| -> RasterResult<()> {
         // Bit 1 marks a reduced-resolution image and bit 4 a transparency mask.
-        if subfile_type(ifd)? & 5 != 4 {
+        let kind = subfile_type(ifd)?;
+        let size_matches = ifd.width() == image.width() && ifd.height() == image.height();
+        if kind & 4 == 0 || (overviews && !size_matches) || (!overviews && kind & 1 != 0) {
             return Ok(());
         }
         if mask.is_some() {
             return invalid("Multiple full-resolution TIFF masks are unsupported");
         }
         let layout = ifd.raster_layout()?;
-        if ifd.width() != image.width()
-            || ifd.height() != image.height()
+        if !size_matches
             || ifd.photometric_interpretation() != Some(4)
             || layout.samples_per_pixel != 1
             || layout.sample_format != 1
@@ -622,7 +666,7 @@ fn find_mask(tiff: &TiffFile, image: &Ifd) -> RasterResult<Option<Ifd>> {
     Ok(mask)
 }
 
-fn subfile_type(ifd: &Ifd) -> RasterResult<u32> {
+pub(super) fn subfile_type(ifd: &Ifd) -> RasterResult<u32> {
     match ifd.tag(TAG_NEW_SUBFILE_TYPE) {
         None => Ok(0),
         Some(tag) => tag
@@ -642,7 +686,7 @@ pub(super) fn doubles(ifd: &Ifd, code: u16) -> RasterResult<Option<&[f64]>> {
     }
 }
 
-fn geotransform(ifd: &Ifd, pixel_is_point: bool) -> RasterResult<[f64; 6]> {
+pub(super) fn geotransform(ifd: &Ifd, pixel_is_point: bool) -> RasterResult<[f64; 6]> {
     let mut transform = match (
         doubles(ifd, MODEL_TRANSFORMATION)?,
         doubles(ifd, MODEL_PIXEL_SCALE)?,

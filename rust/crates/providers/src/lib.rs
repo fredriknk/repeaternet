@@ -3,6 +3,8 @@ pub mod corescope;
 pub mod kartverket;
 pub mod roads;
 
+pub mod sources;
+mod tile_grid;
 mod transport;
 pub use transport::user_agent;
 

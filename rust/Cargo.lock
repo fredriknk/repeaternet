@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "repeaternet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1694,12 +1694,14 @@ dependencies = [
  "fs2",
  "geo",
  "httpdate",
+ "quick-xml",
  "repeaternet-terrain",
  "reqwest",
  "rstar 0.14.0",
  "rustls",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2",
  "tempfile",
  "thiserror",

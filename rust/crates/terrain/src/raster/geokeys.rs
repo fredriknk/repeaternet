@@ -41,6 +41,27 @@ fn short_key(keys: &GeoKeys, id: u16) -> RasterResult<Option<u16>> {
     }
 }
 
+pub(super) fn geographic_crs(ifd: &Ifd) -> RasterResult<Option<(u16, bool)>> {
+    let keys = geo_keys(ifd)?;
+    if short_key(&keys, 1024)? != Some(2) {
+        return Ok(None);
+    }
+    let Some(code @ (4326 | 4258 | 4269 | 4283 | 4619 | 4167)) = short_key(&keys, 2048)? else {
+        return invalid("Unsupported geographic source CRS");
+    };
+    if !matches!(short_key(&keys, 2054)?, None | Some(9102))
+        || !matches!(short_key(&keys, 2051)?, None | Some(8901))
+        || keys.contains_key(&2062)
+    {
+        return invalid("Geographic source coordinates must use Greenwich degrees");
+    }
+    match short_key(&keys, 1025)? {
+        None | Some(1) => Ok(Some((code, false))),
+        Some(2) => Ok(Some((code, true))),
+        _ => invalid("Unsupported GeoTIFF raster type"),
+    }
+}
+
 pub(super) fn projected_crs(ifd: &Ifd) -> RasterResult<(TerrainCrs, bool)> {
     let keys = geo_keys(ifd)?;
     if short_key(&keys, 1024)? != Some(1) {

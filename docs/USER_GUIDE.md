@@ -24,6 +24,7 @@ critical links in the field before choosing installation sites.
 - [Scenarios and targets](#scenarios-and-targets)
 - [Coverage exports and reports](#coverage-exports-and-reports)
 - [Terrain and coordinates](#terrain-and-coordinates)
+- [Data sources](#data-sources)
 - [Road filter](#road-filter)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Mobile layout](#mobile-layout)
@@ -60,13 +61,14 @@ Open **⋯** for project actions.
 | **Duplicate** | Opens a copy with the current saved plan and terrain. Calculations can be run separately in the copy. |
 | **Recover previous save** | Restores the previous saved plan revision and makes the current revision the recovery copy. This appears when a previous revision exists. |
 | **Export plan file** | Downloads a portable `route.webplan.json` with settings, sites, policies and targets. Terrain and computed results are separate. |
+| **Data sources…** | Manage the terrain providers and map layers available to all projects on this server. |
 | **Import plan file…** | Opens the plan JSON and autosaves its settings and sites in the current project. Import into a new project to keep both plans. Load matching terrain as needed. |
 | **Archive** | Removes the project from the active list and keeps its saved data. The dashboard switches to another project or creates a replacement. |
 | **Archived projects** → **Restore** | Returns an archived project to the active list and opens it. |
 | **Delete permanently…** | Deletes the selected project's stored data after confirmation. |
-| **Clear saved RF calculations** | Clears cached link calculations for this workspace. Later RF searches may have more work to do. Kartverket and Overpass downloads have their own shared caches. |
+| **Clear saved RF calculations** | Clears cached link calculations for this workspace. Later RF searches may have more work to do. Terrain providers and Overpass downloads have their own shared caches. |
 
-![Project menu with recovery, plan import and export, archive, delete and RF cache actions](images/project-menu.png)
+![Project menu with recovery, plan import and export, data sources, archive, delete and RF cache actions](images/project-menu.png)
 
 ![Archived project expanded with its Restore button](images/project-archived.png)
 
@@ -94,17 +96,23 @@ or **Set B** on the map, or drag either pin. Check where both pins landed.
 
 ### Terrain
 
-For a route in Norway, choose **Estimate Kartverket terrain**. Review the planned
-tile count, effective resolution, estimated uncompressed disk usage, free space
-and cache hits. Choose **Download planned terrain** to prepare the tiles.
-If you start with **Find repeater route** and ground tiles are missing, review the
-combined estimate dialog and choose **Download and find route**.
+**Terrain source** defaults to **Automatic · best available**. The status below
+the selector describes which providers cover the route and which may fill gaps.
+Choose a specific provider to prefer it, then use **Fill gaps from other
+sources** to control whether the planner can use other providers as needed.
+
+Choose **Estimate terrain download**. Review the planned tile count, effective
+resolution, disk usage, free space, cache hits and the list of sources with
+their attributions and warnings. Choose **Download planned terrain** to review
+and confirm the download. If you start with **Find repeater route** and ground
+tiles are missing, the combined estimate offers **Download and find route**.
 
 Under **Download options**, **Requested resolution · m** defaults to 10 m.
 **Coarsen automatically to stay within the pixel budget** allows larger pixels
 when needed. **Also download surface terrain** is enabled in a new project.
-Disable it for a ground-only estimate. Adding surface terrain doubles the planned
-product tile and pixel counts for the same area and resolution. File size varies.
+When surface elevation is unavailable, the Terrain step explains why and the
+estimate includes ground tiles only. Surface tiles increase disk usage when
+available.
 
 Expand **Upload your own terrain files** to use local GeoTIFFs. **＋ Add ground
 terrain** accepts bare-earth DTM tiles. **＋ Add surface terrain** accepts optional
@@ -113,9 +121,9 @@ DOM tiles for mapped surface obstacles. Each tile can be up to 512 MiB. Use
 confirmation for any additional coverage terrain that will also be cleared.
 See [terrain and coordinates](#terrain-and-coordinates) for the file and map details.
 
-![Terrain step with download options and the inline estimate for three ground tiles](images/route-terrain.png)
+![Terrain step with automatic source selection and an inline estimate of three Kartverket ground tiles](images/route-terrain.png)
 
-![Combined Kartverket estimate dialog with the Download and find route action](images/kartverket-estimate.png)
+![Combined estimate dialog listing Kartverket NHM as the source, with Download and find route](images/kartverket-estimate.png)
 
 ![Local GeoTIFF upload controls and readiness check, with one ground tile installed](images/route-terrain-upload.png)
 
@@ -257,7 +265,9 @@ coordinates use latitude, longitude to six decimals.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
   when available.
 - Use **+** and **−** to zoom. In the layer control, choose **OpenStreetMap** or
-  **Kartverket topo**. Toggle **Terrain coverage**, **Predicted mesh coverage**,
+  **Kartverket topo**, and other enabled maps. Regional layers display
+  **(outside view)** when the map is outside their coverage. Your selected
+  basemap stays in place as you pan. Toggle **Terrain coverage**, **Predicted mesh coverage**,
   **Coverage analysis area**, **Coverage difference** or **Coverage targets** as
   needed. **Map legend** explains the route lines and marker shapes.
 
@@ -267,7 +277,7 @@ coordinates use latitude, longitude to six decimals.
 
 ![Map legend showing endpoint and router markers, margin bands and stale links](images/map-legend.png)
 
-![Layers control expanded with both basemaps and five coverage overlays](images/map-layer-control.png)
+![Layers control expanded with five basemaps and five coverage overlays](images/map-layer-control.png)
 
 ## Running a search and managing jobs
 
@@ -439,13 +449,13 @@ is present, the supplemental download includes surface terrain. Use **Cancel
 coverage terrain download** or **Reconnect to terrain download** as needed.
 When the tiles are ready, choose **Calculate coverage** again.
 
-![Supplemental coverage terrain estimate with missing area, tile count and disk size](images/coverage-terrain-download.png)
+![Supplemental coverage terrain estimate with missing area, tile count, disk size and source list](images/coverage-terrain-download.png)
 
 Coverage uses the first valid sample from route terrain, then supplemental tiles.
 A coverage download preserves the certified route and its original terrain.
 Supplemental tiles remain installed when the coverage area or route alternative
 changes. Clearing, uploading or preparing route terrain resets the supplemental
-set. Previously downloaded Kartverket tiles can be reused. Paths outside the
+set. Previously downloaded terrain tiles can be reused. Paths outside the
 tiles and no-data pixels can still produce unknown results.
 
 In **Runs**, **Analysis context** identifies the selected mesh and client
@@ -590,9 +600,9 @@ profiles and grids are calculated in the terrain's projected coordinate
 reference system (CRS). Upload georeferenced GeoTIFF tiles that use the same
 supported projected CRS and metre units.
 
-- **DTM** is bare-earth elevation. The model places an antenna at ground
-  elevation plus its configured height above ground, and uses ground terrain
-  to score candidate sites.
+- **DTM** is the ground elevation input. It normally represents bare earth.
+  The model places an antenna at ground elevation plus its configured height
+  above ground, and uses ground terrain to score candidate sites.
 - **DOM** is surface elevation and can include trees and buildings. Where
   surface samples are available, they inform the obstruction profile. With no
   surface data the model reports a terrain-only assumption.
@@ -601,13 +611,14 @@ supported projected CRS and metre units.
   no-data gaps.
 
 The **Terrain coverage** layer shows loaded ground and surface outlines and
-highlights sampled gaps. Kartverket's route estimate selects a configured
-Norwegian ETRS89 UTM service for the planning coordinates. Larger areas are
-split into tiles. Requested route resolution accepts 1–1,000 m. Supplemental
-coverage downloads start at 25 m by default and can coarsen to the pixel
-budget. Downloaded tiles are validated before they become active. Basemap
-tiles and online providers require a network connection. Uploaded terrain
-and RF calculation work locally. [Packaged Kartverket service definitions](../rust/crates/providers/src/kartverket_wcs.json).
+highlights sampled gaps. The planner splits downloads into tiles, reprojects
+source elevations to the project's projected CRS, and validates the tiles
+before activating them. New projects use a compatible provider CRS where
+available, otherwise a local WGS84 UTM zone or polar projection. The requested
+route resolution accepts 1–1,000 m. The source resolution can set a coarser
+effective limit. Supplemental coverage downloads start at 25 m and can
+coarsen to the pixel budget. Basemaps and online terrain downloads require a
+network connection. Uploaded terrain and RF calculation work locally.
 
 To try the workflow with synthetic terrain, upload the [two-ridges GeoTIFF](../examples/synthetic_two_ridges.tif)
 as ground terrain in a new project. Set **Start point** to **60.344700, 10.499586**
@@ -617,6 +628,92 @@ hop length to 5,500 m. Choose **Quick · up to 200 candidate sites**, then
 **Find repeater route**. The elevations in this sample are synthetic. They are
 for practicing the workflow.
 
+## Data sources
+
+Open **⋯ → Data sources…** to manage the registry for all projects on the
+server. Built-in terrain providers include Kartverket NHM (1 m ground and
+surface elevation in mainland Norway), USGS 3DEP (10 m ground elevation in
+covered areas of the United States), and Copernicus GLO-30 and GLO-90 (30 m and
+90 m worldwide surface models). Built-in maps include OpenStreetMap,
+OpenTopoMap, Kartverket topo and grey, and Sentinel-2 cloudless imagery.
+
+Automatic selection works tile by tile. It prefers sources that cover the
+tile centre, then finer native resolution, then higher priority. Other
+eligible providers can fill missing pixels. Ground and surface downloads
+select sources independently. Copernicus surface models can include trees
+and buildings even when used for the ground input. Antenna elevations and
+clearance predictions can differ from results calculated with bare-earth
+elevation, especially in forests and built-up areas.
+
+Use **Add source** for a WCS service, a single cloud-optimized GeoTIFF (COG),
+a tiled COG collection, XYZ/WMTS map tiles, or a WMS map. Use **Test** on an
+enabled terrain provider to check a small area around the map centre. Use
+**Preview** on a map layer to display it briefly. You can disable built-in
+sources and edit or remove custom ones. A plan that pins a disabled or removed
+source needs a new selection before estimating terrain again.
+
+The registry stores custom definitions in `providers.json` under the server's
+data directory. Set `RF_PLANNER_PROVIDERS_FILE` to use another path. The version
+1 file contains `disabled_builtins` (built-in IDs to disable), `terrain` and
+`basemaps`. Each custom definition has a unique lowercase ID, name, kind and
+attribution. Terrain definitions also specify coverage, native resolution and
+one or both elevation products (`dtm` and `dom`). Coverage can be global, a
+bounding box, multiple boxes or polygon rings in WGS84. Coordinates in boxes
+are west, south, east, north. An optional `region` (for example `"Norway"`)
+labels the coverage in the source list instead of its bounds. Match each
+product's fields to its source kind.
+See the [provider schema](design/DATA_SOURCES.md#provider-definition-file).
+
+This example defines a regional WCS and a tiled COG collection. Replace the
+example URLs, coverage and attribution with values from your providers.
+
+```json
+{
+  "version": 1,
+  "disabled_builtins": [],
+  "terrain": [
+    {
+      "id": "regional-wcs",
+      "name": "Regional ground model",
+      "kind": "wcs",
+      "coverage": {"type": "bbox", "bbox": [10, 59, 12, 61]},
+      "resolution_m": 2,
+      "attribution": "Example mapping agency",
+      "products": {
+        "dtm": {
+          "endpoint": "https://elevation.example.org/wcs",
+          "coverage": "ground",
+          "version": "1.0.0",
+          "native_crs": ["EPSG:25833"],
+          "format": "GeoTIFF"
+        }
+      }
+    },
+    {
+      "id": "regional-cog-tiles",
+      "name": "Regional elevation tiles",
+      "kind": "cog_tiles",
+      "coverage": {"type": "bbox", "bbox": [10, 59, 12, 61]},
+      "resolution_m": 10,
+      "attribution": "Example elevation programme",
+      "products": {
+        "dtm": {
+          "url_template": "https://tiles.example.org/dem/{NS}{lat2}{EW}{lon3}.tif",
+          "tile_degrees": 1.0
+        }
+      }
+    }
+  ],
+  "basemaps": []
+}
+```
+
+Keep each provider's attribution with the data and check its licence before
+sharing maps, elevations or derived products. The map displays attribution for
+active layers. Terrain estimates list the planned sources and their credits.
+Browser map requests go directly to the map provider. For terrain services
+that require HTTP headers, use server environment references such as
+`${TERRAIN_API_TOKEN}`. The editor displays stored literal values as `***`.
 
 ## Road filter
 

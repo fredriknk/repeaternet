@@ -42,6 +42,22 @@ pub fn router(app: AppState) -> Router {
         )
         .route("/api/terrain/prepare", post(crate::provider_http::prepare))
         .route(
+            "/api/data-sources",
+            get(crate::source_http::get).put(crate::source_http::put),
+        )
+        .route(
+            "/api/data-sources/validate",
+            post(crate::source_http::validate),
+        )
+        .route(
+            "/api/data-sources/{id}/probe",
+            post(crate::source_http::probe),
+        )
+        .route(
+            "/api/data-sources/preview",
+            post(crate::source_http::preview),
+        )
+        .route(
             "/api/terrain/{kind}",
             post(terrain_http::upload)
                 .layer(DefaultBodyLimit::max(
@@ -412,6 +428,8 @@ async fn state(State(app): State<AppState>, workspace: Workspace) -> ApiResult<J
             "evictions": stats.evictions, "capacity": stats.capacity});
         payload["terrain"] = route_terrain.names();
         payload["coverage_terrain"] = coverage_terrain.names();
+        payload["terrain_sources"] = json!(route_terrain.sources(&directory));
+        payload["coverage_terrain_sources"] = json!(coverage_terrain.sources(&directory));
         if let Some(settings) = project.plan.get("coverage") {
             payload["coverage_settings"] = settings.clone();
         }

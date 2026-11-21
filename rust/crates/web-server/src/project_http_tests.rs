@@ -15,7 +15,7 @@ const FIXTURE_ID: &str = "00000000000000000002";
 
 fn open(root: &Path) -> (Router, ProjectStore) {
     let store = ProjectStore::new(root.join("projects.sqlite3"), root).unwrap();
-    (router(store.clone(), "", true, None), store)
+    (router(store.clone(), root, "", true, None), store)
 }
 
 async fn send(
@@ -604,7 +604,7 @@ async fn runtime_guards_share_the_workspace_lock_and_autosave_cancels_inspection
 
     let root = tempfile::tempdir().unwrap();
     let (_, store) = open(root.path());
-    let app_state = AppState::new(store);
+    let app_state = AppState::new(store, root.path());
     let app = api::router(app_state.clone());
     let initial = state(&app, A).await;
     let active = initial["projects"]["active_id"].as_str().unwrap();

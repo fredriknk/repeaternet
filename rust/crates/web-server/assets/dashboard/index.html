@@ -34,6 +34,7 @@
             <input id="open" type="file" accept=".json" aria-label="Select a RepeaterNet plan JSON file" hidden>
             <button id="import-plan" type="button">Import plan file…</button>
             <button id="save" type="button">Export plan file</button>
+            <button id="open-data-sources" type="button" data-map-edit>Data sources…</button>
             <hr>
             <button id="archive-project" type="button">Archive</button>
             <button id="delete-project" type="button">Delete permanently…</button>
@@ -58,12 +59,46 @@
       <form id="action-dialog-form">
         <h2 id="action-dialog-title">Confirm action</h2>
         <p id="action-dialog-copy"></p>
+        <div id="action-dialog-detail" hidden></div>
         <label id="action-dialog-field-label" for="action-dialog-value" hidden>
           Project name<input id="action-dialog-value" maxlength="80" autocomplete="off">
         </label>
         <div class="dialog-actions">
           <button id="action-dialog-cancel" type="button">Cancel</button>
           <button id="action-dialog-confirm" type="submit">Continue</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="data-sources-dialog" class="app-dialog" aria-labelledby="data-sources-title">
+      <div class="data-sources-heading">
+        <h2 id="data-sources-title" tabindex="-1">Data sources</h2>
+        <div class="source-row-actions">
+          <button id="add-data-source" type="button">Add source</button>
+          <button id="close-data-sources" type="button">Close</button>
+        </div>
+      </div>
+      <p id="data-sources-status" role="status" tabindex="-1" hidden></p>
+      <div id="data-sources-list">
+        <p>These settings apply to all projects on this server.</p>
+        <section aria-labelledby="terrain-sources-title">
+          <h3 id="terrain-sources-title">Terrain</h3>
+          <ul id="terrain-source-list" class="source-list"></ul>
+        </section>
+        <section aria-labelledby="map-sources-title">
+          <h3 id="map-sources-title">Map layers</h3>
+          <ul id="map-source-list" class="source-list"></ul>
+        </section>
+      </div>
+      <form id="data-source-editor" novalidate hidden>
+        <div id="data-source-fields" class="source-fields"></div>
+        <details id="data-source-json-panel">
+          <summary>Edit as JSON</summary>
+          <label for="data-source-json">Source definition</label>
+          <textarea id="data-source-json" rows="10" spellcheck="false"></textarea>
+        </details>
+        <div class="dialog-actions">
+          <button id="cancel-data-source" type="button">Cancel</button>
+          <button id="save-data-source" type="submit">Save source</button>
         </div>
       </form>
     </dialog>
@@ -99,16 +134,21 @@
           <div class="plan-step" data-step="terrain-setup">
             <button type="button" class="plan-step-header" data-plan-section="terrain-setup" aria-expanded="false" aria-controls="terrain-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">2</span><span class="step-copy"><strong>Terrain</strong><small id="section-summary-terrain">Ground tiles required</small></span><span class="step-chevron" aria-hidden="true"></span></button>
             <section id="terrain-setup" class="plan-step-body" hidden>
-          <p class="hint">In Norway, estimate the download for your route, then download the tiles. Elsewhere, upload ground elevation files covering your route.</p>
+          <p>Download elevation for your route from the best available source, or upload your own files.</p>
           <div class="terrain-tools">
+            <label>Terrain source<select id="terrain-source" data-map-edit><option value="auto">Automatic · best available</option></select></label>
+            <p id="terrain-source-preview" class="hint" role="status" hidden></p>
+            <label id="terrain-fallback-label" class="check-line" hidden><input id="terrain-fallback" type="checkbox" data-map-edit checked> Fill gaps from other sources</label>
             <details><summary>Download options</summary>
             <p class="hint">Smaller grid cells capture finer terrain and require a larger download. Include surface terrain to account for trees and buildings.</p>
-            <label>Requested resolution · m<input id="terrain-resolution" type="number" min="1" max="1000" step="1" value="10"></label>
+            <label>Requested resolution · m<input id="terrain-resolution" type="number" min="1" max="1000" step="1" value="10" aria-describedby="terrain-resolution-error"></label>
+            <p id="terrain-resolution-error" class="field-error" hidden></p>
             <label class="check-line"><input id="terrain-auto" type="checkbox" checked> Coarsen automatically to stay within the pixel budget</label>
-            <label class="check-line"><input id="terrain-dom" type="checkbox"> Also download surface terrain</label>
+            <label class="check-line"><input id="terrain-dom" type="checkbox" aria-describedby="terrain-dom-note"> Also download surface terrain</label>
+            <p id="terrain-dom-note" class="hint" role="status" hidden></p>
             </details>
-            <button id="estimate-terrain" class="wide-button">Estimate Kartverket terrain</button>
-            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint"></p><button id="prepare-terrain" class="wide-button" hidden>Download planned terrain</button></div>
+            <button id="estimate-terrain" class="wide-button">Estimate terrain download</button>
+            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint" role="status"></p><div id="terrain-estimate-detail"></div><button id="prepare-terrain" class="wide-button" hidden>Download planned terrain</button></div>
           </div>
           <details><summary>Upload your own terrain files</summary>
           <label class="upload">＋ Add ground terrain<small>DTM · GeoTIFF · up to 512 MiB per tile</small><input id="dtm" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
