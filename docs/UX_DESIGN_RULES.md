@@ -16,7 +16,7 @@ The layout has one owner per job. Put new features where users already look:
 | Area | Purpose | Contents |
 | --- | --- | --- |
 | Top bar (56 px, one row) | Which project am I in? | Brand, project select, **＋ New**, **⋯** project menu, save state |
-| **⋯** project menu | Rare project operations | Rename, duplicate, recover, import/export plan file, archive, delete, archived list, cache |
+| **⋯** project menu | Rare project operations | Rename, duplicate, recover, import/export plan file, **Data sources…**, archive, delete, archived list, cache |
 | Left panel tab **1 Route** | Define the problem | Accordion steps: Endpoints, Terrain, Routers, Radio, Search, then a sticky **Find repeater route** |
 | Left panel tab **2 Coverage** | Handheld coverage of the chosen route | Area & detail, Sources, Handheld, Runs (saved runs and their exports), sticky **Calculate coverage** |
 | Left panel tab **3 Scenarios** | What-ifs on a finished coverage run | Failure scenario, heights and run comparison, targets |
