@@ -80,6 +80,7 @@
           ]
         ]
       },
+      "region": "Norway",
       "resolution_m": 1,
       "priority": 100,
       "crs_rule": "norway_utm",
@@ -156,6 +157,7 @@
           ]
         ]
       },
+      "region": "United States",
       "resolution_m": 10,
       "priority": 50,
       "products": {
@@ -239,7 +241,8 @@
           31.3,
           71.3
         ]
-      }
+      },
+      "region": "Norway"
     },
     {
       "id": "kartverket-grey",
@@ -256,7 +259,8 @@
           31.3,
           71.3
         ]
-      }
+      },
+      "region": "Norway"
     },
     {
       "id": "s2cloudless-2016",

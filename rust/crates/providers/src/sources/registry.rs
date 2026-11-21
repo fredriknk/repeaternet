@@ -360,71 +360,118 @@ impl ProviderRegistry {
         let dtm = self.rank(Product::Dtm, area, choice);
         let dom = self.rank(Product::Dom, area, choice);
         let total = area.unsigned_area();
+        let share = |geometry: &MultiPolygon<f64>| {
+            if total > 0.0 {
+                (geometry.unsigned_area() / total).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        // Each tile prefers the finest provider that covers it, so credit
+        // each provider with the part of the area no finer provider covers.
+        let primary_shares = |ranked: &[&TerrainProvider]| {
+            let mut order: Vec<usize> = (0..ranked.len()).collect();
+            order.sort_by(|&a, &b| {
+                ranked[a]
+                    .resolution_m
+                    .total_cmp(&ranked[b].resolution_m)
+                    .then(ranked[b].priority.cmp(&ranked[a].priority))
+                    .then(a.cmp(&b))
+            });
+            let mut uncovered = area.clone();
+            let mut shares = vec![0.0; ranked.len()];
+            for index in order {
+                let coverage = ranked[index].coverage.geometry();
+                shares[index] = share(&uncovered.intersection(&coverage));
+                uncovered = uncovered.difference(&coverage);
+            }
+            (shares, share(&uncovered))
+        };
+        let (dtm_shares, dtm_uncovered) = primary_shares(&dtm);
+        let (dom_shares, _) = primary_shares(&dom);
         let mut sources = Vec::new();
-        for (product, ranked) in [(Product::Dtm, &dtm), (Product::Dom, &dom)] {
+        for (product, ranked, shares) in [
+            (Product::Dtm, &dtm, &dtm_shares),
+            (Product::Dom, &dom, &dom_shares),
+        ] {
             if product == Product::Dom && !include_dom {
                 continue;
             }
-            for provider in ranked {
+            for (provider, &primary_share) in ranked.iter().zip(shares) {
                 let coverage_share = if matches!(provider.coverage, Coverage::Global) {
                     1.0
-                } else if total > 0.0 {
-                    (area
-                        .intersection(&provider.coverage.geometry())
-                        .unsigned_area()
-                        / total)
-                        .clamp(0.0, 1.0)
                 } else {
-                    0.0
+                    share(&area.intersection(&provider.coverage.geometry()))
                 };
                 sources.push(AreaSource {
                     source: SourceInfo::new(provider, product),
                     coverage_share,
+                    primary_share,
+                    role: if primary_share >= PRIMARY_SHARE_MINIMUM {
+                        SourceRole::Primary
+                    } else {
+                        SourceRole::Fallback
+                    },
                 });
             }
         }
-        let description = |provider: &TerrainProvider| {
-            format!(
-                "{} ({} m{})",
-                provider.name,
-                provider.resolution_m,
-                if provider.surface_model {
-                    " surface model"
-                } else {
-                    ""
-                }
-            )
+        let percent = |value: f64| format!("{:.0}%", (value * 100.0).max(1.0));
+        let primaries: Vec<(&TerrainProvider, f64)> = {
+            let mut list: Vec<_> = dtm
+                .iter()
+                .zip(&dtm_shares)
+                .filter(|(_, share)| **share >= PRIMARY_SHARE_MINIMUM)
+                .map(|(provider, share)| (*provider, *share))
+                .collect();
+            list.sort_by(|a, b| b.1.total_cmp(&a.1));
+            list
         };
-        let summary = match dtm.as_slice() {
-            [] => "No ground terrain source covers this area".into(),
-            [first, rest @ ..] => {
-                let product = if include_dom && dom.first().is_some_and(|p| p.id == first.id) {
-                    "ground and surface"
-                } else {
-                    "ground"
-                };
-                let first_info = format!(
-                    "{} · {} m {product}{}",
-                    first.name,
-                    first.resolution_m,
-                    if first.surface_model {
-                        " (surface model)"
-                    } else {
-                        ""
+        let summary = if dtm.is_empty() {
+            "No ground terrain source covers this area".to_owned()
+        } else {
+            let several = primaries.len() > 1;
+            let mut parts: Vec<String> = primaries
+                .iter()
+                .map(|(provider, share)| {
+                    let with_surface = include_dom
+                        && dom
+                            .iter()
+                            .zip(&dom_shares)
+                            .any(|(p, s)| p.id == provider.id && *s >= PRIMARY_SHARE_MINIMUM);
+                    let mut text = format!(
+                        "{} · {} m {}",
+                        provider.name,
+                        provider.resolution_m,
+                        if with_surface {
+                            "ground and surface"
+                        } else {
+                            "ground"
+                        }
+                    );
+                    if provider.surface_model {
+                        text.push_str(" (surface model)");
                     }
-                );
-                if rest.is_empty() {
-                    first_info
-                } else {
-                    format!(
-                        "{first_info}; gaps from {}",
-                        rest.iter()
-                            .map(|p| description(p))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
+                    if several {
+                        text.push_str(&format!(" for {} of the area", percent(*share)));
+                    }
+                    text
+                })
+                .collect();
+            if dtm_uncovered >= PRIMARY_SHARE_MINIMUM {
+                parts.push(format!(
+                    "no source covers {} of the area",
+                    percent(dtm_uncovered)
+                ));
             }
+            let mut summary = parts.join("; ");
+            if let Some((fallback, _)) = dtm
+                .iter()
+                .zip(&dtm_shares)
+                .find(|(_, share)| **share < PRIMARY_SHARE_MINIMUM)
+            {
+                summary.push_str(&format!(". No-data gaps fall back to {}", fallback.name));
+            }
+            summary
         };
         AreaSources {
             sources,
@@ -461,7 +508,23 @@ impl SourceInfo {
 pub struct AreaSource {
     #[serde(flatten)]
     pub source: SourceInfo,
+    /// Share of the area inside this provider's coverage.
     pub coverage_share: f64,
+    /// Share of the area where this provider is the finest covering source.
+    pub primary_share: f64,
+    pub role: SourceRole,
+}
+
+/// Below this share of the area a provider is treated as a fallback only.
+const PRIMARY_SHARE_MINIMUM: f64 = 0.001;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRole {
+    /// Supplies elevation for part of the area.
+    Primary,
+    /// Only fills no-data gaps left by primary sources.
+    Fallback,
 }
 
 #[derive(Debug, Serialize)]

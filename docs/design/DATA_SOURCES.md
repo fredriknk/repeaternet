@@ -104,6 +104,7 @@ Written atomically (temp + rename). Unknown fields are rejected.
 | `kind` | `"wcs"` \| `"cog"` \| `"cog_tiles"` | |
 | `products` | object | keys `dtm` and/or `dom`; at least one |
 | `coverage` | Coverage | where the provider has data |
+| `region` | string | optional, 1–40 chars, place name shown to people ("Norway"); display only. Without it the UI shows the bounds or "Global". |
 | `resolution_m` | number | nominal native ground resolution, 0.1–10,000 |
 | `priority` | integer | −1000…1000, default 0; higher wins when resolution ties |
 | `surface_model` | bool | default false. True when the "dtm" product is really a surface model (Copernicus, SRTM). Shown as a caveat. |
@@ -165,7 +166,7 @@ polygon rings closed or auto-closed, ≥ 4 points, valid.
 
 | Field | Type | Rules |
 | --- | --- | --- |
-| `id`, `name`, `attribution`, `enabled`, `coverage` | as above | coverage optional (default global) |
+| `id`, `name`, `attribution`, `enabled`, `coverage`, `region` | as above | coverage optional (default global) |
 | `kind` | `"xyz"` \| `"wms"` | WMTS in Web Mercator is an `xyz` template |
 | `url` | string | xyz: must contain `{z}`, `{x}`, `{y}`; optional `{s}`, `{r}`. wms: base URL |
 | `subdomains` | string | optional, e.g. `"abc"` |
@@ -341,7 +342,7 @@ compatibility layer or be removed once the server no longer uses it.
 | PUT | `/api/data-sources` | full `CustomFile`. 400 with `{"error": "...", "issues": [{"path": "...", "message": "..."}]}` on validation failure. Saves atomically; returns the GET payload. Redacted `"***"` header values keep their stored value. |
 | POST | `/api/data-sources/validate` | `CustomFile` → `{ "ok": bool, "issues": [...] }` without saving. |
 | POST | `/api/data-sources/{id}/probe` | `{ "latitude": .., "longitude": .. }` → `ProbeResult` `{ ok, crs, resolution_m, valid_fraction, min_m, max_m, mean_m, elapsed_ms, bytes_fetched, message }`. Runs on a worker, bounded to 30 s. |
-| POST | `/api/data-sources/preview` | `{ "a": [lat,lon], "b": [lat,lon], "known_routers"?, "manual_routers"?, "terrain": {...} }` → `{ "crs": "EPSG:…", "sources": [...as in estimate, without tile counts but with coverage share], "dom_available": bool, "summary": "Kartverket NHM · 1 m DTM and surface; gaps from Copernicus GLO-30 (30 m surface model)" }`. Cheap, no network. |
+| POST | `/api/data-sources/preview` | `{ "a": [lat,lon], "b": [lat,lon], "known_routers"?, "manual_routers"?, "terrain": {...} }` → `{ "crs": "EPSG:…", "sources": [...as in estimate, without tile counts, plus "coverage_share" (area inside the provider's coverage), "primary_share" (area where it is the finest covering source) and "role": "primary" \| "fallback"], "dom_available": bool, "summary": "Kartverket NHM · 1 m ground and surface. No-data gaps fall back to Copernicus GLO-30" }`. With several primaries the summary gives each one's share ("… for 9% of the area"). Cheap, no network. |
 
 Existing `/api/terrain/estimate`, `/api/terrain/prepare`,
 `/api/coverage/terrain/estimate` and `/api/coverage/terrain/prepare` keep

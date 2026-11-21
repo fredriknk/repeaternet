@@ -47,6 +47,9 @@ pub struct TerrainProvider {
     pub kind: TerrainKind,
     pub products: Products,
     pub coverage: Coverage,
+    /// Short place name for people, e.g. "Norway". Display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
     pub resolution_m: f64,
     #[serde(default)]
     pub priority: i32,
@@ -258,6 +261,9 @@ pub struct MapLayer {
     pub enabled: bool,
     #[serde(default)]
     pub coverage: Coverage,
+    /// Short place name for people, e.g. "Norway". Display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
     pub kind: MapKind,
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -400,6 +406,16 @@ impl Validator {
             format!("{path}.attribution"),
             "attribution must contain 1–300 characters",
         );
+    }
+
+    fn region(&mut self, path: &str, region: Option<&str>) {
+        if let Some(region) = region {
+            self.check(
+                !region.trim().is_empty() && region.chars().count() <= 40,
+                format!("{path}.region"),
+                "region must contain 1–40 characters",
+            );
+        }
     }
 
     fn coverage(&mut self, path: &str, coverage: &Coverage) {
@@ -784,6 +800,7 @@ pub(super) fn validate(
             "auto is reserved for automatic source selection",
         );
         v.coverage(&format!("{path}.coverage"), &provider.coverage);
+        v.region(&path, provider.region.as_deref());
         v.check(
             (0.1..=10_000.0).contains(&provider.resolution_m),
             format!("{path}.resolution_m"),
@@ -875,6 +892,7 @@ pub(super) fn validate(
         };
         v.name_fields(&mut ids, &path, &layer.id, &layer.name, &layer.attribution);
         v.coverage(&format!("{path}.coverage"), &layer.coverage);
+        v.region(&path, layer.region.as_deref());
         v.check(
             layer.min_zoom <= layer.max_zoom && layer.max_zoom <= 24,
             format!("{path}.max_zoom"),

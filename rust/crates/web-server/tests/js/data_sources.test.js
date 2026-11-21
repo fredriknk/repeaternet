@@ -110,6 +110,7 @@ test('terrain source and fallback round-trip through plan and load and record an
     coords: name => name === 'a' ? [59, 10] : [60, 11],
     dataSources: { terrain: [
       { id: 'local', name: 'Local elevation', resolution_m: 2, coverage: { type: 'global' } },
+      { id: 'regional', name: 'Regional', resolution_m: 1, region: 'Norway', coverage: { type: 'bbox', bbox: [4, 57.9, 31.3, 71.3] } },
       { id: 'off', name: 'Disabled', resolution_m: 4, enabled: false },
     ] },
     mapEditsLocked: () => false,
@@ -124,12 +125,14 @@ test('terrain source and fallback round-trip through plan and load and record an
   vm.runInContext(
     section('const defaultTerrainOptions =', 'let dataSources =') +
     section('function sourceCoverageBoxes(', 'function sourceRingIntersectsView(') +
-    section('function sourceCoverageLabel(', 'function setTerrainDomNote(') +
+    section('function sourceCoverageBounds(', 'function setTerrainDomNote(') +
     section('function plan(){', 'async function applyHistory('), context,
   );
   const basePlan = { a: [55, 10], b: [56, 11], rf: {}, candidates: {} };
   context.load(basePlan);
-  assert.deepEqual($('terrain-source').options.map(option => option.value), ['auto', 'local']);
+  assert.deepEqual($('terrain-source').options.map(option => option.value), ['auto', 'local', 'regional']);
+  assert.deepEqual($('terrain-source').options.slice(1).map(option => option.text),
+    ['Local elevation · 2 m · Global', 'Regional · 1 m · Norway'], 'regions label coverage instead of bounds');
   actions.length = 0;
   $('terrain-source').value = 'local';
   $('terrain-fallback').checked = false;
@@ -172,10 +175,14 @@ test('a preview response is stale as soon as route changes schedule the next pre
   assert.match(copy.textContent, /Checking sources/);
 
   timers.values().next().value();
-  requests[1].resolve({ summary: 'New route', dom_available: false, sources: [{ name: 'Surface DEM', surface_model: true }] });
+  requests[1].resolve({ summary: 'New route', dom_available: false, sources: [
+    { name: 'Surface DEM', surface_model: true, role: 'primary' },
+    { name: 'Backup DSM', surface_model: true, role: 'fallback' },
+  ] });
   await new Promise(setImmediate);
   assert.match(copy.textContent, /For this route: New route/);
-  assert.match(copy.textContent, /Surface models can include trees and buildings/);
+  assert.match(copy.textContent, /Surface models such as Surface DEM can include trees and buildings/);
+  assert.doesNotMatch(copy.textContent, /Backup DSM/, 'fallback-only sources carry no caveat');
   assert.match(domNote.textContent, /No surface terrain/);
 });
 

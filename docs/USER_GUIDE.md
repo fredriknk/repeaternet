@@ -664,7 +664,9 @@ data directory. Set `RF_PLANNER_PROVIDERS_FILE` to use another path. The version
 attribution. Terrain definitions also specify coverage, native resolution and
 one or both elevation products (`dtm` and `dom`). Coverage can be global, a
 bounding box, multiple boxes or polygon rings in WGS84. Coordinates in boxes
-are west, south, east, north. Match each product's fields to its source kind.
+are west, south, east, north. An optional `region` (for example `"Norway"`)
+labels the coverage in the source list instead of its bounds. Match each
+product's fields to its source kind.
 See the [provider schema](design/DATA_SOURCES.md#provider-definition-file).
 
 This example defines a regional WCS and a tiled COG collection. Replace the

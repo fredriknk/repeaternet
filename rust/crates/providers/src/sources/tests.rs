@@ -62,8 +62,10 @@ fn definitions_validate_with_paths_and_round_trip() {
     });
     let mut extra = custom("typo", "https://example.com/a.tif");
     extra["products"]["dtm"]["extra"] = json!(true);
+    let mut unnamed = custom("unnamed-region", "https://example.com/b.tif");
+    unnamed["region"] = json!(" ");
     let issues = ProviderRegistry::validate_custom(&json!({
-        "version": 2, "terrain": [a,bad_template,extra], "disabled_builtins": ["missing"],
+        "version": 2, "terrain": [a,bad_template,extra,unnamed], "disabled_builtins": ["missing"],
     }))
     .unwrap_err();
     for path in [
@@ -73,6 +75,7 @@ fn definitions_validate_with_paths_and_round_trip() {
         "terrain[0].resolution_m",
         "terrain[1].products.dtm.url_template",
         "terrain[2].products.dtm.extra",
+        "terrain[3].region",
     ] {
         assert!(
             issues.iter().any(|issue| issue.path == path),
@@ -213,6 +216,56 @@ fn ranking_pinning_and_target_zones() {
             "{x}, {y}"
         );
     }
+}
+
+#[test]
+fn area_preview_separates_primary_sources_from_fallbacks() {
+    let registry = ProviderRegistry::builtin();
+    let roles = |preview: &AreaSources| {
+        preview
+            .sources
+            .iter()
+            .filter(|source| source.source.product == Product::Dtm)
+            .map(|source| (source.source.id.clone(), source.role))
+            .collect::<Vec<_>>()
+    };
+
+    let oslo = registry.describe_area(&area([10.75, 59.91]), true, &SourceChoice::default());
+    assert_eq!(
+        roles(&oslo),
+        [
+            ("kartverket-nhm".into(), SourceRole::Primary),
+            ("copernicus-glo30".into(), SourceRole::Fallback),
+            ("copernicus-glo90".into(), SourceRole::Fallback),
+        ]
+    );
+    assert_eq!(
+        oslo.summary,
+        "Kartverket NHM · 1 m ground and surface. No-data gaps fall back to Copernicus GLO-30"
+    );
+
+    // Straddles the Norway–Sweden border at about 11.4°E (cut by the mainland polygon).
+    let border = MultiPolygon(vec![rectangle([10.9, 59.0, 12.6, 59.3])]);
+    let preview = registry.describe_area(&border, false, &SourceChoice::default());
+    let primary: Vec<_> = preview
+        .sources
+        .iter()
+        .filter(|source| source.role == SourceRole::Primary)
+        .map(|source| source.source.id.as_str())
+        .collect();
+    assert!(primary.contains(&"kartverket-nhm"), "{preview:?}");
+    assert!(primary.contains(&"copernicus-glo30"), "{preview:?}");
+    let total: f64 = preview
+        .sources
+        .iter()
+        .map(|source| source.primary_share)
+        .sum();
+    assert!((total - 1.0).abs() < 1e-6, "{total}");
+    assert!(
+        preview.summary.contains("of the area") && !preview.summary.contains("surface;"),
+        "{}",
+        preview.summary
+    );
 }
 
 #[test]

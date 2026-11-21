@@ -688,18 +688,20 @@ function bindSourceLayerKeyboard(control){
   });
 }
 map.on('layeradd layerremove',()=>requestAnimationFrame(updateSourceLayerLabels));
+function sourceCoverageBounds(definition){
+  return sourceCoverageBoxes(definition).map(box=>`[${box.join(', ')}]`).join(' · ');
+}
 function sourceCoverageLabel(definition){
-  const boxes=sourceCoverageBoxes(definition);
-  if(!boxes.length)return 'Global';
-  return `Bounds ${boxes.map(box=>`[${box.join(', ')}]`).join(' · ')}`;
+  if(definition.region?.trim())return definition.region.trim();
+  const bounds=sourceCoverageBounds(definition);
+  return bounds?`Bounds ${bounds}`:'Global';
 }
 function updateTerrainSourceSelect(){
   const select=$('terrain-source');
   const options=[new Option('Automatic · best available','auto')];
   const providers=dataSources?.terrain||[];
   for(const provider of providers.filter(item=>item.enabled!==false)){
-    const region={'kartverket-nhm':'Norway','usgs-3dep-13':'United States'}[provider.id]||sourceCoverageLabel(provider);
-    options.push(new Option(`${provider.name} · ${provider.resolution_m} m · ${region}`,provider.id));
+    options.push(new Option(`${provider.name} · ${provider.resolution_m} m · ${sourceCoverageLabel(provider)}`,provider.id));
   }
   if(!options.some(option=>option.value===terrainOptions.source)){
     const name=providers.find(provider=>provider.id===terrainOptions.source)?.name;
@@ -775,8 +777,8 @@ async function previewTerrainSources(snapshot,request=++terrainPreviewRequest){
   try{
     const preview=await api('/api/data-sources/preview',sourceJsonRequest('POST',terrainSourceRequest(snapshot)));
     if(request!==terrainPreviewRequest)return;
-    const caveats=[...new Set((preview.sources||[]).filter(source=>source.surface_model).map(source=>source.name))];
-    const caveat=caveats.length?` Surface models can include trees and buildings (${caveats.join(', ')}).`:'';
+    const caveats=[...new Set((preview.sources||[]).filter(source=>source.surface_model&&source.role!=='fallback').map(source=>source.name))];
+    const caveat=caveats.length?` Surface models such as ${caveats.join(', ')} can include trees and buildings, so ground clearance is approximate.`:'';
     copy.textContent=`For this route: ${preview.summary}${/[.!?]$/.test(preview.summary)?'':'.'}${caveat}`;
     terrainPreviewDomNote=preview.dom_available===false?'No surface terrain (DOM) source covers this route.':'';
   }catch(error){
@@ -847,6 +849,8 @@ function renderDataSourceRows(){
       specs.push(builtin?'Built-in':'Custom');
       if(definition.surface_model)specs.push('Surface model');
       meta.textContent=specs.join(' · ');
+      const bounds=sourceCoverageBounds(definition);
+      if(bounds&&definition.region)meta.title=`Bounds ${bounds}`;
       const controls=document.createElement('div');
       controls.className='source-row-actions';
       const toggle=sourceRowButton(definition,'Enabled',event=>void toggleDataSource(key,definition,index,event.currentTarget));
@@ -1034,6 +1038,7 @@ function renderSourceFields(definition){
   add('enabled','Enabled','checkbox',definition.enabled!==false);
   const coverage=definition.coverage||{type:'global'};
   const coverageType=add('coverage.type','Coverage',[['global','Global'],['bbox','Bounding box'],['multi_bbox','Multiple bounding boxes'],['polygon','Polygon']],coverage.type).querySelector('select');
+  add('region','Region name · optional','text',definition.region,{placeholder:'Norway'});
   const coverageFields=[
     ['bbox',add('coverage.bbox','Bounds [west, south, east, north] · JSON array','json',coverage.bbox,{placeholder:'[4, 57.9, 31.3, 71.3]'})],
     ['multi_bbox',add('coverage.bboxes','Bounding boxes · JSON array','json',coverage.bboxes)],
