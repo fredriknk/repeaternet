@@ -58,10 +58,14 @@ saved-run fingerprints read local GeoTIFFs as today.
    choose the declared UTM code whose zone central meridian is nearest the
    centroid longitude.
 3. Otherwise WGS84 UTM for the centroid: EPSG:326zz (north) or 327zz (south).
-   Beyond ±84° latitude use EPSG:3413 (north) or 3031 (south).
+   Beyond ±84° latitude use EPSG:3413 (north) or 3031 (south). Keep the
+   Stockholm area (18–19.5°E, 58.5–60.2°N) in zone 33 to meet the Stockholm
+   target CRS requirement, since the nominal zone boundary is at 18°E.
 
 Mixed-CRS mosaics stay unsupported; a provider whose native CRS differs from
-the target is warped.
+the target is warped. A project with terrain in a custom, unregistered CRS
+can use its existing terrain and uploads. Downloads that need to write new
+tiles require a registered CRS because the writer emits registered EPSG keys.
 
 ### Geographic source rasters
 
@@ -95,7 +99,7 @@ Written atomically (temp + rename). Unknown fields are rejected.
 
 | Field | Type | Rules |
 | --- | --- | --- |
-| `id` | string | `^[a-z0-9][a-z0-9-]{0,47}$`, unique across built-in and custom |
+| `id` | string | `^[a-z0-9][a-z0-9-]{0,47}$`, unique across built-in and custom. `auto` is reserved for automatic terrain selection. |
 | `name` | string | 1–80 chars, shown to people |
 | `kind` | `"wcs"` \| `"cog"` \| `"cog_tiles"` | |
 | `products` | object | keys `dtm` and/or `dom`; at least one |
@@ -120,13 +124,17 @@ Written atomically (temp + rename). Unknown fields are rejected.
   different endpoint or coverage name per CRS (Kartverket) give
   `"per_crs": {"EPSG:25832": {"endpoint": url, "coverage": string}, ...}`
   instead of `endpoint`/`coverage`/`native_crs`; `native_crs` is then the
-  key list in order. `native_crs` lists CRSs the server can
+  keys in lexical order, since JSON objects do not define key order.
+  `native_crs` lists CRSs the server can
   return; when the target CRS is listed request it directly (no warp),
   otherwise request in `native_crs[0]` over the transformed envelope (+2
   source pixels margin) and warp. WCS 2.0.1 uses `subset=E(..)`/`subset=N(..)`
   (or `Lat/Long`), `subsettingCrs`, `outputCrs` and `scaleSize`; the axis labels
   come from `axis_labels` (default `["E","N"]` for projected, `["Long","Lat"]`
   for geographic native CRSs).
+  Geographic WCS subsetting clips a window to the longitude interval
+  containing its centre at the antimeridian. Use projected native WCS or
+  a COG fallback to fill across that boundary.
 - **cog**: `{ "url": url }`. CRS and geotransform come from the file.
 - **cog_tiles**: `{ "url_template": string, "tile_degrees": 1.0 }`. Template
   placeholders (cell = floor of south-west corner):
@@ -176,7 +184,7 @@ Verified live 2026-11-21 (HTTP 200, `Accept-Ranges: bytes`).
 
 | id | kind | coverage | res | priority | notes |
 | --- | --- | --- | --- | --- | --- |
-| `kartverket-nhm` | wcs 1.0.0 | Norway mainland bbox `[4.0, 57.9, 31.3, 71.3]` | 1 m | 100 | DTM+DOM, `crs_rule: norway_utm`, one endpoint per CRS via `per_crs` (values from `kartverket_wcs.json`, which this replaces). Returns nodata outside Norway → gap fill. |
+| `kartverket-nhm` | wcs 1.0.0 | Approximate Norway mainland polygon, with a bounding box of `[4.0, 57.9, 31.3, 71.3]` | 1 m | 100 | DTM+DOM, `crs_rule: norway_utm`, one endpoint per CRS via `per_crs` (values from the previous Kartverket service table). The polygon excludes Stockholm, which is inside the bounding box. Nodata within the polygon is eligible for gap fill. |
 | `usgs-3dep-13` | cog_tiles | CONUS + AK + HI multi-bbox | 10 m | 50 | DTM. `https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/{ns}{lat_n2}{ew}{lon3}/USGS_13_{ns}{lat_n2}{ew}{lon3}.tif`, NAD83 geographic, ~400 MB files → range reads only. Missing tile → nodata. |
 | `copernicus-glo30` | cog_tiles | global | 30 m | 10 | `https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif`. `surface_model: true`, `missing_tile: sea_level`. Attribution "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA". |
 | `copernicus-glo90` | cog_tiles | global | 90 m | 5 | `https://copernicus-dem-90m.s3.amazonaws.com/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif`. Fallback for the few GLO-30 gaps. |
@@ -223,18 +231,21 @@ from a DTM provider.
 
 Cache root: `shared-cache/` as today.
 
-- `shared-cache/kartverket/` keeps the existing names so current caches still
-  hit when the generic WCS request equals the legacy one (nice-to-have).
 - `shared-cache/sources/<provider-id>/<sha256(definition-fetch-fields)[..12]>/`:
   - `cog/<sha(url)[..20]>/header.bin` + `blocks/<offset>-<len>.bin`: raw
     byte ranges fetched from a COG (chunk-aligned, 256 KiB default chunk,
     coalesce adjacent ranges, max 16 MiB per request). Remote `TiffSource`
-    reads hit this cache first. Also a `missing` marker file for 404 cells.
+    reads hit this cache first. The directory also stores `object.json`
+    with the object length and HTTP validator, a `missing` marker for
+    404/403 tiled cells, or `whole.tif` for an allowed range-ignoring response.
   - `wcs/<sha(request)[..20]>.tif` for WCS responses.
 - `shared-cache/composed/<sha(tile request)[..24]>-<product>.tif`: final warped
   composite tiles. Key = target CRS identity, bounds, width, height, product,
   ordered list of (provider id, definition fetch hash). Estimates count these
-  for cache hits.
+  for cache hits. A matching JSON sidecar records providers used and warnings.
+  The legacy Kartverket adapter still reads `shared-cache/kartverket/`.
+  The registry uses the new cache keys for its composed results and WCS
+  responses.
 
 Changing a provider's fetch-relevant fields changes its hash, so stale caches
 are never reused. Cache directories are created lazily.
@@ -342,7 +353,21 @@ and `"fallback": bool` (default true). Unknown/disabled source ids → 400
 Concurrency: definition changes take effect for new estimates. A running
 download keeps the registry snapshot it started with. Estimates and prepares
 record the registry fingerprint; prepare after a definition change → 409
-"Data sources changed; estimate again".
+"Data sources changed; estimate again". Both estimate responses include
+`registry_fingerprint`. Clients can echo it as a top-level field in the
+matching prepare request to bind the job to a specific estimate, including
+when several tabs share a workspace. Without it, the server checks the last
+estimate of that type in the workspace when available. Treat the fingerprint
+as opaque. Completed terrain jobs include `warnings` and `providers_used`
+(provider IDs that contributed valid samples). Preview `coverage_share`
+is a number between 0 and 1, measured per provider, so shares can overlap.
+Each published terrain generation stores the contributing source definitions
+(the estimate's source fields without tile counts) in `sources.json`.
+`GET /api/state` exposes these under `terrain_sources` and
+`coverage_terrain_sources`.
+New coverage manifests and their JSON/GeoJSON exports carry
+`terrain_sources` for attribution. Rendering terrain attribution in HTML
+report assumptions belongs to the report renderer.
 
 ## Dashboard
 

@@ -42,7 +42,7 @@ fn plan() -> Value {
 
 fn app(root: &Path, token: &str) -> (Router, AppState) {
     let store = ProjectStore::new(root.join("projects.sqlite3"), root).unwrap();
-    let mut app = AppState::new(store);
+    let mut app = AppState::new(store, root);
     app.scheduler = Arc::new(Scheduler::new(1));
     (router_with_state(app.clone(), token, true), app)
 }
@@ -1508,6 +1508,201 @@ async fn mock_upstream(router: Router) -> (String, tokio::task::JoinHandle<()>) 
     )
 }
 
+#[tokio::test]
+async fn data_sources_edit_validate_and_redact() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    let call = |method, url, body, status| api(&app, &cookie, method, url, body, status);
+    let initial = call(
+        Method::GET,
+        "/api/data-sources",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(initial["errors"].as_array().unwrap().is_empty());
+    assert_eq!(initial["terrain"][0]["products"], json!(["dtm", "dom"]));
+    assert_eq!(initial["terrain"][0]["builtin"], true);
+    assert_eq!(initial["terrain"][0]["attribution"], "© Kartverket");
+    assert_eq!(initial["basemaps"][0]["id"], "osm");
+    let custom = json!({
+        "version": 1, "disabled_builtins": ["copernicus-glo90"],
+        "terrain":[{
+            "id":"local", "name":"Local elevation", "kind":"cog", "coverage":{"type":"global"},
+            "products":{"dtm":{"url":"http://localhost:8080/local.tif"}},
+            "attribution":"Local survey", "resolution_m":20,
+            "headers":{"authorization":"test-sensitive","x-key":"${SOURCE_KEY}"}
+        }]
+    });
+    let valid = call(
+        Method::POST,
+        "/api/data-sources/validate",
+        custom.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(valid, json!({"ok":true, "issues":[]}));
+    assert!(!root.path().join("providers.json").exists());
+    let saved = call(
+        Method::PUT,
+        "/api/data-sources",
+        custom.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        saved["custom"]["terrain"][0]["headers"],
+        json!({"authorization":"***","x-key":"${SOURCE_KEY}"})
+    );
+    assert!(!saved.to_string().contains("test-sensitive"));
+    let disabled = saved["terrain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "copernicus-glo90")
+        .unwrap();
+    assert_eq!(disabled["enabled"], false);
+    let mut edit = saved["custom"].clone();
+    edit["terrain"][0]["name"] = json!("Updated local elevation");
+    call(
+        Method::PUT,
+        "/api/data-sources",
+        edit.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let file = std::fs::read_to_string(root.path().join("providers.json")).unwrap();
+    assert!(file.contains("test-sensitive"));
+    edit["terrain"][0]["products"]["dtm"]["url"] = json!("http://example.com/plain.tif");
+    let invalid = call(
+        Method::PUT,
+        "/api/data-sources",
+        edit,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(invalid["issues"][0]["path"], "terrain[0].products.dtm.url");
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("providers.json")).unwrap(),
+        file
+    );
+    let bad =
+        json!({"a":[-22.95,-43.21],"b":[-22.94,-43.20],"terrain":{"source":"copernicus-glo90"}});
+    call(
+        Method::POST,
+        "/api/data-sources/preview",
+        bad,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rio_cog_estimate_prepare_and_search_with_registry_change_guard() {
+    use axum::{response::IntoResponse, routing::get};
+    const COG: &[u8] = include_bytes!("../../providers/tests/fixtures/geographic-cog.tif");
+    let (upstream, task) = mock_upstream(Router::new().route(
+        "/rio.tif",
+        get(|headers: HeaderMap| async move {
+            assert_eq!(headers["range"], "bytes=0-262143");
+            let range = format!("bytes 0-{}/{}", COG.len() - 1, COG.len());
+            (
+                StatusCode::PARTIAL_CONTENT,
+                [("content-type", "image/tiff"), ("content-range", &range)],
+                COG,
+            )
+                .into_response()
+        }),
+    ))
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let mut definitions = json!({
+        "version":1,
+        "terrain":[{
+            "id":"rio-local", "name":"Rio local elevation", "kind":"cog",
+            "products":{"dtm":{"url":format!("{upstream}/rio.tif")}},
+            "coverage":{"type":"bbox","bbox":[-43.4,-23.21,-42.9,-22.7]},
+            "resolution_m":20,"attribution":"Synthetic Rio fixture"
+        }]
+    });
+    std::fs::write(root.path().join("providers.json"), definitions.to_string()).unwrap();
+    let (_, mut runtime) = app(root.path(), "");
+    runtime.terrain_limits.maximum_tile_area_km2 = 1.0;
+    let app = router_with_state(runtime, "", true);
+    let cookie = cookie(A);
+    let call = |method, url, body, status| api(&app, &cookie, method, url, body, status);
+    let mut plan = json!({
+        "a": [-22.95,-43.21], "b": [-22.948,-43.208],
+        "terrain":{"source":"rio-local","fallback":false},
+        "candidates":{"corridor_width_m":100,"maximum_candidates":10,"refine_radius_m":0},
+        "search_effort":"quick"
+    });
+    let preview = call(
+        Method::POST,
+        "/api/data-sources/preview",
+        plan.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(preview["crs"], "EPSG:32723");
+    assert_eq!(preview["dom_available"], false);
+    assert_eq!(preview["sources"][0]["coverage_share"], 1.0);
+    let estimate_url = "/api/terrain/estimate";
+    let prepare_url = "/api/terrain/prepare";
+    let estimate = call(Method::POST, estimate_url, plan.clone(), StatusCode::OK).await;
+    assert_eq!(estimate["effective_resolution_m"], 20.0);
+    assert_eq!(estimate["sources"][0]["id"], "rio-local");
+    assert!(estimate["dom_unavailable_reason"].is_string());
+    definitions["terrain"][0]["name"] = json!("Rio updated elevation");
+    call(
+        Method::PUT,
+        "/api/data-sources",
+        definitions,
+        StatusCode::OK,
+    )
+    .await;
+    call(
+        Method::POST,
+        prepare_url,
+        plan.clone(),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    plan["registry_fingerprint"] = estimate["registry_fingerprint"].clone();
+    call(
+        Method::POST,
+        prepare_url,
+        plan.clone(),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let estimate = call(Method::POST, estimate_url, plan.clone(), StatusCode::OK).await;
+    plan["registry_fingerprint"] = estimate["registry_fingerprint"].clone();
+    call(Method::POST, prepare_url, plan.clone(), StatusCode::OK).await;
+    let prepared = terminal(&app, &cookie).await;
+    assert_eq!(prepared["job"]["state"], "terrain_ready", "{prepared}");
+    assert_eq!(prepared["job"]["providers_used"], json!(["rio-local"]));
+    assert_eq!(
+        prepared["terrain_sources"][0]["attribution"],
+        "Synthetic Rio fixture"
+    );
+    let readiness = call(
+        Method::POST,
+        "/api/terrain/coverage?route_only=true",
+        plan.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(readiness["covered"], true, "{readiness}");
+    plan.as_object_mut().unwrap().remove("registry_fingerprint");
+    call(Method::POST, "/api/optimize", plan.clone(), StatusCode::OK).await;
+    assert_eq!(terminal(&app, &cookie).await["job"]["state"], "complete");
+    plan["terrain"]["source"] = json!("missing");
+    call(Method::POST, estimate_url, plan, StatusCode::BAD_REQUEST).await;
+    task.abort();
+}
+
 fn geographic(x: f64, y: f64) -> LonLat {
     Transformer::new(TerrainCrs::Etrs89Utm33)
         .unwrap()
@@ -1518,7 +1713,6 @@ fn geographic(x: f64, y: f64) -> LonLat {
 #[tokio::test]
 async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_and_failure() {
     use axum::{response::IntoResponse, routing::get};
-    use repeaternet_providers::kartverket::WcsService;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const WCS_TILE: &[u8] = include_bytes!("../../providers/tests/fixtures/tile-west.tif");
@@ -1554,17 +1748,30 @@ async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_an
     .await;
     let root = tempfile::tempdir().unwrap();
     let (_, mut runtime) = app(root.path(), "");
-    runtime.wcs_limits.maximum_tile_area_km2 = 0.01;
+    runtime.terrain_limits.maximum_tile_area_km2 = 0.01;
     runtime.coverage_terrain_resolution = Some(10.0);
-    runtime.wcs_config.services.insert(
-        "EPSG:25833".into(),
-        WcsService {
-            dtm_endpoint: format!("{upstream}/wcs"),
-            dom_endpoint: format!("{upstream}/wcs"),
-            dtm_coverage: "ground".into(),
-            dom_coverage: "surface".into(),
-        },
-    );
+    let wcs = |coverage| {
+        json!({
+            "endpoint": format!("{upstream}/wcs"),
+            "coverage": coverage,
+            "version": "1.0.0",
+            "format": "GeoTIFF",
+            "native_crs": ["EPSG:25833"]
+        })
+    };
+    std::fs::write(
+        root.path().join("providers.json"),
+        json!({
+            "version": 1,
+            "terrain": [{
+                "id": "kartverket-loopback", "name": "Kartverket loopback", "kind": "wcs",
+                "coverage": {"type":"global"}, "resolution_m": 1.0, "attribution": "Kartverket",
+                "products": {"dtm": wcs("ground"), "dom": wcs("surface")}
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
     let app = router_with_state(runtime.clone(), "", true);
     let cookie = cookie(A);
     let a = geographic(500025.0, 6650050.0);
@@ -1572,7 +1779,7 @@ async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_an
     let mut body = json!({
         "a": [a.latitude,a.longitude], "b": [b.latitude,b.longitude],
         "candidates": {"corridor_width_m": 10},
-        "terrain": {"requested_resolution_m": 10, "include_dom": false},
+        "terrain": {"requested_resolution_m": 10, "include_dom": false, "source": "kartverket-loopback", "fallback": false},
     });
     let post = |url, data| api(&app, &cookie, Method::POST, url, data, StatusCode::OK);
     let estimate = post("/api/terrain/estimate", body.clone()).await;
@@ -1674,6 +1881,19 @@ async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_an
     tokio::time::timeout(Duration::from_secs(5), requested.notified())
         .await
         .unwrap();
+    let during_download = api(
+        &app,
+        &cookie,
+        Method::GET,
+        "/api/state",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        during_download["job"]["stage"],
+        "DOM tile 1/1 · Kartverket loopback"
+    );
     post("/api/cancel", json!({"job_id": job["job_id"]})).await;
     resume.notify_one();
     let cancelled = terminal(&app, &cookie).await;

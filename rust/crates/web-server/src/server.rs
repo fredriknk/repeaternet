@@ -22,11 +22,17 @@ mod route_http_tests;
 
 pub fn router(
     store: ProjectStore,
+    data_directory: &std::path::Path,
     token: &str,
     loopback_only: bool,
     trusted_proxy: Option<IpAddr>,
 ) -> Router {
-    build_router(AppState::new(store), token, loopback_only, trusted_proxy)
+    build_router(
+        AppState::new(store, data_directory),
+        token,
+        loopback_only,
+        trusted_proxy,
+    )
 }
 
 #[cfg(test)]
@@ -88,6 +94,7 @@ mod tests {
     fn test_router(data: &std::path::Path, token: &str) -> Router {
         router(
             ProjectStore::new(data.join("projects.sqlite3"), data).unwrap(),
+            data,
             token,
             true,
             None,
@@ -252,7 +259,7 @@ mod tests {
         let store = ProjectStore::new(data.path().join("projects.sqlite3"), data.path()).unwrap();
         let trusted: SocketAddr = "127.0.0.2:5000".parse().unwrap();
         let direct: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        let app = router(store, "proxy-token", true, Some(trusted.ip()));
+        let app = router(store, data.path(), "proxy-token", true, Some(trusted.ip()));
         let forwarded = |method, path, peer| {
             request(method, path)
                 .extension(ConnectInfo(peer))

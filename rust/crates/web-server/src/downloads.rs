@@ -239,9 +239,12 @@ async fn coverage(
                 _ => return Err(ApiError::invalid("Scenario export needs both a scenario run and a reference router")),
             }
         };
-        let metadata = grid.metadata(&counts, MetadataOptions {
+        let mut metadata = grid.metadata(&counts, MetadataOptions {
             stale: job["stale"] == true, target_report: target_report.as_ref(), exported_at: Some(route_http::now()),
         });
+        if let Some(sources) = job.get("terrain_sources") {
+            metadata["terrain_sources"] = sources.clone();
+        }
         let attachments = CoverageAttachments {
             target_report: target_report.as_ref(), scenario_comparison: comparison.as_ref(), ..Default::default()
         };

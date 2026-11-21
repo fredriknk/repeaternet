@@ -2,8 +2,7 @@
 # Development and architecture
 
 RepeaterNet runs as one native `repeaternet` process. It serves an embedded
-vanilla-JavaScript and Leaflet dashboard. The Kartverket service table and
-terrain CRS catalog are embedded too. The executable runs without a frontend
+vanilla-JavaScript and Leaflet dashboard. The built-in data source registry and terrain CRS catalog are embedded too. The executable runs without a frontend
 build, Python, GDAL or PROJ. The retired Python implementation is available at
 commit `18b7cee`. The [migration inventory](history/RUST_MIGRATION.md) records
 the original compatibility contracts.
@@ -22,7 +21,7 @@ flowchart LR
     Workers <--> Runs["Coverage store · JSON and JSONL"]
     Workers <--> Providers["Provider adapters"]
     Optimizer -.->|Road filter| Providers
-    Providers <-->|Terrain tiles| Kartverket
+    Providers <-->|Elevation requests and ranges| Elevation["WCS and Cloud Optimized GeoTIFF"]
     Providers <-->|Road tiles| Overpass
     Providers <-->|Repeaters| CoreScope
 ```
@@ -44,7 +43,7 @@ relative to the repository root.
 | [`rust/crates/coverage/`](../rust/crates/coverage/README.md) | Area grids, exact-point evaluation, scenarios, comparisons and targets |
 | [`rust/crates/coverage-store/`](../rust/crates/coverage-store/README.md) | Coverage manifests, result pages, target reports and identity checks |
 | [`rust/crates/exports/`](../rust/crates/exports/README.md) | Route CSV, GeoJSON and HTML, plus coverage JSON, GeoJSON and HTML |
-| [`rust/crates/providers/`](../rust/crates/providers/README.md) | Kartverket WCS, Overpass roads and CoreScope adapters |
+| [`rust/crates/providers/`](../rust/crates/providers/README.md) | Worldwide WCS and COG elevation, Overpass roads and CoreScope adapters |
 | [`rust/crates/corescope-capture/`](../rust/crates/corescope-capture/README.md) | Standalone CoreScope RF reception and topology capture to SQLite |
 | [`tools/`](../tools) | Windows build, executable verification and release packaging |
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Windows PR checks and tagged Windows release publishing |
@@ -63,7 +62,7 @@ worker threads. Terrain uploads use separate admission limits.
 ### Route search
 
 1. The dashboard saves pending edits and checks terrain readiness. It can
-   estimate and queue a Kartverket corridor download, poll until the terrain
+   estimate and queue a corridor terrain download, poll until the terrain
    is ready, then submit the route plan to `POST /api/optimize`.
 2. The handler validates the plan and requested project revision, opens route
    terrain, projects site coordinates and checks required ground samples.
@@ -83,7 +82,7 @@ worker threads. Terrain uploads use separate admission limits.
 
 1. The dashboard sends coverage settings and the certified route snapshot and
    alternative. It can estimate or preview the grid, or request supplemental
-   Kartverket terrain for the chosen area.
+   terrain for the chosen area in the existing route CRS.
 2. The handler resolves area, sources and grid, applies optional source-height
    overrides and builds the run identity. The coverage mosaic reads route
    terrain first and supplemental terrain second. The identity includes
@@ -105,7 +104,8 @@ worker threads. Terrain uploads use separate admission limits.
 | `projects.sqlite3` | Catalog, workspace selection, current and previous plan, route summary and run state, and the native snapshot in `route_results`. SQLite can create WAL and SHM sidecars. |
 | `projects.sqlite3.repeaternet-intent` | SQLite journal for staged project-store publication and reconciliation. |
 | `<workspace-key>/projects/<directory-token>/` | Project files. Catalog project IDs and directory tokens are separate. Legacy catalog rows can refer to the workspace root. |
-| `shared-cache/kartverket/`, `shared-cache/overpass/` | Shared downloads. `RF_PLANNER_CACHE_DIR` overrides the cache root. |
+| `providers.json` | Server-wide custom sources and disabled built-ins. `RF_PLANNER_PROVIDERS_FILE` overrides this path. |
+| `shared-cache/sources/`, `shared-cache/composed/`, `shared-cache/overpass/` | Shared downloads. `RF_PLANNER_CACHE_DIR` overrides the cache root. |
 
 Paths below are relative to a project directory.
 
@@ -115,6 +115,7 @@ Paths below are relative to a project directory.
 | `dtm/`, `dom/` | Route ground and surface uploads. |
 | `terrain-generations/generation-*/{dtm,dom}/` | Downloaded route terrain. |
 | `coverage-terrain-generations/generation-*/{dtm,dom}/` | Downloaded supplemental terrain. |
+| `{terrain-generations,coverage-terrain-generations}/generation-*/sources.json` | Source attribution and product metadata published with the terrain tiles. |
 | `coverage-job.json`, `coverage-jobs/<job-id>.json` | Latest manifest and prior manifests archived on rollover. |
 | `coverage-reused-selection.json` | Optional pointer recording a reused run selected by the server. |
 | `coverage-results/<job-id>.jsonl` | Ordered coverage result chunks, one array per line. |
@@ -137,12 +138,23 @@ Changing the coverage area or selected alternative preserves them. The
 supplemental estimate subtracts installed tile footprints by product. Raster
 sampling still checks masked and missing pixels.
 
-Shared provider caches sit outside project storage usage. Kartverket and
-Overpass keys incorporate their upstream request or tile schema. The Overpass
-grid uses 0.1° latitude by 0.2° longitude cells. Provider downloads can survive
-a cancelled job and be reused. Shared caches have no automatic retention
-policy. Stop the server before taking a backup of the full data directory or
-removing the shared cache.
+The [data sources API](design/DATA_SOURCES.md#http-api-web-server) reloads
+`providers.json` on estimates and download requests. Each worker retains its
+starting registry snapshot. Before queueing, the server compares the
+registry fingerprint with the one used to estimate the request. The provider
+adapter ranks sources per tile and fills remaining gaps in order. Local terrain
+consumers read the resulting GeoTIFF mosaic in one projected CRS.
+
+Shared provider caches sit outside project storage usage. Raw terrain
+responses live under `sources/<provider-id>/<fetch-definition-hash>/`.
+COG byte chunks are 256 KiB, with object metadata, missing-tile markers and
+a small whole-object fallback for servers that ignore ranges. Composed
+projected tiles and their provider reports are keyed by grid, product and
+ordered provider definitions under `composed/`. The Overpass grid uses
+0.1° latitude by 0.2° longitude cells. Provider downloads can survive a
+cancelled job and be reused. Shared caches have no automatic retention policy.
+Stop the server before backing up the full data directory or removing the
+shared cache.
 
 ## Dashboard assets
 

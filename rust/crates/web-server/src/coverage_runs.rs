@@ -237,6 +237,9 @@ pub async fn start(
         let manifest = json!({
             "coverage_store_format": FORMAT, "model_version": MODEL_VERSION, "project_id": context.project_id,
             "terrain_fingerprint": context.fingerprint, "terrain_crs": terrain.crs().to_string(),
+            "terrain_sources": context.route.sources(&context.directory).into_iter()
+                .chain(context.supplemental.iter().flat_map(|files| files.sources(&context.directory)))
+                .collect::<Vec<_>>(),
             "settings": settings, "settings_fingerprint": fingerprint(&json!(settings)),
             "source_ids": network.source_ids, "source_sites": source_sites, "network_sites": network_sites,
             "network_links": network.network_links, "report_links": report_links,

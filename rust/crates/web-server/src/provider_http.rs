@@ -10,16 +10,20 @@ use repeaternet_optimizer::Cancellation;
 use repeaternet_optimizer::InfrastructurePolicy;
 use repeaternet_providers::{
     corescope,
-    kartverket::{
-        DownloadArea, DownloadPlan, KartverketProvider, PlanOptions, Product, StagedGeneration,
+    kartverket::StagedGeneration,
+    sources::{
+        DownloadArea, DownloadCancellation, DownloadPlan, PlanOptions, Product, ProviderRegistry,
+        SourceChoice, TerrainDownloader, geographic_footprint,
     },
 };
-use repeaternet_terrain::{Bounds, GeoTiff, LonLat, TerrainCrs, Transformer};
+use repeaternet_terrain::{
+    Bounds, GeoTiff, LonLat, Point, TerrainCrs, Transformer, corridor::corridor_geometry,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    api::{ApiError, ApiResult, ObjectBody, Workspace, ensure_idle, save_plan},
+    api::{ApiError, ApiResult, ObjectBody, Workspace, active_project, ensure_idle, save_plan},
     catalog::{AppState, Session, random_id},
     route_http::{self, Control},
     route_inputs,
@@ -119,6 +123,8 @@ struct Options {
     requested_resolution_m: f64,
     auto_resolution: bool,
     include_dom: bool,
+    source: String,
+    fallback: bool,
 }
 
 impl Default for Options {
@@ -127,13 +133,16 @@ impl Default for Options {
             requested_resolution_m: 10.0,
             auto_resolution: true,
             include_dom: true,
+            source: "auto".into(),
+            fallback: true,
         }
     }
 }
 
 struct Download {
     context: TerrainContext,
-    provider: KartverketProvider,
+    provider: TerrainDownloader,
+    choice: SourceChoice,
     crs: TerrainCrs,
     dtm: Option<DownloadPlan>,
     dom: Option<DownloadPlan>,
@@ -191,8 +200,8 @@ impl Download {
         app: &AppState,
         key: &str,
         id: &str,
-        cancelled: &dyn Fn() -> bool,
-    ) -> ApiResult<StagedGeneration> {
+        cancelled: DownloadCancellation,
+    ) -> ApiResult<DownloadStage> {
         let root = self.context.directory.join(if self.supplemental() {
             "coverage-terrain-generations"
         } else {
@@ -232,73 +241,241 @@ impl Download {
             }
         }
         let mut done = 0;
+        let mut warnings = std::collections::BTreeSet::new();
+        let mut providers_used = std::collections::BTreeSet::new();
+        let mut source_info = Vec::new();
         let mut fetch = |kind: Product, plan: &Option<DownloadPlan>| -> ApiResult<Vec<PathBuf>> {
             let Some(plan) = plan else {
                 return Ok(Vec::new());
             };
             let paths = self
                 .provider
-                .fetch_plan(kind, self.crs, plan, cancelled, |index, count, cached| {
-                    let lock = app.session(key);
-                    let mut guard = lock.blocking_lock();
-                    if let Some(session) = guard.as_mut().filter(|s| self.matches(s, id)) {
-                        let status = self.status(session);
-                        let product = kind.name().to_uppercase();
-                        let suffix = if cached { " (cache hit)" } else { "" };
-                        status["stage"] = json!(format!("{product} tile {index}/{count}{suffix}"));
-                        status["done"] = json!(done + index.saturating_sub(1));
-                    }
-                })
+                .fetch_plan(
+                    kind,
+                    self.crs,
+                    plan,
+                    &self.choice,
+                    cancelled.clone(),
+                    |tile| {
+                        let lock = app.session(key);
+                        let mut guard = lock.blocking_lock();
+                        if let Some(session) = guard.as_mut().filter(|s| self.matches(s, id)) {
+                            let status = self.status(session);
+                            let product = kind.name().to_uppercase();
+                            let provider = tile
+                                .provider
+                                .map_or_else(String::new, |name| format!(" · {name}"));
+                            let suffix = if tile.cached { " (cache hit)" } else { "" };
+                            status["stage"] = json!(format!(
+                                "{product} tile {}/{}{provider}{suffix}",
+                                tile.index, tile.count
+                            ));
+                            status["done"] = json!(done + tile.index.saturating_sub(1));
+                        }
+                    },
+                )
                 .map_err(terrain_invalid)?;
-            done += paths.len();
-            Ok(paths)
+            done += paths.paths.len();
+            warnings.extend(paths.warnings);
+            source_info.extend(self.provider.source_info(kind, &paths.providers_used));
+            providers_used.extend(paths.providers_used);
+            Ok(paths.paths)
         };
         let dtm = fetch(Product::Dtm, &self.dtm)?;
         let dom = fetch(Product::Dom, &self.dom)?;
-        StagedGeneration::copy_from_cache(&root, &dtm, &dom, cancelled).map_err(terrain_invalid)
+        let generation = StagedGeneration::copy_from_cache(&root, &dtm, &dom, cancelled.as_ref())
+            .map_err(terrain_invalid)?;
+        let metadata = serde_json::to_vec(&source_info).map_err(ApiError::internal)?;
+        fs::write(generation.path().join("sources.json"), metadata).map_err(ApiError::internal)?;
+        Ok(DownloadStage {
+            generation,
+            warnings,
+            providers_used,
+        })
     }
 }
 
-async fn route_plan(app: AppState, workspace: Workspace, body: Value) -> ApiResult<Download> {
-    let options: Options =
-        serde_json::from_value(body.get("terrain").cloned().unwrap_or_else(|| json!({})))
-            .map_err(terrain_invalid)?;
+struct DownloadStage {
+    generation: StagedGeneration,
+    warnings: std::collections::BTreeSet<String>,
+    providers_used: std::collections::BTreeSet<String>,
+}
+
+impl Options {
+    fn read(value: Option<&Value>) -> ApiResult<Self> {
+        serde_json::from_value(value.cloned().unwrap_or_else(|| json!({}))).map_err(terrain_invalid)
+    }
+
+    fn choice(&self) -> SourceChoice {
+        SourceChoice {
+            source: self.source.clone(),
+            fallback: self.fallback,
+        }
+    }
+}
+
+fn require_choice(registry: &ProviderRegistry, choice: &SourceChoice) -> ApiResult<()> {
+    registry
+        .check_choice(choice)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))
+}
+
+fn estimate_slot(session: &mut Session, supplemental: bool) -> &mut Option<String> {
+    if supplemental {
+        &mut session.coverage_terrain_estimate_registry
+    } else {
+        &mut session.route_terrain_estimate_registry
+    }
+}
+
+fn check_estimate(expected: Option<&str>, snapshot: &ProviderRegistry) -> ApiResult<()> {
+    if expected.is_some_and(|expected| expected != snapshot.fingerprint()) {
+        return Err(ApiError::conflict("Data sources changed; estimate again"));
+    }
+    Ok(())
+}
+
+fn route_area(
+    transform: &Transformer,
+    locations: &[LonLat],
+    width: f64,
+) -> ApiResult<(Vec<Point>, MultiPolygon<f64>)> {
+    let points = locations
+        .iter()
+        .map(|&site| transform.forward(site))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(terrain_invalid)?;
+    let corridor = corridor_geometry(&points[..2], width, &points[2..]).map_err(terrain_invalid)?;
+    Ok((points, corridor))
+}
+
+fn route_crs(
+    registry: &ProviderRegistry,
+    context: &TerrainContext,
+    locations: &[LonLat],
+    width: f64,
+    choice: &SourceChoice,
+) -> ApiResult<TerrainCrs> {
+    if let Some(path) = ["dtm", "dom"]
+        .into_iter()
+        .find_map(|kind| context.route.paths(kind).first())
+    {
+        return Ok(GeoTiff::open(context.directory.join(path))
+            .map_err(terrain_invalid)?
+            .metadata()
+            .crs);
+    }
+    let origin = locations[0].longitude;
+    let center = LonLat {
+        longitude: (origin
+            + locations
+                .iter()
+                .map(|p| (p.longitude - origin + 180.0).rem_euclid(360.0) - 180.0)
+                .sum::<f64>()
+                / locations.len() as f64
+            + 180.0)
+            .rem_euclid(360.0)
+            - 180.0,
+        latitude: locations.iter().map(|p| p.latitude).sum::<f64>() / locations.len() as f64,
+    };
+    let provisional = TerrainCrs::for_wgs84_location(center).map_err(terrain_invalid)?;
+    let transform = Transformer::new(provisional).map_err(terrain_invalid)?;
+    let (_, geometry) = route_area(&transform, locations, width)?;
+    let footprint = geographic_footprint(&transform, &geometry).map_err(terrain_invalid)?;
+    registry
+        .target_crs(&footprint, choice)
+        .map_err(terrain_invalid)
+}
+
+pub async fn preview_sources(
+    app: AppState,
+    workspace: Workspace,
+    body: Value,
+) -> ApiResult<Json<Value>> {
+    let options = Options::read(body.get("terrain"))?;
+    let choice = options.choice();
+    let candidates = route_inputs::terrain_candidates(&body, &app.defaults)?;
+    let locations = download_locations(&body, candidates.infrastructure_policy)?;
+    let width = candidates.corridor_width_m;
+    workspace
+        .run(app, move |app, key, session| {
+            let registry = app.provider_snapshot()?;
+            require_choice(&registry, &choice)?;
+            let context = TerrainContext::capture(app, key, session, false)?;
+            let crs = route_crs(&registry, &context, &locations, width, &choice)?;
+            let transform = Transformer::new(crs).map_err(terrain_invalid)?;
+            let (_, geometry) = route_area(&transform, &locations, width)?;
+            let footprint = geographic_footprint(&transform, &geometry).map_err(terrain_invalid)?;
+            let mut result =
+                json!(registry.describe_area(&footprint, options.include_dom, &choice));
+            result["crs"] = json!(crs.to_string());
+            Ok(Json(result))
+        })
+        .await
+}
+
+async fn route_plan(
+    app: AppState,
+    workspace: Workspace,
+    mut body: Value,
+    preparing: bool,
+) -> ApiResult<Download> {
+    let options = Options::read(body.get("terrain"))?;
     if !(1.0..=1000.0).contains(&options.requested_resolution_m) {
         return Err(ApiError::invalid(
             "Terrain resolution must be between 1 and 1,000 m",
         ));
     }
+    let choice = options.choice();
     let candidates = route_inputs::terrain_candidates(&body, &app.defaults)?;
     let locations = download_locations(&body, candidates.infrastructure_policy)?;
     let width = candidates.corridor_width_m;
-    let config = app.wcs_config.clone();
-    let limits = app.wcs_limits;
-    let context = workspace
-        .run(app, |app, key, session| {
-            TerrainContext::capture(app, key, session, false)
+    let limits = app.terrain_limits;
+    let requested_fingerprint = body
+        .as_object_mut()
+        .and_then(|body| body.remove("registry_fingerprint"));
+    let plan_choice = choice.clone();
+    let (context, registry) = workspace
+        .run(app, move |app, key, session| {
+            let registry = app.provider_snapshot()?;
+            if preparing {
+                let fingerprint = requested_fingerprint
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .or(estimate_slot(session, false).as_deref());
+                check_estimate(fingerprint, &registry)?;
+            }
+            require_choice(&registry, &plan_choice)?;
+            Ok((TerrainContext::capture(app, key, session, false)?, registry))
         })
         .await?;
     tokio::task::spawn_blocking(move || {
-        let longitude =
-            locations.iter().map(|site| site.longitude).sum::<f64>() / locations.len() as f64;
-        let transform = Transformer::for_norway_longitude(longitude).map_err(terrain_invalid)?;
-        let crs = transform.crs();
-        let points = locations
-            .iter()
-            .map(|site| transform.forward(*site))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(terrain_invalid)?;
+        let crs = route_crs(&registry, &context, &locations, width, &choice)?;
+        let transform = Transformer::new(crs).map_err(terrain_invalid)?;
+        let (points, geometry) = route_area(&transform, &locations, width)?;
+        if choice.source != "auto" && !choice.fallback {
+            let footprint = geographic_footprint(&transform, &geometry).map_err(terrain_invalid)?;
+            if registry.rank(Product::Dtm, &footprint, &choice).is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Terrain source {} has no ground terrain in this area",
+                        choice.source
+                    ),
+                ));
+            }
+        }
         let bounds = Bounds {
             min_x: points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min) - width,
             min_y: points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min) - width,
             max_x: points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max) + width,
             max_y: points.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max) + width,
         };
-        let provider =
-            KartverketProvider::new(context.cache_directory.join("kartverket"), config, limits)
-                .map_err(terrain_invalid)?;
+        let provider = TerrainDownloader::new(registry, &context.cache_directory, limits)
+            .map_err(terrain_invalid)?;
         let plan = provider
             .plan_download(
+                crs,
                 bounds,
                 options.requested_resolution_m,
                 DownloadArea::Corridor {
@@ -310,17 +487,20 @@ async fn route_plan(app: AppState, workspace: Workspace, body: Value) -> ApiResu
                     auto_resolution: options.auto_resolution,
                     ..PlanOptions::default()
                 },
+                options.include_dom,
+                choice.clone(),
             )
             .map_err(terrain_invalid)?;
         let estimate = provider
-            .estimate(crs, &plan, options.include_dom, &context.directory)
+            .estimate(crs, &plan, &context.directory)
             .map_err(terrain_invalid)?;
         Ok(Download {
             context,
             provider,
+            choice,
             crs,
-            dom: options.include_dom.then(|| plan.clone()),
-            dtm: Some(plan),
+            dom: plan.dom,
+            dtm: plan.dtm,
             estimate: json!(estimate),
             plan: Some(body),
             route_identity: None,
@@ -330,9 +510,32 @@ async fn route_plan(app: AppState, workspace: Workspace, body: Value) -> ApiResu
     .map_err(ApiError::internal)?
 }
 
-async fn extra_plan(app: AppState, workspace: Workspace, body: Value) -> ApiResult<Download> {
-    let config = app.wcs_config.clone();
-    let limits = app.wcs_limits;
+async fn extra_plan(
+    app: AppState,
+    workspace: Workspace,
+    body: Value,
+    preparing: bool,
+) -> ApiResult<Download> {
+    let limits = app.terrain_limits;
+    let terrain = body.get("terrain").cloned();
+    let requested_fingerprint = body.get("registry_fingerprint").cloned();
+    let (registry, choice) = workspace
+        .clone()
+        .run(app.clone(), move |app, key, session| {
+            let registry = app.provider_snapshot()?;
+            if preparing {
+                let fingerprint = requested_fingerprint
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .or(estimate_slot(session, true).as_deref());
+                check_estimate(fingerprint, &registry)?;
+            }
+            let saved = active_project(&app.store, key, session)?.plan;
+            let choice = Options::read(terrain.as_ref().or_else(|| saved.get("terrain")))?.choice();
+            require_choice(&registry, &choice)?;
+            Ok((registry, choice))
+        })
+        .await?;
     let resolution = std::env::var("RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M")
         .ok()
         .map(|value| {
@@ -384,19 +587,22 @@ async fn extra_plan(app: AppState, workspace: Workspace, body: Value) -> ApiResu
         let dtm: MultiPolygon<f64> = missing(terrain.ground_tiles());
         let dom =
             (!context.route.paths("dom").is_empty()).then(|| missing(terrain.surface_tiles()));
-        let provider =
-            KartverketProvider::new(context.cache_directory.join("kartverket"), config, limits)
-                .map_err(terrain_invalid)?;
+        let provider = TerrainDownloader::new(registry, &context.cache_directory, limits)
+            .map_err(terrain_invalid)?;
         let plans = provider
-            .plan_coverage_extension(crs, &dtm, dom.as_ref(), resolution)
+            .plan_coverage_extension(crs, &dtm, dom.as_ref(), resolution, choice.clone())
+            .map_err(terrain_invalid)?;
+        let estimate = provider
+            .estimate(crs, &plans, &context.directory)
             .map_err(terrain_invalid)?;
         Ok(Download {
             context,
             provider,
+            choice,
             crs,
             dtm: plans.dtm,
             dom: plans.dom,
-            estimate: json!(plans.estimate),
+            estimate: json!(estimate),
             plan: None,
             route_identity: Some((
                 route["snapshot_version"].clone(),
@@ -413,11 +619,8 @@ pub async fn estimate(
     workspace: Workspace,
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        route_plan(app, workspace, Value::Object(body))
-            .await?
-            .estimate,
-    ))
+    let download = route_plan(app.clone(), workspace.clone(), Value::Object(body), false).await?;
+    record_estimate(app, workspace, download).await
 }
 
 pub async fn estimate_extra(
@@ -425,10 +628,20 @@ pub async fn estimate_extra(
     workspace: Workspace,
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
-    let download = extra_plan(app.clone(), workspace.clone(), Value::Object(body)).await?;
+    let download = extra_plan(app.clone(), workspace.clone(), Value::Object(body), false).await?;
+    record_estimate(app, workspace, download).await
+}
+
+async fn record_estimate(
+    app: AppState,
+    workspace: Workspace,
+    download: Download,
+) -> ApiResult<Json<Value>> {
     workspace
         .run(app, move |app, key, session| {
             download.verify(app, key, session)?;
+            *estimate_slot(session, download.supplemental()) =
+                Some(download.provider.fingerprint().into());
             Ok(Json(download.estimate))
         })
         .await
@@ -439,7 +652,7 @@ pub async fn prepare(
     workspace: Workspace,
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
-    let download = route_plan(app.clone(), workspace.clone(), Value::Object(body)).await?;
+    let download = route_plan(app.clone(), workspace.clone(), Value::Object(body), true).await?;
     enqueue(app, workspace, download).await
 }
 
@@ -448,7 +661,7 @@ pub async fn prepare_extra(
     workspace: Workspace,
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
-    let download = extra_plan(app.clone(), workspace.clone(), Value::Object(body)).await?;
+    let download = extra_plan(app.clone(), workspace.clone(), Value::Object(body), true).await?;
     enqueue(app, workspace, download).await
 }
 
@@ -460,6 +673,8 @@ async fn enqueue(
     workspace.run(app, move |app, key, session| {
         ensure_idle(session)?;
         download.verify(app, key, session)?;
+        let registry = app.provider_snapshot()?;
+        check_estimate(Some(download.provider.fingerprint()), &registry)?;
         let total = download.estimate["cache_total"].clone();
         if total == 0 {
             return Ok(Json(json!({
@@ -473,7 +688,7 @@ async fn enqueue(
         let stage = match (worker.is_some(), download.supplemental()) {
             (false, _) => "Waiting for a terrain worker",
             (true, true) => "Preparing coverage terrain",
-            (true, false) => "Preparing Kartverket terrain",
+            (true, false) => "Preparing route terrain",
         };
         let id = random_id::<12>()?;
         let control = Arc::new(Control::default());
@@ -512,9 +727,10 @@ impl TerrainJob {
         self.control.cancellation() != Cancellation::Continue
     }
 
-    fn stage(&self, app: &AppState, key: &str) -> ApiResult<StagedGeneration> {
+    fn stage(self: &Arc<Self>, app: &AppState, key: &str) -> ApiResult<DownloadStage> {
+        let job = self.clone();
         self.download
-            .stage(app, key, &self.id, &|| self.cancelled())
+            .stage(app, key, &self.id, Arc::new(move || job.cancelled()))
     }
 
     fn publish(
@@ -551,7 +767,7 @@ impl TerrainJob {
         app: &AppState,
         key: &str,
         session: &mut Session,
-        outcome: ApiResult<Option<StagedGeneration>>,
+        outcome: ApiResult<Option<DownloadStage>>,
     ) -> ApiResult<()> {
         if !self.download.matches(session, &self.id) {
             return Ok(());
@@ -560,7 +776,9 @@ impl TerrainJob {
         let mut status = self.download.status(session).clone();
         let published = outcome.and_then(|stage| {
             if let Some(stage) = stage.filter(|_| !self.cancelled()) {
-                self.publish(app, key, session, stage)?;
+                self.publish(app, key, session, stage.generation)?;
+                status["warnings"] = json!(stage.warnings);
+                status["providers_used"] = json!(stage.providers_used);
                 return Ok(true);
             }
             Ok(false)

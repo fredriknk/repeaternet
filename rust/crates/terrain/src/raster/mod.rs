@@ -2,9 +2,17 @@ mod array;
 mod geokeys;
 mod geotiff;
 mod memory;
+mod source;
+mod writer;
 
 pub use array::ArrayTerrain;
 pub use geotiff::{GeoTiff, RasterMetadata};
+pub use source::{SourceCrs, SourceRaster};
+pub use tiff_reader::{
+    error::Error as TiffError,
+    source::{BytesSource, FileSource, TiffSource},
+};
+pub use writer::write_elevation_tiff;
 
 use std::path::Path;
 

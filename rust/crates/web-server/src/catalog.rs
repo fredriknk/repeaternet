@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write,
     fs, io,
     path::{Path, PathBuf},
@@ -22,8 +22,9 @@ type SessionLock = Arc<AsyncMutex<Option<Session>>>;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub store: ProjectStore,
-    pub wcs_limits: repeaternet_providers::kartverket::TileLimits,
-    pub wcs_config: repeaternet_providers::kartverket::WcsConfig,
+    pub data_directory: PathBuf,
+    pub terrain_limits: repeaternet_providers::sources::TileLimits,
+    pub providers: Arc<Mutex<Arc<repeaternet_providers::sources::ProviderRegistry>>>,
     #[cfg(test)]
     pub overpass_endpoint: Option<String>,
     #[cfg(test)]
@@ -40,11 +41,17 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub fn new(store: ProjectStore) -> Self {
+    pub fn new(store: ProjectStore, data_directory: &Path) -> Self {
+        use repeaternet_providers::sources::ProviderRegistry;
+        let providers = ProviderRegistry::load(data_directory).unwrap_or_else(|error| {
+            eprintln!("Could not open data sources: {error}");
+            ProviderRegistry::builtin()
+        });
         Self {
             store,
-            wcs_limits: Default::default(),
-            wcs_config: Default::default(),
+            data_directory: data_directory.into(),
+            terrain_limits: Default::default(),
+            providers: Arc::new(Mutex::new(Arc::new(providers))),
             #[cfg(test)]
             overpass_endpoint: None,
             #[cfg(test)]
@@ -72,6 +79,17 @@ impl AppState {
                     .unwrap_or(50_000),
             )),
         }
+    }
+
+    pub fn provider_snapshot(
+        &self,
+    ) -> crate::api::ApiResult<Arc<repeaternet_providers::sources::ProviderRegistry>> {
+        let mut registry = self.providers.lock().expect("provider registry lock");
+        *registry = Arc::new(
+            repeaternet_providers::sources::ProviderRegistry::load(&self.data_directory)
+                .map_err(crate::api::ApiError::internal)?,
+        );
+        Ok(registry.clone())
     }
 
     pub fn session(&self, key: &str) -> SessionLock {
@@ -104,6 +122,8 @@ pub(crate) struct Session {
     pub upload: Arc<tokio::sync::Semaphore>,
     pub coverage_terrain_control: Option<Arc<crate::route_http::Control>>,
     pub coverage_terrain_job: Option<Value>,
+    pub route_terrain_estimate_registry: Option<String>,
+    pub coverage_terrain_estimate_registry: Option<String>,
     pub inspection_job: Option<Value>,
     pub inspection_cancel: Option<Arc<AtomicBool>>,
     pub inspection_control: Option<Arc<crate::route_http::Control>>,
@@ -146,6 +166,8 @@ impl Session {
             coverage_recovered: false,
             upload: Arc::new(tokio::sync::Semaphore::new(1)),
             coverage_terrain_job: None,
+            route_terrain_estimate_registry: None,
+            coverage_terrain_estimate_registry: None,
             coverage_terrain_control: None,
             inspection_job: None,
             inspection_cancel: None,
@@ -406,6 +428,45 @@ impl TerrainFiles {
                 .collect()
         }
         json!({"dtm": names(&self.dtm), "dom": names(&self.dom)})
+    }
+
+    pub fn sources(&self, project: &Path) -> Vec<repeaternet_providers::sources::SourceInfo> {
+        use repeaternet_providers::sources::{Product, SourceInfo};
+        let mut sources = BTreeMap::new();
+        for (product, paths) in [(Product::Dtm, &self.dtm), (Product::Dom, &self.dom)] {
+            let roots: BTreeSet<_> = paths
+                .iter()
+                .filter_map(|path| path.parent()?.parent())
+                .filter(|root| !root.as_os_str().is_empty())
+                .collect();
+            for root in roots {
+                let file = project.join(root).join("sources.json");
+                let Some(bytes) = fs::symlink_metadata(&file)
+                    .ok()
+                    .filter(|meta| meta.is_file() && !linked(meta) && meta.len() <= 2 * 1024 * 1024)
+                    .and_then(|_| fs::read(file).ok())
+                else {
+                    continue;
+                };
+                let Ok(entries) = serde_json::from_slice::<Vec<SourceInfo>>(&bytes) else {
+                    continue;
+                };
+                for source in entries
+                    .into_iter()
+                    .filter(|source| source.product == product)
+                {
+                    sources.insert(
+                        (
+                            source.product,
+                            source.id.clone(),
+                            source.attribution.clone(),
+                        ),
+                        source,
+                    );
+                }
+            }
+        }
+        sources.into_values().collect()
     }
 
     pub fn fingerprint(&self, project: &Path, supplemental: Option<&Self>) -> Option<Value> {

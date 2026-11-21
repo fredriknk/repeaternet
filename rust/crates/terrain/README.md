@@ -43,7 +43,22 @@ Raster sampling floors the inverse affine coordinate and groups points into 256 
 
 The Kartverket coverage profile traced most cold time to iterating over full typed windows and collecting them into `Vec<f64>`. The smaller reads and direct pixel conversion also lower temporary allocation. [Profiling breakdown and timings](../coverage/README.md#cache-benchmark)
 
-The reader rejects undefined georeferencing, GCP-only georeferencing, multiple tiepoints, unsupported compression or band layouts, and `.msk` and `.aux.xml` sidecars. JPEG, WebP, LERC, packed elevation bands, 64-bit integer and complex elevation, alpha/multiband inputs, external georeferencing, overview selection, and raster reprojection are outside the current scope. The reader samples raw band values, with no vertical datum, scale, or unit conversion.
+The reader rejects undefined georeferencing, GCP-only georeferencing, multiple tiepoints, unsupported compression or band layouts, and `.msk` and `.aux.xml` sidecars. JPEG, WebP, LERC, packed elevation bands, 64-bit integer and complex elevation, alpha/multiband inputs, and external georeferencing are outside the supported local reader layouts. The reader samples raw band values, with no vertical datum, scale, or unit conversion.
+
+## Source rasters and terrain downloads
+
+`SourceRaster` accepts any `tiff_reader::TiffSource`. It opens both local
+WCS responses and COGs backed by range reads, selects a reduced-resolution
+IFD when appropriate, and reads only the windows needed for nodata-aware
+bilinear sampling. Geographic source CRS codes 4326, 4258, 4269, 4283, 4619,
+and 4167 use longitude and latitude in degrees. This treats their horizontal
+coordinates as WGS84 within approximately 1–2 m. `GeoTiff::open` continues
+to require a projected metre CRS for terrain installed in a project.
+
+`write_elevation_tiff` writes tiled Float32 output in a registered target
+CRS. It uses 256 × 256 uncompressed tiles and the -32767 nodata value. Classic
+TIFF and BigTIFF use the same grid and sample layout. `GeoTiff::validate_pixels`
+walks every block before a generated raster is published.
 
 ## Verification
 
@@ -66,6 +81,6 @@ sampler reads the required rectangle within a batch. Set
 `RF_PLANNER_TERRAIN_CACHE_MB=0` to disable resident-window retention. The
 per-file decoder block cache still applies. [Memory budget](src/raster/memory.rs)
 
-Kartverket zone selection is independent of upload CRS support. Supplemental
-downloads require service for the route terrain CRS if the area has missing
-tiles. [Provider guide](../providers/README.md)
+Provider downloads select a registered target CRS for new route terrain.
+Supplemental downloads preserve the existing route CRS and can use sources in
+a different CRS. [Provider guide](../providers/README.md)

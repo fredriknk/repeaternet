@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "terrain": [
+    {
+      "id": "kartverket-nhm",
+      "name": "Kartverket NHM",
+      "kind": "wcs",
+      "coverage": {
+        "type": "polygon",
+        "rings": [
+          [
+            [
+              4,
+              57.9
+            ],
+            [
+              11.4,
+              57.9
+            ],
+            [
+              11.7,
+              58.9
+            ],
+            [
+              12.8,
+              61
+            ],
+            [
+              12.1,
+              62.6
+            ],
+            [
+              14.5,
+              64
+            ],
+            [
+              16.1,
+              65
+            ],
+            [
+              16.5,
+              66.2
+            ],
+            [
+              18.1,
+              68
+            ],
+            [
+              20.4,
+              68.6
+            ],
+            [
+              22.9,
+              68.6
+            ],
+            [
+              25.8,
+              68.6
+            ],
+            [
+              30.2,
+              69.1
+            ],
+            [
+              31.3,
+              69.7
+            ],
+            [
+              31.3,
+              71.3
+            ],
+            [
+              4,
+              71.3
+            ],
+            [
+              4,
+              57.9
+            ]
+          ]
+        ]
+      },
+      "resolution_m": 1,
+      "priority": 100,
+      "crs_rule": "norway_utm",
+      "products": {
+        "dtm": {
+          "version": "1.0.0",
+          "format": "GeoTIFF",
+          "per_crs": {
+            "EPSG:25832": {
+              "endpoint": "https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25832",
+              "coverage": "nhm_dtm_topo_25832"
+            },
+            "EPSG:25833": {
+              "endpoint": "https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25833",
+              "coverage": "nhm_dtm_topo_25833"
+            },
+            "EPSG:25835": {
+              "endpoint": "https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25835",
+              "coverage": "nhm_dtm_topo_25835"
+            }
+          }
+        },
+        "dom": {
+          "version": "1.0.0",
+          "format": "GeoTIFF",
+          "per_crs": {
+            "EPSG:25832": {
+              "endpoint": "https://wcs.geonorge.no/skwms1/wcs.hoyde-dom-nhm-25832",
+              "coverage": "nhm_dom_topo_25832"
+            },
+            "EPSG:25833": {
+              "endpoint": "https://wcs.geonorge.no/skwms1/wcs.hoyde-dom-nhm-25833",
+              "coverage": "nhm_dom_topo_25833"
+            },
+            "EPSG:25835": {
+              "endpoint": "https://wcs.geonorge.no/skwms1/wcs.hoyde-dom-nhm-25835",
+              "coverage": "nhm_dom_topo_25835"
+            }
+          }
+        }
+      },
+      "attribution": "© Kartverket"
+    },
+    {
+      "id": "usgs-3dep-13",
+      "name": "USGS 3DEP 1/3 arc-second",
+      "kind": "cog_tiles",
+      "coverage": {
+        "type": "multi_bbox",
+        "bboxes": [
+          [
+            -125,
+            24,
+            -66,
+            50
+          ],
+          [
+            -180,
+            51,
+            -129,
+            72
+          ],
+          [
+            172,
+            51,
+            180,
+            56
+          ],
+          [
+            -161,
+            18,
+            -154,
+            23
+          ]
+        ]
+      },
+      "resolution_m": 10,
+      "priority": 50,
+      "products": {
+        "dtm": {
+          "url_template": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/{ns}{lat_n2}{ew}{lon3}/USGS_13_{ns}{lat_n2}{ew}{lon3}.tif",
+          "tile_degrees": 1
+        }
+      },
+      "attribution": "USGS 3D Elevation Program"
+    },
+    {
+      "id": "copernicus-glo30",
+      "name": "Copernicus GLO-30",
+      "kind": "cog_tiles",
+      "coverage": {
+        "type": "global"
+      },
+      "resolution_m": 30,
+      "priority": 10,
+      "surface_model": true,
+      "missing_tile": "sea_level",
+      "products": {
+        "dtm": {
+          "url_template": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "tile_degrees": 1
+        }
+      },
+      "attribution": "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA"
+    },
+    {
+      "id": "copernicus-glo90",
+      "name": "Copernicus GLO-90",
+      "kind": "cog_tiles",
+      "coverage": {
+        "type": "global"
+      },
+      "resolution_m": 90,
+      "priority": 5,
+      "surface_model": true,
+      "missing_tile": "sea_level",
+      "products": {
+        "dtm": {
+          "url_template": "https://copernicus-dem-90m.s3.amazonaws.com/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "tile_degrees": 1
+        }
+      },
+      "attribution": "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA"
+    }
+  ],
+  "basemaps": [
+    {
+      "id": "osm",
+      "name": "OpenStreetMap",
+      "kind": "xyz",
+      "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      "attribution": "© OpenStreetMap contributors",
+      "max_zoom": 19,
+      "default": true
+    },
+    {
+      "id": "opentopomap",
+      "name": "OpenTopoMap",
+      "kind": "xyz",
+      "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+      "attribution": "Map data © OpenStreetMap contributors, SRTM · style © OpenTopoMap (CC-BY-SA)",
+      "max_zoom": 17,
+      "subdomains": "abc"
+    },
+    {
+      "id": "kartverket-topo",
+      "name": "Kartverket Topo",
+      "kind": "xyz",
+      "url": "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png",
+      "attribution": "© Kartverket",
+      "max_zoom": 18,
+      "coverage": {
+        "type": "bbox",
+        "bbox": [
+          4,
+          57.9,
+          31.3,
+          71.3
+        ]
+      }
+    },
+    {
+      "id": "kartverket-grey",
+      "name": "Kartverket Grey",
+      "kind": "xyz",
+      "url": "https://cache.kartverket.no/v1/wmts/1.0.0/topograatone/default/webmercator/{z}/{y}/{x}.png",
+      "attribution": "© Kartverket",
+      "max_zoom": 18,
+      "coverage": {
+        "type": "bbox",
+        "bbox": [
+          4,
+          57.9,
+          31.3,
+          71.3
+        ]
+      }
+    },
+    {
+      "id": "s2cloudless-2016",
+      "name": "Sentinel-2 cloudless",
+      "kind": "xyz",
+      "url": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg",
+      "attribution": "Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)",
+      "max_zoom": 15
+    }
+  ]
+}
