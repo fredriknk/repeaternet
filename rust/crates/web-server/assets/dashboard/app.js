@@ -8,7 +8,10 @@ function setRoutePreflightBusy(value){routePreflightBusy=value;syncCoverageLocks
 let meshcoreRouters = [], routerPolicies = new Map(), selectedKnownRouterId = null;
 let manualRouters = [], selectedManualRouterId = null, undoStack = [], redoStack = [], lastHistoryPlan = null, resultStale = false, resultStaleReason = '';
 let projectInfo = null, baseRf = null, baseCandidates = null, autosaveTimer = null;
-let terrainOptions = {requested_resolution_m:10,auto_resolution:true,include_dom:true}, preparingTerrain = false, coverageTimer = null, terrainLoaded = false;
+const defaultTerrainOptions = {requested_resolution_m:10,auto_resolution:true,include_dom:true,source:'auto',fallback:true};
+let terrainOptions = {...defaultTerrainOptions}, preparingTerrain = false, coverageTimer = null, terrainLoaded = false;
+let dataSources = null, dataSourcesRevision = 0, dataSourcesError = '';
+let terrainPreviewTimer, terrainPreviewRequest = 0, terrainPreviewKey, terrainPreviewDomNote = '', terrainEstimateReview = null;
 let terrainReadiness=null,coverageTerrainLoaded=false,coverageTerrainTileCounts={dtm:0,dom:0};
 let coverageSettings = {mode:'two_way',area_mode:'mesh',area_polygon_wgs84:null,cell_size_m:1000,area_buffer_m:5000,profile_step_m:200,maximum_profile_samples:4096,maximum_cells:4096,maximum_sources:64,maximum_evaluations:250000,include_endpoints:false,source_ids:[],client:{name:'Handheld · 1.5 m',height_agl_m:1.5,tx_power_dbm:20,gain_dbi:2.15,feed_loss_db:0,sensitivity_dbm:-130,miscellaneous_loss_db:0}};
 const defaultCoverageSettings=JSON.parse(JSON.stringify(coverageSettings));
@@ -22,15 +25,25 @@ let labelledRoute = null, routeSiteLabels = new Map();
 const mapPane = $('view-map'), mapWrap = map.getContainer().parentElement;
 const mapResizeObserver = new ResizeObserver(resizeMapViewport);
 mapResizeObserver.observe(mapPane);
-const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap contributors'}).addTo(map);
-const topo = L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {maxZoom:18, attribution:'© Kartverket'});
+const fallbackBasemaps = [
+  {id:'osm',name:'OpenStreetMap',kind:'xyz',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',max_zoom:19,attribution:'© OpenStreetMap contributors',default:true},
+  {id:'kartverket-topo',name:'Kartverket topo',kind:'xyz',url:'https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png',max_zoom:18,attribution:'© Kartverket',coverage:{type:'bbox',bbox:[4,57.9,31.3,71.3]}}
+];
+const basemapStorageKey = 'repeaternet.base-layer';
+let mapSourceLayers = [], mapLayerControl, mapSourcePreview, mapSourcePreviewTimer;
 map.createPane('coveragePane');map.getPane('coveragePane').style.zIndex=350;
 const coverageRenderer=L.canvas({pane:'coveragePane',padding:0.25});
 map.createPane('repeaterRoadsPane').style.zIndex=375;
-const repeaterRoadLayer=L.layerGroup([], {attribution:osm.options.attribution});
+const repeaterRoadLayer=L.layerGroup([], {attribution:fallbackBasemaps[0].attribution});
 const routeLayer = L.layerGroup().addTo(map), candidateLayer = L.layerGroup().addTo(map), knownLayer = L.layerGroup().addTo(map), coverageLayer = L.layerGroup().addTo(map), predictedCoverageLayer=L.layerGroup(), coverageAreaLayer=L.layerGroup().addTo(map), coverageDiffLayer=L.layerGroup(), inspectionLayer=L.layerGroup().addTo(map), manualLayer = L.layerGroup().addTo(map), targetLayer=L.layerGroup().addTo(map);
 let routeLinkLayers=[];
-L.control.layers({'OpenStreetMap':osm, 'Kartverket topo':topo},{'Terrain coverage':coverageLayer,'Predicted mesh coverage':predictedCoverageLayer,'Coverage analysis area':coverageAreaLayer,'Coverage difference':coverageDiffLayer,'Coverage targets':targetLayer}).addTo(map);
+const plannerMapOverlays = {'Terrain coverage':coverageLayer,'Predicted mesh coverage':predictedCoverageLayer,'Coverage analysis area':coverageAreaLayer,'Coverage difference':coverageDiffLayer,'Coverage targets':targetLayer};
+rebuildSourceLayers(fallbackBasemaps);
+map.on('baselayerchange',event=>{
+  const selected = mapSourceLayers.find(item=>item.layer===event.layer);
+  if(selected)try{localStorage.setItem(basemapStorageKey,selected.definition.id);}catch{}
+});
+map.on('moveend',updateSourceLayerLabels);
 const markers = {};
 const knownMapMarkers = new Map();
 const routerPolicyLabels = {optional:'Optional',required:'Required',excluded:'Excluded'};
@@ -105,7 +118,7 @@ function setMapHint(message='',transient=false){
   if(transient&&interactionMode==='browse')mapHintTimer=setTimeout(()=>setMapHint(),4000);
 }
 function status(message, error=false) {$('status').textContent=message;$('status').className=error?'error':'';const action=$('plan-action-status');if(action){action.textContent=message;action.title=message;action.className=error?'action-status error':'action-status';}}
-async function api(url, options={}) {const response=await fetch(url,options); if(!response.ok){const body=await response.json().catch(()=>({detail:response.statusText}));const error=Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail));error.status=response.status;throw error;}return response.json();}
+async function api(url, options={}) {const response=await fetch(url,options); if(!response.ok){const body=await response.json().catch(()=>({detail:response.statusText}));const detail=body.detail??body.error??response.statusText;const error=Error(typeof detail==='string'?detail:JSON.stringify(detail));error.status=response.status;error.issues=body.issues;throw error;}return response.json();}
 function parseCoordinates(latitude,longitude){
   if(!latitude.trim()||!longitude.trim())return null;
   const lat=Number(latitude),lon=Number(longitude);
@@ -138,6 +151,7 @@ function clone(value){return JSON.parse(JSON.stringify(value));}
 function setHistoryButtons(){$('undo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!undoStack.length;$('redo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!redoStack.length;}
 function recordEdit(){try{const next=clone(plan());if(lastHistoryPlan&&JSON.stringify(next)!==JSON.stringify(lastHistoryPlan)){undoStack.push(lastHistoryPlan);if(undoStack.length>50)undoStack.shift();redoStack=[];}lastHistoryPlan=next;setHistoryButtons();if(projectInfo) scheduleAutosave();}catch(e){status(e.message,true);}}
 function invalidate(reason='planning inputs'){
+  clearTerrainEstimateReview();
   invalidateCoverageEstimate(`${reason} changed. Review a new coverage estimate before previewing or calculating.`);
   setInteractionMode('browse');
   cancelActiveInspection();
@@ -336,7 +350,11 @@ function renderMeshcoreRouters(){
   $('include-all').disabled=busy||coverageBusy||!visible.length;$('include-none').disabled=busy||coverageBusy||!visible.some(router=>['optional','required'].includes(routerPolicies.get(router.id)||router.policy));
   renderKnownMapMarkers();
 }
-for(const name of ['a','b']){$(name).onchange=()=>{try{mark(name,coords(name));recordEdit();invalidate('endpoint coordinates');scheduleCoverageCheck();}catch(e){status(e.message,true);}};mark(name,coords(name));}
+for(const name of ['a','b']){
+  $(name).addEventListener('input',()=>{clearTerrainEstimateReview();scheduleTerrainSourcePreview();});
+  $(name).onchange=()=>{try{mark(name,coords(name));recordEdit();invalidate('endpoint coordinates');scheduleCoverageCheck();}catch(e){status(e.message,true);}};
+  mark(name,coords(name));
+}
 fitMapSites();
 for(const name of ['a','b'])$(name).addEventListener('input',()=>updatePlanReadiness());
 function setInteractionMode(next){
@@ -382,6 +400,7 @@ function setWorkspace(id){
   });
   if(mobileViewport.matches)setMobileDestination('setup');
   updateCoverageTerrainAction();
+  scheduleTerrainSourcePreview();
   try{localStorage.setItem('repeaternet.active-workspace',id);}catch{}
   requestAnimationFrame(()=>{if(!$('view-map').hidden)map.invalidateSize({pan:false});if(!$('view-analysis').hidden&&result?.links.length)profile(selected);});
 }
@@ -394,6 +413,7 @@ function setPlanSection(id,persist=true,{toggle=false}={}){
   if(toggle&&current===id)id=null;
   for(const sectionId of planSectionIds){const section=$(sectionId),active=sectionId===id;if(section)section.hidden=!active;const button=document.querySelector(`[data-plan-section="${sectionId}"]`);if(button)button.setAttribute('aria-expanded',String(active));button?.closest('.plan-step')?.classList.toggle('open',active);}
   if(persist)try{localStorage.setItem('repeaternet.plan-section',id||'');}catch{}
+  scheduleTerrainSourcePreview();
 }
 document.querySelectorAll('[data-plan-section]').forEach(button=>button.addEventListener('click',()=>{setPlanSection(button.dataset.planSection,true,{toggle:true});if(!$(button.dataset.planSection).hidden)requestAnimationFrame(()=>button.scrollIntoView({block:'nearest',behavior:'smooth'}));}));
 try{const saved=localStorage.getItem('repeaternet.plan-section');setPlanSection(saved===''?null:saved||'endpoint-setup',false);}catch{setPlanSection('endpoint-setup',false);}
@@ -553,9 +573,698 @@ function buildSettings(){
   const advancedNote=document.createElement('p');advancedNote.className='hint';advancedNote.textContent='Lower limits can speed up a search but may exclude useful paths. Units are metres unless stated.';advanced.append(advancedNote);
   group(advanced,candidates,[['corridor_width_m','Corridor half-width · m (each side and around endpoints)'],['grid_spacing_m','Candidate grid spacing · m'],['maximum_candidates','Maximum candidate sites'],['maximum_solution_routers','Maximum total routers'],['maximum_neighbors_per_site','Neighbors per site'],['maximum_link_distance_m','Maximum hop length · m (blank = auto)'],['refine_radius_m','Refinement radius · m'],['refine_step_m','Refinement step · m'],['final_sample_step_m','Final terrain sample step · m']]);
 }
-function syncTerrainControls(){if(!$('terrain-resolution'))return;$('terrain-resolution').value=terrainOptions.requested_resolution_m;$('terrain-auto').checked=terrainOptions.auto_resolution;$('terrain-dom').checked=terrainOptions.include_dom;}
-function readTerrainControls(){terrainOptions={requested_resolution_m:Number($('terrain-resolution').value),auto_resolution:$('terrain-auto').checked,include_dom:$('terrain-dom').checked};$('terrain-estimate').hidden=true;$('prepare-terrain').hidden=true;}
-function scheduleCoverageCheck(){clearTimeout(coverageTimer);terrainReadiness=null;updatePlanReadiness(null);coverageTimer=setTimeout(()=>updateTerrainCoverage(),350);}
+function sourceHtmlText(value){
+  const text=document.createElement('span');
+  text.textContent=value??'';
+  return text.innerHTML;
+}
+function makeSourceMapLayer(definition){
+  const {url,kind,wms}=definition;
+  const options={attribution:sourceHtmlText(definition.attribution)};
+  for(const [field,option] of [['min_zoom','minZoom'],['max_zoom','maxZoom'],['subdomains','subdomains'],['opacity','opacity']]){
+    if(definition[field]!=null)options[option]=definition[field];
+  }
+  if(kind==='xyz')return L.tileLayer(url,options);
+  if(kind==='wms')return L.tileLayer.wms(url,{...wms,...options});
+  throw Error('Unsupported map layer kind.');
+}
+function sourceCoverageBoxes(definition){
+  const coverage=definition.coverage;
+  if(coverage?.type==='bbox')return [coverage.bbox];
+  if(coverage?.type==='multi_bbox')return coverage.bboxes;
+  if(coverage?.type==='polygon')return coverage.rings.map(ring=>{
+    const longitude=ring.map(point=>point[0]),latitude=ring.map(point=>point[1]);
+    return [Math.min(...longitude),Math.min(...latitude),Math.max(...longitude),Math.max(...latitude)];
+  });
+  return definition.coverage_bbox&&coverage?.type!=='global'?[definition.coverage_bbox]:[];
+}
+function sourceRingIntersectsView(ring,west,south,east,north){
+  let inside=false;
+  for(let index=0;index<ring.length;index++){
+    const [x,y]=ring[index], [nextX,nextY]=ring[(index+1)%ring.length];
+    if(x>=west&&x<=east&&y>=south&&y<=north)return true;
+    if((y>south)!==(nextY>south)&&west<x+(south-y)*(nextX-x)/(nextY-y))inside=!inside;
+    for(const edge of [west,east]){
+      if(x===nextX||edge<Math.min(x,nextX)||edge>Math.max(x,nextX))continue;
+      const latitude=y+(edge-x)*(nextY-y)/(nextX-x);
+      if(latitude>=south&&latitude<=north)return true;
+    }
+    for(const edge of [south,north]){
+      if(y===nextY||edge<Math.min(y,nextY)||edge>Math.max(y,nextY))continue;
+      const longitude=x+(edge-y)*(nextX-x)/(nextY-y);
+      if(longitude>=west&&longitude<=east)return true;
+    }
+  }
+  return inside;
+}
+function sourceIntersectsView(definition){
+  const boxes=sourceCoverageBoxes(definition);
+  if(!boxes.length||map.getZoom()==null)return true;
+  const bounds=map.getBounds(),south=bounds.getSouth(),north=bounds.getNorth();
+  const west=L.Util.wrapNum(bounds.getWest(),[-180,180]),width=bounds.getEast()-bounds.getWest();
+  const spans=width>=360?[[-180,180]]:[[west,Math.min(180,west+width)]];
+  if(width<360&&west+width>180)spans.push([-180,west+width-360]);
+  return boxes.some(([x,y,nextX,nextY],index)=>spans.some(([left,right])=>
+    y<=north&&nextY>=south&&x<=right&&nextX>=left&&
+    (definition.coverage?.type!=='polygon'||sourceRingIntersectsView(definition.coverage.rings[index],left,south,right,north))));
+}
+function updateSourceLayerLabels(){
+  const labels=mapLayerControl?.getContainer()?.querySelectorAll('[data-source-layer-index]')||[];
+  for(const label of labels)label.hidden=sourceIntersectsView(mapSourceLayers[Number(label.dataset.sourceLayerIndex)].definition);
+}
+function clearMapSourcePreview(){
+  clearTimeout(mapSourcePreviewTimer);
+  if(mapSourcePreview)map.removeLayer(mapSourcePreview);
+  mapSourcePreview=null;
+}
+function rebuildSourceLayers(definitions,{preserveBase=true}={}){
+  const next=definitions.filter(definition=>definition.enabled!==false)
+    .map(definition=>({definition,layer:makeSourceMapLayer(definition)}));
+  const active=mapSourceLayers.filter(item=>map.hasLayer(item.layer));
+  const current=preserveBase?active.find(item=>!item.definition.overlay)?.definition.id:null;
+  let remembered;
+  try{remembered=localStorage.getItem(basemapStorageKey);}catch{}
+  clearMapSourcePreview();
+  if(mapLayerControl){
+    map.off('click',mapLayerControl.collapse,mapLayerControl);
+    mapLayerControl.remove();
+  }
+  for(const {layer} of active)map.removeLayer(layer);
+  mapSourceLayers=next;
+  const bases=mapSourceLayers.filter(item=>!item.definition.overlay);
+  const base=bases.find(item=>item.definition.id===current)
+    ||bases.find(item=>item.definition.id===remembered)
+    ||bases.find(item=>item.definition.default&&sourceIntersectsView(item.definition))
+    ||bases.find(item=>sourceIntersectsView(item.definition));
+  if(base)base.layer.addTo(map);
+  for(const {definition,layer} of mapSourceLayers){
+    if(definition.overlay&&active.some(item=>item.definition.overlay&&item.definition.id===definition.id))layer.addTo(map);
+  }
+  mapLayerControl=L.control.layers({},plannerMapOverlays);
+  const entries=[...mapSourceLayers.entries()];
+  entries.sort(([,a],[,b])=>Number(!!a.definition.overlay)-Number(!!b.definition.overlay));
+  for(const [index,{definition,layer}] of entries){
+    const label=`${sourceHtmlText(definition.name)}<span data-source-layer-index="${index}"${sourceIntersectsView(definition)?' hidden':''}> (outside view)</span>`;
+    if(definition.overlay)mapLayerControl.addOverlay(layer,label);
+    else mapLayerControl.addBaseLayer(layer,label);
+  }
+  mapLayerControl.addTo(map);
+  bindSourceLayerKeyboard(mapLayerControl);
+}
+function bindSourceLayerKeyboard(control){
+  const container=control.getContainer(),toggle=container.querySelector('.leaflet-control-layers-toggle');
+  container.addEventListener('keydown',event=>{
+    if(event.target===toggle&&['Enter',' '].includes(event.key)){
+      event.preventDefault();
+      control.expand();
+      (container.querySelector('input:checked:not(:disabled)')||container.querySelector('input:not(:disabled)'))?.focus();
+    }else if(event.key==='Escape'){
+      event.preventDefault();event.stopPropagation();
+      control.collapse();toggle.focus();
+    }
+  });
+  container.addEventListener('click',event=>{
+    if(event.detail===0&&event.target.matches('.leaflet-control-layers-selector'))event.target.focus();
+  });
+}
+map.on('layeradd layerremove',()=>requestAnimationFrame(updateSourceLayerLabels));
+function sourceCoverageLabel(definition){
+  const boxes=sourceCoverageBoxes(definition);
+  if(!boxes.length)return 'Global';
+  return `Bounds ${boxes.map(box=>`[${box.join(', ')}]`).join(' · ')}`;
+}
+function updateTerrainSourceSelect(){
+  const select=$('terrain-source');
+  const options=[new Option('Automatic · best available','auto')];
+  const providers=dataSources?.terrain||[];
+  for(const provider of providers.filter(item=>item.enabled!==false)){
+    const region={'kartverket-nhm':'Norway','usgs-3dep-13':'United States'}[provider.id]||sourceCoverageLabel(provider);
+    options.push(new Option(`${provider.name} · ${provider.resolution_m} m · ${region}`,provider.id));
+  }
+  if(!options.some(option=>option.value===terrainOptions.source)){
+    const name=providers.find(provider=>provider.id===terrainOptions.source)?.name;
+    options.push(new Option(name?`${name} · unavailable`:'Saved terrain source · unavailable',terrainOptions.source));
+    options.at(-1).disabled=true;
+  }
+  select.replaceChildren(...options);select.value=terrainOptions.source;
+  $('terrain-fallback-label').hidden=terrainOptions.source==='auto';
+}
+function syncTerrainControls(){
+  $('terrain-resolution').value=terrainOptions.requested_resolution_m;
+  $('terrain-resolution').removeAttribute('aria-invalid');
+  $('terrain-resolution-error').hidden=true;
+  $('terrain-auto').checked=terrainOptions.auto_resolution;
+  $('terrain-dom').checked=terrainOptions.include_dom;
+  $('terrain-fallback').checked=terrainOptions.fallback;
+  updateTerrainSourceSelect();
+}
+function readTerrainControls(){
+  terrainOptions={...terrainOptions,
+    auto_resolution:$('terrain-auto').checked,include_dom:$('terrain-dom').checked,
+    source:$('terrain-source').value,fallback:$('terrain-fallback').checked};
+  const resolution=$('terrain-resolution').value.trim();
+  if(resolution&&$('terrain-resolution').validity.valid)terrainOptions.requested_resolution_m=Number(resolution);
+  $('terrain-fallback-label').hidden=terrainOptions.source==='auto';
+}
+function validTerrainResolution(){
+  const field=$('terrain-resolution'),error=$('terrain-resolution-error');
+  const valid=field.value.trim()!==''&&field.validity.valid;
+  field.setAttribute('aria-invalid',String(!valid));
+  error.textContent=valid?'':'Enter a whole number from 1 to 1,000 m.';
+  error.hidden=valid;
+  if(!valid){field.closest('details').open=true;field.focus();}
+  return valid;
+}
+function editTerrainControls(event){
+  if(mapEditsLocked()||(event.target.id==='terrain-resolution'&&!validTerrainResolution()))return;
+  readTerrainControls();recordEdit();invalidate('terrain settings');scheduleCoverageCheck();
+}
+function setTerrainDomNote(){
+  const copy=$('terrain-dom-note');
+  copy.textContent=terrainEstimateReview?.estimate.dom_unavailable_reason||terrainPreviewDomNote;
+  copy.hidden=!copy.textContent;
+}
+function clearTerrainEstimateReview(){
+  terrainEstimateReview=null;
+  $('terrain-estimate').hidden=true;
+  $('prepare-terrain').hidden=true;
+  setTerrainDomNote();
+}
+function terrainSourceRequest({a,b,known_routers,manual_routers,terrain}){
+  return {a,b,known_routers,manual_routers,terrain};
+}
+function scheduleTerrainSourcePreview(){
+  const snapshot={a:validEndpointCoords('a'),b:validEndpointCoords('b'),known_routers:selectedKnownRouters(),manual_routers:manualRouters,terrain:terrainOptions};
+  const ready=dataSources&&!$('workspace-plan').hidden&&!$('terrain-setup').hidden&&snapshot.a&&snapshot.b;
+  const key=ready?JSON.stringify(snapshot):null;
+  if(key===terrainPreviewKey)return;
+  terrainPreviewKey=key;
+  clearTimeout(terrainPreviewTimer);
+  const request=++terrainPreviewRequest;
+  const copy=$('terrain-source-preview');
+  copy.hidden=!ready;
+  copy.textContent=ready?'Checking sources for this route…':'';
+  terrainPreviewDomNote='';
+  setTerrainDomNote();
+  if(ready)terrainPreviewTimer=setTimeout(()=>void previewTerrainSources(snapshot,request),300);
+}
+async function previewTerrainSources(snapshot,request=++terrainPreviewRequest){
+  clearTimeout(terrainPreviewTimer);
+  if(!dataSources)return;
+  const copy=$('terrain-source-preview');
+  try{
+    const preview=await api('/api/data-sources/preview',sourceJsonRequest('POST',terrainSourceRequest(snapshot)));
+    if(request!==terrainPreviewRequest)return;
+    const caveats=[...new Set((preview.sources||[]).filter(source=>source.surface_model).map(source=>source.name))];
+    const caveat=caveats.length?` Surface models can include trees and buildings (${caveats.join(', ')}).`:'';
+    copy.textContent=`For this route: ${preview.summary}${/[.!?]$/.test(preview.summary)?'':'.'}${caveat}`;
+    terrainPreviewDomNote=preview.dom_available===false?'No surface terrain (DOM) source covers this route.':'';
+  }catch(error){
+    if(request!==terrainPreviewRequest)return;
+    copy.textContent=`Could not preview terrain sources. ${error.message}`;
+    terrainPreviewDomNote='';
+  }
+  copy.hidden=false;
+  setTerrainDomNote();
+}
+function scheduleCoverageCheck(){scheduleTerrainSourcePreview();clearTimeout(coverageTimer);terrainReadiness=null;updatePlanReadiness(null);coverageTimer=setTimeout(()=>updateTerrainCoverage(),350);}
+function sourceJsonRequest(method,body){
+  return {method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
+}
+function applySourceRegistry(registry){
+  rebuildSourceLayers(registry.basemaps,{preserveBase:!!dataSources});
+  dataSources=registry;
+  dataSourcesRevision++;
+  terrainPreviewKey=undefined;
+  clearTerrainEstimateReview();
+  updateTerrainSourceSelect();
+  scheduleTerrainSourcePreview();
+}
+let sourceRegistryRequest;
+function loadDataSources(){
+  if(sourceRegistryRequest)return sourceRegistryRequest;
+  sourceRegistryRequest=api('/api/data-sources').then(registry=>{
+    applySourceRegistry(registry);
+    dataSourcesError='';
+  }).catch(error=>{
+    dataSourcesError=`Data sources could not be loaded. ${error.message}`;
+  }).finally(()=>{sourceRegistryRequest=null;});
+  return sourceRegistryRequest;
+}
+
+const sourceKindLabels={wcs:'WCS',cog:'COG',cog_tiles:'COG tiles',xyz:'XYZ map tiles',wms:'WMS map'};
+let sourceDialogOpener, sourceEditorOpener, sourceEditorLocation, sourceSavePending=false;
+function sourceDialogStatus(message=''){
+  const copy=$('data-sources-status');
+  copy.textContent=message;
+  copy.hidden=!message;
+}
+function sourceIssueSummary(issues){
+  return issues.map(issue=>`${issue.path?issue.path+': ':''}${issue.message}`).join(' ');
+}
+function sourceRowButton(definition,action,handler){
+  const button=document.createElement('button');
+  button.type='button';
+  button.textContent=action;
+  button.dataset.sourceId=definition.id;
+  button.dataset.sourceAction=action;
+  button.setAttribute('aria-label',`${action} ${definition.name}`);
+  button.onclick=handler;
+  return button;
+}
+function renderDataSourceRows(){
+  for(const [key,listId] of [['terrain','terrain-source-list'],['basemaps','map-source-list']]){
+    const list=$(listId);
+    list.replaceChildren();
+    for(const definition of dataSources?.[key]||[]){
+      const index=dataSources.custom[key].findIndex(item=>item.id===definition.id);
+      const builtin=index<0,enabled=definition.enabled!==false;
+      const row=document.createElement('li'), title=document.createElement('strong'),meta=document.createElement('p');
+      title.textContent=definition.name;
+      const specs=[sourceKindLabels[definition.kind],sourceCoverageLabel(definition)];
+      if(key==='terrain')specs.push(`${definition.resolution_m} m`,`Priority ${definition.priority??0}`);
+      else specs.push(`Zoom ${definition.min_zoom??0}–${definition.max_zoom??18}`,definition.overlay?'Overlay':'Base layer');
+      specs.push(builtin?'Built-in':'Custom');
+      if(definition.surface_model)specs.push('Surface model');
+      meta.textContent=specs.join(' · ');
+      const controls=document.createElement('div');
+      controls.className='source-row-actions';
+      const toggle=sourceRowButton(definition,'Enabled',event=>void toggleDataSource(key,definition,index,event.currentTarget));
+      toggle.setAttribute('aria-pressed',String(enabled));
+      toggle.textContent=enabled?'Enabled':'Disabled';
+      controls.append(toggle);
+      if(key==='terrain'&&enabled){
+        const result=document.createElement('p');
+        result.setAttribute('role','status');
+        result.hidden=true;
+        controls.append(sourceRowButton(definition,'Test',event=>void probeDataSource(definition,event.currentTarget,result)));
+        row.append(title,meta,controls,result);
+      }else{
+        if(key==='basemaps')controls.append(sourceRowButton(definition,'Preview',()=>previewMapSource(definition)));
+        row.append(title,meta,controls);
+      }
+      if(!builtin){
+        controls.append(sourceRowButton(definition,'Edit',event=>openSourceEditor({key,index},event.currentTarget)));
+        controls.append(sourceRowButton(definition,'Remove',event=>void removeDataSource(key,index,definition,event.currentTarget)));
+      }
+      list.append(row);
+    }
+    if(!list.childElementCount){
+      const empty=document.createElement('li');
+      empty.textContent='No sources to show.';
+      list.append(empty);
+    }
+  }
+  $('add-data-source').disabled=!dataSources;
+}
+function focusSourceDialogControl(opener){
+  const matching=opener?.dataset.sourceId&&[...$('data-sources-list').querySelectorAll('[data-source-action]')]
+    .find(button=>button.dataset.sourceId===opener.dataset.sourceId&&button.dataset.sourceAction===opener.dataset.sourceAction);
+  (matching||((opener?.isConnected&&opener.checkVisibility()&&!opener.disabled)?opener:null)||$('add-data-source')).focus();
+}
+async function openDataSources(event){
+  const dialog=$('data-sources-dialog');
+  sourceDialogOpener=event.currentTarget;
+  $('data-sources-title').textContent='Data sources';
+  $('add-data-source').hidden=false;
+  $('data-source-editor').hidden=true;
+  $('data-sources-list').hidden=false;
+  sourceEditorLocation=null;
+  renderDataSourceRows();
+  sourceDialogStatus(dataSources?'':'Loading data sources…');
+  dialog.showModal();
+  $('data-sources-title').focus();
+  if(!dataSources)await loadDataSources();
+  if(!dialog.open||!$('data-source-editor').hidden)return;
+  if(!dataSources)$('add-data-source').disabled=true;
+  else if(!document.activeElement.closest('.source-list'))renderDataSourceRows();
+  sourceDialogStatus(dataSourcesError||sourceIssueSummary(dataSources?.errors||[]));
+}
+async function saveSourceRegistry(custom){
+  const registry=await api('/api/data-sources',sourceJsonRequest('PUT',custom));
+  applySourceRegistry(registry);
+  invalidateCoverageEstimate('Data sources changed. Review a new coverage estimate before calculating.');
+}
+async function changeSourceRegistry(custom,opener,message){
+  if(sourceSavePending||mapEditsLocked())return;
+  sourceSavePending=true;
+  sourceDialogStatus('Saving data sources…');
+  try{
+    await saveSourceRegistry(custom);
+    if(!$('data-sources-dialog').open)return;
+    renderDataSourceRows();
+    focusSourceDialogControl(opener);
+    sourceDialogStatus(message);
+  }catch(error){sourceDialogStatus(error.issues?.length?sourceIssueSummary(error.issues):error.message);}
+  finally{sourceSavePending=false;}
+}
+async function toggleDataSource(key,definition,index,opener){
+  const custom=clone(dataSources.custom),enabled=definition.enabled!==false;
+  if(index>=0)custom[key][index].enabled=!enabled;
+  else{
+    const disabled=new Set(custom.disabled_builtins||[]);
+    if(enabled)disabled.add(definition.id);
+    else disabled.delete(definition.id);
+    custom.disabled_builtins=[...disabled];
+  }
+  await changeSourceRegistry(custom,opener,`${definition.name} ${enabled?'disabled':'enabled'}.`);
+}
+async function removeDataSource(key,index,definition,opener){
+  if(sourceSavePending||mapEditsLocked())return;
+  const impact=key==='terrain'?' Plans that pin it will need another terrain source.':'';
+  if(!await askActionDialog({title:`Remove ${definition.name}?`,copy:`Remove the custom source ${definition.name} from all projects on this server.${impact}`,confirm:'Remove source',danger:true}))return;
+  const custom=clone(dataSources.custom);
+  custom[key].splice(index,1);
+  await changeSourceRegistry(custom,opener,`${definition.name} removed.`);
+}
+async function probeDataSource(definition,button,result){
+  if(button.getAttribute('aria-disabled')==='true')return;
+  button.setAttribute('aria-disabled','true');
+  result.hidden=false;
+  result.textContent='Testing at the map centre…';
+  try{
+    const {lat,lng}=map.getCenter().wrap();
+    const probe=await api(`/api/data-sources/${encodeURIComponent(definition.id)}/probe`,sourceJsonRequest('POST',{latitude:lat,longitude:lng}));
+    const details=[];
+    if(Number.isFinite(probe.valid_fraction))details.push(`${(probe.valid_fraction*100).toFixed(1)}% valid`);
+    if(Number.isFinite(probe.min_m)&&Number.isFinite(probe.max_m))details.push(`Min ${probe.min_m.toFixed(1)} m · max ${probe.max_m.toFixed(1)} m`);
+    if(Number.isFinite(probe.elapsed_ms))details.push(`${probe.elapsed_ms} ms`);
+    result.textContent=[probe.message|| (probe.ok?'Test complete':'Test failed'),...details].join(' · ');
+  }catch(error){result.textContent=`Test failed. ${error.message}`;}
+  finally{button.removeAttribute('aria-disabled');}
+}
+function previewMapSource(definition){
+  try{
+    clearMapSourcePreview();
+    mapSourcePreview=makeSourceMapLayer(definition).addTo(map).bringToFront();
+    mapSourcePreviewTimer=setTimeout(clearMapSourcePreview,15000);
+    $('data-sources-dialog').close();
+    setMainView('view-map');
+    setMapHint(`Previewing ${definition.name} for 15 seconds${sourceIntersectsView(definition)?'':' · outside the current view'}.`);
+    clearTimeout(mapHintTimer);
+    mapHintTimer=setTimeout(()=>setMapHint(),15000);
+  }catch(error){sourceDialogStatus(error.message);}
+}
+
+function makeSourceField(path,label,type,value,{placeholder,readOnly=false}={}){
+  const wrapper=document.createElement('div'),caption=document.createElement('label');
+  const field=document.createElement(Array.isArray(type)?'select':type==='json'?'textarea':'input');
+  field.id=`source-field-${path.replaceAll('.','-')}`;
+  field.dataset.sourcePath=path;
+  field.dataset.sourceType=Array.isArray(type)?'select':type;
+  if(Array.isArray(type)){
+    for(const [key,copy] of type)field.add(new Option(copy,key));
+  }else if(type==='checkbox'){
+    field.type='checkbox';
+    field.checked=!!value;
+    caption.className='check-line';
+  }else if(type==='json'){
+    field.rows=2;
+    field.spellcheck=false;
+  }else{
+    field.type='text';
+    if(type==='number')field.inputMode='decimal';
+  }
+  if(type!=='checkbox')field.value=type==='json'&&value!==undefined?JSON.stringify(value):value??'';
+  field.readOnly=readOnly;
+  if(placeholder)field.placeholder=placeholder;
+  caption.htmlFor=field.id;
+  caption.append(type==='checkbox'?field:label);
+  caption.append(type==='checkbox'?label:field);
+  wrapper.append(caption);
+  return wrapper;
+}
+function sourceProductFields(kind){
+  if(kind==='cog')return [['url','GeoTIFF URL','text']];
+  if(kind==='cog_tiles')return [
+    ['url_template','Tile URL template','text',undefined,'https://example.org/dem/{NS}{lat2}{EW}{lon3}.tif'],
+    ['tile_degrees','Tile size · degrees','number',1]
+  ];
+  return [
+    ['endpoint','WCS endpoint','text'],
+    ['coverage','Coverage name','text'],
+    ['version','WCS version',[['1.0.0','1.0.0'],['2.0.1','2.0.1']],'1.0.0'],
+    ['format','Format',[['GeoTIFF','GeoTIFF'],['image/tiff','image/tiff']],'GeoTIFF'],
+    ['native_crs','Native CRS codes · JSON array','json',undefined,'["EPSG:25833"]'],
+    ['axis_labels','Axis labels · JSON array','json',undefined,'["E","N"]'],
+    ['params','Extra request parameters · JSON object','json'],
+    ['per_crs','Per-CRS endpoints and coverage names · JSON object','json']
+  ];
+}
+function renderSourceFields(definition){
+  const fields=$('data-source-fields');
+  fields.replaceChildren();
+  const {kind}=definition;
+  const terrain=['wcs','cog','cog_tiles'].includes(kind);
+  const secretHeaders=Object.values(sourceEditorLocation?.original?.headers||{}).includes('***');
+  const add=(path,label,type,value,options)=>fields.appendChild(makeSourceField(path,label,type,value,options));
+  add('kind','Kind',Object.entries(sourceKindLabels),kind).querySelector('select').onchange=event=>{
+    const next={kind:event.target.value};
+    for(const key of ['id','name','attribution']){
+      next[key]=$(`source-field-${key}`).value;
+    }
+    next.enabled=$('source-field-enabled').checked;
+    clearSourceEditorIssues();
+    renderSourceFields(next);
+    $('source-field-kind').focus();
+  };
+  add('name','Name','text',definition.name);
+  add('id','Source ID','text',definition.id,{placeholder:'example-elevation',readOnly:secretHeaders});
+  add('attribution','Attribution','text',definition.attribution);
+  add('enabled','Enabled','checkbox',definition.enabled!==false);
+  const coverage=definition.coverage||{type:'global'};
+  const coverageType=add('coverage.type','Coverage',[['global','Global'],['bbox','Bounding box'],['multi_bbox','Multiple bounding boxes'],['polygon','Polygon']],coverage.type).querySelector('select');
+  const coverageFields=[
+    ['bbox',add('coverage.bbox','Bounds [west, south, east, north] · JSON array','json',coverage.bbox,{placeholder:'[4, 57.9, 31.3, 71.3]'})],
+    ['multi_bbox',add('coverage.bboxes','Bounding boxes · JSON array','json',coverage.bboxes)],
+    ['polygon',add('coverage.rings','Outer rings [longitude, latitude] · JSON array','json',coverage.rings)]
+  ];
+  coverageType.onchange=()=>{
+    for(const [shape,wrapper] of coverageFields){
+      wrapper.hidden=coverageType.value!==shape;
+      wrapper.querySelector('textarea').disabled=wrapper.hidden;
+    }
+  };
+  coverageType.onchange();
+  if(terrain){
+    add('resolution_m','Native resolution · m','number',definition.resolution_m);
+    add('priority','Priority','number',definition.priority??0);
+    add('surface_model','Ground data is a surface model','checkbox',definition.surface_model);
+    add('license','Licence','text',definition.license);
+    add('homepage','Homepage URL','text',definition.homepage);
+    add('max_concurrency','Maximum concurrent requests','number',definition.max_concurrency);
+    add('headers','HTTP headers · JSON object','json',definition.headers);
+    if(kind==='wcs')add('crs_rule','Target CRS rule',[['','Automatic'],['nearest_utm','Nearest UTM zone'],['norway_utm','Norway UTM zones']],definition.crs_rule);
+    if(kind==='cog_tiles')add('missing_tile','Missing tiles',[['nodata','No data'],['sea_level','Sea level (0 m)']],definition.missing_tile??'nodata');
+    for(const [product,label] of [['dtm','Ground (DTM)'],['dom','Surface (DOM)']]){
+      const group=document.createElement('fieldset'),legend=document.createElement('legend');
+      legend.textContent=label;
+      const path=`products.${product}`,value=definition.products?.[product];
+      const toggle=makeSourceField(path,`Offer ${product==='dtm'?'ground':'surface'} elevation`,'checkbox',!!value||(!definition.products&&product==='dtm'));
+      toggle.querySelector('input').dataset.sourceType='product';
+      group.append(legend,toggle);
+      const productFields=document.createElement('fieldset');
+      productFields.className='source-product-fields';
+      for(const [key,fieldLabel,type,defaultValue,placeholder] of sourceProductFields(kind)){
+        productFields.append(makeSourceField(`${path}.${key}`,fieldLabel,type,value?.[key]??defaultValue,{placeholder}));
+      }
+      group.append(productFields);
+      const input=toggle.querySelector('input');
+      input.onchange=()=>{productFields.hidden=productFields.disabled=!input.checked;};
+      input.onchange();
+      fields.append(group);
+    }
+  }else{
+    add('url',kind==='xyz'?'Tile URL template':'WMS URL','text',definition.url);
+    if(kind==='xyz')add('subdomains','Tile subdomains','text',definition.subdomains,{placeholder:'abc'});
+    add('min_zoom','Minimum zoom','number',definition.min_zoom??0);
+    add('max_zoom','Maximum zoom','number',definition.max_zoom??18);
+    add('opacity','Opacity · 0 to 1','number',definition.opacity);
+    add('overlay','Overlay','checkbox',definition.overlay);
+    add('default','Default base layer','checkbox',definition.default);
+    if(kind==='wms'){
+      add('wms.layers','WMS layers','text',definition.wms?.layers);
+      add('wms.styles','WMS styles','text',definition.wms?.styles);
+      add('wms.version','WMS version','text',definition.wms?.version??'1.3.0');
+      add('wms.format','WMS format','text',definition.wms?.format??'image/png');
+      add('wms.transparent','Transparent WMS tiles','checkbox',definition.wms?.transparent??true);
+    }
+  }
+}
+function readSourceFields(){
+  const definition={},issues=[];
+  for(const field of $('data-source-fields').querySelectorAll('[data-source-path]')){
+    const {sourcePath:path,sourceType:type}=field.dataset;
+    if(field.matches(':disabled')||type==='product')continue;
+    const raw=field.value.trim(),parts=path.split('.'),key=parts.pop();
+    let value=type==='checkbox'?field.checked:raw;
+    if((type==='json'||type==='number')&&raw){
+      try{
+        value=JSON.parse(raw);
+        if(type==='number'&&!Number.isFinite(value))throw Error();
+      }catch{
+        issues.push({path,message:type==='number'?'Enter a number.':'Enter valid JSON.'});
+        continue;
+      }
+    }else if(!raw&&type!=='checkbox')continue;
+    const object=parts.reduce((parent,part)=>(parent[part]??={}),definition);
+    object[key]=value;
+  }
+  return {definition,issues};
+}
+function readSourceJson(){
+  const raw=$('data-source-json').value;
+  try{
+    const definition=JSON.parse(raw);
+    if(!definition||Array.isArray(definition)||typeof definition!=='object')throw Error();
+    return {definition,issues:[]};
+  }catch{return {issues:[{path:'$json',message:'Enter a valid JSON object.'}]};}
+}
+function clearSourceEditorIssues(){
+  const editor=$('data-source-editor');
+  for(const field of editor.querySelectorAll('[aria-invalid]')){
+    field.removeAttribute('aria-invalid');field.removeAttribute('aria-describedby');
+  }
+  for(const error of editor.querySelectorAll('.field-error'))error.remove();
+  sourceDialogStatus();
+}
+function showSourceEditorIssues(issues,prefix=''){
+  clearSourceEditorIssues();
+  const editor=$('data-source-editor'),json=$('data-source-json'),jsonOpen=$('data-source-json-panel').open;
+  const fields=[...editor.querySelectorAll('[data-source-path]')].filter(input=>!input.matches(':disabled')&&input.checkVisibility());
+  const unmatched=[];
+  let first=null;
+  for(const issue of issues){
+    const path=(issue.path||'').replace(/^\$\./,'');
+    const local=prefix?(path===prefix?'':path.startsWith(prefix+'.')?path.slice(prefix.length+1):null):path;
+    const parent=fields.filter(input=>local?.startsWith(input.dataset.sourcePath+'.')||local?.startsWith(input.dataset.sourcePath+'['))
+      .sort((a,b)=>b.dataset.sourcePath.length-a.dataset.sourcePath.length)[0];
+    const field=local===null?null:jsonOpen?json:fields.find(input=>input.dataset.sourcePath===local)
+      ||parent||fields.find(input=>input.dataset.sourcePath.startsWith(local+'.'));
+    if(!field){unmatched.push(issue);continue;}
+    const errorId=`${field.id}-error`;
+    let error=$(errorId);
+    if(!error){
+      error=document.createElement('p');error.id=errorId;error.className='field-error';
+      (field===json?field:field.closest('label')).after(error);
+    }
+    error.textContent=[error.textContent,issue.message].filter(Boolean).join(' ');
+    field.setAttribute('aria-invalid','true');
+    field.setAttribute('aria-describedby',errorId);
+    first??=field;
+  }
+  sourceDialogStatus(unmatched.length?sourceIssueSummary(unmatched):'Review the highlighted fields.');
+  (first||$('data-sources-status')).focus();
+}
+function openSourceEditor(location,opener){
+  if(sourceSavePending||mapEditsLocked()||!dataSources)return;
+  const definition=location?dataSources.custom[location.key][location.index]:{kind:'wcs'};
+  sourceEditorLocation={...location,original:definition};
+  sourceEditorOpener=opener;
+  clearSourceEditorIssues();
+  $('data-source-json-panel').open=false;
+  $('data-source-fields').hidden=false;
+  renderSourceFields(definition);
+  $('data-sources-list').hidden=true;
+  $('add-data-source').hidden=true;
+  $('data-source-editor').hidden=false;
+  $('data-sources-title').textContent=location?'Edit source':'Add source';
+  $('source-field-kind').focus();
+}
+function closeSourceEditor(){
+  $('data-source-editor').hidden=true;
+  $('data-sources-list').hidden=false;
+  $('add-data-source').hidden=false;
+  $('data-sources-title').textContent='Data sources';
+  sourceEditorLocation=null;
+  sourceDialogStatus();
+  focusSourceDialogControl(sourceEditorOpener);
+}
+function toggleSourceJson(event){
+  event.preventDefault();
+  const panel=$('data-source-json-panel'),fields=$('data-source-fields'),json=$('data-source-json');
+  if(panel.open){
+    const {definition,issues}=readSourceJson();
+    if(issues.length){showSourceEditorIssues(issues);return;}
+    if(!Object.hasOwn(sourceKindLabels,definition.kind)){
+      showSourceEditorIssues([{path:'kind',message:'Choose a supported source kind.'}]);return;
+    }
+    clearSourceEditorIssues();
+    renderSourceFields(definition);
+    fields.hidden=false;panel.open=false;
+  }else{
+    const {definition,issues}=readSourceFields();
+    if(issues.length){showSourceEditorIssues(issues);return;}
+    clearSourceEditorIssues();
+    json.value=JSON.stringify(definition,null,2);
+    panel.open=true;fields.hidden=true;json.focus();
+  }
+}
+async function submitSourceEditor(event){
+  event.preventDefault();
+  if(sourceSavePending||mapEditsLocked())return;
+  const dialog=$('data-sources-dialog'),location=sourceEditorLocation;
+  const {definition,issues}=$('data-source-json-panel').open?readSourceJson():readSourceFields();
+  if(issues.length){showSourceEditorIssues(issues);return;}
+  const {key,index,original}=location;
+  const group=['xyz','wms'].includes(definition.kind)?'basemaps':'terrain';
+  if(group==='terrain'&&definition.id==='auto'){
+    showSourceEditorIssues([{path:'id',message:'Choose an ID other than auto, which is reserved for automatic selection.'}]);return;
+  }
+  if(definition.id!==original.id&&Object.values(original.headers||{}).includes('***')&&Object.values(definition.headers||{}).includes('***')){
+    showSourceEditorIssues([{path:'id',message:'To change this ID, first replace the redacted header values.'}]);return;
+  }
+  const custom=clone(dataSources.custom);
+  if(key&&key!==group)custom[key].splice(index,1);
+  const destination=key===group?index:custom[group].length;
+  custom[group][destination]=definition;
+  const prefix=`${group}[${destination}]`;
+  const current=()=>dialog.open&&sourceEditorLocation===location;
+  clearSourceEditorIssues();
+  sourceDialogStatus('Validating source…');
+  sourceSavePending=true;
+  const editor=$('data-source-editor'),fields=$('data-source-fields'),jsonPanel=$('data-source-json-panel');
+  editor.setAttribute('aria-busy','true');
+  fields.inert=jsonPanel.inert=true;
+  try{
+    const validation=await api('/api/data-sources/validate',sourceJsonRequest('POST',custom));
+    if(!current())return;
+    if(!validation.ok){
+      fields.inert=jsonPanel.inert=false;
+      showSourceEditorIssues(validation.issues||[],prefix);
+      return;
+    }
+    sourceDialogStatus('Saving source…');
+    await saveSourceRegistry(custom);
+    if(!dialog.open)return;
+    renderDataSourceRows();
+    if(current()){
+      if(key)sourceEditorOpener.dataset.sourceId=definition.id;
+      closeSourceEditor();
+    }else focusSourceDialogControl(document.activeElement);
+    sourceDialogStatus(`${definition.name} saved.`);
+  }catch(error){
+    fields.inert=jsonPanel.inert=false;
+    if(current()&&error.issues?.length)showSourceEditorIssues(error.issues,prefix);
+    else if(dialog.open)sourceDialogStatus(error.message);
+  }finally{
+    sourceSavePending=false;
+    fields.inert=jsonPanel.inert=false;
+    editor.removeAttribute('aria-busy');
+  }
+}
+$('open-data-sources').onclick=openDataSources;
+$('close-data-sources').onclick=()=>$('data-sources-dialog').close();
+$('data-sources-dialog').addEventListener('close',()=>{
+  const opener=sourceDialogOpener;
+  const menu=opener?.closest('.project-menu');
+  const summary=menu?.querySelector('summary');
+  (menu?.open&&opener.checkVisibility()&&!opener.disabled?opener:summary)?.focus();
+});
+$('add-data-source').onclick=event=>openSourceEditor(null,event.currentTarget);
+$('cancel-data-source').onclick=closeSourceEditor;
+$('data-source-editor').onsubmit=submitSourceEditor;
+$('data-source-json-panel').querySelector('summary').onclick=toggleSourceJson;
 async function updateTerrainCoverage(requestPlan=plan()){coverageLayer.clearLayers();if(!terrainLoaded){$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';$('coverage-note').className='hint';return null;}try{const coverage=await api('/api/terrain/coverage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)});for(const polygon of coverage.dtm_outlines)L.polygon(polygon,{color:'#29805d',weight:1,fill:false}).addTo(coverageLayer);for(const polygon of coverage.dom_outlines)L.polygon(polygon,{color:'#4382b5',weight:1,dashArray:'5 4',fill:false}).addTo(coverageLayer);for(const gap of coverage.line_gaps){if(gap.length>1)L.polyline(gap,{color:'#c8463a',weight:4,dashArray:'4 6'}).addTo(coverageLayer);else if(gap.length)L.circleMarker(gap[0],{radius:5,color:'#c8463a',fillColor:'#e99a90',fillOpacity:.8}).addTo(coverageLayer);}for(const site of coverage.uncovered_sites)L.circleMarker([site.latitude,site.longitude],{radius:8,color:'#b52222',fillColor:'#ed7770',fillOpacity:.9}).bindTooltip(`${site.name}: ${site.reason==='no_data'?'terrain nodata':'outside terrain coverage'}`).addTo(coverageLayer);const missing=coverage.uncovered_sites.map(site=>site.name);$('coverage-note').textContent=missing.length?`Ground coverage missing at ${missing.join(', ')}. Add terrain tiles before searching.`:`Ground terrain covers selected sites${coverage.line_gaps.length?`; ${coverage.line_gaps.length} nodata gap(s) sampled along the direct corridor`:''}. ${coverage.surface_available?'Surface data loaded.':'Surface obstruction data unavailable — terrain only.'}`;$('coverage-note').className=missing.length?'hint error':'hint';return coverage;}catch(e){$('coverage-note').textContent=e.message;$('coverage-note').className='hint error';return null;}}
 function syncCoverageInputs(){if(!$('coverage-mode'))return;$('coverage-mode').value=coverageSettings.mode;$('coverage-area').value=coverageSettings.area_mode;$('coverage-cell-size').value=coverageSettings.cell_size_m;$('coverage-buffer').value=coverageSettings.area_buffer_m;$('coverage-profile-step').value=coverageSettings.profile_step_m;$('coverage-profile-limit').value=coverageSettings.maximum_profile_samples||4096;$('coverage-endpoints').checked=coverageSettings.include_endpoints;const c=coverageSettings.client;$('client-height').value=c.height_agl_m;$('client-tx').value=c.tx_power_dbm;$('client-gain').value=c.gain_dbi;$('client-feed').value=c.feed_loss_db;$('client-sensitivity').value=c.sensitivity_dbm;$('client-loss').value=c.miscellaneous_loss_db;syncCoverageAreaControls();renderCoverageArea();}
 function validateMeshBuffer(){
@@ -1224,8 +1933,56 @@ document.querySelectorAll('[data-clear]').forEach(button=>button.onclick=async()
   if(!await askActionDialog({title,copy:routeCopy+coverageCopy,confirm:'Clear tiles',danger:true}))return;
   try{await api('/api/terrain/'+kind,{method:'DELETE'});invalidate();await refresh();await updateTerrainCoverage();}catch(error){status(error.message,true);}
 });
-for(const id of ['terrain-resolution','terrain-auto','terrain-dom'])$(id).onchange=()=>{readTerrainControls();recordEdit();invalidate();};
-async function estimateTerrain(){const button=$('estimate-terrain');button.disabled=true;try{readTerrainControls();const estimate=await api('/api/terrain/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(plan())});$('terrain-estimate-copy').textContent=`${estimate.summary}. ${estimate.cache_hits}/${estimate.cache_total} tile(s) already cached; approximate uncompressed cache+workspace space ${estimate.estimated_disk_mib.toFixed(0)} MiB; server free ${estimate.available_disk_mib.toFixed(0)} MiB.`;$('terrain-estimate').hidden=false;$('prepare-terrain').hidden=false;status('Terrain download estimate ready. Review it before starting.');}catch(e){status(e.message,true);}finally{button.disabled=busy;}}
+for(const id of ['terrain-resolution','terrain-auto','terrain-dom','terrain-source','terrain-fallback'])$(id).onchange=editTerrainControls;
+function terrainEstimateCost(estimate){
+  return `${estimate.cache_hits}/${estimate.cache_total} tiles already cached · about ${estimate.estimated_disk_mib.toFixed(0)} MiB for the workspace and cache · ${estimate.available_disk_mib.toFixed(0)} MiB free on the server.`;
+}
+function renderTerrainEstimateDetail(container,estimate){
+  container.replaceChildren();
+  if(estimate.sources?.length){
+    const list=document.createElement('ul');
+    list.className='terrain-estimate-sources';
+    for(const source of estimate.sources){
+      const product=source.product==='dom'?'Surface (DOM)':'Ground (DTM)';
+      const tiles=`${source.tiles} ${source.tiles===1?'tile':'tiles'}`;
+      const row=document.createElement('li');
+      row.textContent=`${source.name} · ${product} · ${tiles} · ${source.resolution_m} m${source.surface_model?' · Surface model may include trees and buildings':''}`;
+      if(source.attribution){
+        const attribution=document.createElement('small');
+        attribution.textContent=source.attribution;
+        row.append(attribution);
+      }
+      list.append(row);
+    }
+    container.append(list);
+  }
+  const messages=[estimate.dom_unavailable_reason&&`Ground only. ${estimate.dom_unavailable_reason}`,...(estimate.warnings||[])];
+  for(const message of messages.filter(Boolean)){
+    const warning=document.createElement('p');
+    warning.className='hint';
+    warning.textContent=message;
+    container.append(warning);
+  }
+  container.hidden=!container.childElementCount;
+}
+async function estimateTerrain(){
+  if(mapEditsLocked()||!validTerrainResolution())return;
+  const button=$('estimate-terrain');button.disabled=true;
+  clearTerrainEstimateReview();
+  try{
+    const operation=createRouteOperation(),revision=dataSourcesRevision;
+    void previewTerrainSources(operation.snapshot);
+    const estimate=await api('/api/terrain/estimate',sourceJsonRequest('POST',operation.snapshot));
+    if(revision!==dataSourcesRevision||!routeOperationIsCurrent(operation))return;
+    terrainEstimateReview={estimate,operation};
+    $('terrain-estimate-copy').textContent=`${estimate.summary}. ${terrainEstimateCost(estimate)}`;
+    renderTerrainEstimateDetail($('terrain-estimate-detail'),estimate);
+    setTerrainDomNote();
+    $('terrain-estimate').hidden=false;$('prepare-terrain').hidden=false;
+    status('Terrain download estimate ready. Review it before starting.');
+  }catch(error){status(error.message,true);}
+  finally{button.disabled=mapEditsLocked();}
+}
 $('estimate-terrain').onclick=estimateTerrain;
 async function startTerrainPreparation(operation=createRouteOperation()){
   if(busy||activeJobKind)throw Error('Another planner job is already active.');
@@ -1238,13 +1995,17 @@ async function startTerrainPreparation(operation=createRouteOperation()){
     const job=await api('/api/terrain/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(operation.snapshot)});
     activeJobId=job.job_id;jobStartedAt=(job.started_at||Date.now()/1000)*1000;
     updateJobCard({kind:'terrain',state:job.state||'queued',phase:job.stage||'Terrain preparation queued',message:'Preparing requested terrain tiles.',progress:{known:Number.isFinite(job.total)&&job.total>0,done:job.done||0,total:job.total||0,unit:'tiles'}});
-    status('Preparing Kartverket terrain…');void pollTerrainJob();
+    status('Preparing terrain…');void pollTerrainJob();
   }catch(error){activeJobId=null;activeJobKind=null;preparingTerrain=false;setBusy(false);throw error;}
 }
 $('prepare-terrain').onclick=async()=>{
-  const button=$('prepare-terrain');button.disabled=true;
-  try{readTerrainControls();await startTerrainPreparation();}
-  catch(error){if(!busy)updateJobCard({kind:'terrain',state:'failed',phase:'Terrain preparation did not start',message:error.message});status(error.message,true);}
+  const review=terrainEstimateReview;
+  if(!review||mapEditsLocked()||!validTerrainResolution())return;
+  const {estimate,operation}=review;
+  if(!await askActionDialog({title:'Download planned terrain?',copy:`${estimate.summary}. ${terrainEstimateCost(estimate)}`,confirm:'Download terrain'}))return;
+  if(review!==terrainEstimateReview)return;
+  try{await startTerrainPreparation(operation);}
+  catch(error){if(error.status===409)clearTerrainEstimateReview();if(!busy)updateJobCard({kind:'terrain',state:'failed',phase:'Terrain preparation did not start',message:error.message});status(error.message,true);}
   finally{syncCoverageLocks();}
 };
 function routeOperationIsCurrent(operation){return operation.projectId===(projectInfo?.active_id||null)&&operation.revision===saveRevision&&validEndpointCoords('a')&&validEndpointCoords('b')&&operation.fingerprint===JSON.stringify(plan());}
@@ -1297,7 +2058,7 @@ map.on('moveend',invalidateChangedCoverageExtent);
 document.querySelectorAll('[data-height-preset]').forEach(button=>button.onclick=()=>applyCoverageHeightPreset(Number(button.dataset.heightPreset)));
 function plan(){return {format:'repeaternet-web',version:1,a:coords('a'),b:coords('b'),rf,candidates,terrain:terrainOptions,coverage:coverageSettings,coverage_targets:{type:'FeatureCollection',features:clone(coverageTargets)},search_effort:searchEffort,known_routers:selectedKnownRouters(),manual_routers:clone(manualRouters)};}
 $('save').onclick=()=>{try{const blob=new Blob([JSON.stringify(plan(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='route.webplan.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){status(e.message,true);}};
-function load(data){if(!Array.isArray(data.a)||!Array.isArray(data.b)||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');rf=data.rf;candidates={...baseCandidates,...data.candidates};if(!candidates.infrastructure_policy)candidates.infrastructure_policy='existing_and_proposed';terrainOptions={...terrainOptions,...(data.terrain||{})};if(typeof terrainOptions.requested_resolution_m!=='number')terrainOptions.requested_resolution_m=10;if(typeof terrainOptions.auto_resolution!=='boolean')terrainOptions.auto_resolution=true;if(typeof terrainOptions.include_dom!=='boolean')terrainOptions.include_dom=true;coverageSettings={...JSON.parse(JSON.stringify(defaultCoverageSettings)),...(data.coverage||{}),client:{...defaultCoverageSettings.client,...(data.coverage?.client||{})}};coverageTargets=Array.isArray(data.coverage_targets?.features)?clone(data.coverage_targets.features):[];coverageTargetStates=new Map();syncTerrainControls();syncCoverageInputs();searchEffort=data.search_effort||'balanced';$('search-effort').value=searchEffort;meshcoreRouters=Array.isArray(data.known_routers)?data.known_routers.map(router=>({...router,provenance:router.provenance||'saved plan'})):[];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,router.policy||'optional']));if(!meshcoreRouters.some(router=>router.id===selectedKnownRouterId))selectedKnownRouterId=null;manualRouters=Array.isArray(data.manual_routers)?clone(data.manual_routers):[];mark('a',data.a);mark('b',data.b);coords('a');coords('b');buildSettings();renderMeshcoreRouters();renderManualRouters();renderCoverageTargets();invalidate();$('fit').click();scheduleCoverageCheck();}
+function load(data){if(!Array.isArray(data.a)||!Array.isArray(data.b)||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');rf=data.rf;candidates={...baseCandidates,...data.candidates};if(!candidates.infrastructure_policy)candidates.infrastructure_policy='existing_and_proposed';terrainOptions={...defaultTerrainOptions,...(data.terrain||{})};for(const [key,defaultValue] of Object.entries(defaultTerrainOptions)){if(typeof terrainOptions[key]!==typeof defaultValue)terrainOptions[key]=defaultValue;}coverageSettings={...JSON.parse(JSON.stringify(defaultCoverageSettings)),...(data.coverage||{}),client:{...defaultCoverageSettings.client,...(data.coverage?.client||{})}};coverageTargets=Array.isArray(data.coverage_targets?.features)?clone(data.coverage_targets.features):[];coverageTargetStates=new Map();syncTerrainControls();syncCoverageInputs();searchEffort=data.search_effort||'balanced';$('search-effort').value=searchEffort;meshcoreRouters=Array.isArray(data.known_routers)?data.known_routers.map(router=>({...router,provenance:router.provenance||'saved plan'})):[];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,router.policy||'optional']));if(!meshcoreRouters.some(router=>router.id===selectedKnownRouterId))selectedKnownRouterId=null;manualRouters=Array.isArray(data.manual_routers)?clone(data.manual_routers):[];mark('a',data.a);mark('b',data.b);coords('a');coords('b');buildSettings();renderMeshcoreRouters();renderManualRouters();renderCoverageTargets();invalidate();$('fit').click();scheduleCoverageCheck();}
 async function applyHistory(from,to){
   if(!from.length)return;
   const invalid=['a','b'].find(name=>!validEndpointCoords(name));
@@ -1321,7 +2082,7 @@ $('redo').onclick=()=>applyHistory(redoStack,undoStack);
 $('alternative-select').onchange=chooseAlternative;$('analysis-link-select').onchange=event=>profile(Number(event.target.value));
 $('import-plan').onclick=()=>{if(!busy&&!switchingProject)$('open').click();};
 $('open').onchange=async e=>{try{load(JSON.parse(await e.target.files[0].text()));undoStack=[];redoStack=[];lastHistoryPlan=clone(plan());setHistoryButtons();scheduleAutosave();status('Plan opened and saved to this project. Upload matching terrain if needed.');}catch(e){status(e.message,true);}e.target.value='';};
-function emptyProjectPlan(){return {format:'repeaternet-web',version:1,a:[59.9139,10.7522],b:[59.95,10.85],rf:clone(baseRf),candidates:clone(baseCandidates),terrain:{requested_resolution_m:10,auto_resolution:true,include_dom:true},coverage:clone(defaultCoverageSettings),coverage_targets:{type:'FeatureCollection',features:[]},search_effort:'balanced',known_routers:[],manual_routers:[]};}
+function emptyProjectPlan(){return {format:'repeaternet-web',version:1,a:[59.9139,10.7522],b:[59.95,10.85],rf:clone(baseRf),candidates:clone(baseCandidates),terrain:{...defaultTerrainOptions},coverage:clone(defaultCoverageSettings),coverage_targets:{type:'FeatureCollection',features:[]},search_effort:'balanced',known_routers:[],manual_routers:[]};}
 function showPlanSummary(data){const summary=data.projects?.previous_result;if(summary){const prefix=summary.stale?'Saved result is stale':'Last certified result';status(`${prefix}: ${summary.router_count} router(s), ${summary.alternatives?.length||0} alternative(s). Rerun to restore the full route and profiles.`);}else if(data.job.state==='interrupted'){status('Previous search was interrupted by restart. The saved inputs are ready to rerun.',true);}else status('Project ready. Changes save automatically.');}
 function showCertifiedRoute(saved){
   result=saved;resultStale=false;resultStaleReason='';lastSnapshotVersion=saved.snapshot_version;
@@ -1392,10 +2153,13 @@ async function transitionProject(operation,{allowInvalidCurrentPlan=false}={}){
 }
 async function activateProject(id){if(!id||id===projectInfo?.active_id)return;try{const switched=await transitionProject(async()=>{const response=await api(`/api/projects/${encodeURIComponent(id)}/activate`,{method:'POST'});await installProject(response);});if(!switched)$('project-select').value=projectInfo?.active_id||'';}catch(error){status(error.message,true);await refresh();}}
 $('project-select').onchange=event=>activateProject(event.target.value);
-function askActionDialog({title,copy,label='',value='',confirm='Continue',danger=false}){
+function askActionDialog({title,copy,label='',value='',confirm='Continue',danger=false,terrainEstimate}){
   const dialog=$('action-dialog'),form=$('action-dialog-form'),fieldLabel=$('action-dialog-field-label'),field=$('action-dialog-value'),confirmButton=$('action-dialog-confirm'),cancelButton=$('action-dialog-cancel');
   const returnFocus=document.activeElement instanceof HTMLElement?document.activeElement:null,fallbackFocus=returnFocus?.closest('details')?.querySelector(':scope > summary')||null;
   $('action-dialog-title').textContent=title;$('action-dialog-copy').textContent=copy;fieldLabel.hidden=!label;fieldLabel.firstChild.textContent=label;field.value=value;field.required=!!label;field.setCustomValidity('');confirmButton.textContent=confirm;confirmButton.classList.toggle('danger-button',danger);
+  const detail=$('action-dialog-detail');
+  if(terrainEstimate)renderTerrainEstimateDetail(detail,terrainEstimate);
+  else{detail.replaceChildren();detail.hidden=true;}
   return new Promise(resolve=>{
     const onSubmit=event=>{event.preventDefault();if(label&&!field.value.trim()){field.setCustomValidity(`${label} is required.`);field.reportValidity();return;}dialog.close('confirm');};
     const onInput=()=>field.setCustomValidity('');
@@ -1468,6 +2232,7 @@ $('optimize').onclick=async()=>{
       return;
     }
   }
+  if(!terrainLoaded&&!$('terrain-resolution-error').hidden){setPlanSection('terrain-setup');validTerrainResolution();return;}
   const operation=createRouteOperation();setRoutePreflightBusy(true);
   try{
     status('Checking terrain coverage…');
@@ -1477,12 +2242,14 @@ $('optimize').onclick=async()=>{
     await flushAutosave();
     if(!routeOperationIsCurrent(operation))throw Error('Route settings changed before the terrain estimate. Start again to use the latest settings.');
     status('Estimating terrain for this route…');
-    const estimate=await api('/api/terrain/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(operation.snapshot)});
+    const revision=dataSourcesRevision;
+    void previewTerrainSources(operation.snapshot);
+    const estimate=await api('/api/terrain/estimate',sourceJsonRequest('POST',operation.snapshot));
     if(!routeOperationIsCurrent(operation))throw Error('Route settings changed while estimating terrain. Start again to use the latest settings.');
-    const cost=`${estimate.cache_hits}/${estimate.cache_total} tiles already cached · about ${estimate.estimated_disk_mib.toFixed(0)} MiB additional workspace/cache space · ${estimate.available_disk_mib.toFixed(0)} MiB free on the server.`;
     const resolution=`Requested resolution ${operation.snapshot.terrain.requested_resolution_m} m${operation.snapshot.terrain.auto_resolution?' · automatic coarsening enabled':''}.`;
-    const confirmed=await askActionDialog({title:'Download terrain and find this route?',copy:`${estimate.summary}. ${resolution} ${cost}${operation.snapshot.terrain.include_dom?' Surface terrain is included.':'Ground terrain only; surface data is optional.'}`,confirm:'Download and find route'});
+    const confirmed=await askActionDialog({title:'Download terrain and find this route?',copy:`${estimate.summary}. ${resolution} ${terrainEstimateCost(estimate)}`,terrainEstimate:estimate,confirm:'Download and find route'});
     if(!confirmed){status('Route search cancelled. No terrain was downloaded.');return;}
+    if(revision!==dataSourcesRevision)throw Error('Data sources changed. Estimate again before downloading.');
     if(!routeOperationIsCurrent(operation))throw Error('Route settings changed before terrain preparation. Start again to approve the current settings.');
     pendingRouteContinuation=operation;status('Starting the approved terrain download…');await startTerrainPreparation(operation);
   }catch(error){pendingRouteContinuation=null;status(error.message,true);}
@@ -1721,6 +2488,7 @@ profile=(index,focusRow=false)=>{const liveRf=rf;if(result?.rf_settings)rf={...r
 window.addEventListener('resize',()=>{requestAnimationFrame(()=>{resizeMapViewport();invalidateChangedCoverageExtent();if(result?.links.length)profile(selected);});});
 renderCoverageTargets();
 updateCoverageTargetInputs();
+void loadDataSources();
 (async()=>{
   try{
     const data=await refresh();rf=data.rf;candidates=data.candidates;baseRf=clone(rf);baseCandidates=clone(candidates);
