@@ -302,12 +302,13 @@ pub fn neighbor_batch(
     bbox: Bbox,
     now_ms: i64,
     limit: usize,
+    refresh_ms: i64,
 ) -> Result<Vec<String>> {
-    const DAILY_NEIGHBOR_LIMIT: usize = 600;
-    let threshold = now_ms - 86_400_000;
+    const DAILY_NEIGHBOR_LIMIT: usize = 300;
+    let threshold = now_ms - refresh_ms;
     let used: i64 = db.query_row(
         "SELECT count(*) FROM request_log WHERE endpoint = ? AND sent_ms > ? AND neighbor IS NOT NULL",
-        params![endpoint, threshold],
+        params![endpoint, now_ms - 86_400_000],
         |row| row.get(0),
     )?;
     let limit = limit.min(DAILY_NEIGHBOR_LIMIT.saturating_sub(used as usize));

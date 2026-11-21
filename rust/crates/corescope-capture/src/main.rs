@@ -49,14 +49,23 @@ struct Cli {
     #[arg(long, default_value_t = 360, value_parser = clap::value_parser!(u64).range(60..=525_600))]
     snapshot_minutes: u64,
     /// Maximum per-node neighbor requests per packet cycle.
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(0..=20))]
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(0..=20))]
     neighbor_batch: u32,
+    /// Hours before a node's neighbors are fetched again.
+    #[arg(long, default_value_t = 168, value_parser = clap::value_parser!(u64).range(24..=8_760))]
+    neighbor_refresh_hours: u64,
     /// Loopback port for the local watch dashboard.
     #[arg(long, default_value_t = 8790)]
     dashboard_port: u16,
     /// Run without the local watch dashboard.
     #[arg(long)]
     no_dashboard: bool,
+}
+
+impl Cli {
+    fn neighbor_refresh_ms(&self) -> i64 {
+        self.neighbor_refresh_hours as i64 * 3_600_000
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]

@@ -68,21 +68,24 @@ sequentially, and identifies itself as RepeaterNet.
 - Cycle intervals vary by ±10% while respecting the minimums. The default
   `--rate 0.5` spaces request starts at least two seconds apart. The fastest
   accepted setting is `--rate 1`.
-- Watch attempts up to 20 in-bounds node neighbor requests at the end of each
+- Watch attempts up to 10 in-bounds node neighbor requests at the end of each
   packet cycle (`--neighbor-batch 0..20`). It tries nodes with no prior attempt
-  first, then the oldest attempts. A node gets at most one lookup per 24 hours.
-  There is also a rolling cap of 600 per-node lookups per day to bound traffic
-  as the inventory grows.
+  first, then the oldest attempts. A node's neighbors are fetched again only
+  after 7 days (`--neighbor-refresh-hours`, minimum 24). There is also a
+  rolling cap of 300 per-node lookups per day to bound traffic as the inventory
+  grows.
 - A failed cycle pauses upstream requests. Consecutive failures back off from
   one minute to an hour. A longer server `Retry-After` takes precedence.
   This covers HTTP 429, 5xx, timeouts and other request failures.
 
-Expect **about 800 requests per day** at defaults with the observed inventory
-and packet volume. Budget roughly 200 packet requests, 20 topology requests and
-up to 600 neighbor lookups. The packet estimate assumes two 250-packet pages
-per poll, including the overlap. Traffic and page counts vary. With the
-default eight-page packet cap, even sustained capped polls and full neighbor
-batches stay around 1,500 requests per day at the observed topology size.
+Expect **about 350 requests per day** at defaults once every in-bounds node has
+been looked up once: roughly 200 packet requests, 20 topology requests and
+about 110 neighbor lookups (around 750 located nodes refreshed weekly). The
+first two to three days work through the initial neighbor backlog at up to 300
+lookups per day, so expect up to about 520 requests per day then. The packet
+estimate assumes two 250-packet pages per poll, including the overlap. Traffic
+and page counts vary. With the default eight-page packet cap, even sustained
+capped polls stay under about 1,100 requests per day.
 
 ## Database and one-shot captures
 

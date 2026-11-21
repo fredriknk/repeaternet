@@ -75,6 +75,7 @@ pub fn neighbors(
     client: &mut CaptureClient,
     bbox: Bbox,
     limit: usize,
+    refresh_ms: i64,
     run: &mut Run,
     stopped: &dyn Fn() -> bool,
 ) -> Result<()> {
@@ -84,6 +85,7 @@ pub fn neighbors(
         bbox,
         Utc::now().timestamp_millis(),
         limit,
+        refresh_ms,
     )?;
     for key in batch {
         let response = match get(db, client, Endpoint::Neighbors(&key), &[], stopped) {

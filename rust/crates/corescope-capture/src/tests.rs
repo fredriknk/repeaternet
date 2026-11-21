@@ -249,7 +249,7 @@ fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
     let day = 86_400_000;
     let start = 10 * day;
     assert_eq!(
-        db::neighbor_batch(&db, "sample", bbox, start, 2).unwrap(),
+        db::neighbor_batch(&db, "sample", bbox, start, 2, day).unwrap(),
         ["a", "b"]
     );
     for (key, sent) in [
@@ -267,25 +267,34 @@ fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
     drop(db);
     let db = db::open(&path).unwrap();
     assert_eq!(
-        db::neighbor_batch(&db, "sample", bbox, start + 20, 20).unwrap(),
+        db::neighbor_batch(&db, "sample", bbox, start + 20, 20, day).unwrap(),
         ["d", "c"]
     );
     assert_eq!(
-        db::neighbor_batch(&db, "sample", bbox, start + day + 9, 20).unwrap(),
+        db::neighbor_batch(&db, "sample", bbox, start + day + 9, 20, day).unwrap(),
         ["d", "c"]
     );
     assert_eq!(
-        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20).unwrap(),
+        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20, day).unwrap(),
         ["d", "c", "a"]
     );
+    assert!(
+        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20, 7 * day)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        db::neighbor_batch(&db, "sample", bbox, start + 5 * day, 20, 7 * day).unwrap(),
+        ["d"]
+    );
     db.execute(
-        "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < 599)
+        "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < 299)
          INSERT INTO request_log SELECT 'sample', ?, 'other-' || n FROM numbers",
         [start + day],
     )
     .unwrap();
     assert!(
-        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20)
+        db::neighbor_batch(&db, "sample", bbox, start + day + 10, 20, day)
             .unwrap()
             .is_empty()
     );

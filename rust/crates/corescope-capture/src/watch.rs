@@ -140,6 +140,7 @@ pub fn run(
                         client,
                         cli.bbox,
                         cli.neighbor_batch as usize,
+                        cli.neighbor_refresh_ms(),
                         &mut run,
                         stopped,
                     )
@@ -252,6 +253,7 @@ pub fn once(
             client,
             cli.bbox,
             cli.neighbor_batch as usize,
+            cli.neighbor_refresh_ms(),
             &mut run,
             stopped,
         );
@@ -287,8 +289,13 @@ mod tests {
     fn watch_defaults_and_cli_floors() {
         let cli = Cli::try_parse_from(["capture", "watch"]).unwrap();
         assert_eq!(
-            (cli.packet_minutes, cli.snapshot_minutes, cli.neighbor_batch),
-            (15, 360, 20)
+            (
+                cli.packet_minutes,
+                cli.snapshot_minutes,
+                cli.neighbor_batch,
+                cli.neighbor_refresh_hours
+            ),
+            (15, 360, 10, 168)
         );
         assert_eq!(cli.rate, Duration::from_secs(2));
         for (flag, value) in [
@@ -297,6 +304,7 @@ mod tests {
             ("--rate", "1.001"),
             ("--rate", "NaN"),
             ("--neighbor-batch", "21"),
+            ("--neighbor-refresh-hours", "23"),
         ] {
             assert!(Cli::try_parse_from(["capture", "watch", flag, value]).is_err());
         }
