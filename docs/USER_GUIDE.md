@@ -653,7 +653,8 @@ server. Built-in terrain providers include Kartverket NHM (1 m ground and
 surface elevation in mainland Norway), USGS 3DEP (10 m ground elevation in
 covered areas of the United States), and Copernicus GLO-30 and GLO-90 (30 m and
 90 m worldwide surface models). Built-in maps include OpenStreetMap,
-OpenTopoMap, Kartverket topo and grey, and Sentinel-2 cloudless imagery.
+OpenTopoMap, Esri Dark Gray (a dark map that makes the coverage heatmap
+stand out), Kartverket topo and grey, and Sentinel-2 cloudless imagery.
 
 Automatic selection works tile by tile. It prefers sources that cover the
 tile centre, then finer native resolution, then higher priority. Other
