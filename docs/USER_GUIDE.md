@@ -398,7 +398,7 @@ terrain samples along each RF path. If a profile hits the sample cap, it remains
 unresolved. A larger step or higher cap can let it complete. **Help: profile
 sample limit** explains this behavior.
 
-![Area & detail settings with coverage view, area, opacity and advanced sampling](images/coverage-area-detail.png)
+![Area & detail settings with coverage view, area and advanced sampling](images/coverage-area-detail.png)
 
 ![Custom coverage boundary drawn on the map with the area controls open](images/coverage-drawn-area.png)
 
@@ -435,7 +435,7 @@ profile is separate from the route's radio assumptions.
 
 ![Confirmation for the bounded approximate coverage preview](images/coverage-preview-estimate.png)
 
-![Approximate preview drawn with large coverage cells and an on-map legend](images/coverage-preview-map.png)
+![Approximate coverage preview with a signal margin scale](images/coverage-preview-map.png)
 
 ![Full coverage estimate with grid spacing, cell count, source evaluations and terrain availability](images/coverage-calculation-estimate.png)
 
@@ -445,15 +445,17 @@ downlink and **Handheld → router** shows uplink. **Overlapping routers** count
 usable links to multiple sources. It measures local options and does not
 measure independent backbone paths. **Best serving router** colors cells by
 the source with the best valid two-way margin. If the list is long, use
-**Filter serving routers** in the legend. Adjust **Layer opacity**, or toggle
+**Filter serving routers** in the legend. Adjust **Opacity** in that legend, or toggle
 **Predicted mesh coverage** in the map layers control.
 
-Read the **Coverage legend** with the map and hover over a cell for its summary.
-**Not usable**, **Unknown terrain**, **Unresolved profile limit**, and
-**Outside requested area** represent different outcomes. Unevaluated work in a
-partial run is also separate. For an individual place, use location inspection.
+The margin scale fades from green for strong signals (10 dB and above), through
+yellow at 5 dB, to orange at 0 dB. Terrain shadows, unusable samples, areas outside
+the grid and cells awaiting calculation leave the basemap visible. Grey hatching
+marks unknown terrain and purple hatching marks unresolved profile limits.
+Hover over the map for the underlying sample's summary. Use **Inspect a map location**
+to calculate the links at the point you select.
 
-![Completed coverage grid on synthetic terrain with the signal margin legend](images/coverage-map.png)
+![Completed coverage heatmap with the margin scale and opacity control](images/coverage-map.png)
 
 ### Additional terrain and saved runs
 
@@ -540,8 +542,9 @@ The dashboard explains incompatible selections. Compare completed runs using
 compatible project, terrain, model, radio, client and grid assumptions. Choose
 **Compare runs on map** to see **Coverage difference** for reference-connected
 coverage. The summary also reports local gains and losses, retained coverage,
-unknown cells and unresolved profiles. Use the difference legend and map layer
-control to distinguish changes from the underlying prediction.
+unknown cells and unresolved profiles. The map legend labels both displayed
+layers and its **Opacity** slider adjusts them together. Use the map layers
+control to show either layer on its own.
 
 **Apply heights to plan · undo available** saves the trial heights as plan edits.
 Edited proposed sites become **Required**. Run a new route search and calculate

@@ -162,7 +162,7 @@ shared cache.
 Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
 `workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
 the deferred classic scripts load in order
-`main_view_navigation.js`, `app.js` and `coverage_inspection.js`.
+`main_view_navigation.js`, `coverage_raster.js`, `app.js` and `coverage_inspection.js`.
 Put new styles in the layer that owns the feature.
 
 Register a new asset and its content type in

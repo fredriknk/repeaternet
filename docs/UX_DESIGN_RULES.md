@@ -71,6 +71,11 @@ The layout has one owner per job. Put new features where users already look:
 
   Use `analysisMarginBand()` / `routeLinkMapStyle()`. Do not invent new
   thresholds or colours.
+- The handheld coverage raster uses the same 0, 5 and 10 dB boundaries with a
+  continuous orange, yellow and green ramp. Fade near weak signal so terrain
+  shadows and the basemap stay readable. Unusable and outside-area samples
+  supply no colour. Hatch unknown terrain and unresolved profiles, and label
+  both patterns in the legend. The gradient has dB ticks and an opacity control.
 - Never encode meaning by colour alone. Pair colour with text (the pill shows the
   number), shape (marker shapes differ by kind) or line style.
 - Show people's labels, not IDs: route sites are `R1, R2…` or the router's name

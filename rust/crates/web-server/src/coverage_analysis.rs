@@ -261,6 +261,9 @@ pub(crate) fn compare_saved(
     )
     .map_err(|error| ApiError::new(axum::http::StatusCode::CONFLICT, error.to_string()))?;
     let mut result = serde_json::to_value(comparison).map_err(ApiError::internal)?;
+    result["rows"] = scenario["rows"].clone();
+    result["columns"] = scenario["columns"].clone();
+    result["raster_mesh"] = json!(coverage_runs::raster_mesh(&scenario, Some(context)));
     if let Some(cells) = result["cells"].as_array_mut() {
         for (cell, source) in cells.iter_mut().zip(&right) {
             cell["x"] = json!(source.x);
