@@ -98,7 +98,7 @@ Copernicus GLO-30 or the Flemish or Walloon lidar DTMs for Belgium.
 
 CoreScope is volunteer-run. Watch uses one HTTP client, sends requests
 sequentially and asks for gzip-compressed responses. Its User-Agent is
-`RepeaterNet/<version> (read-only CoreScope RF capture; +https://github.com/fredriknk/repeaternet)`,
+`RepeaterNet/<version> (temporary read-only collection for an RF link calibration dataset; +https://github.com/fredriknk/repeaternet)`,
 so an operator can see what is calling and where to find the project.
 
 - Packets are polled every 15 minutes by default (`--packet-minutes`, minimum 5).
