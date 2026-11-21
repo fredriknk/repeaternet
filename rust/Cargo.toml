@@ -9,6 +9,7 @@ members = [
     "crates/project-store",
     "crates/providers",
     "crates/rf-core",
+    "crates/sondehub-import",
     "crates/terrain",
     "crates/web-server",
 ]

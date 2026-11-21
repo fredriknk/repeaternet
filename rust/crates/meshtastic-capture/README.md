@@ -65,9 +65,13 @@ Contracts are documented by [868.no](https://map.868.no/api-docs.html),
 - `run --daily-budget 300` sets the rolling request ceiling separately
   applied to each host. `--min-interval-ms` can increase the common minimum
   above 2,000 ms.
+- `run --total-budget-gb 50` stops each host when the total size of capture
+  databases and their WAL and SHM files reaches 50 GB.
 - `run --dashboard-port 8795` and `view --port 8795` set the loopback port.
   `--no-dashboard` disables the viewer in run mode.
-- `view --db-dir DIR` reads `*capture*.sqlite3` in a different directory.
+- `view --db-dir DIR` reads `*capture*.sqlite3` and
+  `sondehub-import.sqlite3` in a different directory. Use
+  `view --total-budget-gb GB` to display a custom budget.
   Repeat `view --glob PATTERN` options to read from several directories.
   Quote the patterns in the shell. The default searches the capture
   directory. Files named with `backup` are skipped.
@@ -97,7 +101,11 @@ retain only relevant fields from live samples.
 
 The viewer groups located measurements by directed pair, evidence, band
 and preset within the selected time window and shows mean SNR and RSSI.
-Per-source totals cover all time. For MeshCore, the latest observer radio
+Per-source totals cover all time and include the combined database size.
+For [SondeHub](../sondehub-import/README.md), select **Radiosonde** and
+**Last week** to allow for archive lag. The viewport, AGL and evidence filters
+apply to radiosonde link groups. The two decoder metrics have separate
+legends. For MeshCore, the latest observer radio
 configuration supplies the frequency band and SF/BW/CR when available.
 For Meshtastic, a reported region or latest endpoint radio configuration
 supplies the filter values. The US-based Meshview instances and Central

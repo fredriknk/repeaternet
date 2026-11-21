@@ -9,6 +9,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::StatusCode;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use sondehub_import::{GB, database_bytes};
 
 use crate::{
     Run, db,
@@ -100,6 +101,21 @@ pub fn run(args: &Run, dir: &Path, stop: &(dyn Fn() -> bool + Sync)) -> Result<(
 }
 
 fn host(source: &Source, args: &Run, dir: &Path, stop: &dyn Fn() -> bool) -> Result<()> {
+    let ceiling = (args.total_budget_gb * GB) as u64;
+    let budget_reached = || -> Result<bool> {
+        let bytes = database_bytes(dir)?;
+        if bytes < ceiling {
+            return Ok(false);
+        }
+        println!(
+            "{} · stopped at database budget · {bytes} bytes in use · {ceiling} bytes allowed",
+            source.host
+        );
+        Ok(true)
+    };
+    if budget_reached()? {
+        return Ok(());
+    }
     let path = dir.join(format!("meshtastic-capture-{}.sqlite3", source.host));
     let (mut db, _lock) = db::open(&path, source.host)?;
     let mut http = Http::new(
@@ -125,6 +141,9 @@ fn host(source: &Source, args: &Run, dir: &Path, stop: &dyn Fn() -> bool) -> Res
     let mut last_error = false;
 
     while !stop() && !http.disabled {
+        if budget_reached()? {
+            return Ok(());
+        }
         let now = Instant::now();
         if now >= status_due {
             status(source, &db, &http, "running")?;
