@@ -153,7 +153,9 @@ To collect Meshtastic RF measurements or view both networks together, use
 the separate `meshtastic-capture` utility. Its **Measured links** viewer
 opens at `http://127.0.0.1:8795/` and reads the capture databases while
 collection runs. Filter the map by network, source, band, preset, evidence,
-time window or position precision. See the [Meshtastic capture and viewer guide](../rust/crates/meshtastic-capture/README.md).
+time window or position precision. Suspect links (zero SNR, old firmware or
+endpoints over 300 km apart, usually MQTT-bridged neighbours) are hidden by
+default; clear **Hide suspect links** to show them. See the [Meshtastic capture and viewer guide](../rust/crates/meshtastic-capture/README.md).
 
 For a site you want to try, use **Place proposed router on map** or expand
 **Add a proposed router by coordinates**. Enter **Latitude**, **Longitude** and

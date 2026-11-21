@@ -60,6 +60,7 @@
       <label>Evidence<select id="evidence"><option value="">All evidence</option></select></label>
       <label>Time window<select id="window"><option value="day">Last day</option><option value="week">Last week</option><option value="all">All time</option></select></label>
       <label class="check"><input id="precision" type="checkbox">Hide coarse positions</label>
+      <label class="check"><input id="suspect" type="checkbox" checked>Hide suspect links</label>
     </form>
     <section class="map-panel" aria-label="Measured links map">
       <div id="map" aria-label="Map of located links"></div>
@@ -167,7 +168,7 @@
       node.append(title, fields(rows));
       if (full && link.suspect) {
         const note = document.createElement('p');
-        note.textContent = 'Includes MQTT-suspect neighbour reports.';
+        note.textContent = 'Suspect: includes neighbour reports with zero SNR, firmware older than 2.3.2 or endpoints over 300 km apart.';
         node.append(note);
       }
       return node;
@@ -186,7 +187,8 @@
       const sourceMatches = source => matches('network', source.network) && matches('host', source.host);
       const links = data.links.filter(link => sourceMatches(data.sources[link.source])
         && matches('band', code(link.band)) && matches('preset', code(link.preset))
-        && matches('evidence', link.evidence) && (!byId('precision').checked || !link.coarse));
+        && matches('evidence', link.evidence) && (!byId('precision').checked || !link.coarse)
+        && (!byId('suspect').checked || !link.suspect));
       layer.clearLayers();
       map.closePopup();
       const bounds = L.latLngBounds();

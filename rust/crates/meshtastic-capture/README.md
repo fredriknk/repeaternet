@@ -110,7 +110,9 @@ than 2.3.2, or endpoints over 300 km apart. The viewer uses last known
 coordinates for that distance test. Positions with an estimated radius
 over 100 m are coarse. When neither the source nor the position report
 provides precision, the viewer shows it as unknown. Both flags are exposed
-in `measurement_flags` and its located subset `located_measurements`.
+in `measurement_flags` and its located subset `located_measurements`. The
+viewer hides suspect links by default. Clear **Hide suspect links** to show
+them.
 For external SQL clients, register `capture_over_300_km(lat1, lon1, lat2, lon2)`
 as a great-circle distance test returning false for missing coordinates, or
 read the underlying tables and join them with positions appropriate to the
