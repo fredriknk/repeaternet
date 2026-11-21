@@ -36,6 +36,7 @@ map.createPane('repeaterRoadsPane').style.zIndex=375;
 const repeaterRoadLayer=L.layerGroup([], {attribution:fallbackBasemaps[0].attribution});
 const routeLayer = L.layerGroup().addTo(map), candidateLayer = L.layerGroup().addTo(map), knownLayer = L.layerGroup().addTo(map), coverageLayer = L.layerGroup().addTo(map), predictedCoverageLayer=L.layerGroup(), coverageAreaLayer=L.layerGroup().addTo(map), coverageDiffLayer=L.layerGroup(), inspectionLayer=L.layerGroup().addTo(map), manualLayer = L.layerGroup().addTo(map), targetLayer=L.layerGroup().addTo(map);
 let routeLinkLayers=[];
+let routeLinkInspector=null, routeLinkPreviewTimer, routeLinkPreviewInFlight=false, routeLinkPreviewStarted=-Infinity;
 const plannerMapOverlays = {'Terrain coverage':coverageLayer,'Predicted mesh coverage':predictedCoverageLayer,'Coverage analysis area':coverageAreaLayer,'Coverage difference':coverageDiffLayer,'Coverage targets':targetLayer};
 const coverageHover = L.tooltip({direction:'top', className:'coverage-sample-tooltip'});
 map.on('mousemove', showCoverageSample).on('mouseout movestart', hideCoverageSample);
@@ -137,12 +138,10 @@ function mark(name,latlng){
   if(markers[name])markers[name].setLatLng(latlng);
   else{
     const icon=L.divIcon({className:'site-marker '+(name==='b'?'destination':''),html:label,iconSize:[32,32]});
-    markers[name]=L.marker(latlng,{draggable:!mapEditsLocked(),icon,title:'Endpoint '+label}).addTo(map);
+    markers[name]=L.marker(latlng,{draggable:!mapEditsLocked(),icon,title:'Endpoint '+label});
     markers[name].bindTooltip('',{direction:'top',offset:[0,-12]});
-    markers[name].on('dragend',event=>{
-      const point=event.target.getLatLng().wrap();
-      editEndpoint(name,point);
-    });
+    bindRouteSiteInspector(markers[name],label,point=>editEndpoint(name,point));
+    markers[name].addTo(map);
   }
   markers[name].setTooltipContent(`${label} · ${$(name).value}`);
 }
@@ -156,6 +155,7 @@ function clone(value){return JSON.parse(JSON.stringify(value));}
 function setHistoryButtons(){$('undo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!undoStack.length;$('redo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!redoStack.length;}
 function recordEdit(){try{const next=clone(plan());if(lastHistoryPlan&&JSON.stringify(next)!==JSON.stringify(lastHistoryPlan)){undoStack.push(lastHistoryPlan);if(undoStack.length>50)undoStack.shift();redoStack=[];}lastHistoryPlan=next;setHistoryButtons();if(projectInfo) scheduleAutosave();}catch(e){status(e.message,true);}}
 function invalidate(reason='planning inputs'){
+  if(!routeLinkInspector?.committing)closeRouteLinkInspector();
   clearTerrainEstimateReview();
   invalidateCoverageEstimate(`${reason} changed. Review a new coverage estimate before previewing or calculating.`);
   setInteractionMode('browse');
@@ -465,6 +465,7 @@ $('inspection-show-map').onclick=()=>setMainView('view-map');
 window.addEventListener('keydown',event=>{
   if(document.querySelector('dialog[open]'))return;
   if(event.key==='Escape'){
+    if(routeLinkInspector){closeRouteLinkInspector(true);event.preventDefault();}
     if(mapContextPopup?.isOpen())map.closePopup(mapContextPopup);
     if(interactionMode!=='browse'){
       setInteractionMode('browse');
@@ -2481,11 +2482,218 @@ function routeSiteLabel(siteId){
   }
   return routeSiteLabels.get(siteId)??siteId;
 }
-function routeLinkMapStyle(link){
+function routeLinkMapStyle(link,stale=resultStale){
   const margin=link.worst_margin_db;
-  const band=resultStale?'stale':!link.valid||margin<0?'invalid':margin>=10?'strong':margin>=5?'good':'marginal';
+  const band=stale?'stale':!link.valid||margin<0?'invalid':margin>=10?'strong':margin>=5?'good':'marginal';
   return {color:`var(--map-${band})`,dashArray:band==='stale'||band==='invalid'?'5 6':null};
 }
+function routeMapLinkTooltip(link){
+  return mapText('span',`${routeSiteLabel(link.source_id)} → ${routeSiteLabel(link.target_id)} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB · ${linkIssues(link)}`);
+}
+function routeSiteNeighbors(id){
+  const primary=result?.alternatives?.find(item=>item.id===result.active_alternative_id)?.route||[];
+  const index=primary.findIndex(site=>site.id===id);
+  if(index<0)return [];
+  return [primary[index-1],primary[index+1]].filter(Boolean).flatMap(neighbor=>{
+    const source=primary[index],target=neighbor;
+    const linkIndex=result.links.findIndex(link=>
+      (link.source_id===source.id&&link.target_id===target.id)||
+      (link.source_id===target.id&&link.target_id===source.id));
+    if(linkIndex<0)return [];
+    const link=result.links[linkIndex];
+    const sites=link.source_id===source.id?[source,target]:[target,source];
+    return [{link,sites,line:routeLinkLayers[linkIndex]}];
+  });
+}
+function bindRouteSiteInspector(marker,id,move,details){
+  const inspect=()=>{
+    if(interactionMode!=='browse')return;
+    if(!openRouteLinkInspector(id,marker,details,true))details?.();
+  };
+  marker.on('click',inspect);
+  marker.on('add',()=>marker.getElement().addEventListener('keydown',event=>{
+    if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();inspect();}
+  }));
+  if(!move)return;
+  marker.on('dragstart',()=>{
+    if(!mapEditsLocked()&&!resultStale&&interactionMode==='browse')openRouteLinkInspector(id,marker,details,false);
+  });
+  marker.on('drag',()=>{
+    const inspector=routeLinkInspector;
+    if(!mapEditsLocked()&&!resultStale&&inspector?.marker===marker){
+      queueRouteLinkPreview(inspector,marker.getLatLng().wrap());
+    }
+  });
+  marker.on('dragend',()=>{
+    const inspector=routeLinkInspector?.marker===marker?routeLinkInspector:null;
+    const point=marker.getLatLng().wrap();
+    if(mapEditsLocked()){
+      if(inspector)marker.setLatLng(inspector.originalPoint);
+      return;
+    }
+    // Evaluate exactly the coordinates that the plan will save.
+    const finalPoint=L.latLng(Number(point.lat.toFixed(6)),Number(point.lng.toFixed(6)));
+    if(inspector)inspector.committing=true;
+    try{move(finalPoint);}finally{if(inspector)inspector.committing=false;}
+    if(inspector){
+      for(const item of inspector.links)restoreRouteInspectorLine(item);
+      setRouteInspectorStatus('Link preview · run a new search to validate the route.');
+      queueRouteLinkPreview(inspector,finalPoint);
+    }
+  });
+}
+function openRouteLinkInspector(id,marker,details,focus){
+  if(routeLinkInspector?.id===id&&routeLinkInspector.marker===marker){
+    if(focus)$('route-link-inspector-title').focus({preventScroll:true});
+    return true;
+  }
+  const links=routeSiteNeighbors(id);
+  if(!links.length)return false;
+  closeRouteLinkInspector();
+  map.closePopup();
+  const originalPoint=L.latLng(mapPoint(links[0].sites.find(site=>site.id===id)));
+  routeLinkInspector={id,marker,originalPoint,links,route:result,projectId:projectInfo?.active_id};
+  const panel=$('route-link-inspector'),container=$('route-link-inspector-links'),title=$('route-link-inspector-title');
+  title.textContent=`Links at ${routeSiteLabel(id)}`;
+  container.replaceChildren();
+  for(const item of links){
+    const card=document.createElement('article');
+    item.body=document.createElement('div');
+    card.append(mapText('h3',item.sites.map(site=>routeSiteLabel(site.id)).join(' – ')),item.body);
+    container.append(card);
+  }
+  const detailsButton=$('route-link-inspector-site');
+  detailsButton.hidden=!details;
+  detailsButton.onclick=details?()=>{closeRouteLinkInspector(true);details();}:null;
+  setRouteInspectorStatus(resultStale?'Previous route · stale.':'');
+  panel.hidden=false;
+  panel.scrollTop=0;
+  for(const item of links)renderRouteInspectorLink(item,item.link);
+  if(focus){
+    title.focus({preventScroll:true});
+    keepRouteInspectorSiteVisible(marker,panel);
+  }
+  return true;
+}
+function keepRouteInspectorSiteVisible(marker,panel){
+  const pin=marker.getElement()?.getBoundingClientRect();
+  const pane=panel.getBoundingClientRect(),gap=12;
+  if(!pin||pin.right+gap<=pane.left||pin.left>=pane.right||pin.bottom+gap<=pane.top||pin.top>=pane.bottom)return;
+  const offset=mobileViewport.matches?[0,pin.bottom-pane.top+gap]:[pin.right-pane.left+gap,0];
+  map.panBy(offset,{animate:false});
+}
+function setRouteInspectorStatus(message){
+  const status=$('route-link-inspector-status');
+  if(status.textContent!==message)status.textContent=message;
+  status.hidden=!message;
+}
+function restoreRouteInspectorLine({link,sites,line}){
+  line?.setLatLngs(sites.map(mapPoint));
+  line?.setStyle(routeLinkMapStyle(link));
+  line?.setTooltipContent(routeMapLinkTooltip(link));
+}
+function closeRouteLinkInspector(restoreFocus=false){
+  if(!routeLinkInspector)return;
+  const {marker,links} = routeLinkInspector;
+  routeLinkInspector=null;
+  clearTimeout(routeLinkPreviewTimer);
+  routeLinkPreviewTimer=null;
+  for(const item of links)restoreRouteInspectorLine(item);
+  $('route-link-inspector').hidden=true;
+  if(restoreFocus){
+    const icon=marker.getElement();
+    (icon?.checkVisibility()?icon:map.getContainer()).focus({preventScroll:true});
+  }
+}
+function queueRouteLinkPreview(inspector,point){
+  inspector.pending=point;
+  if(!resultStale){
+    setRouteInspectorStatus('Live link preview');
+    for(const item of inspector.links){
+      item.line?.setLatLngs(item.sites.map(site=>site.id===inspector.id?point:mapPoint(site)));
+    }
+  }
+  scheduleRouteLinkPreview();
+}
+function scheduleRouteLinkPreview(){
+  if(!routeLinkInspector?.pending||routeLinkPreviewInFlight||routeLinkPreviewTimer!=null)return;
+  const wait=Math.max(0,125-(performance.now()-routeLinkPreviewStarted));
+  routeLinkPreviewTimer=setTimeout(evaluateRouteLinkPreview,wait);
+}
+async function evaluateRouteLinkPreview(){
+  routeLinkPreviewTimer=null;
+  const inspector=routeLinkInspector;
+  if(!inspector?.pending||mapEditsLocked())return;
+  const point=inspector.pending;
+  inspector.pending=null;
+  routeLinkPreviewInFlight=true;
+  routeLinkPreviewStarted=performance.now();
+  try{
+    for(const item of inspector.links){
+      if(routeLinkInspector!==inspector||result!==inspector.route||mapEditsLocked())break;
+      const [source,target]=item.sites.map(({id,latitude,longitude,antenna_height_m,kind})=>({
+        id,latitude:id===inspector.id?point.lat:latitude,longitude:id===inspector.id?point.lng:longitude,
+        antenna_height_m,kind
+      }));
+      let link,error;
+      try{
+        link=await api('/api/link/evaluate',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({source,target,include_profile:true,project_id:inspector.projectId})});
+      }catch(e){error=e.message;}
+      if(routeLinkInspector!==inspector||result!==inspector.route||mapEditsLocked())break;
+      renderRouteInspectorLink(item,link,error);
+      if(!resultStale&&item.line){
+        item.line.setStyle(routeLinkMapStyle(link??{valid:false}));
+        item.line.setTooltipContent(link?routeMapLinkTooltip(link):mapText('span',error));
+      }
+    }
+  }finally{
+    routeLinkPreviewInFlight=false;
+    scheduleRouteLinkPreview();
+  }
+}
+function renderRouteInspectorLink(item,link,error){
+  const body=item.body;
+  body.replaceChildren();
+  if(error){
+    const message=mapText('p',error);
+    message.className='error';
+    message.role='status';
+    body.append(message);
+    return;
+  }
+  const metrics=document.createElement('dl');
+  const fresnel=link.minimum_fresnel_clearance_ratio;
+  for(const [label,value] of [
+    ['Distance · km',formatMetric(link.distance_m/1000,2)],
+    ['Usable margin',marginPill(link.worst_margin_db)],
+    ['Line of sight clear',link.los_clear?'Yes':'No'],
+    ['Min. Fresnel clearance',Number.isFinite(fresnel)?`${(fresnel*100).toFixed(0)}%`:'—'],
+  ]){
+    const field=document.createElement('div'),reading=document.createElement('dd');
+    reading.append(value);
+    field.append(mapText('dt',label),reading);
+    metrics.append(field);
+  }
+  body.append(metrics);
+  if(!link.profile)return;
+  const clearance=link.required_fresnel_clearance??result.rf_settings?.required_fresnel_clearance??rf.required_fresnel_clearance;
+  const canvas=document.createElement('canvas'),legend=document.createElement('div');
+  canvas.setAttribute('role','img');
+  canvas.setAttribute('aria-label','Elevation profile along the link');
+  legend.className='chart-legend';
+  const lines=routeProfileLines(link.profile,clearance);
+  for(const {label,color,dash} of lines){
+    const item=document.createElement('span'),swatch=document.createElement('i');
+    if(dash)swatch.style.borderTop=`3px dashed ${color}`;
+    else swatch.style.backgroundColor=color;
+    item.append(swatch,label);
+    legend.append(item);
+  }
+  body.append(canvas,legend);
+  drawRouteProfileChart(canvas,link,lines,78);
+}
+$('route-link-inspector-close').onclick=()=>closeRouteLinkInspector(true);
 function openRouteLink(index){
   setMainView('view-analysis');
   profile(index,true);
@@ -2515,6 +2723,7 @@ function routeSitePopup(site,links,nearest){
 }
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?`Passes configured validation criteria${issues.length?` · ${issues.slice(0,2).join(', ')}`:''}`:issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
 function resetRouteResultView(){
+  closeRouteLinkInspector();
   routeLayer.clearLayers();candidateLayer.clearLayers();routeLinkLayers=[];
   $('metrics').replaceChildren();$('route-verdict').hidden=true;$('alternatives').hidden=true;$('hops').hidden=true;$('hops-disclosure').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('candidate-search-diagnostic').hidden=true;$('rf-validation-note').hidden=true;$('analysis-link-picker').hidden=true;
   $('route-show-map').disabled=true;$('result-title').textContent='A clear view of your connection.';$('status').textContent='Find a route to see alternatives, hops, link budgets and terrain profiles here.';$('status').className='';
@@ -2557,6 +2766,7 @@ function renderRouteVerdict({links,band,margin,requested,achieved,resilient}={})
   verdict.dataset.state=state;verdict.textContent=parts.join(' ');
 }
 function render(){
+  closeRouteLinkInspector();
   routeLayer.clearLayers();routeLinkLayers=[];$('metrics').replaceChildren();$('hops').querySelector('tbody').replaceChildren();$('profile').hidden=true;$('analysis-link-picker').hidden=true;$('hops-disclosure').hidden=true;$('rf-validation-note').hidden=true;
   syncAnalysisBadge();showRepeaterRoads();$('route-show-map').disabled=!result?.links?.length;
   const candidateDiagnostic=$('candidate-search-diagnostic');
@@ -2577,16 +2787,19 @@ function render(){
     const proposed=site.origin!=='known',label=routeSiteLabel(site.id),origin=proposed?'Proposed':'Existing';
     const marker=L.marker(mapPoint(site),{
       draggable:proposed&&!mapEditsLocked()&&!resultStale,
-      icon:mapSiteIcon(proposed?'proposed':'existing',label),title:label+' · '+origin
+      icon:mapSiteIcon(proposed?'proposed':'existing',label),title:label+' · '+origin,zIndexOffset:100
     }).bindTooltip(mapText('span',`${label} · ${origin}`));
     const nearest=active?.nearest_road_distance_m?.[site.id];
-    marker.bindPopup(()=>routeSitePopup(site,links,nearest),mapPopupOptions({maxHeight:260}));
+    const details=()=>{
+      const content=routeSitePopup(site,links,nearest);
+      L.popup(mapPopupOptions({maxHeight:260})).setLatLng(marker.getLatLng()).setContent(content).openOn(map);
+      content.querySelector('button')?.focus({preventScroll:true});
+    };
     marker._plannerDraggable=proposed;
-    if(proposed)marker.on('dragend',event=>{
-      const point=event.target.getLatLng();
-      event.target.setLatLng(mapPoint(site));
+    bindRouteSiteInspector(marker,site.id,proposed?point=>{
+      marker.setLatLng(mapPoint(site));
       pinMovedRouter(site,point);
-    });
+    }:null,details);
     marker.addTo(routeLayer);
   });
   links.forEach((link,index)=>{
@@ -2594,7 +2807,7 @@ function render(){
     if(a&&b&&[...mapPoint(a),...mapPoint(b)].every(Number.isFinite)){
       const line=L.polyline([mapPoint(a),mapPoint(b)],{...routeLinkMapStyle(link),weight:4}).addTo(routeLayer);
       routeLinkLayers[index]=line;
-      line.bindTooltip(mapText('span',`${routeSiteLabel(link.source_id)} → ${routeSiteLabel(link.target_id)} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB · ${linkIssues(link)}`));
+      line.bindTooltip(routeMapLinkTooltip(link));
       line.on('click',()=>{if(interactionMode==='browse')openRouteLink(index);});
     }
     const row=document.createElement('tr'),reason=linkIssues(link),resultCell=document.createElement('span');resultCell.className=link.valid?'link-result pass':'link-result fail';resultCell.textContent=link.valid?'Pass':'Fail';resultCell.title=reason;const linkName=document.createElement('span');linkName.textContent=`${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)}`;linkName.title=`${link.source_id} → ${link.target_id}`;for(const value of [linkName,(link.distance_m/1000).toFixed(2)+' km',marginPill(link.worst_margin_db),link.minimum_fresnel_clearance_ratio===null?'—':(link.minimum_fresnel_clearance_ratio*100).toFixed(0)+'%',link.los_clear?'Clear':'Obstructed',resultCell]){const cell=document.createElement('td');if(value instanceof Node)cell.append(value);else cell.textContent=value;row.append(cell);}row.tabIndex=0;row.setAttribute('aria-selected',String(index===selected));row.onclick=()=>profile(index);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();profile(index);}};$('hops').querySelector('tbody').append(row);
@@ -2604,17 +2817,48 @@ function render(){
 function showCandidates(){candidateLayer.clearLayers();if($('show-candidates').checked&&result)result.candidates.filter(site=>site.origin!=='known'&&mapPoint(site).every(Number.isFinite)).forEach(site=>L.circleMarker(mapPoint(site),{radius:3,color:resultStale?'#68737b':'#778e7d',weight:1,interactive:false}).addTo(candidateLayer));}
 $('show-candidates').onchange=showCandidates;
 function formatMetric(value,digits=1){return Number.isFinite(value)?value.toFixed(digits):'—';}
+function routeProfileLines(profileData,clearance){
+  const curved=values=>values.map((value,i)=>value+profileData.earth_bulge_m[i]);
+  return [
+    {label:'Ground terrain',color:'#94785d',values:curved(profileData.dtm_elevation_m)},
+    ...(profileData.surface_available?[{label:'Surface',color:'#508c62',values:curved(profileData.surface_elevation_m)}]:[]),
+    {label:'Line of sight',color:'#457bab',values:profileData.los_elevation_m},
+    {label:`${(clearance*100).toFixed(0)}% Fresnel lower edge`,color:'#b36e14',dash:[5,3],
+      values:profileData.los_elevation_m.map((value,i)=>value-clearance*profileData.fresnel_radius_m[i])}
+  ];
+}
+function drawRouteProfileChart(canvas,link,lines,height){
+  const width=Math.max(200,canvas.clientWidth),ratio=devicePixelRatio||1;
+  canvas.width=width*ratio;canvas.height=height*ratio;
+  const ctx=canvas.getContext('2d');
+  ctx.scale(ratio,ratio);
+  let minimum=Infinity,maximum=-Infinity;
+  for(const {values} of lines)for(const value of values){
+    if(Number.isFinite(value)){minimum=Math.min(minimum,value);maximum=Math.max(maximum,value);}
+  }
+  minimum-=5;maximum+=5;
+  const span=maximum-minimum,x=i=>45+(width-60)*i/Math.max(1,lines[0].values.length-1),y=value=>height-22-(value-minimum)/span*(height-34);
+  ctx.font='12px Segoe UI';
+  const ticks=height<120?3:5;
+  for(let i=0;i<ticks;i++){
+    const value=minimum+span*i/(ticks-1);
+    ctx.fillStyle='#51655b';ctx.fillText(`${value.toFixed(0)} m`,0,y(value));
+    ctx.strokeStyle='#dfe6df';ctx.beginPath();ctx.moveTo(43,y(value));ctx.lineTo(width,y(value));ctx.stroke();
+  }
+  for(const {values,color,dash=[]} of lines){
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.setLineDash(dash);ctx.beginPath();
+    values.forEach((value,i)=>i?ctx.lineTo(x(i),y(value)):ctx.moveTo(x(i),y(value)));
+    ctx.stroke();
+  }
+  ctx.fillStyle='#51655b';ctx.fillText('0 km',45,height-4);
+  ctx.textAlign='right';ctx.fillText(`${(link.distance_m/1000).toFixed(2)} km`,width-2,height-4);
+}
 function profile(index,focusRow=false){
   if(!result?.links?.[index])return;selected=index;$('analysis-link-select').value=String(index);const link=result.links[index],profileData=link.profile;if(!profileData)return;$('profile').hidden=false;$('profile-title').textContent=`${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)} · ${(link.distance_m/1000).toFixed(2)} km`;
   document.querySelectorAll('#hops tbody tr').forEach((row,i)=>{row.classList.toggle('selected',i===index);row.setAttribute('aria-selected',String(i===index));if(i===index&&focusRow){row.focus({preventScroll:true});row.scrollIntoView({block:'nearest'});}});
   routeLinkLayers.forEach((line,i)=>line.setStyle({weight:i===index?6:4,opacity:i===index?1:.76}));
-  const assumptions=result.rf_settings||rf,clearance=Number(assumptions.required_fresnel_clearance??rf.required_fresnel_clearance),canvas=$('chart'),width=Math.max(200,canvas.clientWidth),height=230,ratio=devicePixelRatio||1;
-  canvas.width=width*ratio;canvas.height=height*ratio;const ctx=canvas.getContext('2d');ctx.scale(ratio,ratio);
-  const ground=profileData.dtm_elevation_m.map((value,i)=>value+profileData.earth_bulge_m[i]),surface=profileData.surface_elevation_m.map((value,i)=>value+profileData.earth_bulge_m[i]),fresnel=profileData.los_elevation_m.map((value,i)=>value-clearance*profileData.fresnel_radius_m[i]);
-  const all=[...ground,...(profileData.surface_available?surface:[]),...profileData.los_elevation_m,...fresnel].filter(Number.isFinite),minimum=Math.min(...all)-10,maximum=Math.max(...all)+10,span=maximum-minimum||1,x=i=>45+(width-60)*i/Math.max(1,ground.length-1),y=value=>height-28-(value-minimum)/span*(height-45);
-  ctx.font='10px Segoe UI';for(let i=0;i<5;i++){const value=minimum+span*i/4;ctx.fillStyle='#88968c';ctx.fillText(`${value.toFixed(0)} m`,0,y(value));ctx.strokeStyle='#dfe6df';ctx.beginPath();ctx.moveTo(43,y(value));ctx.lineTo(width,y(value));ctx.stroke();}
-  for(const [values,color] of [[ground,'#94785d'],...(profileData.surface_available?[[surface,'#508c62']]:[]),[profileData.los_elevation_m,'#457bab'],[fresnel,'#d69a45']]){ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();values.forEach((value,i)=>i?ctx.lineTo(x(i),y(value)):ctx.moveTo(x(i),y(value)));ctx.stroke();}
-  ctx.fillStyle='#88968c';ctx.fillText('0 km',45,height-5);ctx.fillText(`${(link.distance_m/1000).toFixed(2)} km`,width-60,height-5);
+  const assumptions=result.rf_settings||rf,clearance=Number(assumptions.required_fresnel_clearance??rf.required_fresnel_clearance);
+  drawRouteProfileChart($('chart'),link,routeProfileLines(profileData,clearance),230);
   const clearanceRatio=Number.isFinite(link.minimum_fresnel_clearance_ratio)?`${(link.minimum_fresnel_clearance_ratio*100).toFixed(1)}% minimum Fresnel clearance`: 'Fresnel clearance unavailable',clearanceDistance=formatMetric(link.minimum_clearance_distance_m/1000,3);$('profile-description').textContent=`Terrain profile for ${link.source_id} to ${link.target_id}, ${(link.distance_m/1000).toFixed(2)} km. ${clearanceRatio} at ${clearanceDistance} km; ${pText(profileData)} Fresnel boundary uses ${(clearance*100).toFixed(0)}% clearance from the result's saved RF assumptions. ${linkIssues(link)}.`;
   const body=$('budget-table').querySelector('tbody');body.replaceChildren();for(const [direction,budget] of [['Forward',link.forward],['Reverse',link.reverse]]){const row=document.createElement('tr');for(const value of [`${direction} · ${budget.source_id} → ${budget.target_id}`,`${formatMetric(budget.tx_power_dbm)} dBm`,`${formatMetric(budget.total_path_loss_db)} dB`,`${formatMetric(budget.received_power_dbm)} dBm`,`${formatMetric(budget.sensitivity_dbm)} dBm`,`${formatMetric(budget.usable_margin_db)} dB`]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}body.append(row);}
   $('budget').textContent=`Saved RF assumptions · ${formatMetric(assumptions.frequency_mhz)} MHz · k-factor ${formatMetric(assumptions.k_factor,2)} · Fresnel clearance ${(clearance*100).toFixed(0)}% · ${assumptions.validation_mode||'RF propagation'}\n\n${['forward','reverse'].map(direction=>{const budget=link[direction];return `${direction.toUpperCase()} ${budget.source_id} → ${budget.target_id}: TX ${formatMetric(budget.tx_power_dbm)} dBm; TX gain ${formatMetric(budget.tx_gain_dbi)} dBi; TX feed loss ${formatMetric(budget.tx_feed_loss_db)} dB; FSPL ${formatMetric(budget.fspl_db)} dB; diffraction ${formatMetric(budget.diffraction_loss_db)} dB; clutter ${formatMetric(budget.clutter_loss_db)} dB; total path loss ${formatMetric(budget.total_path_loss_db)} dB; RX gain ${formatMetric(budget.rx_gain_dbi)} dBi; RX feed loss ${formatMetric(budget.rx_feed_loss_db)} dB; received ${formatMetric(budget.received_power_dbm)} dBm; sensitivity ${formatMetric(budget.sensitivity_dbm)} dBm; raw margin ${formatMetric(budget.raw_margin_db)} dB; usable margin ${formatMetric(budget.usable_margin_db)} dB; departure/arrival ${formatMetric(budget.departure_angle_deg)}°/${formatMetric(budget.arrival_angle_deg)}°.`;}).join('\n')}\n\nLink checks · ${linkIssues(link)} · minimum Fresnel clearance ${clearanceRatio} · surface obstruction data ${profileData.surface_available?'included':'unavailable; terrain only'}.`;

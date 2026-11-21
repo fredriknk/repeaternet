@@ -7,6 +7,7 @@ mod coverage_http;
 mod coverage_inspect;
 mod coverage_runs;
 mod downloads;
+mod link_http;
 mod provider_http;
 mod route_http;
 mod route_inputs;

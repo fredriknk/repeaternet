@@ -490,6 +490,17 @@
             </label>
           </section>
           </div>
+          <section id="route-link-inspector" class="route-link-inspector" aria-labelledby="route-link-inspector-title" hidden>
+            <div class="route-link-inspector-header">
+              <h2 id="route-link-inspector-title" tabindex="-1"></h2>
+              <div class="route-link-inspector-actions">
+                <button type="button" id="route-link-inspector-site" hidden>Site details</button>
+                <button type="button" id="route-link-inspector-close">Close</button>
+              </div>
+            </div>
+            <p id="route-link-inspector-status" role="status" hidden></p>
+            <div id="route-link-inspector-links"></div>
+          </section>
           <details class="route-map-legend">
             <summary>Map legend</summary>
             <div class="map-legend-grid">
@@ -543,7 +554,7 @@
           <div id="profile" hidden>
             <div class="profile-heading"><h3 id="profile-title"></h3><label id="analysis-link-picker" for="analysis-link-select" hidden><span class="visually-hidden">Link terrain profile</span><select id="analysis-link-select"></select></label></div>
             <canvas id="chart" height="230" aria-label="Terrain, direct line of sight and Fresnel profile" role="img"></canvas>
-            <p class="chart-legend" aria-hidden="true"><span><i style="background:#94785d"></i>Terrain + curvature</span><span><i style="background:#508c62"></i>Surface</span><span><i style="background:#457bab"></i>Line of sight</span><span><i style="background:#d69a45"></i>Required Fresnel boundary</span></p>
+            <p class="chart-legend" aria-hidden="true"><span><i style="background:#94785d"></i>Terrain + curvature</span><span><i style="background:#508c62"></i>Surface</span><span><i style="background:#457bab"></i>Line of sight</span><span><i style="border-top:3px dashed #b36e14"></i>Required Fresnel boundary</span></p>
             <p id="profile-description" class="hint" role="status"></p>
             <details id="directional-budget"><summary>Forward and reverse link budget</summary><div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th>Direction</th><th>TX power</th><th>Path loss</th><th>Received</th><th>Sensitivity</th><th>Usable margin</th></tr></thead><tbody></tbody></table></div></details>
             <details id="profile-details"><summary>Detailed radio budget and assumptions</summary><pre id="budget"></pre></details>

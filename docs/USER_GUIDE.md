@@ -270,11 +270,19 @@ coordinates use latitude, longitude to six decimals.
   popup to change antenna height or policy, or use **Remove**.
 - Open a MeshCore router marker to read its ID and activity and choose **Excluded**,
   **Optional** or **Required**.
-- Open a route-site marker to see its height, origin, distance to road when
-  available, and **Links and margins**. Select a link in the popup to open its
-  profile in **Analysis**. **Edit manual router** or **Edit MeshCore router**, when
-  shown, opens the editable site. Drag a proposed route-site marker to pin that
-  location as a **Required** proposed router. Run a fresh search after moving it.
+- Select an endpoint or router on the primary route to see its adjacent hops.
+  Each hop shows distance, usable margin, line of sight, minimum Fresnel
+  clearance and an elevation profile. Press **Enter** or **Space** on a focused
+  marker to open the inspector, and **Esc** to close it.
+- Drag an endpoint or proposed route site to preview the adjacent hops and
+  their colours on the map as you move it. Dropping a proposed route site pins
+  it as a **Required** router. The previous route is marked stale and the
+  inspector keeps the preview for the dropped location. Use **Undo** to revert
+  the move, or run a new search to validate the edited route.
+- From the inspector, open **Site details** for a router's height, origin and
+  distance to a mapped road when available. Select a link there to open its
+  profile in **Analysis**. **Edit manual router** or **Edit MeshCore router**,
+  when shown, opens the editable site.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
