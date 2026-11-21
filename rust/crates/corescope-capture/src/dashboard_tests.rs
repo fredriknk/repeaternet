@@ -12,7 +12,7 @@ use crate::db::{Run, Snapshot};
 async fn json_map_aggregates_directed_last_hops_and_applies_filters() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fixture.sqlite3");
-    let mut db = db::open(&path).unwrap();
+    let mut db = db::open(&path, "fixture").unwrap();
     let run = Run::start(&db, "fixture", "watch-topology").unwrap();
     db::save_snapshot(
         &mut db,
@@ -152,7 +152,24 @@ async fn json_map_aggregates_directed_last_hops_and_applies_filters() {
     )
     .unwrap();
     db::log_request(&db, "fixture", None).unwrap();
-    let app = router(path, "fixture", "54,71.5,4,31.7".parse().unwrap()).unwrap();
+    let app = router(
+        path,
+        "fixture",
+        "analyzer.on8ar.eu",
+        "54,71.5,4,31.7".parse().unwrap(),
+    )
+    .unwrap();
+    let page = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = to_bytes(page.into_body(), usize::MAX).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("<h1>CoreScope capture · analyzer.on8ar.eu</h1>")
+    );
     let result = fetch(&app, "/api/map?window=day&hops=both&min_count=2").await;
     let stats = &result["stats"];
     for (key, value) in [

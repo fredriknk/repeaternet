@@ -42,7 +42,7 @@ pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-pub fn open(path: &Path) -> Result<Connection> {
+pub fn open(path: &Path, endpoint: &str) -> Result<Connection> {
     let mut db = Connection::open(path)?;
     db.busy_timeout(Duration::from_secs(5))?;
     db.pragma_update(None, "foreign_keys", true)?;
@@ -66,9 +66,58 @@ pub fn open(path: &Path) -> Result<Connection> {
     if version < 2 {
         transaction.execute_batch(include_str!("watch_schema.sql"))?;
     }
+    bind_endpoint(&transaction, endpoint)?;
     transaction.commit()?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     Ok(db)
+}
+
+fn bind_endpoint(db: &Connection, endpoint: &str) -> Result<()> {
+    // Keep the version 2 layout readable by earlier capture binaries.
+    db.execute_batch(include_str!("instance_schema.sql"))?;
+    let stored: Option<String> = db
+        .query_row("SELECT base_url FROM capture_instance", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    if let Some(stored) = stored {
+        ensure!(
+            stored == endpoint,
+            "This capture database belongs to {stored}. Use a different --db for {endpoint}."
+        );
+        return Ok(());
+    }
+
+    // Check indexed endpoints from every legacy writer. Snapshot tables
+    // inherit their endpoint from capture_runs via run_id.
+    let (first, last): (Option<String>, Option<String>) = db.query_row(
+        "WITH endpoints AS (
+            SELECT (SELECT min(endpoint) FROM capture_runs) AS lo,
+                   (SELECT max(endpoint) FROM capture_runs) AS hi
+            UNION ALL SELECT (SELECT min(endpoint) FROM observations),
+                             (SELECT max(endpoint) FROM observations)
+            UNION ALL SELECT (SELECT min(endpoint) FROM packet_cursor),
+                             (SELECT max(endpoint) FROM packet_cursor)
+            UNION ALL SELECT (SELECT min(endpoint) FROM request_log),
+                             (SELECT max(endpoint) FROM request_log)
+            UNION ALL SELECT (SELECT min(endpoint) FROM watch_state),
+                             (SELECT max(endpoint) FROM watch_state)
+        ) SELECT min(lo), max(hi) FROM endpoints",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    ensure!(
+        first == last,
+        "This capture database already contains multiple CoreScope instances. Use a different --db."
+    );
+    if let Some(stored) = first {
+        ensure!(
+            stored == endpoint,
+            "This capture database belongs to {stored}. Use a different --db for {endpoint}."
+        );
+    }
+    db.execute("INSERT INTO capture_instance VALUES (1, ?)", [endpoint])?;
+    Ok(())
 }
 
 impl Run {

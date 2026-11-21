@@ -132,17 +132,17 @@ fn parse_rate(value: &str) -> Result<Duration> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut client = CaptureClient::new(&cli.base_url, cli.rate)?;
-    let path = database_path(cli.db.clone())?;
+    let path = database_path(cli.db.clone(), &client)?;
     fs::create_dir_all(path.parent().context("Select a SQLite file path")?)?;
-    let mut db =
-        db::open(&path).with_context(|| format!("Open capture database {}", path.display()))?;
+    let mut db = db::open(&path, client.base_url())
+        .with_context(|| format!("Open capture database {}", path.display()))?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_by_signal = Arc::clone(&interrupted);
     ctrlc::set_handler(move || interrupted_by_signal.store(true, Ordering::Relaxed))
         .context("Install Ctrl+C handler")?;
     let stopped = || interrupted.load(Ordering::Relaxed);
 
-    println!("Capture database · {}", path.display());
+    println!("{} · Capture database · {}", client.host(), path.display());
     if cli.mode == Mode::Watch {
         let _dashboard = if cli.no_dashboard {
             None
@@ -150,6 +150,7 @@ fn main() -> Result<()> {
             Some(dashboard::start(
                 path,
                 client.base_url(),
+                client.host(),
                 cli.bbox,
                 cli.dashboard_port,
             )?)
@@ -160,12 +161,30 @@ fn main() -> Result<()> {
     }
 }
 
-fn database_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
+fn default_database_filename(client: &CaptureClient) -> String {
+    if client.base_url() == DEFAULT_BASE_URL {
+        return "corescope-capture.sqlite3".into();
+    }
+    let host: String = client
+        .host()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("corescope-capture-{host}.sqlite3")
+}
+
+fn database_path(explicit: Option<PathBuf>, client: &CaptureClient) -> Result<PathBuf> {
     let path = match explicit {
         Some(path) => path,
         None => default_data_home()?
             .join("RepeaterNet")
-            .join("corescope-capture.sqlite3"),
+            .join(default_database_filename(client)),
     };
     ensure!(path.file_name().is_some(), "Select a SQLite file path");
     let path = resolve_path(&path)?;

@@ -53,6 +53,47 @@ count. RepeaterNet currently supplies terrain for Norway only. Analysis
 elsewhere requires other terrain data, such as Copernicus GLO-30 or a
 national DEM.
 
+## Capturing more than one CoreScope instance
+
+Ask the instance operator before starting a long capture. Build once from
+`rust/` in PowerShell.
+
+```powershell
+& "$env:USERPROFILE\.cargo\bin\cargo.exe" build --release --locked -p corescope-capture --target-dir target/multi
+```
+
+In the first PowerShell window, from `rust/`, use the default CoreScope
+instance and dashboard at `http://127.0.0.1:8790/`. If this capture is already
+running, leave it running and go straight to the second window.
+
+```powershell
+.\target\multi\release\corescope-capture.exe watch
+```
+
+In the second window, from `rust/`, capture on8ar.eu with the Belgium,
+Netherlands and western Germany neighbor bounds and dashboard port 8791.
+
+```powershell
+.\target\multi\release\corescope-capture.exe watch --base-url https://analyzer.on8ar.eu --bbox 49.4,53.6,2.5,7.3 --dashboard-port 8791
+```
+
+The second dashboard is at `http://127.0.0.1:8791/`. The dashboard header
+and terminal status identify the instance. The two commands use separate
+SQLite files automatically. Each file is tied to its full base URL. Use a
+separate `--db` if you capture distinct base URLs on the same host.
+
+At defaults, budget **about 440 requests per day** for on8ar.eu once the
+inventory is warm, and **about 520 per day** while the tool works through the
+initial neighbor backlog. The server reported 205,191 packets in 24 hours.
+The paged feed returned 306–333 transmissions per sampled 30-minute window,
+which includes the default watch overlap. That works out to two pages per
+poll (about 192 requests/day), plus about 28 topology requests/day and
+217 weekly-rotation lookups/day for 1,519 in-bounds nodes. During the initial
+backlog, neighbor lookups can reach 300/day. Traffic and page counts vary.
+
+Terrain analysis outside Norway needs a DEM other than Kartverket's, such as
+Copernicus GLO-30 or the Flemish or Walloon lidar DTMs for Belgium.
+
 ## Request pacing
 
 CoreScope is volunteer-run. Watch uses one HTTP client, sends requests
@@ -89,10 +130,12 @@ capped polls stay under about 1,100 requests per day.
 
 ## Database and one-shot captures
 
-- `--db <file>` overrides the default capture file. The default is
-  `%LOCALAPPDATA%/RepeaterNet/corescope-capture.sqlite3` on Windows and
-  `$XDG_DATA_HOME/RepeaterNet/corescope-capture.sqlite3` on Unix
-  (`~/.local/share` if XDG is unset). The file must live outside the
+- `--db <file>` overrides the default capture file. The directory is
+  `%LOCALAPPDATA%/RepeaterNet` on Windows and `$XDG_DATA_HOME/RepeaterNet` on
+  Unix (`~/.local/share/RepeaterNet` if XDG is unset). The default filename
+  for eth0.no is `corescope-capture.sqlite3`. Other instances use
+  `corescope-capture-<host>.sqlite3`, for example
+  `corescope-capture-analyzer.on8ar.eu.sqlite3`. The file must live outside the
   RepeaterNet checkout and `%LOCALAPPDATA%/RepeaterNet/data`. Run one
   capture process per file.
 - `snapshot` takes one topology snapshot and one bounded batch of node
@@ -112,6 +155,7 @@ can read while capture writes. Existing version 1 files are upgraded in place.
 
 | Table | Contents |
 | --- | --- |
+| `capture_instance` | Full base URL for this file. Files from earlier versions adopt the endpoint already recorded in their capture data. |
 | `observations` | One row per CoreScope reception, keyed by endpoint, packet ID and observation ID. For a representative-only response, the observer identity is the fallback key. Expanded observations can include several real receptions of the same transmission at one observer. Path columns contain JSON arrays with null placeholders for unresolved positions. |
 | `nodes_snapshot`, `observers_snapshot` | Timestamped JSON records keyed by capture run and public key or observer ID, with location columns for joins. |
 | `neighbors_snapshot` | Timestamped JSON responses keyed by capture run and source public key. An empty source key denotes the global graph. |

@@ -12,6 +12,7 @@ use super::*;
 use crate::model::packet_page;
 
 const SAMPLE: &str = include_str!("../fixtures/packets.json");
+const ON8AR: &str = "https://analyzer.on8ar.eu";
 const SENDER: &str = "70d8fb2dae304b220850aa24672f066785105752e80a87cd98314a9fe8bc83bf";
 
 fn sample() -> Value {
@@ -45,7 +46,7 @@ fn packets_allowlist_advert_fields_and_deduplicate_receptions() {
     let page = packet_page(payload, 0).unwrap();
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("capture.sqlite3");
-    let mut db = db::open(&db_path).unwrap();
+    let mut db = db::open(&db_path, "sample").unwrap();
     assert_eq!(
         db::save_page(
             &mut db,
@@ -135,7 +136,7 @@ fn resumes_capped_scan_and_honors_backoff() {
     ]);
     let db_dir = tempfile::tempdir().unwrap();
     let path = db_dir.path().join("resume.sqlite3");
-    let mut db = db::open(&path).unwrap();
+    let mut db = db::open(&path, &base).unwrap();
     let mut client = CaptureClient::new(&base, Duration::from_millis(10)).unwrap();
     let mut run = db::Run::start(&db, &base, "packets").unwrap();
     capture::packets(&mut db, &mut client, 1, &mut run, &|| false).unwrap();
@@ -146,7 +147,7 @@ fn resumes_capped_scan_and_honors_backoff() {
     assert_eq!(cursor.last_packet_id, Some(1316284));
     drop(db);
 
-    let mut db = db::open(&path).unwrap();
+    let mut db = db::open(&path, &base).unwrap();
     let mut run = db::Run::start(&db, &base, "packets").unwrap();
     capture::packets(&mut db, &mut client, 1, &mut run, &|| false).unwrap();
     assert!(!run.capped);
@@ -198,7 +199,7 @@ fn watch_defers_retries_and_uses_server_validators() {
         (429, "Retry-After: 270\r\n", Value::Null),
     ]);
     let dir = tempfile::tempdir().unwrap();
-    let db = db::open(&dir.path().join("watch.sqlite3")).unwrap();
+    let db = db::open(&dir.path().join("watch.sqlite3"), &base).unwrap();
     let mut client = CaptureClient::new(&base, Duration::from_millis(10)).unwrap();
     client.defer_retries();
     for _ in 0..2 {
@@ -227,7 +228,7 @@ fn watch_defers_retries_and_uses_server_validators() {
 fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("neighbors.sqlite3");
-    let mut db = db::open(&path).unwrap();
+    let mut db = db::open(&path, "sample").unwrap();
     let run = db::Run::start(&db, "sample", "watch-topology").unwrap();
     let inside = json!({"lat": 56, "lon": 11});
     let outside = json!({"lat": 52, "lon": 11});
@@ -265,7 +266,7 @@ fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
         .unwrap();
     }
     drop(db);
-    let db = db::open(&path).unwrap();
+    let db = db::open(&path, "sample").unwrap();
     assert_eq!(
         db::neighbor_batch(&db, "sample", bbox, start + 20, 20, day).unwrap(),
         ["d", "c"]
@@ -298,6 +299,180 @@ fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn on8ar_snapshot_and_expanded_packets() {
+    let fixture: Value = serde_json::from_str(include_str!("../fixtures/on8ar.json")).unwrap();
+    let nodes = fixture["nodes"]["nodes"].as_array().unwrap();
+    // v3.18 can hide rows after paging, so a short page with has_more
+    // advances by the requested limit.
+    let (base, server) = mock(vec![
+        (200, "", fixture["stats"].clone()),
+        (200, "", fixture["observers"].clone()),
+        (200, "", fixture["graph"].clone()),
+        (
+            200,
+            "",
+            json!({"nodes": [&nodes[0]], "total": 1, "has_more": true}),
+        ),
+        (
+            200,
+            "",
+            json!({"nodes": [&nodes[1]], "total": 1, "has_more": false}),
+        ),
+        (200, "", fixture["neighbors"].clone()),
+        (200, "", fixture["packets"].clone()),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = db::open(&dir.path().join("on8ar.sqlite3"), &base).unwrap();
+    let mut client = CaptureClient::new(&base, Duration::from_millis(10)).unwrap();
+    let mut topology = db::Run::start(&db, &base, "snapshot").unwrap();
+    capture::topology(&mut db, &mut client, 2, &mut topology, &|| false).unwrap();
+    assert_eq!(topology.version.as_deref(), Some("v3.18.0-on8ar.3"));
+    assert_eq!(
+        (topology.nodes, topology.observers, topology.neighbors),
+        (2, 3, 1)
+    );
+    topology.finish(&db, 5, false).unwrap();
+
+    let bbox = "49.4,53.6,2.5,7.3".parse().unwrap();
+    let mut neighbors = db::Run::start(&db, &base, "neighbors").unwrap();
+    capture::neighbors(
+        &mut db,
+        &mut client,
+        bbox,
+        1,
+        168 * 3_600_000,
+        &mut neighbors,
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(neighbors.neighbors, 1);
+
+    let mut packets = db::Run::start(&db, &base, "packets").unwrap();
+    capture::packets(&mut db, &mut client, 1, &mut packets, &|| false).unwrap();
+    assert_eq!(packets.observations, 4);
+    assert!(packets.capped);
+    let (rssi, snr, prefix, unresolved, last_hop, sender): (
+        f64,
+        f64,
+        String,
+        String,
+        String,
+        String,
+    ) = db
+        .query_row(
+            "SELECT rssi, snr, json_extract(path_prefixes, '$[0]'),
+                    json_type(resolved_path, '$[3]'), last_hop, sender_pubkey
+             FROM observations WHERE observation_id = 53013927",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (rssi, snr, prefix.as_str(), unresolved.as_str()),
+        (-127.0, -11.5, "d4be", "null")
+    );
+    assert_eq!(last_hop.len(), 64);
+    assert_eq!(sender.len(), 64);
+    let calls = server.join().unwrap();
+    assert!(calls[4].0.contains("offset=500"));
+    let node = fixture["neighbors"]["node"].as_str().unwrap();
+    assert!(
+        calls[5]
+            .0
+            .starts_with(&format!("GET /api/nodes/{node}/neighbors "))
+    );
+}
+
+#[test]
+fn default_database_names_follow_the_instance_host() {
+    let name = |url| default_database_filename(&CaptureClient::new(url, Duration::ZERO).unwrap());
+    assert_eq!(
+        name("https://CORESCOPE.eth0.no/"),
+        "corescope-capture.sqlite3"
+    );
+    assert_eq!(name(ON8AR), "corescope-capture-analyzer.on8ar.eu.sqlite3");
+    assert_eq!(
+        name("http://[::1]:8080/test"),
+        "corescope-capture----1-.sqlite3"
+    );
+}
+
+#[test]
+fn new_database_rejects_another_instance_before_any_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capture.sqlite3");
+    drop(db::open(&path, ON8AR).unwrap());
+    let error = db::open(&path, "https://analyzer.on8ar.eu/other")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(ON8AR) && error.contains("--db"));
+    db::open(&path, ON8AR).unwrap();
+}
+
+#[test]
+fn adopts_existing_version_two_database_and_preserves_its_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("corescope-capture.sqlite3");
+    let legacy = rusqlite::Connection::open(&path).unwrap();
+    legacy.execute_batch(include_str!("schema.sql")).unwrap();
+    legacy
+        .execute_batch(include_str!("watch_schema.sql"))
+        .unwrap();
+    let run = db::Run::start(&legacy, DEFAULT_BASE_URL, "watch-topology").unwrap();
+    run.finish(&legacy, 1, false).unwrap();
+    db::log_request(&legacy, DEFAULT_BASE_URL, None).unwrap();
+    legacy
+        .execute(
+            "INSERT INTO packet_cursor VALUES (?, 100, 200, 13, 42)",
+            [DEFAULT_BASE_URL],
+        )
+        .unwrap();
+    let error = db::open(&path, ON8AR).unwrap_err().to_string();
+    assert!(error.contains(DEFAULT_BASE_URL) && error.contains("--db"));
+
+    db::log_request(&legacy, ON8AR, None).unwrap();
+    let error = db::open(&path, DEFAULT_BASE_URL).unwrap_err().to_string();
+    assert!(error.contains("multiple CoreScope instances"));
+    legacy
+        .execute("DELETE FROM request_log WHERE endpoint = ?", [ON8AR])
+        .unwrap();
+    drop(legacy);
+
+    let db = db::open(&path, DEFAULT_BASE_URL).unwrap();
+    assert_eq!(
+        db::cursor(&db, DEFAULT_BASE_URL).unwrap(),
+        db::Cursor {
+            completed_until: Some(100),
+            window_until: Some(200),
+            next_offset: 13,
+            last_packet_id: Some(42),
+        }
+    );
+    assert!(
+        db::latest_topology(&db, DEFAULT_BASE_URL)
+            .unwrap()
+            .is_some()
+    );
+    let legacy = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = legacy
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    assert!(db::log_request(&legacy, ON8AR, None).is_err());
+    assert!(db::Run::start(&legacy, ON8AR, "snapshot").is_err());
+    db::log_request(&legacy, DEFAULT_BASE_URL, None).unwrap();
 }
 
 fn mock(

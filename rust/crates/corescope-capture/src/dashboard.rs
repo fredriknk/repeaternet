@@ -50,13 +50,19 @@ impl Drop for Dashboard {
     }
 }
 
-pub fn start(path: PathBuf, endpoint: &str, bbox: Bbox, port: u16) -> Result<Dashboard> {
+pub fn start(
+    path: PathBuf,
+    endpoint: &str,
+    host: &str,
+    bbox: Bbox,
+    port: u16,
+) -> Result<Dashboard> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).context(
         "Bind the capture dashboard. Choose another --dashboard-port or use --no-dashboard.",
     )?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
-    let app = router(path, endpoint, bbox)?;
+    let app = router(path, endpoint, host, bbox)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()?;
@@ -89,7 +95,7 @@ struct StateData {
     reader: Mutex<Reader>,
 }
 
-fn router(path: PathBuf, endpoint: &str, bbox: Bbox) -> Result<Router> {
+fn router(path: PathBuf, endpoint: &str, host: &str, bbox: Bbox) -> Result<Router> {
     let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_secs(5))?;
     db.create_aggregate_function(
@@ -104,8 +110,13 @@ fn router(path: PathBuf, endpoint: &str, bbox: Bbox) -> Result<Router> {
         bbox,
         reader: Mutex::new(Reader { db, cache: None }),
     });
+    let host = host
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let page = include_str!("dashboard.html").replace("{{host}}", &host);
     Ok(Router::new()
-        .route("/", get(|| async { Html(include_str!("dashboard.html")) }))
+        .route("/", get(move || async move { Html(page) }))
         .route(
             "/leaflet.js",
             get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], LEAFLET_JS) }),
