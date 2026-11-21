@@ -90,6 +90,10 @@ impl CaptureClient {
         self.base.as_str().trim_end_matches('/')
     }
 
+    pub fn host(&self) -> &str {
+        self.base.host_str().expect("validated CoreScope URL")
+    }
+
     pub fn requests(&self) -> usize {
         self.requests
     }

@@ -146,7 +146,8 @@ explains what the feed and saved entries mean.
 
 To record observed MeshCore links over time, run the separate CoreScope
 capture utility. It saves receptions in SQLite and shows them on a local live
-map. See the [CoreScope capture guide](../rust/crates/corescope-capture/README.md).
+map. Each CoreScope instance has its own capture file and a dashboard labelled
+with its host. See the [CoreScope capture guide](../rust/crates/corescope-capture/README.md).
 
 For a site you want to try, use **Place proposed router on map** or expand
 **Add a proposed router by coordinates**. Enter **Latitude**, **Longitude** and

@@ -189,8 +189,9 @@ pub fn run(
                 )
             });
         println!(
-            "{} · {label} {status} · +{} receptions · {} pairs · {requests}/{} requests (cycle/24 h) · next poll {next}{pause}",
+            "{} · {} · {label} {status} · +{} receptions · {} pairs · {requests}/{} requests (cycle/24 h) · next poll {next}{pause}",
             Local::now().format("%F %T"),
+            client.host(),
             run.observations,
             db::pair_count(db, &endpoint)?,
             db::requests_today(db, &endpoint, Utc::now().timestamp_millis())?,
@@ -273,8 +274,13 @@ fn finish_once(
     let requests = client.requests() - start;
     let status = run.finish(db, requests, stopped())?;
     println!(
-        "Capture {} {status} · {} receptions added · {} nodes · {} observers · {} neighbor responses · {requests} requests",
-        run.id, run.observations, run.nodes, run.observers, run.neighbors,
+        "{} · Capture {} {status} · {} receptions added · {} nodes · {} observers · {} neighbor responses · {requests} requests",
+        client.host(),
+        run.id,
+        run.observations,
+        run.nodes,
+        run.observers,
+        run.neighbors,
     );
     ensure!(run.errors.is_empty(), "{}", run.errors.join("\n"));
     Ok(())

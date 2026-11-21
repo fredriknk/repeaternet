@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CoreScope capture</title>
+  <title>CoreScope capture · {{host}}</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/leaflet.css">
   <style>
     :root { color-scheme: light; font-family: system-ui, sans-serif; color: #142725; background: #f2f6f4; }
     * { box-sizing: border-box; }
     body { margin: 0; font-size: 14px; }
-    header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 22px; background: #12302d; color: #fff; }
+    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 12px 22px; background: #12302d; color: #fff; }
     h1, h2, p { margin: 0; }
-    h1 { font-size: 20px; }
+    h1 { font-size: 20px; overflow-wrap: anywhere; }
     h2 { font-size: 15px; }
     #status { font-size: 13px; text-align: right; color: #d3e9e1; }
     main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; padding: 14px; min-height: calc(100dvh - 52px); }
@@ -60,7 +60,7 @@
 </head>
 <body>
   <header>
-    <h1>CoreScope capture</h1>
+    <h1>CoreScope capture · {{host}}</h1>
     <p id="status" role="status">Loading capture…</p>
   </header>
   <main>

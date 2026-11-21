@@ -1,0 +1,433 @@
+{
+  "stats": {
+    "totalPackets": 253845,
+    "totalTransmissions": 253845,
+    "totalObservations": 2717099,
+    "totalNodes": 1955,
+    "totalNodesAllTime": 1960,
+    "totalObservers": 51,
+    "packetsLastHour": 8677,
+    "packetsLast24h": 205191,
+    "engine": "go",
+    "version": "v3.18.0-on8ar.3",
+    "commit": "1fda1c30",
+    "buildTime": "2026-11-19T17:43:01Z",
+    "counts": {
+      "repeaters": 1599,
+      "rooms": 67,
+      "companions": 285,
+      "sensors": 1
+    },
+    "signatureDrops": 179,
+    "hashMigrationComplete": true,
+    "trackedMB": 1676.6,
+    "storeDataMB": 1676.6,
+    "processRSSMB": 6219.4,
+    "goHeapInuseMB": 4920.4,
+    "goSysMB": 7666.4,
+    "neighborGraphCacheRebuildFailures": 0
+  },
+  "packets": {
+    "total": 333,
+    "limit": 20,
+    "offset": 0,
+    "packets": [
+      {
+        "_parsedPath": [
+          "D4BE",
+          "BEEF",
+          "9AE1",
+          "624F",
+          "6E3C",
+          "6926",
+          "5555",
+          "88DC"
+        ],
+        "direction": "rx",
+        "first_seen": "2026-11-21T07:22:58Z",
+        "hash": "ced98d2995593a2f",
+        "id": 4073980,
+        "observation_count": 3,
+        "observations": [
+          {
+            "direction": "rx",
+            "id": 53013927,
+            "observer_iata": "NRW",
+            "observer_id": "043119D88E94BF1D0476DCD9F62E3C96963FC6D95E1056ACD430E2723EB30859",
+            "observer_name": "Kessel",
+            "path_json": "[\"D4BE\",\"BEEF\",\"9AE1\",\"624F\",\"6E3C\",\"6926\"]",
+            "radio": "869.618,62.5,8,8",
+            "resolved_path": [
+              "d4beef92b2409bd5d8f19ef0dfd83d53a281bb871cf82c0606314179dee11ba1",
+              "beef503d27ca625860644da98ff9c6c0d62c0f31655bd1754bc54a729c03b4a1",
+              "9ae11bf20c8fd6eac24e257a2eef7530e86d6a38d1a200a2158c513813494561",
+              null,
+              "6e3c0fe011dfe237af1ae3e03f0d5eb2150406f7d1a5b83eaa9b45d73fc5d8c7",
+              "69260484f4b393421cd04024c1edce362c45f1010fb870bd88fef4eb65c37693"
+            ],
+            "rssi": -127,
+            "snr": -11.5,
+            "timestamp": "2026-11-21T07:22:58.000Z"
+          },
+          {
+            "direction": "rx",
+            "id": 53013936,
+            "observer_iata": "NRW",
+            "observer_id": "043119D88E94BF1D0476DCD9F62E3C96963FC6D95E1056ACD430E2723EB30859",
+            "observer_name": "Kessel",
+            "path_json": "[\"D4BE\",\"BEEF\",\"9AE1\",\"624F\",\"6E3C\",\"6926\",\"CD58\"]",
+            "radio": "869.618,62.5,8,8",
+            "resolved_path": [
+              "d4beef92b2409bd5d8f19ef0dfd83d53a281bb871cf82c0606314179dee11ba1",
+              "beef503d27ca625860644da98ff9c6c0d62c0f31655bd1754bc54a729c03b4a1",
+              "9ae11bf20c8fd6eac24e257a2eef7530e86d6a38d1a200a2158c513813494561",
+              null,
+              "6e3c0fe011dfe237af1ae3e03f0d5eb2150406f7d1a5b83eaa9b45d73fc5d8c7",
+              "69260484f4b393421cd04024c1edce362c45f1010fb870bd88fef4eb65c37693",
+              "cd580a2380f027684f5dc612f98248a1f74600708cbea2079a2f2794c1fd844b"
+            ],
+            "rssi": -30,
+            "snr": 12,
+            "timestamp": "2026-11-21T07:23:01.000Z"
+          },
+          {
+            "direction": "rx",
+            "id": 53013953,
+            "observer_iata": "MST",
+            "observer_id": "D3AFC53995E867DBE4CACE4D27011A7BD3E6663873A3E19AE08CDBB270661E50",
+            "observer_name": "NL-MCK-RS01 pw melick",
+            "path_json": "[\"D4BE\",\"BEEF\",\"9AE1\",\"624F\",\"6E3C\",\"6926\",\"5555\",\"88DC\"]",
+            "radio": "869.618,62.5,8,8",
+            "resolved_path": [
+              "d4beef92b2409bd5d8f19ef0dfd83d53a281bb871cf82c0606314179dee11ba1",
+              "beef503d27ca625860644da98ff9c6c0d62c0f31655bd1754bc54a729c03b4a1",
+              "9ae11bf20c8fd6eac24e257a2eef7530e86d6a38d1a200a2158c513813494561",
+              null,
+              "6e3c0fe011dfe237af1ae3e03f0d5eb2150406f7d1a5b83eaa9b45d73fc5d8c7",
+              "69260484f4b393421cd04024c1edce362c45f1010fb870bd88fef4eb65c37693",
+              "555555d0fa89bb1bf6df0a74a8ef29fc655b1743f256cf26a5a45190ecbba915",
+              "88dcdbef1260bd295bf84c5b2b40edf0a3ed9b44f1b4ff577ead9a4af903a4d6"
+            ],
+            "rssi": -65,
+            "snr": 12,
+            "timestamp": "2026-11-21T07:23:03.000Z"
+          }
+        ],
+        "observer_iata": "MST",
+        "observer_id": "D3AFC53995E867DBE4CACE4D27011A7BD3E6663873A3E19AE08CDBB270661E50",
+        "observer_name": "NL-MCK-RS01 pw melick",
+        "path_json": "[\"D4BE\",\"BEEF\",\"9AE1\",\"624F\",\"6E3C\",\"6926\",\"5555\",\"88DC\"]",
+        "payload_type": 4,
+        "radio": "869.618,62.5,8,8",
+        "resolved_path": [
+          "d4beef92b2409bd5d8f19ef0dfd83d53a281bb871cf82c0606314179dee11ba1",
+          "beef503d27ca625860644da98ff9c6c0d62c0f31655bd1754bc54a729c03b4a1",
+          "9ae11bf20c8fd6eac24e257a2eef7530e86d6a38d1a200a2158c513813494561",
+          null,
+          "6e3c0fe011dfe237af1ae3e03f0d5eb2150406f7d1a5b83eaa9b45d73fc5d8c7",
+          "69260484f4b393421cd04024c1edce362c45f1010fb870bd88fef4eb65c37693",
+          "555555d0fa89bb1bf6df0a74a8ef29fc655b1743f256cf26a5a45190ecbba915",
+          "88dcdbef1260bd295bf84c5b2b40edf0a3ed9b44f1b4ff577ead9a4af903a4d6"
+        ],
+        "route_type": 0,
+        "rssi": -65,
+        "scope_name": "#de-nw",
+        "snr": 12,
+        "timestamp": "2026-11-21T07:22:58Z",
+        "decoded_json": "{\"pubKey\": \"d2beef3c4f8064c10fb41885cd980bd7677a2d55540f20988b16675b70e7658a\", \"lat\": 50.625233, \"lon\": 6.855777, \"name\": \"D-53381 Flamersheim\", \"flags\": {\"raw\": 146}}"
+      },
+      {
+        "_parsedPath": null,
+        "direction": "tx",
+        "first_seen": "2026-11-21T07:22:57Z",
+        "hash": "d8545beeedb337f8",
+        "id": 4073979,
+        "observation_count": 1,
+        "observations": [
+          {
+            "direction": "tx",
+            "id": 53013922,
+            "observer_iata": "KJK",
+            "observer_id": "02F54F382EFE6CFF042160567E0FF33DFAE644145DA2B226D6AC02B7DB832E84",
+            "observer_name": "Roeselare OBS2",
+            "path_json": "[]",
+            "radio": "869.618,62.5,8,8",
+            "rssi": null,
+            "snr": null,
+            "timestamp": "2026-11-21T07:22:57.000Z"
+          }
+        ],
+        "observer_iata": "KJK",
+        "observer_id": "02F54F382EFE6CFF042160567E0FF33DFAE644145DA2B226D6AC02B7DB832E84",
+        "observer_name": "Roeselare OBS2",
+        "path_json": "[]",
+        "payload_type": 4,
+        "radio": "869.618,62.5,8,8",
+        "route_type": 2,
+        "rssi": null,
+        "scope_name": null,
+        "snr": null,
+        "timestamp": "2026-11-21T07:22:57Z",
+        "decoded_json": "{\"pubKey\": \"02f54f382efe6cff042160567e0ff33dfae644145da2b226d6ac02b7db832e84\", \"lat\": 50.95581, \"lon\": 3.12265, \"name\": \"Roeselare OBS2\", \"flags\": {\"raw\": 146}}"
+      }
+    ]
+  },
+  "nodes": {
+    "nodes": [
+      {
+        "advert_count": 113,
+        "battery_mv": null,
+        "bridge_score": 0.04063120307839028,
+        "configured_scope": null,
+        "configured_scope_at": null,
+        "coverage_score": 0.014421024357884584,
+        "default_scope": "#be",
+        "first_seen": "2026-07-02T01:44:08Z",
+        "foreign": true,
+        "hash_size": 2,
+        "hash_size_inconsistent": false,
+        "last_certain_relay": "2026-11-20T22:20:20Z",
+        "last_heard": "2026-11-20T22:20:20Z",
+        "last_relayed": "2026-11-21T06:28:54Z",
+        "last_seen": "2026-11-20T22:20:20Z",
+        "lat": 51.4873,
+        "lon": 7.214457,
+        "multi_byte_evidence": "advert",
+        "multi_byte_max_hash_size": 2,
+        "multi_byte_status": "confirmed",
+        "name": "DE-NW-BO-Center",
+        "public_key": "010bb100136b935c3b911e33b7e67dd3654772a918f69c0d320676f2c4868253",
+        "redundancy_score": 0.003026080031853474,
+        "region_placement": {
+          "basis": "none",
+          "hops": 5
+        },
+        "relay_active": true,
+        "relay_count_1h": 1,
+        "relay_count_24h": 44,
+        "role": "repeater",
+        "scope_config_state": "observed",
+        "temperature_c": null,
+        "traffic_share_score": 0.0005862201623097075,
+        "transported_scopes": [
+          "#be",
+          "#de",
+          "#de-nw",
+          "#ruhrgebiet"
+        ],
+        "unscoped_relay_count_24h": 40,
+        "usefulness_grade": "F",
+        "usefulness_score": 0.017033391560925978
+      },
+      {
+        "advert_count": 3,
+        "battery_mv": null,
+        "configured_scope": null,
+        "configured_scope_at": null,
+        "default_scope": null,
+        "first_seen": "2026-11-17T09:20:36Z",
+        "foreign": false,
+        "hash_size": 2,
+        "hash_size_inconsistent": true,
+        "hash_sizes_seen": [
+          1,
+          2
+        ],
+        "last_heard": "2026-11-19T13:54:19Z",
+        "last_seen": "2026-11-19T13:54:19Z",
+        "lat": 51.338565,
+        "lon": 3.304512,
+        "multi_byte_evidence": "advert",
+        "multi_byte_max_hash_size": 2,
+        "multi_byte_status": "confirmed",
+        "name": "DDB-1A319",
+        "public_key": "01572f49cc05012d0288844cb8a283260758af00c54765d829850086b4482a01",
+        "region_placement": {
+          "basis": "fewest_hops",
+          "hops": 3,
+          "regions": [
+            "OST"
+          ]
+        },
+        "role": "companion",
+        "temperature_c": null
+      }
+    ],
+    "has_more": false,
+    "total": 2
+  },
+  "observers": {
+    "observers": [
+      {
+        "battery_mv": 0,
+        "can_relay": true,
+        "client_version": "meshcore/v1.17.1-dutchmeshcore.nl-observer-mqtt-f6e4e167",
+        "clock_last_naive_at": null,
+        "clock_naive": false,
+        "clock_skew_count_24h": 0,
+        "clock_skew_seconds": null,
+        "firmware": "v1.17.1-dutchmeshcore.nl-observer-mqtt-f6e4e167",
+        "first_seen": "2026-09-03T12:23:13Z",
+        "iata": "KJK",
+        "id": "02F54F382EFE6CFF042160567E0FF33DFAE644145DA2B226D6AC02B7DB832E84",
+        "last_packet_at": "2026-11-21T06:22:57Z",
+        "last_seen": "2026-11-21T07:20:35Z",
+        "lat": 50.95581,
+        "lon": 3.12265,
+        "model": "Xiao S3 WIO",
+        "name": "Roeselare OBS2",
+        "neighbors_count": 3,
+        "neighbors_report_at": "2026-11-20T22:52:49Z",
+        "nodeRole": "repeater",
+        "noise_floor": -103,
+        "packet_count": 25635,
+        "packetsLastHour": 1,
+        "radio": "869.617981,62.5,8,8",
+        "uptime_secs": 2393701
+      },
+      {
+        "battery_mv": 4069,
+        "client_version": "meshcore/1.14.1-letsmesh.net-dev-2026-03-20-abe6e046",
+        "clock_last_naive_at": null,
+        "clock_naive": false,
+        "clock_skew_count_24h": 0,
+        "clock_skew_seconds": null,
+        "firmware": "1.14.1-letsmesh.net-dev-2026-03-20-abe6e046",
+        "first_seen": "2026-04-18T19:02:41Z",
+        "iata": "NRW",
+        "id": "043119D88E94BF1D0476DCD9F62E3C96963FC6D95E1056ACD430E2723EB30859",
+        "last_packet_at": "2026-11-21T07:21:49Z",
+        "last_seen": "2026-11-21T07:21:49Z",
+        "lat": 51.296462,
+        "lon": 6.044653,
+        "model": "Heltec V3",
+        "name": "Kessel",
+        "nodeRole": "repeater",
+        "noise_floor": -115,
+        "packet_count": 3329146,
+        "packetsLastHour": 555,
+        "radio": "869.617981,62.5,8,8",
+        "uptime_secs": 2571208
+      },
+      {
+        "battery_mv": 3842,
+        "client_version": "meshcoretomqtt/1.3.0.0-preview",
+        "clock_last_naive_at": null,
+        "clock_naive": false,
+        "clock_skew_count_24h": 0,
+        "clock_skew_seconds": null,
+        "firmware": "v1.17.1 (Build: 14 Aug 2026)",
+        "first_seen": "2026-11-06T08:30:58Z",
+        "iata": "MST",
+        "id": "D3AFC53995E867DBE4CACE4D27011A7BD3E6663873A3E19AE08CDBB270661E50",
+        "last_packet_at": "2026-11-21T07:21:52Z",
+        "last_seen": "2026-11-21T07:21:52Z",
+        "lat": 51.1664,
+        "lon": 6.0301,
+        "model": "Heltec V3",
+        "name": "NL-MCK-RS01 pw melick",
+        "nodeRole": "room",
+        "noise_floor": -115,
+        "packet_count": 52426,
+        "packetsLastHour": 134,
+        "radio": "869.6179809,62.5,8,8",
+        "uptime_secs": 1188471
+      }
+    ]
+  },
+  "graph": {
+    "edges": [
+      {
+        "ambiguous": false,
+        "avg_snr": -3.0625,
+        "bidirectional": true,
+        "score": 0.020158571697015105,
+        "source": "4dce59aa8c4a78cd154b9a502de1057799f4502459af8c0d849d8da4e8f73fcc",
+        "target": "d0beefa640e06ef166a720a9a668a2daf3a2a4e9ab837cd506a0345b3d203827",
+        "weight": 4
+      },
+      {
+        "ambiguous": false,
+        "avg_snr": 6.791666666666667,
+        "bidirectional": true,
+        "score": 0.08051051516822512,
+        "source": "380de125d5cc528fd64236802c98f8184f643dd5be467ec65e24b2f630a4ecca",
+        "target": "775fa1d810e49044b7676e2be99fb4be28a872e91c4a94b4b83286cfbadda303",
+        "weight": 18
+      }
+    ],
+    "nodes": [
+      {
+        "name": "BE-EUP-Hertogenwald🌞",
+        "neighbor_count": 2,
+        "pubkey": "5d44f3e8d181156bd4f22335339a62cc044b76104fc6c3f03d60401e56743cbb",
+        "role": "repeater"
+      },
+      {
+        "name": "BE-BAR-Heikant-EBP-01",
+        "neighbor_count": 13,
+        "pubkey": "1dac22d321e2b193dfbf90206b7b1119cf1b5adcd0584a796d82bd577ae9be11",
+        "role": "repeater"
+      }
+    ],
+    "stats": {
+      "ambiguous_edges": 664,
+      "avg_cluster_size": 5.967894239848914,
+      "rejected_edges_geo_far": 26,
+      "total_edges": 6320,
+      "total_nodes": 2118
+    }
+  },
+  "neighbors": {
+    "neighbors": [
+      {
+        "ambiguous": false,
+        "avg_snr": 7.586363636363637,
+        "count": 11,
+        "counts_by_mode": {
+          "2": 11
+        },
+        "distance_km": 3.590003317236751,
+        "first_seen": "2026-11-10T03:04:22Z",
+        "last_seen": "2026-11-19T03:04:07Z",
+        "name": "D-WAN-Eickel",
+        "observers": [
+          "043119d88e94bf1d0476dcd9f62e3c96963fc6d95e1056acd430e2723eb30859",
+          "14987bded5f1e79e273c379ef340a191415d75a74cf42b8a953dbc07820ac7f4",
+          "77ffefa6a8a0858dbc23a9ff23e011f4e6a5e71ce553676ecc0ee29fa5053628",
+          "e26b76ab22720e5528957ee82e0d282887b226ab7ccc25062d2d5ec6b9c41986",
+          "efef7943505052b47f1809488ea4b4d3942d4ed72d2b1953b90a9f5e62a65fb5"
+        ],
+        "prefix": "cf1f",
+        "pubkey": "cf1fe939060bb8b9baf82a077981dac7c6b13c242cbcc9ecf69726d8030569f0",
+        "role": "repeater",
+        "score": 0.08865000559899526
+      },
+      {
+        "ambiguous": false,
+        "avg_snr": 9.288888888888888,
+        "count": 9,
+        "counts_by_mode": {
+          "2": 9
+        },
+        "distance_km": 13.510039845095848,
+        "first_seen": "2026-11-14T03:04:05Z",
+        "last_seen": "2026-11-17T15:04:18Z",
+        "name": "DE-NW-RE-Quellberg",
+        "observers": [
+          "043119d88e94bf1d0476dcd9f62e3c96963fc6d95e1056acd430e2723eb30859",
+          "14987bded5f1e79e273c379ef340a191415d75a74cf42b8a953dbc07820ac7f4",
+          "64114bc461962b74ed80505149c61cdcef12a87f14ef44c83d080bdcc7d4072a",
+          "77ffefa6a8a0858dbc23a9ff23e011f4e6a5e71ce553676ecc0ee29fa5053628",
+          "d3afc53995e867dbe4cace4d27011a7bd3e6663873a3e19ae08cdbb270661e50"
+        ],
+        "prefix": "0ffb",
+        "pubkey": "0ffbd25c06e4e1a38df906aa1be3fc906afdb11f492143d58e69a3cc82287939",
+        "role": "repeater",
+        "score": 0.06252124808767441
+      }
+    ],
+    "node": "010bb100136b935c3b911e33b7e67dd3654772a918f69c0d320676f2c4868253",
+    "total_observations": 47
+  }
+}
