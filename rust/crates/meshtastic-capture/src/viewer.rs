@@ -16,8 +16,9 @@ use axum::{
     routing::get,
 };
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, named_params, params};
 use serde::{Deserialize, Serialize};
+use sondehub_import::{DATABASE, GB, SUSPECT_FLAGS, database_bytes};
 use tokio::sync::oneshot;
 
 pub struct Viewer {
@@ -36,14 +37,25 @@ impl Drop for Viewer {
     }
 }
 
-pub fn directory_glob(dir: &Path) -> String {
-    PathBuf::from(glob::Pattern::escape(&dir.to_string_lossy()))
-        .join("*capture*.sqlite3")
-        .to_string_lossy()
-        .into_owned()
+const LINE_LIMIT: usize = 15_000;
+const SONDE_HOST: &str = "history.sondehub.org";
+const SONDE_NETWORK: &str = "Radiosonde";
+const SONDE_BAND: &str = "400 MHz";
+
+pub fn directory_globs(dir: &Path) -> Vec<String> {
+    let dir = PathBuf::from(glob::Pattern::escape(&dir.to_string_lossy()));
+    ["*capture*.sqlite3", DATABASE]
+        .into_iter()
+        .map(|pattern| dir.join(pattern).to_string_lossy().into_owned())
+        .collect()
 }
 
-pub fn start(patterns: Vec<String>, port: u16) -> Result<Viewer> {
+pub fn start(
+    patterns: Vec<String>,
+    port: u16,
+    budget_gb: f64,
+    directory: Option<PathBuf>,
+) -> Result<Viewer> {
     for pattern in &patterns {
         glob::Pattern::new(pattern)?;
     }
@@ -57,6 +69,8 @@ pub fn start(patterns: Vec<String>, port: u16) -> Result<Viewer> {
     let (stop, shutdown) = oneshot::channel();
     let state = Arc::new(ViewerState {
         patterns,
+        directory,
+        budget_gb,
         cache: Mutex::new(HashMap::new()),
     });
     let router = Router::new()
@@ -80,6 +94,7 @@ pub fn start(patterns: Vec<String>, port: u16) -> Result<Viewer> {
             }),
         )
         .route("/api/links", get(api))
+        .route("/api/sondes", get(sonde_api))
         .with_state(state);
     let thread = thread::Builder::new()
         .name("capture-viewer".into())
@@ -117,8 +132,21 @@ struct Filters {
     window: Window,
 }
 
+impl Window {
+    fn since(self) -> i64 {
+        let now = Utc::now().timestamp();
+        match self {
+            Self::Day => now - 86_400,
+            Self::Week => now - 7 * 86_400,
+            Self::All => 0,
+        }
+    }
+}
+
 struct ViewerState {
     patterns: Vec<String>,
+    directory: Option<PathBuf>,
+    budget_gb: f64,
     cache: Mutex<HashMap<Window, (Instant, Arc<MapData>)>>,
 }
 
@@ -136,7 +164,7 @@ async fn api(
         {
             return Arc::clone(data);
         }
-        let data = Arc::new(load(&state.patterns, filters.window));
+        let data = Arc::new(load(&state, filters.window));
         cache.insert(filters.window, (Instant::now(), Arc::clone(&data)));
         data
     })
@@ -150,6 +178,8 @@ struct MapData {
     sources: Vec<Inventory>,
     links: Vec<Link>,
     warnings: Vec<String>,
+    database_bytes: u64,
+    budget_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -179,16 +209,13 @@ struct Link {
     coarse: bool,
     unknown_precision: bool,
     suspect: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agl: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quality_flags: Option<u32>,
 }
 
-fn load(patterns: &[String], window: Window) -> MapData {
-    let now = Utc::now().timestamp();
-    let since = match window {
-        Window::Day => now - 86_400,
-        Window::Week => now - 7 * 86_400,
-        Window::All => 0,
-    };
-    let mut data = MapData::default();
+fn capture_paths(patterns: &[String], warnings: &mut Vec<String>) -> BTreeSet<PathBuf> {
     let mut paths = BTreeSet::new();
     for pattern in patterns {
         match glob::glob_with(
@@ -209,11 +236,36 @@ fn load(patterns: &[String], window: Window) -> MapData {
                             }
                         }
                         Ok(_) => {}
-                        Err(error) => data.warnings.push(error.to_string()),
+                        Err(error) => warnings.push(error.to_string()),
                     }
                 }
             }
-            Err(error) => data.warnings.push(error.to_string()),
+            Err(error) => warnings.push(error.to_string()),
+        }
+    }
+    paths
+}
+
+fn load(state: &ViewerState, window: Window) -> MapData {
+    let since = window.since();
+    let mut data = MapData {
+        budget_bytes: (state.budget_gb * GB) as u64,
+        ..MapData::default()
+    };
+    let paths = capture_paths(&state.patterns, &mut data.warnings);
+    let dirs = if let Some(dir) = &state.directory {
+        BTreeSet::from([dir.as_path()])
+    } else {
+        paths.iter().filter_map(|path| path.parent()).collect()
+    };
+    for dir in dirs {
+        match database_bytes(dir) {
+            Ok(bytes) => data.database_bytes = data.database_bytes.saturating_add(bytes),
+            Err(error) => {
+                eprintln!("Could not measure {} · {error}", dir.display());
+                data.warnings
+                    .push("Could not measure capture database size".into());
+            }
         }
     }
     for path in paths {
@@ -246,6 +298,9 @@ fn read_capture(path: &Path, since: i64, source: usize) -> Result<Option<(Invent
     // WAL readers share SQLite's normal snapshot protocol with active writers.
     let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_millis(500))?;
+    if is_sonde(path) {
+        return Ok(Some((sonde_inventory(&db)?, Vec::new())));
+    }
     let snapshot = db.transaction()?;
     let exists = |table| -> rusqlite::Result<bool> {
         snapshot.query_row(
@@ -305,6 +360,8 @@ fn meshtastic(db: &Connection, since: i64, source: usize) -> Result<(Inventory, 
                 coarse: r.get(13)?,
                 unknown_precision: r.get(14)?,
                 suspect: r.get(15)?,
+                agl: None,
+                quality_flags: None,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -444,6 +501,8 @@ fn meshcore(db: &Connection, since: i64, source: usize) -> Result<(Inventory, Ve
             coarse: false,
             unknown_precision: true,
             suspect: false,
+            agl: None,
+            quality_flags: None,
         });
     }
     Ok((
@@ -482,4 +541,156 @@ fn meshcore_radio(radio: &str) -> (Option<String>, Option<String>) {
             .then(|| format!("SF{sf} / {bw} kHz / CR 4/{cr}"))
     })();
     (band, preset)
+}
+
+fn is_sonde(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(DATABASE))
+}
+
+fn sonde_inventory(db: &Connection) -> Result<Inventory> {
+    Ok(db.query_row(
+        "SELECT coalesce(sum(kept_rows), 0), coalesce(sum(located_links), 0),
+                (SELECT count(*) FROM receiver), max(last_observed)
+           FROM source_object WHERE status = 'complete'",
+        [],
+        |r| {
+            Ok(Inventory {
+                network: SONDE_NETWORK,
+                host: SONDE_HOST.into(),
+                measurements: r.get(0)?,
+                located_links: r.get(1)?,
+                nodes: r.get(2)?,
+                last_update: r.get(3)?,
+            })
+        },
+    )?)
+}
+
+#[derive(Deserialize)]
+struct SondeFilters {
+    #[serde(default)]
+    window: Window,
+    west: f64,
+    east: f64,
+    south: f64,
+    north: f64,
+    agl: Option<u32>,
+    evidence: Option<String>,
+    #[serde(default = "hide_suspect_by_default")]
+    hide_suspect: bool,
+}
+
+fn hide_suspect_by_default() -> bool {
+    true
+}
+
+#[derive(Default, Serialize)]
+struct SondeData {
+    links: Vec<Link>,
+    total: usize,
+}
+
+async fn sonde_api(
+    State(state): State<Arc<ViewerState>>,
+    Query(filters): Query<SondeFilters>,
+) -> Result<([(header::HeaderName, &'static str); 1], Json<SondeData>), StatusCode> {
+    if ![filters.west, filters.east, filters.south, filters.north]
+        .into_iter()
+        .all(f64::is_finite)
+        || filters.east < filters.west
+        || filters.north < filters.south
+        || !matches!(filters.agl, None | Some(1_000 | 3_000))
+        || !matches!(
+            filters.evidence.as_deref(),
+            None | Some("sonde_snr_auto_rx" | "sonde_rssi_rdz")
+        )
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let data = tokio::task::spawn_blocking(move || -> Result<SondeData> {
+        let mut data = SondeData::default();
+        let paths = capture_paths(&state.patterns, &mut Vec::new());
+        for path in paths.iter().filter(|path| is_sonde(path)) {
+            let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            db.busy_timeout(Duration::from_millis(500))?;
+            let result = sonde_links(&db, &filters)?;
+            data.total += result.total;
+            data.links.extend(result.links);
+        }
+        data.links
+            .sort_by_key(|link| std::cmp::Reverse((link.count, link.last)));
+        data.links.truncate(LINE_LIMIT);
+        Ok(data)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|error| {
+        eprintln!("Could not read SondeHub links · {error:#}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(data)))
+}
+
+fn sonde_links(db: &Connection, filters: &SondeFilters) -> Result<SondeData> {
+    let since = filters.window.since();
+    let span = filters.east - filters.west;
+    let (west, east) = if span >= 360.0 {
+        (-180.0, 180.0)
+    } else {
+        let west = (filters.west + 180.0).rem_euclid(360.0) - 180.0;
+        (west, west + span)
+    };
+    let wrap = east > 180.0;
+    let wrapped_east = east - 360.0;
+    let east = east.min(180.0);
+    let south = filters.south.clamp(-90.0, 90.0);
+    let north = filters.north.clamp(-90.0, 90.0);
+    let agl_bands = filters
+        .agl
+        .map(|height| if height == 1_000 { 1 } else { 2 });
+    let mut query = db.prepare(include_str!("viewer_sonde.sql"))?;
+    let mut rows = query.query(named_params! {
+        ":west": west, ":east": east, ":south": south, ":north": north,
+        ":since_ms": since * 1000, ":until_ms": Utc::now().timestamp_millis(),
+        ":wrap": wrap, ":wrapped_east": wrapped_east,
+        ":evidence": filters.evidence, ":agl_bands": agl_bands,
+        ":hide_suspect": filters.hide_suspect, ":suspect_flags": SUSPECT_FLAGS,
+        ":limit": LINE_LIMIT as i64,
+    })?;
+    let mut data = SondeData::default();
+    while let Some(row) = rows.next()? {
+        let evidence: String = row.get(8)?;
+        let mean = row.get::<_, Option<f64>>(9)?;
+        let flags: u32 = row.get(7)?;
+        data.total = row.get::<_, i64>(12)? as usize;
+        data.links.push(Link {
+            source: 0,
+            from: [row.get(2)?, row.get(3)?],
+            to: [row.get(4)?, row.get(5)?],
+            tx: row.get(0)?,
+            rx: row.get(1)?,
+            snr: if evidence == "sonde_snr_auto_rx" {
+                mean
+            } else {
+                None
+            },
+            rssi: if evidence == "sonde_rssi_rdz" {
+                mean
+            } else {
+                None
+            },
+            evidence,
+            band: Some(SONDE_BAND.into()),
+            preset: None,
+            count: row.get(10)?,
+            last: row.get::<_, i64>(11)?.div_euclid(1000),
+            coarse: false,
+            unknown_precision: true,
+            suspect: flags & SUSPECT_FLAGS != 0,
+            agl: row.get(6)?,
+            quality_flags: Some(flags),
+        });
+    }
+    Ok(data)
 }

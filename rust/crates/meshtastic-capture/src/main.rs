@@ -17,6 +17,7 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, builder::PossibleValuesParser};
+use sondehub_import::{DEFAULT_BUDGET_GB, default_dir, parse_gb};
 
 #[derive(Parser)]
 #[command(version, about = "Capture and view measured RF links")]
@@ -29,12 +30,15 @@ struct Cli {
 enum Command {
     /// Collect Meshtastic measurements from the enabled public hosts.
     Run(Run),
-    /// View MeshCore and Meshtastic capture files.
+    /// View MeshCore, Meshtastic and SondeHub capture files.
     View(View),
 }
 
 #[derive(Args)]
 struct Run {
+    /// Total limit for SQLite capture files in the database directory (decimal GB).
+    #[arg(long, default_value_t = DEFAULT_BUDGET_GB, value_parser = parse_gb)]
+    total_budget_gb: f64,
     /// Directory for the per-host capture databases.
     #[arg(long)]
     db_dir: Option<PathBuf>,
@@ -72,6 +76,9 @@ struct View {
     /// Directory to search for capture files.
     #[arg(long, conflicts_with = "glob")]
     db_dir: Option<PathBuf>,
+    /// Total limit shown in the viewer (decimal GB).
+    #[arg(long, default_value_t = DEFAULT_BUDGET_GB, value_parser = parse_gb)]
+    total_budget_gb: f64,
     /// Loopback port for the viewer.
     #[arg(long, default_value_t = 8795)]
     port: u16,
@@ -101,18 +108,6 @@ fn parse_duration(raw: &str) -> Result<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
-fn default_dir() -> Result<PathBuf> {
-    #[cfg(windows)]
-    let home = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    #[cfg(not(windows))]
-    let home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
-    Ok(home
-        .context("Set the user data directory or pass --db-dir")?
-        .join("RepeaterNet"))
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -129,21 +124,24 @@ fn main() -> Result<()> {
                 None
             } else {
                 Some(viewer::start(
-                    vec![viewer::directory_glob(&dir)],
+                    viewer::directory_globs(&dir),
                     args.dashboard_port,
+                    args.total_budget_gb,
+                    Some(dir.clone()),
                 )?)
             };
             poll::run(&args, &dir, &stop)
         }
         Command::View(args) => {
-            let patterns = if args.glob.is_empty() {
-                vec![viewer::directory_glob(
-                    &args.db_dir.map_or_else(default_dir, Ok)?,
-                )]
+            let directory = if args.glob.is_empty() {
+                Some(args.db_dir.map_or_else(default_dir, Ok)?)
             } else {
-                args.glob
+                None
             };
-            let _viewer = viewer::start(patterns, args.port)?;
+            let patterns = directory
+                .as_deref()
+                .map_or(args.glob, viewer::directory_globs);
+            let _viewer = viewer::start(patterns, args.port, args.total_budget_gb, directory)?;
             while !interrupted() {
                 thread::sleep(Duration::from_millis(200));
             }

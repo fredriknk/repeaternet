@@ -1,0 +1,47 @@
+[
+  {
+    "serial":"FIXTURE", "type":"RS41", "subtype":"RS41-SG", "frame":42,
+    "datetime":"2026-11-19T00:00:00Z", "time_received":"2026-11-19T00:00:02Z",
+    "lat":60.1, "lon":10.1, "alt":2999, "ref_position":"MSL",
+    "uploader_callsign":"RECEIVER-A", "uploader_position":"60.0, 10.0", "uploader_alt":"120",
+    "uploader_antenna":"Yagi + LNA", "frequency":403.25, "tx_frequency":403.2,
+    "software_name":"radiosonde_auto_rx", "software_version":"1.8.0", "snr":13
+  },
+  {
+    "serial":"FIXTURE", "type":"RS41", "subtype":"RS41-SG", "frame":42,
+    "datetime":"2026-11-19T00:00:00.000000Z", "time_received":"2026-11-19T00:00:03Z",
+    "lat":60.1, "lon":10.1, "alt":2999, "ref_position":"MSL",
+    "uploader_callsign":"RECEIVER-A", "uploader_position":"60.0,10.0",
+    "frequency":403.25, "software_name":"radiosonde_auto_rx", "snr":55
+  },
+  {
+    "serial":"FIXTURE", "type":"RS41", "frame":42, "datetime":"2026-11-19T00:00:00Z",
+    "lat":60.1, "lon":10.1, "alt":2999, "ref_position":"MSL",
+    "uploader_callsign":"RECEIVER-B", "uploader_position":[60.0,10.0],
+    "frequency":403.25, "software_name":"rdzTTGOsonde", "rssi":-127.5
+  },
+  {
+    "serial":"FIXTURE", "type":"RS41", "frame":43, "datetime":"2026-11-19T00:00:20Z",
+    "lat":60.1, "lon":10.1, "alt":2999, "ref_position":"MSL",
+    "uploader_callsign":"RECEIVER-A", "uploader_position":"60.0,10.0",
+    "frequency":403.25, "software_name":"radiosonde_auto_rx", "snr":21
+  },
+  {
+    "serial":"FIXTURE", "type":"RS41", "frame":44, "datetime":"2026-11-19T00:00:25Z",
+    "lat":60.1, "lon":10.1, "alt":3000, "ref_position":"MSL",
+    "uploader_callsign":"RECEIVER-A", "uploader_position":"60.0,10.0",
+    "frequency":403.25, "software_name":"radiosonde_auto_rx", "snr":60
+  },
+  {
+    "serial":"FIXTURE", "type":"RS41", "frame":45, "datetime":"2026-11-19T00:01:25Z",
+    "lat":60.1, "lon":10.1, "alt":3100, "ref_position":"MSL",
+    "uploader_callsign":"RECEIVER-A", "uploader_position":"60.0,10.0",
+    "frequency":403.25, "software_name":"radiosonde_auto_rx", "snr":12
+  },
+  {
+    "serial":"FIXTURE", "type":"RS41", "frame":46, "datetime":"2026-11-19T00:01:26Z",
+    "lat":60.1, "lon":10.1, "alt":3000, "ref_position":"GPS",
+    "uploader_callsign":"RECEIVER-C", "uploader_position":"0,0",
+    "frequency":403.25, "software_name":"radiosonde_auto_rx", "snr":13
+  }
+]
