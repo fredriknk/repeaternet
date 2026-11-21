@@ -2549,6 +2549,8 @@ function openRouteLinkInspector(id,marker,details,focus){
   }
   const links=routeSiteNeighbors(id);
   if(!links.length)return false;
+  // A finished job toast sits where the inspector opens; the inspector takes over that corner.
+  if(!['queued','running','preparing','failed','disconnected'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;
   closeRouteLinkInspector();
   map.closePopup();
   const originalPoint=L.latLng(mapPoint(links[0].sites.find(site=>site.id===id)));
