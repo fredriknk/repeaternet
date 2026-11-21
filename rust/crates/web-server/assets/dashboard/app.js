@@ -1671,7 +1671,7 @@ async function requestCoverageTerrain(){
       return;
     }
     const copy=`${estimate.missing_area_km2.toLocaleString(undefined,{maximumFractionDigits:1})} km² missing · ${estimate.tile_count} tile(s) at ${estimate.effective_resolution_m} m · about ${estimate.estimated_raw_mib.toFixed(1)} MiB uncompressed · ${estimate.cache_hits}/${estimate.cache_total} product tiles cached. ${estimate.include_dom?'Ground and surface terrain included.':'Ground terrain included.'}`;
-    const confirmed=await askActionDialog({title:'Download terrain for coverage area?',copy,confirm:'Download terrain'});
+    const confirmed=await askActionDialog({title:'Download terrain for coverage area?',copy,confirm:'Download terrain',terrainEstimate:estimate});
     if(!confirmed){setCoverageTerrainStatus('');return;}
     if(currentCoverageTerrainRequest()?.key!==current.key)throw Error('The coverage area changed. Review a new terrain estimate.');
     const job=await api('/api/coverage/terrain/prepare',request);

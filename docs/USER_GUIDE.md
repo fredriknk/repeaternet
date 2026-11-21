@@ -68,7 +68,7 @@ Open **⋯** for project actions.
 | **Delete permanently…** | Deletes the selected project's stored data after confirmation. |
 | **Clear saved RF calculations** | Clears cached link calculations for this workspace. Later RF searches may have more work to do. Terrain providers and Overpass downloads have their own shared caches. |
 
-![Project menu with recovery, plan import and export, archive, delete and RF cache actions](images/project-menu.png)
+![Project menu with recovery, plan import and export, data sources, archive, delete and RF cache actions](images/project-menu.png)
 
 ![Archived project expanded with its Restore button](images/project-archived.png)
 
@@ -121,14 +121,9 @@ DOM tiles for mapped surface obstacles. Each tile can be up to 512 MiB. Use
 confirmation for any additional coverage terrain that will also be cleared.
 See [terrain and coordinates](#terrain-and-coordinates) for the file and map details.
 
-<details>
-<summary>Oslo estimate screenshots from the previous interface</summary>
+![Terrain step with automatic source selection and an inline estimate of three Kartverket ground tiles](images/route-terrain.png)
 
-![Inline terrain estimate for the Oslo route](images/route-terrain.png)
-
-![Combined estimate and route search confirmation for the Oslo route](images/kartverket-estimate.png)
-
-</details>
+![Combined estimate dialog listing Kartverket NHM as the source, with Download and find route](images/kartverket-estimate.png)
 
 ![Local GeoTIFF upload controls and readiness check, with one ground tile installed](images/route-terrain-upload.png)
 
@@ -282,7 +277,7 @@ coordinates use latitude, longitude to six decimals.
 
 ![Map legend showing endpoint and router markers, margin bands and stale links](images/map-legend.png)
 
-![Layers control expanded with both basemaps and five coverage overlays](images/map-layer-control.png)
+![Layers control expanded with five basemaps and five coverage overlays](images/map-layer-control.png)
 
 ## Running a search and managing jobs
 
@@ -454,7 +449,7 @@ is present, the supplemental download includes surface terrain. Use **Cancel
 coverage terrain download** or **Reconnect to terrain download** as needed.
 When the tiles are ready, choose **Calculate coverage** again.
 
-![Supplemental coverage terrain estimate with missing area, tile count and disk size](images/coverage-terrain-download.png)
+![Supplemental coverage terrain estimate with missing area, tile count, disk size and source list](images/coverage-terrain-download.png)
 
 Coverage uses the first valid sample from route terrain, then supplemental tiles.
 A coverage download preserves the certified route and its original terrain.

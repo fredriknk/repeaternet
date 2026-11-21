@@ -256,6 +256,9 @@ function createWorkflow(run) {
       await dismissJob();
       if (!await $('#prepare-terrain').isVisible()) await click('estimate-terrain');
       await click('prepare-terrain');
+      // The download is confirmed with its size before it starts.
+      await visible(dialog);
+      await click('action-dialog-confirm');
       await visible('#route-job-card:not([hidden])');
       await waitForJob();
       await waitForText('#coverage-note', 'Ground terrain covers selected sites', 20_000);
