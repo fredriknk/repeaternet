@@ -20,6 +20,7 @@ rusqlite = { version = "0.43", features = ["bundled", "functions"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+sondehub-import = { path = "../sondehub-import" }
 tokio = { version = "1", features = ["net", "rt", "sync"] }
 
 [dev-dependencies]
