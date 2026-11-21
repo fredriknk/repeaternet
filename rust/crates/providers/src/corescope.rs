@@ -12,6 +12,8 @@ use unicode_casefold::UnicodeCaseFold;
 
 use crate::{invalid, response_error, transport, ProviderError, Result};
 
+pub mod capture;
+
 const PROVIDER: &str = "CoreScope";
 pub const DEFAULT_BASE_URL: &str = "https://corescope.eth0.no";
 pub const DEFAULT_MAXIMUM_PAGES: usize = 20;

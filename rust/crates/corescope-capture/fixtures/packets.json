@@ -1,0 +1,103 @@
+{
+    "packets":  [
+                    {
+                        "id":  1316288,
+                        "hash":  "521dec69029e1f6c",
+                        "timestamp":  "2026-11-20T22:18:52Z",
+                        "first_seen":  "2026-11-20T22:18:52Z",
+                        "observer_id":  "0933F690CE37579031FDC56DA8DE12D5A660600DAA3087D513F61B109B0BFC1C",
+                        "observer_name":  "NO-1570 Telemarkslunden",
+                        "observer_iata":  "RYG",
+                        "rssi":  -38,
+                        "snr":  11.5,
+                        "path_json":  "[]",
+                        "_parsedPath":  null,
+                        "route_type":  2,
+                        "payload_type":  4,
+                        "direction":  "rx",
+                        "observation_count":  1,
+                        "scope_name":  null,
+                        "observations":  [
+                                             {
+                                                 "id":  15686416,
+                                                 "timestamp":  "2026-11-20T22:18:52.000Z",
+                                                 "observer_id":  "0933F690CE37579031FDC56DA8DE12D5A660600DAA3087D513F61B109B0BFC1C",
+                                                 "observer_name":  "NO-1570 Telemarkslunden",
+                                                 "observer_iata":  "RYG",
+                                                 "rssi":  -38,
+                                                 "snr":  11.5,
+                                                 "path_json":  "[]",
+                                                 "direction":  "rx"
+                                             }
+                                         ],
+                        "decoded_json":  "{\"type\":\"ADVERT\",\"pubKey\":\"70d8fb2dae304b220850aa24672f066785105752e80a87cd98314a9fe8bc83bf\",\"flags\":{\"raw\":146,\"type\":2,\"chat\":false,\"repeater\":true,\"room\":false,\"sensor\":false,\"hasLocation\":true,\"hasFeat1\":false,\"hasFeat2\":false,\"hasName\":true},\"lat\":59.382817,\"lon\":10.65313,\"name\":\"NO-1570 Moss / Fuglevik\"}"
+                    },
+                    {
+                        "id":  1316284,
+                        "hash":  "ef6428123cca4f80",
+                        "timestamp":  "2026-11-20T22:18:31Z",
+                        "first_seen":  "2026-11-20T22:18:31Z",
+                        "observer_id":  "4539803D464C68AD6F8E498751CA6B76CFACD75257EB3C206C6FDBF8DC5FEE4C",
+                        "observer_name":  "SE1380-Haverdal-4539",
+                        "observer_iata":  "HAD",
+                        "rssi":  -19,
+                        "snr":  12,
+                        "path_json":  "[]",
+                        "_parsedPath":  null,
+                        "route_type":  2,
+                        "payload_type":  4,
+                        "direction":  "rx",
+                        "observation_count":  1,
+                        "scope_name":  null,
+                        "observations":  [
+                                             {
+                                                 "id":  15686408,
+                                                 "timestamp":  "2026-11-20T22:18:31.000Z",
+                                                 "observer_id":  "4539803D464C68AD6F8E498751CA6B76CFACD75257EB3C206C6FDBF8DC5FEE4C",
+                                                 "observer_name":  "SE1380-Haverdal-4539",
+                                                 "observer_iata":  "HAD",
+                                                 "rssi":  -19,
+                                                 "snr":  12,
+                                                 "path_json":  "[]",
+                                                 "direction":  "rx"
+                                             }
+                                         ],
+                        "decoded_json":  "{\"type\":\"ADVERT\",\"pubKey\":\"f329efc5592675eb36ee2e95f781023822ae4d4f5acdc290e5b0c58e0c73431c\",\"flags\":{\"raw\":146,\"type\":2,\"chat\":false,\"repeater\":true,\"room\":false,\"sensor\":false,\"hasLocation\":true,\"hasFeat1\":false,\"hasFeat2\":false,\"hasName\":true},\"lat\":56.723717,\"lon\":12.673646,\"name\":\"SE1380-Haverdal-F329\"}"
+                    },
+                    {
+                        "id":  1316280,
+                        "hash":  "7b631aad4d9a0285",
+                        "timestamp":  "2026-11-20T22:18:13Z",
+                        "first_seen":  "2026-11-20T22:18:13Z",
+                        "observer_id":  "64D83E30D846099A3EEECDD38AAAF67AD395CB668D1C625E3A26BA328E0C50A0",
+                        "observer_name":  "Hommelvik Observer",
+                        "observer_iata":  "TRD",
+                        "rssi":  null,
+                        "snr":  null,
+                        "path_json":  "[]",
+                        "_parsedPath":  null,
+                        "route_type":  2,
+                        "payload_type":  4,
+                        "direction":  "tx",
+                        "observation_count":  1,
+                        "scope_name":  null,
+                        "observations":  [
+                                             {
+                                                 "id":  15686403,
+                                                 "timestamp":  "2026-11-20T22:18:13.000Z",
+                                                 "observer_id":  "64D83E30D846099A3EEECDD38AAAF67AD395CB668D1C625E3A26BA328E0C50A0",
+                                                 "observer_name":  "Hommelvik Observer",
+                                                 "observer_iata":  "TRD",
+                                                 "rssi":  null,
+                                                 "snr":  null,
+                                                 "path_json":  "[]",
+                                                 "direction":  "tx"
+                                             }
+                                         ],
+                        "decoded_json":  "{\"type\":\"ADVERT\",\"pubKey\":\"64d83e30d846099a3eeecdd38aaaf67ad395cb668d1c625e3a26ba328e0c50a0\",\"flags\":{\"raw\":146,\"type\":2,\"chat\":false,\"repeater\":true,\"room\":false,\"sensor\":false,\"hasLocation\":true,\"hasFeat1\":false,\"hasFeat2\":false,\"hasName\":true},\"lat\":0,\"lon\":0,\"name\":\"NO-7550 Hommelvik OBS\"}"
+                    }
+                ],
+    "total":  3,
+    "limit":  6,
+    "offset":  0
+}
