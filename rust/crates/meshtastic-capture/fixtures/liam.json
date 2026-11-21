@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "node_id": "1978245180", "role": 12, "firmware_version": "2.5.20.4c97351",
+      "region": 3, "modem_preset": 0, "position_precision": 12,
+      "latitude": 591921152, "longitude": 181927936,
+      "position_updated_at": "2026-11-21T03:07:41.474Z",
+      "neighbours": [{"node_id": 1770367220, "snr": -1.5}, {"node_id": 3663886988, "snr": -12}],
+      "neighbours_updated_at": "2026-11-21T08:07:34.263Z"
+    },
+    {
+      "node_id": "2718568024", "role": 0, "firmware_version": "2.6.11.60ec05e",
+      "region": 3, "modem_preset": 4, "position_precision": 15,
+      "latitude": 593166336, "longitude": 180682752, "position_updated_at": "2026-11-21T11:39:33.465Z"
+    }
+  ]
+}

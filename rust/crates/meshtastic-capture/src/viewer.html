@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Measured links · RepeaterNet</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/leaflet.css">
+  <style>
+    :root { color-scheme: light; font: 14px/1.45 system-ui, sans-serif; color: #172d28; background: #f1f5f1; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { background: #153a32; color: #fff; padding: .75rem 1.25rem; display: flex; gap: .5rem 1.5rem; align-items: baseline; flex-wrap: wrap; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 1.45rem; }
+    h2 { font-size: 1.05rem; }
+    #status { color: #dbebe3; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(255px, 315px); gap: .75rem; padding: .75rem; }
+    form, .map-panel, aside { background: #fff; border: 1px solid #ccd8d1; border-radius: .6rem; min-width: 0; }
+    form { grid-column: 1/-1; display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); align-items: end; gap: .6rem; padding: .75rem; }
+    label { display: grid; gap: .2rem; min-width: 0; font-weight: 600; }
+    select { width: 100%; min-height: 36px; font: inherit; color: inherit; background: #fff; border: 1px solid #8ba199; border-radius: .35rem; padding: .3rem; }
+    .check { display: flex; min-height: 36px; gap: .45rem; align-items: center; }
+    :focus-visible { outline: 3px solid #166cc1; outline-offset: 2px; }
+    #map { height: max(320px, calc(100vh - 247px)); border-radius: .55rem .55rem 0 0; background: #e2e9e4; }
+    .legend { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem 1rem; padding: .55rem .75rem; font-size: .9rem; }
+    .legend span { white-space: nowrap; }
+    .sample { display: inline-block; width: 1.5rem; margin-right: .35rem; border-top: 3px var(--style, solid) var(--line); vertical-align: middle; }
+    aside { padding: .75rem; max-height: calc(100vh - 150px); overflow: auto; }
+    article { padding: .55rem 0; border-top: 1px solid #dce4de; }
+    article:first-child { margin-top: .45rem; }
+    article strong { overflow-wrap: anywhere; }
+    .muted { color: #466059; font-size: .875rem; }
+    dl { display: grid; grid-template-columns: 1fr auto; margin: .3rem 0 0; gap: .1rem .5rem; font-size: .9rem; }
+    dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+    .inspect { padding: 0 .75rem .6rem; max-width: 36rem; }
+    .link-details { max-width: min(290px, 72vw); overflow-wrap: anywhere; }
+    .leaflet-control-zoom a { min-width: 36px; min-height: 36px; line-height: 36px; }
+    @media (max-width: 740px) {
+      main { grid-template-columns: minmax(0, 1fr); }
+      aside { max-height: none; }
+      header { padding: .6rem .85rem; }
+      #map { height: max(320px, 48vh); }
+      select, .check, .leaflet-control-zoom a { min-height: 44px; }
+      .leaflet-control-zoom a { min-width: 44px; line-height: 44px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Measured links</h1>
+    <p id="status" role="status">Reading capture files…</p>
+  </header>
+  <main>
+    <form aria-label="Link filters">
+      <label>Network<select id="network"><option value="">All networks</option></select></label>
+      <label>Source host<select id="host"><option value="">All hosts</option></select></label>
+      <label>Band or region<select id="band"><option value="">All bands</option></select></label>
+      <label>Modem preset<select id="preset"><option value="">All presets</option></select></label>
+      <label>Evidence<select id="evidence"><option value="">All evidence</option></select></label>
+      <label>Time window<select id="window"><option value="day">Last day</option><option value="week">Last week</option><option value="all">All time</option></select></label>
+      <label class="check"><input id="precision" type="checkbox">Hide coarse positions</label>
+      <label class="check"><input id="suspect" type="checkbox" checked>Hide suspect links</label>
+    </form>
+    <section class="map-panel" aria-label="Measured links map">
+      <div id="map" aria-label="Map of located links"></div>
+      <div class="legend" aria-label="Mean signal-to-noise ratio legend">
+        <strong>Mean SNR · dB</strong>
+        <span><i class="sample" style="--line:#087c48"></i>≥ 5</span>
+        <span><i class="sample" style="--line:#006fa8"></i>0 to &lt; 5</span>
+        <span><i class="sample" style="--line:#9c5800;--style:dashed"></i>−5 to &lt; 0</span>
+        <span><i class="sample" style="--line:#b1303a;--style:dashed"></i>&lt; −5</span>
+        <span><i class="sample" style="--line:#55666a;--style:dotted"></i>Unavailable</span>
+      </div>
+      <label class="inspect">Inspect busiest links<select id="inspect"><option value="">Choose a link</option></select></label>
+    </section>
+    <aside aria-labelledby="sources-heading">
+      <h2 id="sources-heading">Capture totals</h2>
+      <p class="muted">All time · refreshes every minute</p>
+      <div id="sources"></div>
+    </aside>
+  </main>
+  <script src="/leaflet.js"></script>
+  <script>
+    'use strict';
+    const byId = id => document.getElementById(id);
+    const form = document.querySelector('form');
+    const map = L.map('map', { preferCanvas: true }).setView([40, 5], 2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(map);
+    const layer = L.layerGroup().addTo(map);
+    const evidence = {
+      gateway_rx: 'Gateway reception', traceroute_towards: 'Traceroute towards',
+      traceroute_back: 'Traceroute back', neighbor: 'Neighbour report'
+    };
+    const number = new Intl.NumberFormat();
+    const clock = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const date = value => value == null ? '—' : clock.format(value * 1000);
+    const metric = (value, unit) => value == null ? 'Unavailable' : value.toFixed(1) + ' ' + unit;
+    const code = value => value ?? 'Unknown';
+    let data;
+    let pending;
+    let refreshTimer;
+    let fitted = false;
+    let inspected = new Map();
+
+    function options(id, values, label = value => value) {
+      const select = byId(id);
+      const selected = select.value;
+      const priorLabel = select.selectedOptions[0]?.text;
+      const items = new Map(Array.from(new Set(values)).sort().map(value => [value, label(value)]));
+      if (selected && !items.has(selected) && id !== 'inspect') items.set(selected, priorLabel);
+      select.replaceChildren(select.options[0], ...Array.from(items, ([value, text]) => new Option(text, value)));
+      if (items.has(selected)) select.value = selected;
+    }
+
+    function fields(entries) {
+      const list = document.createElement('dl');
+      for (const [name, value] of entries) {
+        const term = document.createElement('dt');
+        term.textContent = name;
+        const detail = document.createElement('dd');
+        detail.textContent = value;
+        list.append(term, detail);
+      }
+      return list;
+    }
+
+    function showSources(sources) {
+      const cards = sources.map(source => {
+        const card = document.createElement('article');
+        const name = document.createElement('strong');
+        name.textContent = source.host;
+        const network = document.createElement('p');
+        network.className = 'muted';
+        network.textContent = source.network;
+        card.append(name, network, fields([
+          ['Measurements', number.format(source.measurements)], ['Located links', number.format(source.located_links)],
+          ['Distinct nodes', number.format(source.nodes)], ['Last update', date(source.last_update)]
+        ]));
+        return card;
+      });
+      byId('sources').replaceChildren(...cards);
+    }
+
+    function style(snr) {
+      if (snr == null) return { color: '#55666a', dashArray: '1 4' };
+      if (snr >= 5) return { color: '#087c48' };
+      if (snr >= 0) return { color: '#006fa8' };
+      if (snr >= -5) return { color: '#9c5800', dashArray: '6 3' };
+      return { color: '#b1303a', dashArray: '3 3' };
+    }
+
+    function details(link, full) {
+      const node = document.createElement('div');
+      node.className = 'link-details';
+      const title = document.createElement('strong');
+      title.textContent = full ? link.tx + ' → ' + link.rx : evidence[link.evidence];
+      const rows = [['Mean SNR', metric(link.snr, 'dB')], ['Mean RSSI', metric(link.rssi, 'dBm')]];
+      if (full) rows.push(
+        ['Source', data.sources[link.source].host], ['Evidence', evidence[link.evidence]],
+        ['Band or region', code(link.band)], ['Preset', code(link.preset)],
+        ['Measurements', number.format(link.count)], ['Last seen', date(link.last)],
+        ['Position precision', link.coarse ? 'Coarse' : link.unknown_precision ? 'Unknown' : '≤ 100 m']
+      );
+      node.append(title, fields(rows));
+      if (full && link.suspect) {
+        const note = document.createElement('p');
+        note.textContent = 'Suspect: includes neighbour reports with zero SNR, firmware older than 2.3.2 or endpoints over 300 km apart.';
+        node.append(note);
+      }
+      return node;
+    }
+
+    function endpoints(link) {
+      const [lat, lon] = link.to;
+      const offset = lon - link.from[1];
+      return [link.from, [lat, lon - 360 * Math.round(offset / 360)]];
+    }
+
+    function draw() {
+      if (!data) return;
+      const value = id => byId(id).value;
+      const matches = (id, actual) => !value(id) || value(id) === actual;
+      const sourceMatches = source => matches('network', source.network) && matches('host', source.host);
+      const links = data.links.filter(link => sourceMatches(data.sources[link.source])
+        && matches('band', code(link.band)) && matches('preset', code(link.preset))
+        && matches('evidence', link.evidence) && (!byId('precision').checked || !link.coarse)
+        && (!byId('suspect').checked || !link.suspect));
+      layer.clearLayers();
+      map.closePopup();
+      const bounds = L.latLngBounds();
+      for (const link of links) {
+        const points = endpoints(link);
+        bounds.extend(points);
+        L.polyline(points, { ...style(link.snr), weight: 1.5, opacity: .82 })
+          .bindTooltip(() => details(link, false))
+          .bindPopup(() => details(link, true)).addTo(layer);
+      }
+      if (!fitted && bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [18, 18], maxZoom: 10, animate: false });
+        fitted = true;
+      }
+      const busiest = links.slice().sort((a, b) => b.count - a.count).slice(0, 50);
+      inspected = new Map(busiest.map((link, index) => [String(index + 1).padStart(2, '0'), link]));
+      options('inspect', Array.from(inspected.keys()), key => {
+        const link = inspected.get(key);
+        return link.count + ' samples · ' + data.sources[link.source].host + ' · ' + metric(link.snr, 'dB');
+      });
+      byId('inspect').value = '';
+      showSources(data.sources.filter(sourceMatches));
+      const warnings = data.warnings.length ? ' · ' + data.warnings.join(' · ') : '';
+      const summary = !data.sources.length ? 'No capture files found'
+        : links.length ? number.format(links.length) + ' link groups shown' : 'No located links match these filters';
+      byId('status').textContent = summary + warnings;
+    }
+
+    async function refresh() {
+      if (pending) pending.abort();
+      clearTimeout(refreshTimer);
+      const request = new AbortController();
+      pending = request;
+      try {
+        const response = await fetch('/api/links?' + new URLSearchParams({ window: byId('window').value }), { signal: request.signal });
+        if (!response.ok) throw new Error('Viewer returned HTTP ' + response.status);
+        data = await response.json();
+        options('network', data.sources.map(source => source.network));
+        options('host', data.sources.map(source => source.host));
+        options('band', data.links.map(link => code(link.band)));
+        options('preset', data.links.map(link => code(link.preset)));
+        options('evidence', Object.keys(evidence), key => evidence[key]);
+        draw();
+      } catch (error) {
+        if (error.name !== 'AbortError') byId('status').textContent = 'Could not refresh capture files. Retrying in one minute.';
+      } finally {
+        if (pending === request) {
+          pending = null;
+          refreshTimer = setTimeout(refresh, 60_000);
+        }
+      }
+    }
+
+    form.addEventListener('submit', event => event.preventDefault());
+    form.addEventListener('change', event => event.target.id === 'window' ? refresh() : draw());
+    byId('inspect').addEventListener('change', event => {
+      const link = inspected.get(event.target.value);
+      if (!link) return;
+      const points = endpoints(link);
+      map.fitBounds(points, { padding: [24, 24], maxZoom: 12 });
+      L.popup().setLatLng(L.latLngBounds(points).getCenter()).setContent(details(link, true)).openOn(map);
+    });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') map.closePopup(); });
+    refresh();
+  </script>
+</body>
+</html>

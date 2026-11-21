@@ -1,0 +1,22 @@
+{
+  "nodes": [{
+    "node_id": 1019446070, "hw_model": "SEEED_SOLAR_NODE", "role": "CLIENT",
+    "last_lat": 499843072, "last_long": 85917696, "last_seen_us": 1795256696383190
+  }],
+  "packets": [
+    {
+      "id": 906692349, "packet_id": 906692349, "import_time_us": 1795261167872437,
+      "from_node_id": 360630829, "to_node_id": 2409675900, "portnum": 70,
+      "payload": "route: 3860612400\nroute: 3364630309\nsnr_towards: 0\nsnr_towards: 23\n"
+    },
+    {
+      "id": 4135381787, "packet_id": 4135381787, "import_time_us": 1795258498675335,
+      "from_node_id": 3364630309, "to_node_id": 1, "portnum": 71,
+      "payload": "node_id: 3364630309\nlast_sent_by_id: 3364630309\nneighbors {\n  node_id: 2131803354\n  snr: 6.25\n}\n"
+    }
+  ],
+  "seen": [{
+    "packet_id": 906692349, "node_id": 3364630309, "rx_time": 1795261167,
+    "hop_limit": 2, "hop_start": 3, "rx_snr": 5.75, "rx_rssi": -81, "import_time_us": 1795261167874596
+  }]
+}
