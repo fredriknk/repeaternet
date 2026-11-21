@@ -179,7 +179,7 @@
           </div>
           <div id="meshcore-list" class="known-list"><p class="hint">Routers within the search corridor will appear here.</p></div>
           <h3>Proposed routers</h3>
-          <details class="help-disclosure"><summary>Help: proposed routers</summary><p>Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site.</p></details>
+          <details class="help-disclosure"><summary>Help: proposed routers</summary><p>Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site. The search routes through every required router, in the order that gives the strongest route.</p></details>
           <button id="add-router" class="wide-button">Place proposed router on map</button>
           <details class="coordinate-entry">
             <summary>Add a proposed router by coordinates</summary>
@@ -214,11 +214,11 @@
           </div>
           <label for="search-effort">Search effort</label>
           <select id="search-effort">
-            <option value="quick">Quick · up to 200 candidate sites</option>
-            <option value="balanced" selected>Balanced · up to 800 candidate sites</option>
+            <option value="quick">Quick · up to 600 candidate sites</option>
+            <option value="balanced" selected>Balanced · up to 2,000 candidate sites</option>
             <option value="thorough">Thorough · configured candidate limit</option>
           </select>
-          <details class="help-disclosure"><summary>Help: search effort</summary><p>Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p></details>
+          <details class="help-disclosure"><summary>Help: search effort</summary><p>Every effort level checks every plausible link between candidate sites and returns the strongest route for each router count, then refines router positions. Quick and Balanced use fewer candidate sites and may miss a better hilltop. Thorough uses your configured candidate limit (5,000 by default) and can take a minute on large areas.</p></details>
             </section>
           </div>
         </div>

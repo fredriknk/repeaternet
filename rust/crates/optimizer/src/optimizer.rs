@@ -15,13 +15,21 @@ use repeaternet_rf_core::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
+#[path = "access.rs"]
+mod access;
 #[path = "bridges.rs"]
 mod bridges;
+#[path = "path_search.rs"]
+mod path_search;
+#[path = "refine.rs"]
+mod refine;
 
 const BACKBONE_LIMIT: usize = 64;
 const ROUTER_HEADROOM: usize = 2;
 const MAX_ENDPOINT_FRONTIER: usize = 32;
 type Pair = (usize, usize);
+/// Prepared sites, optional road-filter counts and the access-site budget.
+type PreparedSites = (Vec<PlanningSite>, Option<[usize; 2]>, usize);
 
 /// RF evaluation seam for specialized adapters and deterministic tests. Independent
 /// evaluations may run concurrently during coarse screening.
@@ -98,6 +106,7 @@ pub enum Stage {
     EvaluatingRfLinks,
     SearchingTopologies,
     ValidatingSolutionAlternatives,
+    RefiningRouterPositions,
     PreparingSolutionProfiles,
 }
 
@@ -112,6 +121,7 @@ impl Stage {
             Self::EvaluatingRfLinks => "Evaluating RF links",
             Self::SearchingTopologies => "Searching topologies",
             Self::ValidatingSolutionAlternatives => "Validating solution alternatives",
+            Self::RefiningRouterPositions => "Refining router positions",
             Self::PreparingSolutionProfiles => "Preparing solution profiles",
         }
     }
@@ -368,12 +378,24 @@ impl<'a> RouteOptimizer<'a> {
         let builtin = LinkEvaluator::new(self.terrain, self.rf);
         let mut search = Search {
             settings: self.settings,
+            terrain: self.terrain,
+            site_filter: self.site_filter,
+            exclusions: request.exclusions.clone(),
+            access_budget: 0,
+            generated_candidates: false,
+            router_height_m: if self.settings.optimize_heights {
+                self.settings.maximum_router_height_m
+            } else {
+                self.rf.router.height_agl_m
+            },
             rf: self.rf_evaluation(&builtin),
             hooks,
             started: Instant::now(),
             sites: Vec::new(),
             by_id: BTreeMap::new(),
             links: BTreeMap::new(),
+            coarse: Vec::new(),
+            screened_links: 0,
             final_checked: BTreeSet::new(),
             snapshot: None,
             certified_by_count: BTreeMap::new(),
@@ -390,9 +412,11 @@ impl<'a> RouteOptimizer<'a> {
         }
         let automatic_candidates = request.candidates.is_none()
             && self.settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly;
-        let (sites, filter_counts) =
+        let (sites, filter_counts, access_budget) =
             self.prepare_sites(request, &search.rf, &|| search.hooks.cancelled())?;
         search.sites = sites;
+        search.access_budget = access_budget;
+        search.generated_candidates = automatic_candidates;
         if automatic_candidates && self.settings.maximum_candidates > 0 {
             let spacing = candidate_grid_spacing(self.terrain, self.settings);
             search.diagnostics.push(format!(
@@ -431,7 +455,7 @@ impl<'a> RouteOptimizer<'a> {
         request: OptimizationRequest,
         evaluation: &RfEvaluation<'_>,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<(Vec<PlanningSite>, Option<[usize; 2]>), OptimizationError> {
+    ) -> Result<PreparedSites, OptimizationError> {
         let OptimizationRequest {
             clients,
             fixed_routers,
@@ -494,6 +518,7 @@ impl<'a> RouteOptimizer<'a> {
             sites.push(site);
         }
         let mut filter_counts = None;
+        let mut access_budget = 0;
         if let Some(candidates) = candidates {
             let mut explicit_ids = BTreeSet::new();
             for site in candidates
@@ -533,6 +558,12 @@ impl<'a> RouteOptimizer<'a> {
                 .iter()
                 .filter(|s| s.is_client() || s.is_required())
                 .collect();
+            if settings.exhaustive_screening {
+                // Keep terminal access sites inside the candidate budget.
+                access_budget = (access::ACCESS_PER_TERMINAL * terminals.len())
+                    .min(settings.maximum_candidates / 4);
+                settings.maximum_candidates -= access_budget;
+            }
             let network = terminals.len() > 2;
             let (mut low, mut high) = (terminals[0].rf.position, terminals[1].rf.position);
             if network {
@@ -653,7 +684,7 @@ impl<'a> RouteOptimizer<'a> {
             }
         }
         if cancelled() {
-            return Ok((sites, filter_counts));
+            return Ok((sites, filter_counts, access_budget));
         }
         if fixed_count > self.settings.maximum_candidates {
             return Err(OptimizationError::InvalidInput(format!(
@@ -691,7 +722,7 @@ impl<'a> RouteOptimizer<'a> {
             let end = sites.remove(1);
             sites.push(end);
         }
-        Ok((sites, filter_counts))
+        Ok((sites, filter_counts, access_budget))
     }
 }
 
@@ -787,6 +818,28 @@ impl RfEvaluation<'_> {
         }
     }
 
+    /// Uncached coarse evaluation for exhaustive screening, which would only churn the cache.
+    fn screen_pair(
+        &self,
+        sites: &[PlanningSite],
+        (a, b): Pair,
+        step: f64,
+    ) -> Result<Option<LinkResult>, OptimizationError> {
+        let (mut source, mut target) = (&sites[a].rf, &sites[b].rf);
+        if source.id > target.id {
+            std::mem::swap(&mut source, &mut target);
+        }
+        match self.evaluator.evaluate(source, target, step, false) {
+            Ok(mut link) => {
+                link.profile = None;
+                link.dominant_obstacles = Vec::new();
+                Ok(Some(link))
+            }
+            Err(RfError::MissingTerrain) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn search_pair(
         &self,
         sites: &[PlanningSite],
@@ -805,12 +858,26 @@ impl RfEvaluation<'_> {
 
 struct Search<'a, 'b> {
     settings: &'a CandidateSettings,
+    terrain: &'a (dyn TerrainSource + Sync),
+    site_filter: Option<&'a SiteFilter<'a>>,
+    exclusions: Vec<Vec<Point>>,
+    /// Part of the candidate budget reserved for terminal access sites.
+    access_budget: usize,
+    /// Candidates were generated from terrain, so their positions may be refined.
+    generated_candidates: bool,
+    /// Antenna height given to generated routers during the search.
+    router_height_m: f64,
     rf: RfEvaluation<'a>,
     hooks: SearchHooks<'b>,
     started: Instant,
     sites: Vec<PlanningSite>,
     by_id: BTreeMap<String, usize>,
     links: BTreeMap<Pair, LinkResult>,
+    /// Coarse screening summaries for the exact path search, which keeps full
+    /// link results only for certified pairs.
+    coarse: Vec<(Pair, crate::paths::Screened)>,
+    /// Links that passed screening, for diagnostics after `coarse` is released.
+    screened_links: usize,
     final_checked: BTreeSet<Pair>,
     snapshot: Option<OptimizationResult>,
     certified_by_count: BTreeMap<usize, NetworkSolution>,
@@ -820,12 +887,34 @@ struct Search<'a, 'b> {
 
 impl Search<'_, '_> {
     fn run(mut self) -> Result<OptimizationResult, OptimizationError> {
+        let initial: BTreeSet<_> = self
+            .sites
+            .iter()
+            .enumerate()
+            .filter_map(|(i, site)| (site.is_client() || site.is_required()).then_some(i))
+            .collect();
+        let access = self.add_terminal_access_sites(&initial)?;
+        if self.hooks.cancelled() {
+            return Ok(self.interrupted());
+        }
+        if access > 0 {
+            self.diagnostics.push(format!(
+                "Added {access} access sites from a fine sweep around the endpoints and required routers."
+            ));
+        }
         let terminals: BTreeSet<_> = self
             .sites
             .iter()
             .enumerate()
             .filter_map(|(i, site)| (site.is_client() || site.is_required()).then_some(i))
             .collect();
+        let two_clients = self.sites.iter().filter(|site| site.is_client()).count() == 2;
+        if two_clients
+            && self.settings.exhaustive_screening
+            && self.settings.priority == OptimizationPriority::MinimumRouters
+        {
+            return self.run_path_search(&terminals);
+        }
         let low_hop_eligible =
             terminals.len() == 2 && self.sites.iter().all(|site| !site.is_required());
         let mut checked_low_hop =
@@ -904,20 +993,24 @@ impl Search<'_, '_> {
             if self.hooks.cancelled() {
                 return Ok(self.interrupted());
             }
-            let result = self.result(alternatives, true);
-            if result.found() {
-                if let Some(publish) = self.hooks.solution_progress.as_deref_mut() {
-                    publish(OptimizationResult {
-                        search_links: Vec::new(),
-                        candidates: result.candidates.clone(),
-                        alternatives: result.alternatives.clone(),
-                        diagnostics: result.diagnostics.clone(),
-                        ..result
-                    });
-                }
-            }
-            return Ok(result);
+            return Ok(self.finish(alternatives));
         }
+    }
+
+    fn finish(&mut self, alternatives: Vec<NetworkSolution>) -> OptimizationResult {
+        let result = self.result(alternatives, true);
+        if result.found() {
+            if let Some(publish) = self.hooks.solution_progress.as_deref_mut() {
+                publish(OptimizationResult {
+                    search_links: Vec::new(),
+                    candidates: result.candidates.clone(),
+                    alternatives: result.alternatives.clone(),
+                    diagnostics: result.diagnostics.clone(),
+                    ..result.clone()
+                });
+            }
+        }
+        result
     }
 
     fn solve(
@@ -929,6 +1022,11 @@ impl Search<'_, '_> {
     }
 
     fn screen(&mut self, terminals: &BTreeSet<usize>) -> Result<(), OptimizationError> {
+        if self.settings.exhaustive_screening {
+            self.exhaustive_screen(terminals, false)?;
+            self.seed_planned_routes();
+            return Ok(());
+        }
         let mut pairs = screened_pairs(
             &self.sites,
             self.settings.maximum_neighbors_per_site,

@@ -183,7 +183,7 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         }
     }
     for (key, min, max) in [
-        ("maximum_candidates", 2.0, 2000.0),
+        ("maximum_candidates", 2.0, 10000.0),
         ("maximum_neighbors_per_site", 1.0, 200.0),
         ("refine_radius_m", 0.0, 2000.0),
         ("maximum_road_distance_m", 10.0, 20_000.0),
@@ -216,6 +216,7 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         candidates_per_cell: i("candidates_per_cell"),
         maximum_candidates: i("maximum_candidates"),
         maximum_neighbors_per_site: i("maximum_neighbors_per_site"),
+        exhaustive_screening: true,
         maximum_solution_routers: i("maximum_solution_routers"),
         reliability_paths: i("reliability_paths"),
         parallel_workers,

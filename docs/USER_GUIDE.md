@@ -212,27 +212,42 @@ objective** for how feasible alternatives are ranked.
 | **Minimum infrastructure cost** | A planning proxy based on installations and mast heights. |
 | **Maximum reliability** | Independent paths, then RF quality among equally redundant options. It can favor extra routers. |
 
-**Search effort** defaults to **Balanced · up to 800 candidate sites**, with an
-additional cap of 12 neighbors per site. **Quick · up to 200 candidate sites**
-caps neighbors at 8. Both respect lower configured limits. **Thorough ·
-configured candidate limit** uses the configured candidate and neighbor limits.
-Smaller searches can miss viable or stronger alternatives. **Help: search effort**
+**Search effort** sets how many candidate sites the search places in the
+corridor. **Quick · up to 600 candidate sites** and **Balanced · up to 2,000
+candidate sites** (the default) respect lower configured limits. **Thorough ·
+configured candidate limit** uses **Maximum candidate sites** (5,000 by
+default) and can take a minute over a large area. At every level the search
+checks every plausible link between candidate sites, not only nearby ones, so
+long hops between distant hilltops are found. It also places extra candidates
+around A and B, where the first and last hops are usually hardest.
+
+The search then returns the route with the strongest weakest hop for each
+router count. A route with more routers is listed only when it is stronger than
+every route with fewer. Hops with clear line of sight and Fresnel clearance are
+preferred over obstructed hops that rely on diffraction. Each planned hop is
+checked again at the final terrain sample step before it is accepted. Finally,
+each generated router is moved within the refinement radius when a nearby
+position makes its hops stronger. The Analysis diagnostics say how many links
+were screened and how many routers were moved.
+
+**Required** routers are via points: the route passes through every required
+router, in the order that gives the strongest route, and never uses a site
+twice. Smaller searches can miss stronger alternatives. **Help: search effort**
 summarizes the trade-off. **Only suggest sites near roads** adds the optional
 [road filter](#road-filter).
 
 Open **Advanced search limits** to adjust the search area, candidate density or
-final terrain sampling. The configured defaults below are before the effort
+final terrain sampling. The configured defaults below apply before the effort
 caps.
 
 | Control | Default and effect |
 | --- | --- |
 | **Corridor half-width · m (each side and around endpoints)** | 15,000 m. The 30 km wide, square-ended band extends 15 km past A and B. It guides generated candidates, route terrain downloads and the nearby MeshCore lookup. |
 | **Candidate grid spacing · m** | 1,000 m between candidate grid points. Smaller spacing explores more possible locations. |
-| **Maximum candidate sites** | 800. |
+| **Maximum candidate sites** | 5,000, up to 10,000. A quarter at most is reserved for sites around A, B and required routers. |
 | **Maximum total routers** | 6 intermediate routers. |
-| **Neighbors per site** | 16 before the effort cap. |
 | **Maximum hop length · m (blank = auto)** | 50,000 m. Clearing the value removes the explicit distance cap. |
-| **Refinement radius · m** and **Refinement step · m** | 250 m around a candidate, with positions sampled every 50 m. |
+| **Refinement radius · m** and **Refinement step · m** | After the route is found, each generated router may move up to 250 m to strengthen its hops. Positions are sampled every 50 m, or at the terrain resolution if that is coarser. Your own proposed and existing routers never move. |
 | **Final terrain sample step · m** | 10 m between samples on final route links. The earlier screening stages default to 200 m and 50 m. |
 
 ![Search step with route objective, effort and the enabled road filter controls](images/route-search.png)
@@ -624,7 +639,7 @@ To try the workflow with synthetic terrain, upload the [two-ridges GeoTIFF](../e
 as ground terrain in a new project. Set **Start point** to **60.344700, 10.499586**
 and **Destination** to **60.344700, 10.654851**. Under **Advanced search limits**,
 set the corridor half-width to 1,200 m, candidate spacing to 250 m and maximum
-hop length to 5,500 m. Choose **Quick · up to 200 candidate sites**, then
+hop length to 5,500 m. Choose **Quick · up to 600 candidate sites**, then
 **Find repeater route**. The elevations in this sample are synthetic. They are
 for practicing the workflow.
 
