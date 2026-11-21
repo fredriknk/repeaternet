@@ -20,6 +20,15 @@ pub(crate) fn client_builder(connect: u64, timeout: u64) -> ClientBuilder {
         .timeout(Duration::from_secs(timeout))
 }
 
+/// Descriptive User-Agent for every upstream request, with a project link so
+/// service operators can see what is calling them.
+pub(crate) fn user_agent(purpose: &str) -> String {
+    format!(
+        "RepeaterNet/{} ({purpose}; +https://github.com/fredriknk/repeaternet)",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 pub(crate) fn check(cancelled: &dyn Fn() -> bool) -> Result<()> {
     if cancelled() {
         Err(ProviderError::Cancelled)

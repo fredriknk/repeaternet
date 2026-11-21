@@ -64,11 +64,7 @@ impl CaptureClient {
             .pool_max_idle_per_host(1)
             .retry(reqwest::retry::never())
             .redirect(Policy::none())
-            .user_agent(concat!(
-                "RepeaterNet/",
-                env!("CARGO_PKG_VERSION"),
-                " (read-only CoreScope RF capture)"
-            ))
+            .user_agent(transport::user_agent("read-only CoreScope RF capture"))
             .build()
             .map_err(|source| ProviderError::Transport {
                 provider: PROVIDER,

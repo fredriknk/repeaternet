@@ -167,6 +167,12 @@ fn resumes_capped_scan_and_honors_backoff() {
             .to_ascii_lowercase()
             .contains("user-agent: repeaternet/")
     );
+    assert!(
+        calls[0]
+            .0
+            .to_ascii_lowercase()
+            .contains("accept-encoding: gzip")
+    );
     assert!(calls[1].0.contains("offset=1"));
     let until = |call: &str| {
         call.split("until=")

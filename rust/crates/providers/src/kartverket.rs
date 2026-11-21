@@ -810,7 +810,7 @@ impl KartverketProvider {
                     .query(&request.params)
                     .header(
                         "User-Agent",
-                        "RepeaterNet RF planner (Kartverket terrain client)",
+                        transport::user_agent("Kartverket terrain client"),
                     )
                     .send()
                     .map_err(|source| ProviderError::Transport {

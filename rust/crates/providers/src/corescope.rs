@@ -173,7 +173,7 @@ impl CoreScopeClient {
                 .get(format!("{}/api/nodes", self.base_url))
                 .header(
                     "User-Agent",
-                    "RF-Router-Planner/0.1 (interactive read-only import)",
+                    transport::user_agent("read-only CoreScope router import"),
                 )
                 .timeout(self.timeout)
                 .query(&[

@@ -578,7 +578,7 @@ impl TiledRoadAccess {
                 .client
                 .post(&self.endpoint)
                 .form(&[("data", query)])
-                .header("User-Agent", "RepeaterNet (road access planner)")
+                .header("User-Agent", transport::user_agent("road access planner"))
                 .send()
             {
                 Ok(response) if response.status().is_success() => {
