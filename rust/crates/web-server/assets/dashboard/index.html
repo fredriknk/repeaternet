@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="/assets/map.css">
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/main_view_navigation.js"></script>
+    <script defer src="/assets/coverage_raster.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
@@ -261,7 +262,6 @@
             <button id="coverage-clear-area" class="wide-button">Clear drawn area</button>
           </div>
           <p id="coverage-area-hint" class="hint" role="status" aria-live="polite" hidden></p>
-          <label>Layer opacity<input id="coverage-opacity" data-display-only type="range" min="10" max="90" value="55"></label>
           <details id="coverage-sampling-controls">
             <summary>Advanced sampling and limits</summary>
             <p class="hint">Grid spacing controls map detail; profile spacing controls terrain detail along each radio path. Limits bound memory and compute.</p>
@@ -478,16 +478,16 @@
           </div>
           <div id="map-hint" role="status" aria-live="polite" hidden></div>
           <section id="coverage-map-legend" class="coverage-map-legend" aria-label="Coverage estimate legend" hidden>
-            <h3>Coverage legend</h3>
-            <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search" placeholder="Router name or ID"></label>
-            <div id="coverage-legend-items" class="coverage-legend-items" aria-label="Coverage states">
-              <span><i class="cov-strong"></i> ≥ 10 dB</span>
-              <span><i class="cov-good"></i> 5–10 dB</span>
-              <span><i class="cov-marginal"></i> 0–5 dB</span>
-              <span><i class="cov-none"></i> Not usable</span>
-              <span><i class="cov-unknown"></i> Unknown terrain</span>
-              <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
+            <h3 id="coverage-legend-heading">Coverage</h3>
+            <div class="coverage-legend-content">
+              <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search"></label>
+              <div id="coverage-legend-items" class="coverage-legend-items"></div>
+              <div id="coverage-difference-items" class="coverage-legend-items" aria-label="Coverage difference" hidden></div>
             </div>
+            <label class="coverage-opacity-control" for="coverage-opacity">
+              <span>Opacity <output id="coverage-opacity-value" for="coverage-opacity" aria-hidden="true">65%</output></span>
+              <input id="coverage-opacity" type="range" min="0" max="100" value="65" aria-valuetext="65%">
+            </label>
           </section>
           </div>
           <details class="route-map-legend">

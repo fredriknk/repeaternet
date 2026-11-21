@@ -32,12 +32,17 @@ const fallbackBasemaps = [
 const basemapStorageKey = 'repeaternet.base-layer';
 let mapSourceLayers = [], mapLayerControl, mapSourcePreview, mapSourcePreviewTimer;
 map.createPane('coveragePane');map.getPane('coveragePane').style.zIndex=350;
-const coverageRenderer=L.canvas({pane:'coveragePane',padding:0.25});
 map.createPane('repeaterRoadsPane').style.zIndex=375;
 const repeaterRoadLayer=L.layerGroup([], {attribution:fallbackBasemaps[0].attribution});
 const routeLayer = L.layerGroup().addTo(map), candidateLayer = L.layerGroup().addTo(map), knownLayer = L.layerGroup().addTo(map), coverageLayer = L.layerGroup().addTo(map), predictedCoverageLayer=L.layerGroup(), coverageAreaLayer=L.layerGroup().addTo(map), coverageDiffLayer=L.layerGroup(), inspectionLayer=L.layerGroup().addTo(map), manualLayer = L.layerGroup().addTo(map), targetLayer=L.layerGroup().addTo(map);
 let routeLinkLayers=[];
 const plannerMapOverlays = {'Terrain coverage':coverageLayer,'Predicted mesh coverage':predictedCoverageLayer,'Coverage analysis area':coverageAreaLayer,'Coverage difference':coverageDiffLayer,'Coverage targets':targetLayer};
+const coverageHover = L.tooltip({direction:'top', className:'coverage-sample-tooltip'});
+map.on('mousemove', showCoverageSample).on('mouseout movestart', hideCoverageSample);
+for(const group of [predictedCoverageLayer, coverageDiffLayer]){
+  group.on('add remove', syncCoverageLegend);
+  group.on('remove', hideCoverageSample);
+}
 rebuildSourceLayers(fallbackBasemaps);
 map.on('baselayerchange',event=>{
   const selected = mapSourceLayers.find(item=>item.layer===event.layer);
@@ -386,7 +391,16 @@ function setMobileDestination(id,persist=true){
 try{setMobileDestination(localStorage.getItem('repeaternet.mobile-destination')||'map',false);}catch{setMobileDestination('map',false);}
 installNavigationControls(document,{setMainView,setMobileDestination});
 let activeWorkspaceId='workspace-plan';
-function syncCoverageLegend(){const legend=$('coverage-map-legend');if(!legend)return;const hasCells=(typeof coverageCells!=='undefined'&&coverageCells.length)||(typeof coveragePreviewCells!=='undefined'&&coveragePreviewActive&&coveragePreviewCells.length)||(typeof coverageComparison!=='undefined'&&!!coverageComparison);legend.hidden=activeWorkspaceId!=='workspace-coverage'||!hasCells;}
+function syncCoverageLegend(){
+  const legend=$('coverage-map-legend');
+  const hasCoverage=map.hasLayer(predictedCoverageLayer)&&!!predictedCoverageLayer.getLayers().length;
+  const hasDifference=map.hasLayer(coverageDiffLayer)&&!!coverageDiffLayer.getLayers().length;
+  // Hiding a layer from the layer picker also hides its legend.
+  legend.hidden=!hasCoverage&&!hasDifference;
+  $('coverage-legend-items').hidden=!hasCoverage;
+  $('coverage-difference-items').hidden=!hasDifference;
+  renderCoverageLegendHeading(hasCoverage,hasDifference);
+}
 function syncScenarioEmptyState(){const empty=$('compare-empty-state'),runs=$('coverage-active-run');if(!empty||!runs)return;empty.hidden=[...runs.options].some(option=>option.value);}
 function setWorkspace(id){
   const valid=['workspace-plan','workspace-coverage','workspace-compare'];
@@ -1285,22 +1299,138 @@ function renderCoverageArea(){const drawing=interactionMode==='draw-coverage-are
 function startCoverageAreaDrawing(){if(busy||routePreflightBusy||coverageBusy||coverageLoadingRun)return;if(interactionMode==='draw-coverage-area'){setInteractionMode('browse');$('coverage-area').value=coverageSettings.area_mode;syncCoverageAreaControls();return;}invalidateCoverageEstimate('Coverage area drawing started. Finish or cancel the polygon, then review a fresh estimate.');$('coverage-area').value='drawn';coverageDrawingPoints=[];map.doubleClickZoom.disable();setInteractionMode('draw-coverage-area');$('coverage-area-hint').textContent='Click at least three map points around the area, then select Finish polygon.';}
 function finishCoverageArea(){if(interactionMode!=='draw-coverage-area'||coverageDrawingPoints.length<3)return;const ring=coverageDrawingPoints.map(point=>[Number(point.lng.toFixed(6)),Number(point.lat.toFixed(6))]);ring.push([...ring[0]]);coverageSettings.area_mode='drawn';coverageSettings.area_polygon_wgs84=ring;coverageDrawingPoints=[];map.doubleClickZoom.enable();$('coverage-area').value='drawn';setInteractionMode('browse');syncCoverageAreaControls();renderCoverageArea();coverageSettingsChanged({target:{id:'coverage-area'}});setMapHint('Coverage area saved. Calculate a preview or estimate its full grid.',true);}
 function clearCoverageArea(){if(interactionMode==='draw-coverage-area')setInteractionMode('browse');coverageSettings.area_polygon_wgs84=null;if(coverageSettings.area_mode==='drawn')coverageSettings.area_mode='mesh';$('coverage-area').value=coverageSettings.area_mode;syncCoverageAreaControls();renderCoverageArea();coverageSettingsChanged({target:{id:'coverage-area'}});}
-function coverageModeMetrics(cell){const sources=cell.sources||[],unknown=cell.unknown_sources||0;if(coverageSettings.mode==='overlap'){const valid=sources.filter(source=>source.valid_two_way);return {count:valid.length,unknown,margin:valid.length?Math.max(...valid.map(source=>source.two_way_margin_db)):null};}const dir=coverageSettings.mode==='downlink'?'downlink':coverageSettings.mode==='uplink'?'uplink':'two_way',valid=sources.filter(source=>source['valid_'+dir]);const best=[...valid].sort((a,b)=>b[dir+'_margin_db']-a[dir+'_margin_db'])[0];return {count:valid.length,unknown,margin:best?.[dir+'_margin_db']??null,bestSourceId:best?.source_id||null};}
+function coverageModeMetrics(cell){
+  const direction=coverageSettings.mode==='downlink'?'downlink':coverageSettings.mode==='uplink'?'uplink':'two_way';
+  let count=0,margin=null,bestSourceId=null;
+  for(const source of cell.sources||[]){
+    if(!source['valid_'+direction])continue;
+    count++;
+    const value=source[direction+'_margin_db'];
+    if(margin===null||value>margin){margin=value;bestSourceId=source.source_id;}
+  }
+  return {count,margin,bestSourceId,unknown:cell.unknown_sources||0};
+}
 const servingPalette=['#287b64','#4169a1','#b24f55','#8a68a8','#9b6b32','#287f91','#775542','#5b8543'];
 function servingColor(sourceId){const ids=(coverageDisplayInfo||coverageJob)?.source_ids||[];let index=ids.indexOf(sourceId);if(index<0){index=[...String(sourceId||'')].reduce((hash,char)=>(hash*31+char.charCodeAt(0))>>>0,7);}return servingPalette[index%servingPalette.length];}
-function coverageColor(cell){if(cell.state==='unresolved')return '#9476b7';if(cell.state==='unknown_terrain')return '#a7afb0';const metrics=coverageModeMetrics(cell);if(!metrics.count)return '#ce796d';if(coverageSettings.mode==='best_source')return servingColor(metrics.bestSourceId);if(coverageSettings.mode==='overlap')return metrics.count>=3?'#287b64':metrics.count===2?'#61a88c':'#f0ca62';return metrics.margin>=10?'#287b64':metrics.margin>=5?'#61a88c':metrics.margin>=0?'#f0ca62':'#ce796d';}
-function addCoverageCell(cell){
-  if(cell.state==='outside_area')return;
-  const info=coverageDisplayInfo||coverageJob,size=info?.effective_cell_size_m||coverageSettings.cell_size_m,lat=cell.latitude,latStep=size/111320,lonStep=size/(111320*Math.max(.15,Math.cos(lat*Math.PI/180))),metrics=coverageModeMetrics(cell),fill=coverageColor(cell),opacity=Number($('coverage-opacity')?.value||55)/100,unknown=cell.state==='unknown_terrain',unresolved=cell.state==='unresolved',area=info?.area_bounds_wgs84,south=Math.max(lat-latStep/2,area?.[0]??-90),west=Math.max(cell.longitude-lonStep/2,area?.[1]??-180),north=Math.min(lat+latStep/2,area?.[2]??90),east=Math.min(cell.longitude+lonStep/2,area?.[3]??180);
-  if(south>=north||west>=east)return;
-  const opacityScale=(unknown||unresolved)?0.55:1,bounds=[[south,west],[north,east]],style={renderer:coverageRenderer,pane:'coveragePane',color:fill,weight:.5,opacity:Math.min(.7,opacity),dashArray:unknown||unresolved?'2 3':coveragePreviewActive?'5 4':null,fillColor:fill,fillOpacity:opacity*opacityScale};
-  const shape=cell.footprint_latlng?.length?L.polygon(cell.footprint_latlng,style):L.rectangle(bounds,style);
-  shape._plannerOpacityScale=opacityScale;
-  const details=unresolved?`Unresolved profile limit · ${cell.unresolved_sources||0} source(s) need more samples`:unknown?'Unknown terrain':coverageSettings.mode==='best_source'?`Best source ${metrics.bestSourceId||'—'} · ${metrics.margin?.toFixed(1)||'—'} dB`:`${metrics.count} usable source(s)${metrics.margin==null?'':` · ${metrics.margin.toFixed(1)} dB`}${metrics.unknown?` · ${metrics.unknown} source(s) unknown`:''}`,client=info?.settings?.client||coverageSettings.client,label=`${coveragePreviewActive?'Approximate preview · ':''}${details}`;
-  shape.bindTooltip(`${label} · saved client ${client.height_agl_m} m AGL · ${client.tx_power_dbm} dBm TX / ${client.sensitivity_dbm} dBm sensitivity`).addTo(predictedCoverageLayer);
+function coverageCellPaint(cell){
+  if(cell.state==='outside_area'||cell.state==='not_evaluated')return null;
+  if(cell.state==='unknown_terrain')return 1;
+  if(cell.state==='unresolved')return 2;
+  const {count,margin,bestSourceId}=coverageModeMetrics(cell);
+  if(!count)return null;
+  if(coverageSettings.mode==='best_source')return coverageRgb(servingColor(bestSourceId));
+  if(coverageSettings.mode==='overlap')return coverageRgb(coverageOverlapColors[Math.min(count,3)-1]);
+  return Number.isFinite(margin)&&margin>=0?coverageMarginPaint(margin):null;
 }
-function redrawCoverageCells(){predictedCoverageLayer.clearLayers();for(const cell of (coveragePreviewActive?coveragePreviewCells:coverageCells))addCoverageCell(cell);renderCoverageLegend();}
-function renderCoverageLegend(){const legend=$('coverage-legend-items');if(!legend)return;legend.replaceChildren();syncCoverageLegend();const searchWrap=$('coverage-legend-search-wrap'),query=$('coverage-legend-search').value.trim().toLocaleLowerCase(),unknown=['repeating-linear-gradient(135deg,#a7afb0 0 3px,#d8dddc 3px 6px)','Unknown terrain'],unresolved=['repeating-linear-gradient(135deg,#9476b7 0 3px,#ddd5e7 3px 6px)','Unresolved profile limit'],outside=['repeating-linear-gradient(135deg,#f7f8f7 0 3px,#d9dfdc 3px 6px)','Outside requested area'];let items;if(coverageSettings.mode==='overlap')items=[['#f0ca62','1 usable router'],['#61a88c','2 usable routers'],['#287b64','3+ usable routers'],['#ce796d','No usable link'],unknown,unresolved,outside];else if(coverageSettings.mode==='best_source'){const sources=(coverageDisplayInfo||coverageJob)?.source_ids||[];searchWrap.hidden=sources.length<=8;items=sources.filter(id=>!query||id.toLocaleLowerCase().includes(query)).map(id=>[servingColor(id),id]);items.push(['#ce796d','No usable link'],unknown,unresolved,outside);}else{searchWrap.hidden=true;items=[['#287b64','≥ 10 dB'],['#61a88c','5–10 dB'],['#f0ca62','0–5 dB'],['#ce796d','Not usable'],unknown,unresolved,outside];}for(const [color,label] of items){const span=document.createElement('span'),swatch=document.createElement('i');swatch.style.background=color;span.append(swatch,document.createTextNode(label));legend.append(span);}}
+function coverageDifferencePaint(cell){
+  const change=cell.reference_connected_change;
+  if(change==='unknown')return 1;
+  if(change==='unresolved')return 2;
+  return coverageChangeColors[change]?coverageRgb(coverageChangeColors[change]):null;
+}
+function addCoverageRasterCells(cells){
+  let raster=predictedCoverageLayer.getLayers()[0];
+  if(!raster){
+    const categorical=['best_source','overlap'].includes(coverageSettings.mode);
+    raster=createCoverageRaster(coverageDisplayInfo||coverageJob,Number($('coverage-opacity').value)/100,coverageCellPaint,categorical);
+    if(!raster)return;
+    raster.addTo(predictedCoverageLayer);
+    renderCoverageLegend();
+  }
+  raster.addCells(cells);
+}
+function redrawCoverageCells(){
+  hideCoverageSample();
+  predictedCoverageLayer.clearLayers();
+  const cells=coveragePreviewActive?coveragePreviewCells:coverageCells;
+  if(cells.length)addCoverageRasterCells(cells);
+  renderCoverageLegend();
+}
+function renderCoverageDifference(report){
+  coverageDiffLayer.clearLayers();
+  const raster=createCoverageRaster(report,Number($('coverage-opacity').value)/100,coverageDifferencePaint,true);
+  if(raster){raster.addCells(report.cells);raster.addTo(coverageDiffLayer);}
+  if(!map.hasLayer(coverageDiffLayer))coverageDiffLayer.addTo(map);
+  renderCoverageLegend();
+}
+function hideCoverageSample(){coverageHover.remove();}
+function showCoverageSample(event){
+  if(interactionMode!=='browse'||$('coverage-opacity').value==='0'||event.originalEvent.target.closest?.('.leaflet-interactive')){hideCoverageSample();return;}
+  const diff=map.hasLayer(coverageDiffLayer)&&coverageDiffLayer.getLayers()[0]?.cellAt(event.latlng);
+  const cell=map.hasLayer(predictedCoverageLayer)&&predictedCoverageLayer.getLayers()[0]?.cellAt(event.latlng);
+  const change=diff&&coverageDifferenceLabels[diff.reference_connected_change];
+  let details=change;
+  if(!details&&cell&&!['outside_area','not_evaluated'].includes(cell.state)){
+    const {count,margin,bestSourceId,unknown}=coverageModeMetrics(cell);
+    const marginLabel=Number.isFinite(margin)?` · ${margin.toFixed(1)} dB`:'';
+    if(cell.state==='unknown_terrain')details='Unknown terrain';
+    else if(cell.state==='unresolved')details=`Unresolved profile limit · ${cell.unresolved_sources||0} source(s) need more samples`;
+    else if(coverageSettings.mode==='best_source'&&bestSourceId)details=`Best source ${routeSiteLabel(bestSourceId)}${marginLabel}`;
+    else details=count?`${count} usable source(s)${marginLabel}`:'No usable link';
+    if(unknown&&count)details+=` · ${unknown} source(s) unknown`;
+    const client=(coverageDisplayInfo||coverageJob)?.settings?.client||coverageSettings.client;
+    if(coveragePreviewActive)details=`Approximate preview · ${details}`;
+    details+=` · handheld ${client.height_agl_m} m AGL · ${client.tx_power_dbm} dBm TX / ${client.sensitivity_dbm} dBm sensitivity`;
+  }
+  if(!details){hideCoverageSample();return;}
+  coverageHover.setContent(mapText('span',details)).setLatLng(event.latlng);
+  if(!map.hasLayer(coverageHover))coverageHover.addTo(map);
+}
+const coverageDifferenceLabels={gained:'Newly connected',lost:'Lost connection',retained:'Still connected',unknown:'Unknown in either run',unresolved:'Unresolved profile limit'};
+function renderCoverageLegendHeading(hasCoverage,hasDifference){
+  $('coverage-legend-heading').textContent=hasCoverage
+    ? coveragePreviewActive?'Approximate coverage preview':coverageStale?'Stale coverage':'Coverage'
+    :'Coverage difference';
+  $('coverage-difference-items').classList.toggle('with-coverage',hasCoverage&&hasDifference);
+  const sources=(coverageDisplayInfo||coverageJob)?.source_ids||[];
+  $('coverage-legend-search-wrap').hidden=!hasCoverage||coverageSettings.mode!=='best_source'||sources.length<=8;
+}
+function coverageLegendItem(legend,color,label){
+  const item=document.createElement('span'),swatch=document.createElement('i');
+  swatch.style.background=color;
+  item.append(swatch,document.createTextNode(label));
+  legend.append(item);
+}
+function coveragePatternSwatch(pattern){
+  const [light,dark]=coveragePatterns[pattern];
+  return `repeating-linear-gradient(135deg,${light} 0 4px,${dark} 4px 6px)`;
+}
+function renderCoverageMarginScale(legend){
+  const scale=document.createElement('div'),label=document.createElement('strong');
+  const ramp=document.createElement('div'),ticks=document.createElement('div');
+  scale.className='coverage-margin-scale';
+  label.textContent='Usable margin · dB';
+  ramp.className='coverage-margin-ramp';
+  ramp.style.background=`linear-gradient(to right,${coverageMarginStops.map(([db,rgb])=>`rgb(${rgb.join(',')}) ${db/15*100}%`).join(',')})`;
+  ticks.className='coverage-margin-ticks';
+  for(const value of ['0','5','10','15+'])ticks.append(mapText('span',value));
+  scale.append(label,ramp,ticks);
+  legend.append(scale);
+}
+function renderCoverageLegend(){
+  const legend=$('coverage-legend-items');
+  legend.replaceChildren();
+  const mode=coverageSettings.mode;
+  if(mode==='overlap'){
+    coverageOverlapColors.forEach((color,i)=>coverageLegendItem(legend,color,['1 usable router','2 usable routers','3+ usable routers'][i]));
+  }else if(mode==='best_source'){
+    const sources=(coverageDisplayInfo||coverageJob)?.source_ids||[];
+    const query=$('coverage-legend-search').value.trim().toLocaleLowerCase();
+    for(const id of sources){
+      const label=routeSiteLabel(id);
+      if(!query||label.toLocaleLowerCase().includes(query))coverageLegendItem(legend,servingColor(id),label);
+    }
+  }else renderCoverageMarginScale(legend);
+  coverageLegendItem(legend,'transparent','Clear · no usable signal or outside area');
+  coverageLegendItem(legend,coveragePatternSwatch('unknown'),'Unknown terrain');
+  coverageLegendItem(legend,coveragePatternSwatch('unresolved'),'Unresolved profile limit');
+  const diff=$('coverage-difference-items');
+  diff.replaceChildren(mapText('strong','Coverage difference'));
+  for(const [change,label] of Object.entries(coverageDifferenceLabels)){
+    coverageLegendItem(diff,coverageChangeColors[change]||coveragePatternSwatch(change),label);
+  }
+  syncCoverageLegend();
+}
 function renderCoverageSources(){const list=$('coverage-sources');if(!list)return;list.replaceChildren();const sources=(result?.route||[]).filter(site=>!['endpoint_a','endpoint_b','client'].includes(site.kind));if(!result?.found||!result?.active_alternative_id){const message=document.createElement('p');message.className='hint';message.textContent='Find a certified route to choose repeater sources.';list.append(message);$('coverage-source-count').textContent='No selected route';return;}if(!sources.length){if(coverageSettings.source_ids.length){coverageSettings.source_ids=[];recordEdit();}const message=document.createElement('p');message.className='hint';message.textContent='This route has no repeater routers. Enable endpoint sources if you want to evaluate the two route ends.';list.append(message);$('coverage-source-count').textContent='No repeater routers';return;}const validIds=new Set(sources.map(site=>site.id));if(coverageSettings.source_ids.some(id=>!validIds.has(id))){coverageSettings.source_ids=[];recordEdit();}const allSelected=coverageSettings.source_ids.length===0,selectedCount=allSelected?sources.length:coverageSettings.source_ids.length;$('coverage-source-count').textContent=allSelected?`${sources.length} available`:`${selectedCount} selected of ${sources.length}`;for(const site of sources){const label=document.createElement('label');label.className='coverage-source';const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=allSelected||coverageSettings.source_ids.includes(site.id);checkbox.disabled=busy||coverageBusy||coverageLoadingRun;checkbox.dataset.sourceId=site.id;checkbox.onchange=updateCoverageSourceSelection;const name=document.createElement('span');name.textContent=`${site.id} · ${site.origin==='known'?'existing':'proposed'}`;label.append(checkbox,name);list.append(label);}}
 function renderHeightScenarioControls(){const list=$('coverage-height-sources');if(!list)return;list.replaceChildren();const all=(result?.route||[]).filter(site=>!['endpoint_a','endpoint_b','client'].includes(site.kind)),chosen=new Set(coverageSettings.source_ids),sites=all.filter(site=>!chosen.size||chosen.has(site.id));for(const site of sites){const label=document.createElement('label');label.className='coverage-height-source';const name=document.createElement('span');name.textContent=`${site.id} · current ${Number(site.antenna_height_m).toFixed(1)} m`;const input=document.createElement('input');input.type='number';input.min='0.1';input.max='500';input.step='0.1';input.value=coverageHeightOverrides[site.id]??site.antenna_height_m;input.dataset.heightSource=site.id;input.dataset.originalHeight=site.antenna_height_m;input.setAttribute('aria-label',`${site.id} scenario antenna height in metres`);input.oninput=updateHeightScenarioButtons;label.append(name,input);list.append(label);}const ready=!!result?.found&&!resultStale&&!!sites.length&&!busy&&!coverageBusy;$('coverage-height-run').disabled=!ready;updateHeightScenarioButtons();}
 function updateCoverageSourceSelection(){const all=[...document.querySelectorAll('#coverage-sources [data-source-id]')],selected=all.filter(input=>input.checked).map(input=>input.dataset.sourceId);if(!selected.length){const changed=[...all].find(input=>!input.checked);if(changed)changed.checked=true;setCoverageStatus('Choose at least one router source, or include endpoints.');return;}coverageSettings.source_ids=selected.length===all.length?[]:selected;renderCoverageSources();coverageSettingsChanged({target:{id:'coverage-sources'}});}
@@ -1317,7 +1447,7 @@ async function loadSavedCoverageRun(jobId=$('coverage-active-run').value){
   setCoverageResultProgress(0,0,false);
   try{
     const job=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}`);if(request!==coverageLoadRequest)return;
-    if(['queued','running'].includes(job.state)){coverageJob=job;coverageDisplayInfo=job;coverageCells=[];coverageCursor=0;coverageStale=!!job.stale;$('coverage-load-progress').hidden=true;$('coverage-load-status').textContent='This saved run is still active; reconnecting to calculation and streamed cells.';coverageBusyState(true);$('coverage-cancel').hidden=false;void pollCoverage(jobId);return;}
+    if(['queued','running'].includes(job.state)){coverageJob=job;coverageDisplayInfo=job;coverageCells=[];coverageCursor=0;coveragePreviewActive=false;coveragePreviewCells=[];coverageStale=!!job.stale;predictedCoverageLayer.clearLayers();if(!map.hasLayer(predictedCoverageLayer))predictedCoverageLayer.addTo(map);$('coverage-load-progress').hidden=true;$('coverage-load-status').textContent='This saved run is still active; reconnecting to calculation and streamed cells.';coverageBusyState(true);$('coverage-cancel').hidden=false;void pollCoverage(jobId);return;}
     coverageJob=job;coverageDisplayInfo=job;coverageCells=[];coverageCursor=0;coveragePreviewActive=false;coveragePreviewCells=[];coverageStale=!!job.stale;predictedCoverageLayer.clearLayers();if(!map.hasLayer(predictedCoverageLayer))predictedCoverageLayer.addTo(map);
     let page=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}/cells?cursor=0&limit=192`);if(request!==coverageLoadRequest)return;const total=page.stored_cells||0,requested=page.requested_cells||job.requested_cells||0;let announcedPercent=-1;
     while(true){
@@ -1455,10 +1585,7 @@ async function runCoverageComparison(){
   if(reasons.length||!reference_id){$('coverage-compare-compatibility').textContent=`Cannot compare yet: ${[...reasons,...(!reference_id?['Select a shared reference router.']:[])].join(' ')}`;return;}
   try{
     $('coverage-compare-run').disabled=true;$('coverage-compare-summary').textContent=`Comparing baseline ${baseline.job_id.slice(0,8)} with scenario ${scenario.job_id.slice(0,8)}…`;
-    const report=await api('/api/coverage/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseline_job_id:baseline.job_id,scenario_job_id:scenario.job_id,reference_id})});coverageComparison=report;coverageDiffLayer.clearLayers();
-    const colors={gained:'#24946d',lost:'#c95158',retained:'#628bb8',unknown:'#a7afb0',unresolved:'#9476b7'};
-    for(const cell of report.cells){const change=cell.reference_connected_change;if(change==='none')continue;const color=colors[change]||colors.unknown,options={renderer:coverageRenderer,color,weight:.6,fillColor:color,fillOpacity:['unknown','unresolved'].includes(change)?.38:.5,dashArray:['unknown','unresolved'].includes(change)?'2 3':null};if(Array.isArray(cell.footprint_latlng))L.polygon(cell.footprint_latlng,options).addTo(coverageDiffLayer);else{const size=report.effective_cell_size_m,lat=cell.latitude,latStep=size/111320,lonStep=size/(111320*Math.max(.15,Math.cos(lat*Math.PI/180))),area=report.area_bounds_wgs84,bounds=[[Math.max(lat-latStep/2,area[0]),Math.max(cell.longitude-lonStep/2,area[1])],[Math.min(lat+latStep/2,area[2]),Math.min(cell.longitude+lonStep/2,area[3])]];if(bounds[0][0]<bounds[1][0]&&bounds[0][1]<bounds[1][1])L.rectangle(bounds,options).addTo(coverageDiffLayer);}}
-    if(!map.hasLayer(coverageDiffLayer))coverageDiffLayer.addTo(map);renderComparisonRunMetrics(baseline,scenario);const c=report.counts,client=baseline.settings?.client,overrides=scenario.source_height_overrides||{},baselineOverrides=baseline.source_height_overrides||{},added=scenario.source_ids.filter(id=>!baseline.source_ids.includes(id)),removed=baseline.source_ids.filter(id=>!scenario.source_ids.includes(id)),heightChanges=Object.keys({...baselineOverrides,...overrides}).filter(id=>baselineOverrides[id]!==overrides[id]).map(id=>`${id} ${baselineOverrides[id]??'plan'}→${overrides[id]??'plan'} m`);
+    const report=await api('/api/coverage/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseline_job_id:baseline.job_id,scenario_job_id:scenario.job_id,reference_id})});coverageComparison=report;renderCoverageDifference(report);renderComparisonRunMetrics(baseline,scenario);const c=report.counts,client=baseline.settings?.client,overrides=scenario.source_height_overrides||{},baselineOverrides=baseline.source_height_overrides||{},added=scenario.source_ids.filter(id=>!baseline.source_ids.includes(id)),removed=baseline.source_ids.filter(id=>!scenario.source_ids.includes(id)),heightChanges=Object.keys({...baselineOverrides,...overrides}).filter(id=>baselineOverrides[id]!==overrides[id]).map(id=>`${id} ${baselineOverrides[id]??'plan'}→${overrides[id]??'plan'} m`);
     const assumptionChanges=[...(added.length?[`added sources ${added.join(', ')}`]:[]),...(removed.length?[`removed sources ${removed.join(', ')}`]:[]),...(heightChanges.length?[`height changes ${heightChanges.join(', ')}`]:[])];
     $('coverage-compare-summary').textContent=`Baseline ${baseline.alternative_id} (${baseline.job_id.slice(0,8)}) → scenario ${scenario.alternative_id} (${scenario.job_id.slice(0,8)}). Scenario changes: ${assumptionChanges.join('; ')||'no source or height changes in the saved context'}. Shared client ${client?.height_agl_m??'—'} m AGL, ${baseline.effective_cell_size_m} m grid. Reference-connected: ${c.gained_reference_connected} gained · ${c.lost_reference_connected} lost · ${c.retained_reference_connected} retained; local: ${c.gained_local} gained · ${c.lost_local} lost; ${c.unknown} unknown · ${c.unresolved||0} unresolved. ${c.evaluated_cells} common evaluated samples · ${Number(report.approximate_sampled_area_km2).toFixed(2)} km² approximate sampled area.`;
   }catch(error){$('coverage-compare-summary').textContent=error.message;}finally{updateComparisonReferenceOptions(coverageRunMetadata.filter(item=>item.state==='complete'));}
@@ -1735,7 +1862,7 @@ function invalidateCoverageEstimate(message='Coverage inputs changed. Calculate 
   updateCoverageActions();
   if(message&&$('coverage-job-status'))setCoverageStatus(message);
 }
-function coverageSettingsChanged(event){if(!validateMeshBuffer())return;readCoverageInputs();const modeOnly=event?.target?.id==='coverage-mode';if(!modeOnly&&interactionMode==='inspect-coverage')setInteractionMode('browse');inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;coverageStale=!modeOnly;coverageDiffLayer.clearLayers();coverageComparison=null;syncCoverageAreaControls();renderCoverageArea();if(modeOnly){redrawCoverageCells();}else{invalidateCoverageEstimate();coverageCells=[];coveragePreviewCells=[];coverageCursor=0;coverageDisplayInfo=null;coveragePreviewActive=false;predictedCoverageLayer.clearLayers();}recordEdit();renderCoverageContext();if(!modeOnly)setCoverageStatus('Settings changed. Calculate again when ready.');else setCoverageStatus('Coverage display mode updated; no RF work was started.');}
+function coverageSettingsChanged(event){if(!validateMeshBuffer())return;readCoverageInputs();const modeOnly=event?.target?.id==='coverage-mode';if(!modeOnly&&interactionMode==='inspect-coverage')setInteractionMode('browse');inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;if(!modeOnly)coverageStale=true;coverageDiffLayer.clearLayers();coverageComparison=null;syncCoverageAreaControls();renderCoverageArea();if(modeOnly){redrawCoverageCells();}else{invalidateCoverageEstimate();coverageCells=[];coveragePreviewCells=[];coverageCursor=0;coverageDisplayInfo=null;coveragePreviewActive=false;predictedCoverageLayer.clearLayers();}recordEdit();renderCoverageContext();if(!modeOnly)setCoverageStatus('Settings changed. Calculate again when ready.');else setCoverageStatus('Coverage display mode updated; no RF work was started.');}
 function coverageEstimateSummary(approved){
   const {payload,estimate}=approved,settings=payload.settings,sources=estimate.source_count||estimate.source_ids?.length||0;
   const sourceLimit=Math.min(settings.maximum_sources,64),evaluationLimit=Math.min(settings.maximum_evaluations,250000),cellLimit=Math.min(settings.maximum_cells,16384,Math.floor(evaluationLimit/Math.max(1,sources))),sampleLimit=Math.min(settings.maximum_profile_samples,16384);
@@ -1785,7 +1912,7 @@ async function previewCoverage(approved=coverageEstimate){
     await autosaveNow();const preview=await api('/api/coverage/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(revision!==coverageRevision||!coverageEstimateIsCurrent(approved))return;
     if(preview.unknown_cells)noteCoverageTerrainGap();
-    coverageCells=[];coverageCursor=0;coverageDisplayInfo=preview;coveragePreviewCells=preview.cells;coveragePreviewActive=true;coverageStale=false;predictedCoverageLayer.clearLayers();if(!map.hasLayer(predictedCoverageLayer))predictedCoverageLayer.addTo(map);for(const cell of preview.cells)addCoverageCell(cell);renderCoverageLegend();renderCoverageContext();setCoverageStatus(`Approximate preview · ${preview.requested_cells} cells at ${preview.effective_cell_size_m.toFixed(0)} m · ${preview.covered_cells} covered · ${preview.unknown_cells} unknown · ${preview.unresolved_cells||0} unresolved · ${preview.elapsed_seconds.toFixed(2)} s. This is not the full saved result.`);
+    coverageCells=[];coverageCursor=0;coverageDisplayInfo=preview;coveragePreviewCells=preview.cells;coveragePreviewActive=true;coverageStale=false;predictedCoverageLayer.clearLayers();if(!map.hasLayer(predictedCoverageLayer))predictedCoverageLayer.addTo(map);addCoverageRasterCells(preview.cells);renderCoverageContext();setCoverageStatus(`Approximate preview · ${preview.requested_cells} cells at ${preview.effective_cell_size_m.toFixed(0)} m · ${preview.covered_cells} covered · ${preview.unknown_cells} unknown · ${preview.unresolved_cells||0} unresolved · ${preview.elapsed_seconds.toFixed(2)} s. This is not the full saved result.`);
   }catch(error){setCoverageStatus(error.message,true);}finally{coverageBusyState(false);updateCoverageActions();}
 }
 function coverageBusyState(value){coverageBusy=value;if(value&&interactionMode==='inspect-coverage')setInteractionMode('browse');if(value)cancelActiveInspection();syncCoverageLocks();}
@@ -1806,12 +1933,18 @@ function syncCoverageLocks(){
   syncMapEditControls();
   $('coverage-load-run').disabled=!$('coverage-active-run').value||locked;$('coverage-reconnect').disabled=!coverageBusy||busy||switchingProject;setHistoryButtons();updateCoverageActions();
 }
-function appendCoverageCells(cells){if(coveragePreviewActive){predictedCoverageLayer.clearLayers();coveragePreviewActive=false;coveragePreviewCells=[];}coverageDisplayInfo=coverageJob;coverageCells.push(...cells);for(const cell of cells)addCoverageCell(cell);syncCoverageLegend();}
-function setCoverageOpacity(value){const opacity=Number(value)/100;for(const layer of predictedCoverageLayer.getLayers())if(layer.setStyle)layer.setStyle({fillOpacity:opacity*(layer._plannerOpacityScale??1),opacity:Math.min(.7,opacity)});}
+function appendCoverageCells(cells){if(coveragePreviewActive){predictedCoverageLayer.clearLayers();coveragePreviewActive=false;coveragePreviewCells=[];}coverageDisplayInfo=coverageJob;coverageCells.push(...cells);addCoverageRasterCells(cells);syncCoverageLegend();}
+function setCoverageOpacity(value){
+  const opacity=Number(value)/100;
+  $('coverage-opacity-value').value=`${value}%`;
+  $('coverage-opacity').setAttribute('aria-valuetext',`${value}%`);
+  for(const group of [predictedCoverageLayer,coverageDiffLayer])group.getLayers()[0]?.setOpacity(opacity);
+  if(!opacity)hideCoverageSample();
+}
 function setCoverageResultProgress(loaded,total,visible=true){const bar=$('coverage-result-progress');bar.hidden=!visible||!total;if(total){bar.max=total;bar.value=Math.min(loaded,total);}else bar.removeAttribute('value');$('coverage-result-progress-copy').hidden=!visible;$('coverage-result-progress-copy').textContent=total?`Loading saved cells · ${loaded.toLocaleString()} of ${total.toLocaleString()}`:'Waiting for stored coverage cells…';}
 async function pollCoverage(jobId,request=++coveragePollRequest){
   try{
-    const job=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}`);if(request!==coveragePollRequest)return;coverageJob=job;coverageDisplayInfo=job;
+    const job=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}`);if(request!==coveragePollRequest)return;coverageJob=job;if(!coveragePreviewActive)coverageDisplayInfo=job;
     let page=await api(`/api/coverage/jobs/${encodeURIComponent(jobId)}/cells?cursor=${coverageCursor}&limit=192`);if(request!==coveragePollRequest)return;
     if(page.cells.length){appendCoverageCells(page.cells);coverageCursor=page.next_cursor??coverageCursor+page.cells.length;}
     const running=['queued','running'].includes(job.state),stored=page.stored_cells||job.stored_cells||0,total=page.requested_cells||job.requested_cells||0;
@@ -1840,7 +1973,7 @@ async function startCoverage(approved=coverageEstimate){
     coverageCells=[];coverageCursor=0;coverageStale=false;coverageRunReused=false;coverageDiffLayer.clearLayers();coverageComparison=null;
     if(!keepPreview){coverageDisplayInfo=null;predictedCoverageLayer.clearLayers();}if(!map.hasLayer(predictedCoverageLayer))predictedCoverageLayer.addTo(map);
     const job=await api('/api/coverage/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    coverageJob=job;coverageDisplayInfo=job;coverageRunReused=!!job.reused;$('coverage-cancel').hidden=false;setCoverageStatus(`${keepPreview?'Approximate preview shown while full calculation runs. ':''}${job.stage} · waiting for bounded planner capacity`);renderCoverageContext();void pollCoverage(job.job_id);
+    coverageJob=job;if(!keepPreview)coverageDisplayInfo=job;coverageRunReused=!!job.reused;$('coverage-cancel').hidden=false;setCoverageStatus(`${keepPreview?'Approximate preview shown while full calculation runs. ':''}${job.stage} · waiting for bounded planner capacity`);renderCoverageContext();void pollCoverage(job.job_id);
   }catch(error){coverageBusyState(false);setCoverageStatus(error.message,true);}
 }
 function cancelCoverage(){if(!coverageJob)return;api(`/api/coverage/jobs/${encodeURIComponent(coverageJob.job_id)}/cancel`,{method:'POST'}).then(()=>setCoverageStatus('Cancelling coverage; completed cells will remain available.')).catch(e=>setCoverageStatus(e.message,true));}

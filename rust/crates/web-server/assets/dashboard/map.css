@@ -99,11 +99,13 @@
 .map-top .coverage-map-legend {
   position: static;
   justify-self: end;
-  width: min(285px, 65%);
+  width: min(224px, 100%);
   margin-right: -42px;
-  max-height: 35vh;
+  max-height: min(390px, 43vh);
   pointer-events: auto;
 }
+
+.coverage-raster { image-rendering: auto; pointer-events: none; }
 
 .map-wrap .leaflet-control-layers-toggle,
 .map-wrap .leaflet-retina .leaflet-control-layers-toggle {
@@ -137,6 +139,7 @@
 }
 @media (max-width: 650px) {
   .map-wrap .leaflet-control-layers label { min-height: 44px; }
+  .map-top .coverage-map-legend { max-height: 35vh; }
 }
 
 .route-map-legend {

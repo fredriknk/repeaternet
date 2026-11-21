@@ -5,7 +5,7 @@ use repeaternet_coverage::{
     CoverageEvaluator, CoverageSettings, CoverageState, MapBounds, RunOptions, area_bounds_wgs84,
     cell_footprint, resolve_area, select_sources,
 };
-use repeaternet_terrain::{RasterTerrain, Transformer};
+use repeaternet_terrain::{Point, RasterTerrain, Transformer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -58,6 +58,35 @@ pub(crate) fn open_coverage_terrain(
     Ok((terrain, digest.finalize().into()))
 }
 
+/// Control points for warping the terrain grid onto the browser's map CRS.
+/// Sample in projected metres across the clipped area, independent of cell pages.
+pub(crate) fn raster_mesh(
+    [left, bottom, right, top]: [f64; 4],
+    cell_size: f64,
+    transform: &Transformer,
+) -> ApiResult<Value> {
+    let width = right - left;
+    let height = top - bottom;
+    let step = (cell_size * 8.0).min(5_000.0);
+    let across = ((width / step).ceil() as usize).clamp(1, 128);
+    let down = ((height / step).ceil() as usize).clamp(1, 128);
+    let mut vertices = Vec::with_capacity((across + 1) * (down + 1));
+    for row in 0..=down {
+        for column in 0..=across {
+            let point = Point {
+                x: left + width * column as f64 / across as f64,
+                y: top - height * row as f64 / down as f64,
+            };
+            let position = transform.reverse(point).map_err(terrain_invalid)?;
+            vertices.push([position.latitude, position.longitude]);
+        }
+    }
+    Ok(json!({
+        "across": across, "down": down, "vertices": vertices,
+        "width": width / cell_size, "height": height / cell_size,
+    }))
+}
+
 async fn evaluate(
     app: AppState,
     workspace: Workspace,
@@ -103,6 +132,8 @@ async fn evaluate(
                 "outside_area_cells": grid.outside_area_cells, "effective_cell_size_m": grid.effective_cell_size_m,
                 "area_bounds_wgs84": area_bounds_wgs84(grid.bounds, &transform).map_err(terrain_invalid)?,
                 "terrain_crs": terrain.crs().to_string(), "grid_bounds_projected": grid.bounds,
+                "rows": grid.rows, "columns": grid.columns,
+                "raster_mesh": raster_mesh(grid.bounds, grid.effective_cell_size_m, &transform)?,
                 "settings": settings, "snapshot_version": snapshot, "alternative_id": route["active_alternative_id"],
                 "terrain_available_cells": grid.terrain_available_cells, "evaluated_cells": grid.evaluated_cells,
                 "covered_cells": grid.cells.iter().filter(|cell| cell.state == CoverageState::Covered).count(),

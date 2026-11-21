@@ -234,7 +234,7 @@ pub async fn start(
         })).map_err(ApiError::internal)?;
         let [left, bottom, right, top] = area.bounds();
         let size = estimate.effective_cell_size_m;
-        let manifest = json!({
+        let mut manifest = json!({
             "coverage_store_format": FORMAT, "model_version": MODEL_VERSION, "project_id": context.project_id,
             "terrain_fingerprint": context.fingerprint, "terrain_crs": terrain.crs().to_string(),
             "terrain_sources": context.route.sources(&context.directory).into_iter()
@@ -257,6 +257,7 @@ pub async fn start(
             "mode": settings.mode, "stale": false, "done": 0, "covered_cells": 0, "evaluated_cells": 0,
             "unknown_cells": 0, "unresolved_cells": 0, "unresolved_source_evaluations": 0,
         });
+        manifest["raster_mesh"] = coverage_http::raster_mesh(area.bounds(), size, &transform)?;
         Ok::<_, ApiError>((context, route, Prepared {
             terrain, terrain_revision, transform, rf, sites, sources, settings, area, network, overrides, manifest,
         }))
@@ -644,13 +645,16 @@ pub async fn detail(
     workspace
         .run(app, move |app, key, session| {
             let storage = store(app, key, session)?;
-            let job = match TerrainContext::capture(app, key, session, true)
-                .ok()
-                .as_ref()
-            {
+            let terrain = TerrainContext::capture(app, key, session, true).ok();
+            let mut job = match terrain.as_ref() {
                 Some(terrain) => storage.load_with_legacy(&id, &legacy(terrain))?,
                 None => storage.load(&id)?,
             };
+            if job["raster_mesh"].is_null()
+                && let Some(mesh) = raster_mesh(&job, terrain.as_ref())
+            {
+                job["raster_mesh"] = mesh;
+            }
             Ok(Json(status(job, identity(app, key, session).as_ref())))
         })
         .await
@@ -712,6 +716,16 @@ pub(crate) fn transform(job: &Value, terrain: Option<&TerrainContext>) -> ApiRes
         .ok_or_else(|| ApiError::conflict("Coverage terrain CRS is unavailable"))?;
     let crs = repeaternet_terrain::TerrainCrs::from_epsg(code).map_err(terrain_invalid)?;
     Transformer::new(crs).map_err(terrain_invalid)
+}
+
+pub(crate) fn raster_mesh(job: &Value, terrain: Option<&TerrainContext>) -> Option<Value> {
+    if !job["raster_mesh"].is_null() {
+        return Some(job["raster_mesh"].clone());
+    }
+    let bounds = serde_json::from_value(job["grid_bounds_projected"].clone()).ok()?;
+    let size = job["effective_cell_size_m"].as_f64()?;
+    let transform = transform(job, terrain).ok()?;
+    coverage_http::raster_mesh(bounds, size, &transform).ok()
 }
 
 pub(crate) fn footprints(
