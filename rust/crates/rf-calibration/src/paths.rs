@@ -9,7 +9,7 @@
 //! directory's `shared-cache`) so downloads are reused by the planner.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -56,10 +56,18 @@ pub fn shared_cache_dir() -> Result<PathBuf> {
 /// Refuse paths inside `<RepeaterNet>/data`, the user's real planner data.
 pub fn refuse_user_data(path: &Path) -> Result<()> {
     if let Ok(root) = repeaternet_data_root() {
-        let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
-        let real = norm(&root.join("data"));
-        let candidate = norm(path);
-        if candidate == real || candidate.starts_with(&format!("{real}/")) {
+        let key = |p: &Path| {
+            if cfg!(windows) {
+                PathBuf::from(p.to_string_lossy().to_lowercase())
+            } else {
+                p.to_path_buf()
+            }
+        };
+        let real = absolute_without_parents(&root.join("data"))?;
+        let candidate = absolute_without_parents(path)?;
+        if key(&candidate).starts_with(key(&real))
+            || key(&resolved_path(&candidate)?).starts_with(key(&resolved_path(&real)?))
+        {
             bail!(
                 "refusing to use {}: it is inside the real RepeaterNet data directory",
                 path.display()
@@ -67,6 +75,32 @@ pub fn refuse_user_data(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn absolute_without_parents(path: &Path) -> Result<PathBuf> {
+    let mut absolute = PathBuf::new();
+    for component in std::path::absolute(path)?.components() {
+        match component {
+            Component::ParentDir => {
+                absolute.pop();
+            }
+            Component::CurDir => {}
+            part => absolute.push(part),
+        }
+    }
+    Ok(absolute)
+}
+
+fn resolved_path(path: &Path) -> Result<PathBuf> {
+    // Resolve junctions/symlinks in any existing ancestor of an output path.
+    for ancestor in path.ancestors() {
+        match std::fs::canonicalize(ancestor) {
+            Ok(resolved) => return Ok(resolved.join(path.strip_prefix(ancestor)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -78,6 +112,7 @@ mod tests {
         let root = repeaternet_data_root().unwrap();
         assert!(refuse_user_data(&root.join("data")).is_err());
         assert!(refuse_user_data(&root.join("data").join("x")).is_err());
+        assert!(refuse_user_data(&root.join("calibration/../data/x")).is_err());
         assert!(refuse_user_data(&root.join("database")).is_ok());
         assert!(refuse_user_data(&root.join("calibration")).is_ok());
     }

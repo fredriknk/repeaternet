@@ -5,6 +5,7 @@
 pub mod dataset;
 pub mod engines;
 pub mod extract;
+mod jsonl;
 pub mod paths;
 pub mod predict;
 pub mod profiles;

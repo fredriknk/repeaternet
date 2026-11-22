@@ -25,7 +25,7 @@ It never edits its inputs.
 | --- | --- | --- |
 | 1. Snapshot | `rf-calibration snapshot` | `snapshots/*.sqlite3`, copied with the SQLite backup API from read-only sources |
 | 2. Extract | `rf-calibration extract` | `dataset/links.jsonl`, `dataset/nodes.jsonl`, `dataset/summary.json` |
-| 3. Profiles | `rf-calibration profiles` | `profiles.jsonl` (DTM and DOM, or a global DEM) |
+| 3. Profiles | `rf-calibration profiles` | `profiles.jsonl` and `path_features.jsonl` |
 | 4. Predict (Rust) | `rf-calibration predict` | `predictions/<engine>.jsonl` |
 | 5. Predict (reference) | `python -I tools/rf-calibration/reference_engines.py` | `predictions/itm_p2p.jsonl`, `predictions/p1812.jsonl` |
 | 6. Fit and report | `python -I tools/rf-calibration/calibrate.py` | `report/` tables, figures and `results.json` |
@@ -36,6 +36,49 @@ through the providers crate into the shared cache
 (`RF_PLANNER_CACHE_DIR`, default `%LOCALAPPDATA%\RepeaterNet\test-data\shared-cache`),
 so the planner reuses every tile. Nothing here prunes or replaces a cache, and
 no stage may read or write `%LOCALAPPDATA%\RepeaterNet\data`.
+
+### Terrain profiles and path features
+
+`profiles` and `predict` accept `--links <path>` and default to
+`<work>/dataset/links.jsonl`. Profiles exclude distances outside 30 m to 150 km,
+self-links, and links or endpoints flagged `over_300km`, `default_position`,
+`self_link` or `mqtt_suspect`. CoreScope non-detections are eligible. The
+lexically ordered node pair forms `path_id = a~b`. If positions differ
+between eligible records for a pair, the record with the most receptions
+supplies the endpoints, with ties broken by link ID.
+
+The midpoint of each path selects the planner's Norwegian UTM zone
+(EPSG:25832, 25833 or 25835) or the local WGS84 UTM zone. The downloader
+unions 300 m half-width corridors for paths in the same region and CRS,
+splitting large plans as needed. It requests pinned Kartverket NHM DTM and
+DOM at 10 m in Norway and pinned Copernicus GLO-30 at 30 m elsewhere.
+GLO-30 is a surface model with some vegetation and buildings already in
+the elevations. It supplies only the harness's `dtm` input. The terrain
+estimate sums uncached raw tile sizes with the provider's 2× planning
+allowance. It is compared with `--max-download-gb` (5 decimal GB by default)
+before any download. Fetches are sequential and the run reports upstream
+response bytes and composed cache hits.
+
+`profiles.jsonl` is sorted by `path_id` and replaced atomically. Each row
+stores the projected endpoints, sorted `link_ids`, target `resolution_m`,
+actual `step_m` and projected `distance_m`, with at least two equal
+intervals and endpoints included. The `dtm` and optional `dom` arrays hold
+raw elevations rounded to 0.01 m. `missing_fraction` counts positions
+missing from either available layer. A wholly unavailable DOM is
+`null`. A path with over 2% missing positions or a gap of more than five
+samples is dropped. Smaller gaps are interpolated linearly. Boundary
+gaps use the nearest elevation. A rerun reuses samples when endpoints
+and `terrain_fingerprint` match. The fingerprint includes the sampling
+method and intersecting cache tile identities, sizes and modification times.
+
+`path_features.jsonl` has the same order and one row per profile. Along
+with `schema`, `path_id` and `distance_m`, it carries `delta_h_m`, the
+90th minus 10th percentile of linearly detrended DTM samples within the
+middle 80% of the chord. `a_clutter_height_m` and `b_clutter_height_m`
+are nonnegative medians of DOM minus DTM within 30 m of each terminal.
+`clutter_fraction_gt_3m` is the length fraction above 3 m of DOM excess,
+with linear interpolation across threshold crossings. All three
+DOM-derived values are `null` when DOM is unavailable.
 
 ## Privacy
 

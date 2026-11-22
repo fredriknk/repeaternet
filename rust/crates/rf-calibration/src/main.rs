@@ -27,7 +27,14 @@ enum Command {
     /// Build `<work>/dataset/{links,nodes}.jsonl` from the snapshots.
     Extract,
     /// Sample terrain profiles for every link into `<work>/profiles.jsonl`.
-    Profiles,
+    Profiles {
+        /// Directed link JSONL (default <work>/dataset/links.jsonl).
+        #[arg(long)]
+        links: Option<PathBuf>,
+        /// Maximum estimated new terrain download in decimal GB.
+        #[arg(long, default_value_t = 5.0)]
+        max_download_gb: f64,
+    },
     /// Evaluate Rust engines into `<work>/predictions/`.
     Predict,
 }
@@ -46,7 +53,14 @@ fn main() -> Result<()> {
             }
         }
         Command::Extract => extract::run(&work.join("snapshots"), &work.join("dataset"))?,
-        Command::Profiles => profiles::run(&work.join("dataset"), &work.join("profiles.jsonl"))?,
+        Command::Profiles {
+            links,
+            max_download_gb,
+        } => profiles::run(
+            &links.unwrap_or_else(|| work.join("dataset/links.jsonl")),
+            &work,
+            max_download_gb,
+        )?,
         Command::Predict => predict::run(
             &work.join("dataset"),
             &work.join("profiles.jsonl"),
