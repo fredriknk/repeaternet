@@ -2,7 +2,7 @@
 
 RepeaterNet plans terrain-aware radio links between two locations and estimates
 where a handheld could use the resulting mesh. **1 Route** sets up the link,
-**2 Coverage** predicts handheld access, and **3 Scenarios** tests changes and
+**2 Coverage** shows live handheld coverage around every site, and **3 Scenarios** tests changes and
 assesses places you care about. Use **Map** to edit the plan and **Analysis** to
 read the result. The examples use a roughly 29 km route across Nordmarka, from
 Oslo to Harestua. A certified route meets the configured model checks. Verify
@@ -297,7 +297,7 @@ coordinates use latitude, longitude to six decimals.
 - Use **+** and **−** to zoom. In the layer control, choose **OpenStreetMap** or
   **Kartverket topo**, and other enabled maps. Regional layers display
   **(outside view)** when the map is outside their coverage. Your selected
-  basemap stays in place as you pan. Toggle **Terrain coverage**, **Predicted mesh coverage**,
+  basemap stays in place as you pan. Toggle **Live coverage**, **Terrain coverage**, **Predicted mesh coverage** (a saved run),
   **Coverage analysis area**, **Coverage difference** or **Coverage targets** as
   needed. **Map legend** explains the route lines and marker shapes.
 
@@ -389,122 +389,155 @@ For an explicit saved run or historical coverage, use
 
 ## Coverage
 
-After certifying and selecting a route, open **2 Coverage**. The model evaluates
-router-to-handheld and handheld-to-router separately for the selected mesh.
-If the panel asks for a route, **Open route setup** takes you back to the
-prerequisite. **Help: predicted coverage** explains what the model predicts.
+Coverage is live. As soon as an endpoint or router is on the map, its handheld
+coverage is drawn around it. There is no separate calculation step and no
+certified route is needed. Each site gets its own coverage map, and the map shows
+the strongest usable margin from any of them. **Help: live coverage** in
+**2 Coverage** summarises the model. These are predictions from terrain and the
+radio settings, not measurements.
 
-### Area and detail
+![Live coverage from both endpoints and two proposed routers with the colour scale legend](images/live-coverage-map.png)
 
-In **Area & detail**, set **Area**.
+### Moving sites
 
-| Area | Samples |
-| --- | --- |
-| **Around the selected route** | The route search corridor, with full width continuing one half-width past A and B, plus the mesh buffer around repeaters and endpoints/clients. |
-| **Area visible on the map** | The current map extent. Moving the map can invalidate a pending estimate. |
-| **Draw a custom boundary** | Use **Draw area on map**, click at least three vertices and choose **Finish polygon**. Use **Cancel drawing**, **Cancel** or Esc to leave placement mode. **Clear drawn area** removes the saved boundary and returns to the route area. |
+Drag an endpoint, a proposed router or a route repeater and its coverage follows
+the marker: a coarse preview is recalculated while you drag, and a detailed map
+replaces it when you let go. Editing coordinates, antenna heights, router
+policies or radio settings in the sidebar recalculates the affected sites the
+same way. Other sites keep their maps, so only the site you changed is redrawn.
 
-In **Advanced sampling and limits**, **Cell spacing · m** defaults to 1,000 m
-(100–100,000 m), **Mesh buffer · m** to 5,000 m (any positive value up to
-500,000 m, including decimals), **Profile step · m**
-to 200 m (10–10,000 m) and **Maximum profile samples** to 4,096 (3–16,384).
-Cell spacing controls map detail. Profile step controls the distance between
-terrain samples along each RF path. If a profile hits the sample cap, it remains
-unresolved. A larger step or higher cap can let it complete. **Help: profile
-sample limit** explains this behavior.
+The model is the one the route search uses: free-space loss, Bullington
+diffraction over the terrain and surface model, Earth curvature with the
+configured k-factor, optional clutter loss, antenna patterns and both link
+directions. In **Strict LOS** validation mode, places without line of sight are
+shown as not covered; the Fresnel clearance requirement is not applied to the
+live map.
 
-![Area & detail settings with coverage view, area and advanced sampling](images/coverage-area-detail.png)
+### Which sites are shown
 
-![Custom coverage boundary drawn on the map with the area controls open](images/coverage-drawn-area.png)
+**2 Coverage** lists every site with coverage on the map, with the share of its
+radius that is covered. Clear a site's checkbox to hide its coverage without
+changing the plan. **Show live coverage on the map** turns the whole layer off;
+the **Live coverage** entry in the map layers control does the same.
 
-### Sources and handheld
+In **Sources & range**, **Show coverage for** chooses the kinds of site:
 
-Under **Sources**, select the **Router sources** to evaluate. The default uses
-every repeater on the selected route. **Include endpoints as sources** also
-evaluates A and B. Turn it on for a direct route without repeaters.
+- **Endpoints A and B**, using the endpoint antenna heights from **Radio**.
+- **Proposed routers** that you placed.
+- **Routers in the selected route**. These follow the selected alternative and
+  are hidden while the route is stale.
+- **Existing routers included in the search** (policy **Optional** or
+  **Required**). Excluded routers have no coverage.
 
-![Sources panel with the endpoint toggle and selected repeater sources](images/coverage-sources.png)
+All four are on by default. Sites at the same position are shown once.
 
-Under **Handheld**, use **Handheld radio assumptions** to set **Height AGL · m**,
-**Transmit power · dBm**, **Antenna gain · dBi**, **Feed loss · dB**, **Sensitivity
-· dBm** and **Other losses · dB**. The example client uses 1.5 m AGL, 20 dBm,
-2.15 dBi, −130 dBm sensitivity and 0 dB feed and other losses. The handheld
-profile is separate from the route's radio assumptions.
+### Range, detail and handheld
 
-![Handheld assumptions panel with client antenna height, power, gain, losses and sensitivity](images/coverage-handheld.png)
+- **Coverage view** chooses **Two-way margin** (both directions must work, the
+  default), **Router → handheld** or **Handheld → router**.
+- **Radius · km** limits how far from each site coverage is calculated
+  (1–80 km, default 20 km).
+- **Detail** sets the map resolution: **Fine · 15 m**, **Standard · 30 m**
+  (default) or **Coarse · 60 m**. Finer detail and larger radii take longer.
+- **Handheld** sets the client radio: **Height AGL · m**, **Transmit power ·
+  dBm**, **Antenna gain · dBi**, **Feed loss · dB**, **Sensitivity · dBm** and
+  **Other losses · dB**. The example client uses 1.5 m AGL, 20 dBm, 2.15 dBi,
+  −130 dBm sensitivity and no losses. It is separate from the route's radio
+  assumptions.
 
-### Preview, calculate and read the map
+Display choices and range settings are remembered by your browser. Handheld
+assumptions are saved with the project.
 
-1. Choose **Quick approximate preview** and review the estimate, then choose
-   **Run preview**. The preview uses at most 256 cells and 4,096 source
-   evaluations. Its approximate cells appear on the map. A preview cannot be
-   selected as a saved run.
-2. Choose **Calculate coverage**, review the work estimate and confirm with
-   **Calculate coverage**. A standard run defaults to a 4,096-cell budget,
-   with hard limits of 16,384 cells, 64 sources and 250,000 cell/source
-   evaluations. The estimate reports effective spacing after coarsening,
-   planned evaluations, known and unknown terrain, and the profile limits.
-3. Cells stream onto the map. Use **Cancel coverage** to stop the job.
-   Available partial cells can be retained. **Reconnect to coverage run**
-   resumes status checks and cell loading after a lost connection.
+### Reading the map
 
-![Confirmation for the bounded approximate coverage preview](images/coverage-preview-estimate.png)
+Colour shows the best usable margin, after the fade margin, from any visible
+site. Areas below 0 dB are left clear so the basemap shows through, and the
+weakest few dB fade in so the edge of coverage stays readable. The **Live
+coverage** legend on the map shows the colour scale in dB, the view and handheld
+height, and how many sites are shown. Use **Hide** to collapse it.
 
-![Approximate coverage preview with a signal margin scale](images/coverage-preview-map.png)
+- **Colour map** (in the legend and in **Display**) offers **Viridis** (default),
+  **Plasma**, **Turbo (rainbow)**, **Cividis (colour-blind safe)**, **Magma** and
+  **Margin bands (orange → green)**, which uses the shared 0, 5 and 10 dB bands.
+- **Colour scale top · dB** sets the margin that gets the top colour (20, 30,
+  40 or 60 dB).
+- **Highlight where coverage overlaps** paints places reached by two or more
+  sites in a single **Overlap colour** (pink by default), with a darker shade for
+  three or more. The legend names both shades.
+- **Hatch areas without terrain data** marks places where no terrain is
+  installed. Turn it off to leave them clear.
+- **Opacity** in the legend fades the whole layer.
 
-![Full coverage estimate with grid spacing, cell count, source evaluations and terrain availability](images/coverage-calculation-estimate.png)
+Hover over the map to see which sites reach that point and their margins, for
+example "2 sites overlap · R1 · 12.3 dB · A · 4.1 dB".
 
-**Coverage view** changes how the existing samples are drawn. **Two-way signal
-margin** needs both directions for a source. **Router → handheld** shows
-downlink and **Handheld → router** shows uplink. **Overlapping routers** counts
-usable links to multiple sources. It measures local options and does not
-measure independent backbone paths. **Best serving router** colors cells by
-the source with the best valid two-way margin. If the list is long, use
-**Filter serving routers** in the legend. Adjust **Opacity** in that legend, or toggle
-**Predicted mesh coverage** in the map layers control.
+![Overlap highlighting where two routers both reach the handheld](images/live-coverage-overlap.png)
 
-The margin scale fades from green for strong signals (10 dB and above), through
-yellow at 5 dB, to orange at 0 dB. Terrain shadows, unusable samples, areas outside
-the grid and cells awaiting calculation leave the basemap visible. Grey hatching
-marks unknown terrain and purple hatching marks unresolved profile limits.
-Hover over the map for the underlying sample's summary. Use **Inspect a map location**
-to calculate the links at the point you select.
+### Terrain for coverage
 
-![Completed coverage heatmap with the margin scale and opacity control](images/coverage-map.png)
-
-### Additional terrain and saved runs
-
-If the coverage area extends beyond installed terrain, or unknown cells are
-reported, choose **Download terrain for coverage area**. Review the missing
-area, tile count, resolution, approximate size and cache reuse. When route DOM
-is present, the supplemental download includes surface terrain. Use **Cancel
-coverage terrain download** or **Reconnect to terrain download** as needed.
-When the tiles are ready, choose **Calculate coverage** again.
+Coverage uses route terrain first, then supplemental coverage terrain. If a
+project has no terrain yet, **2 Coverage** says so and **Open terrain setup**
+takes you to **Terrain** in **1 Route**. When part of a site's radius has no
+terrain, the site list reports the share and **Download terrain for coverage
+area** appears in **Sources & range**. Review the missing area, tile count,
+resolution, size and cache reuse, then confirm. The download covers every
+shown site's radius. Use **Cancel coverage terrain download** or **Reconnect to
+terrain download** as needed. Coverage updates by itself when the tiles are
+ready.
 
 ![Supplemental coverage terrain estimate with missing area, tile count, disk size and source list](images/coverage-terrain-download.png)
 
-Coverage uses the first valid sample from route terrain, then supplemental tiles.
 A coverage download preserves the certified route and its original terrain.
-Supplemental tiles remain installed when the coverage area or route alternative
-changes. Clearing, uploading or preparing route terrain resets the supplemental
-set. Previously downloaded terrain tiles can be reused. Paths outside the
-tiles and no-data pixels can still produce unknown results.
+Supplemental tiles stay installed when sites or the route alternative change.
+Clearing, uploading or preparing route terrain resets the supplemental set.
+No-data pixels in the source data still show as hatched.
 
-In **Runs**, **Analysis context** identifies the selected mesh and client
-assumptions. Select a **Saved coverage run** to use for inspection, targets and
-exports. **Show saved run on map** loads its cells incrementally without new RF
-work. The progress bar clears when the last stored page arrives. The run label
-includes the time, grid, height overrides and state.
-An identical completed run can be reused when route, terrain, sources, grid,
-radio and model metadata match. Otherwise, calculate again. A stored result is
-limited to 100 MiB. A result larger than the limit fails to save.
+**Recalculate coverage** in the action bar discards the cached coverage maps and
+calculates every site again.
+
+### Saved runs
+
+Failure scenarios, targets, exact-point inspection and coverage reports work on
+saved runs: fixed-grid snapshots of a certified route. Open **Saved runs** in
+**2 Coverage**. If it asks for a route, **Open route setup** takes you back to
+the prerequisite.
+
+Open **Saved run area, sources and calculation** to set up a run:
+
+- **Area** is **Around the selected route** (the route search corridor plus the
+  mesh buffer), **Area visible on the map**, or **Draw a custom boundary**
+  (use **Draw area on map**, click at least three vertices and choose **Finish
+  polygon**; Esc or **Cancel** leaves drawing and **Clear drawn area** removes
+  the boundary).
+- **Advanced sampling and limits** sets **Cell spacing · m** (default 1,000 m),
+  **Mesh buffer · m** (default 5,000 m), **Profile step · m** (default 200 m) and
+  **Maximum profile samples** (default 4,096). A profile over the sample cap
+  stays unresolved.
+- **Include endpoints as sources** and **Router sources** choose the sources.
+  Turn endpoints on for a direct route without repeaters.
+- **Calculate saved run** shows the work estimate (a 4,096-cell budget by
+  default, with hard limits of 16,384 cells, 64 sources and 250,000 cell/source
+  evaluations). Confirm to start. **Cancel coverage** stops the job and can keep
+  partial cells. **Reconnect to coverage run** resumes after a lost connection.
+- **Quick approximate preview** evaluates at most 256 cells and cannot be saved.
+
+![Full coverage estimate with grid spacing, cell count, source evaluations and terrain availability](images/coverage-calculation-estimate.png)
+
+**Analysis context** identifies the selected mesh and client assumptions. Select
+a **Saved coverage run** for inspection, targets and exports. **Show saved run on
+map** loads its cells without new RF work and hides the live layer while it is
+shown; turn **Live coverage** back on to return. **Saved run view** chooses how
+a saved run is drawn (two-way, either direction, overlapping routers or best
+serving router). The run label includes the time, grid, height overrides and
+state. An identical completed run is reused when route, terrain, sources, grid,
+radio and model match. A stored result is limited to 100 MiB.
 
 ![Runs panel identifying the selected saved grid and its analysis context](images/coverage-runs.png)
 
 
 ## Location inspection
 
-For a saved run, select it in **Runs** and choose **Show saved run on map** first.
+For a saved run, select it in **Saved runs** and choose **Show saved run on map** first.
 Choose **Inspect a map location**, then click the location. You can also inspect
 with the current route and coverage settings before saving a run. The exact
 point is evaluated using the relevant client assumptions and source heights.
@@ -523,11 +556,11 @@ locations** or **Cancel** exits inspection mode.
 ## Scenarios and targets
 
 Use **3 Scenarios** to ask what changes on a calculated network. Saved runs are
-snapshots. **Open coverage** takes you to coverage setup if a run is needed.
+snapshots. **Open saved runs** takes you to **2 Coverage** → **Saved runs** if a run is needed.
 
 ### Router failure
 
-Open **Router failure scenario**. In **2 Coverage** → **Runs**, select a
+Open **Router failure scenario**. In **2 Coverage** → **Saved runs**, select a
 completed, current run with a repeater source. Back in **3 Scenarios**, pick a
 **Reference router**, check one or more **Disable …** boxes and choose
 **Analyze failures**. The result reports surviving components and cells that
@@ -588,7 +621,7 @@ Point targets also offer **Edit**. Change **Name** or **Minimum margin · dB**
 (−100 to 100 dB) and choose **Save target** or **Cancel**. An edit clears old
 assessments for the changed target set.
 
-Select a completed, current run in **Runs**, then choose **Assess targets
+Select a completed, current run in **Saved runs**, then choose **Assess targets
 against selected run**. Points and roads use exact-position path calculations.
 Areas use conservative saved-grid evaluation. An unknown, out-of-area or
 unresolved sample cannot establish a pass, and areas with too few representative
@@ -605,7 +638,7 @@ Each row shows the change and the two outcomes.
 
 ## Coverage exports and reports
 
-In **2 Coverage** → **Runs**, select the **Saved coverage run** and open
+In **2 Coverage** → **Saved runs**, select the **Saved coverage run** and open
 **Export & print report**. The selected run is used even if a different run
 is displayed on the map. Review the export context before downloading.
 

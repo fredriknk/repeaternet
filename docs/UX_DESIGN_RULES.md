@@ -18,7 +18,7 @@ The layout has one owner per job. Put new features where users already look:
 | Top bar (56 px, one row) | Which project am I in? | Brand, project select, **＋ New**, **⋯** project menu, save state |
 | **⋯** project menu | Rare project operations | Rename, duplicate, recover, import/export plan file, **Data sources…**, archive, delete, archived list, cache |
 | Left panel tab **1 Route** | Define the problem | Accordion steps: Endpoints, Terrain, Routers, Radio, Search, then a sticky **Find repeater route** |
-| Left panel tab **2 Coverage** | Handheld coverage of the chosen route | Area & detail, Sources, Handheld, Runs (saved runs and their exports), sticky **Calculate coverage** |
+| Left panel tab **2 Coverage** | Live handheld coverage of every site on the map | Live on/off, per-site list, Display, Sources & range, Handheld, Saved runs (fixed-grid runs for scenarios, targets and exports), sticky live status and **Recalculate coverage** |
 | Left panel tab **3 Scenarios** | What-ifs on a finished coverage run | Failure scenario, heights and run comparison, targets |
 | **Map** view | See and edit geography | Toolbar, context menu, popups, legend |
 | **Analysis** view | Judge the result | Verdict, key figures, alternatives, links, profile, exports |
@@ -36,7 +36,10 @@ The layout has one owner per job. Put new features where users already look:
 - Exports sit next to the thing they export: route exports in Analysis, coverage
   exports beside the saved-run selector.
 - Each workspace has exactly one primary (filled green) button, in its sticky
-  action bar.
+  action bar. **2 Coverage** is the exception: coverage is live, so its action
+  bar shows live status and a secondary **Recalculate coverage** and has no
+  primary button. (Changed 2026-11-22 when coverage stopped being a separate
+  calculation step.)
 
 ## 2. The map is an editor
 
@@ -53,6 +56,10 @@ The layout has one owner per job. Put new features where users already look:
   never acceptable without a solid background.
 - Map-mode actions (place A/B/router/target, draw, inspect) show a pressed state
   and a hint pill, and Esc or **Cancel** exits them.
+- Live coverage follows the map. A new draggable site marker calls
+  `bindLiveCoverageDrag(marker, describe)` so its coverage previews while
+  dragging; plan edits reach live coverage through `scheduleCoverageCheck()`.
+  Never start live coverage requests from anywhere else.
 - Fit the map once when a result appears or a project opens (`fitMapSites`).
   Never refit on routine re-renders such as coverage cells or autosave.
 
@@ -71,11 +78,20 @@ The layout has one owner per job. Put new features where users already look:
 
   Use `analysisMarginBand()` / `routeLinkMapStyle()`. Do not invent new
   thresholds or colours.
-- The handheld coverage raster uses the same 0, 5 and 10 dB boundaries with a
-  continuous orange, yellow and green ramp. Fade near weak signal so terrain
-  shadows and the basemap stay readable. Unusable and outside-area samples
-  supply no colour. Hatch unknown terrain and unresolved profiles, and label
-  both patterns in the legend. The gradient has dB ticks and an opacity control.
+- The live coverage layer uses a user-selectable perceptual colour map
+  (Viridis by default; Plasma, Turbo, Cividis, Magma, or **Margin bands** with
+  the shared 0, 5 and 10 dB orange, yellow and green ramp) from 0 dB to the
+  chosen scale top. Only usable margin (≥ 0 dB) is coloured. Fade the weakest
+  few dB so terrain shadows and the basemap stay readable. Overlap highlighting
+  uses one user-chosen colour for two sites and a darker shade for three or
+  more. Hatch unknown terrain. The legend names every colour and pattern, has dB
+  ticks, the colour map choice and an opacity control, and the hover tooltip
+  lists each site's margin in dB, so colour never stands alone. (Changed
+  2026-11-22: users asked for a prettier, selectable colour map; the margin-band
+  ramp remains one of the choices.)
+- Saved-run rasters keep the 0, 5 and 10 dB orange, yellow and green ramp, hatch
+  unknown terrain and unresolved profiles, and label both patterns in the legend.
+  Only one coverage layer (live or a saved run) is shown at a time.
 - Never encode meaning by colour alone. Pair colour with text (the pill shows the
   number), shape (marker shapes differ by kind) or line style.
 - Show people's labels, not IDs: route sites are `R1, R2…` or the router's name
@@ -87,7 +103,7 @@ The layout has one owner per job. Put new features where users already look:
 - Every map symbol and chart line must be explained by a visible legend (the
   **Map legend** control, `.chart-legend`).
 - Show a coverage legend only when coverage data is on the map
-  (`syncCoverageLegend`).
+  (`syncCoverageLegend`, `renderLiveCoverageLegend`).
 
 ## 4. Feedback, state and safety
 

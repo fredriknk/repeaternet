@@ -13,6 +13,7 @@
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/main_view_navigation.js"></script>
     <script defer src="/assets/coverage_raster.js"></script>
+    <script defer src="/assets/live_coverage.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
@@ -230,21 +231,81 @@
         </div>
         <div class="workspace-view" id="workspace-coverage" aria-label="Coverage analysis" hidden>
         <section class="coverage-panel">
-          <h2>Predict handheld coverage</h2>
-          <details class="help-disclosure"><summary>Help: predicted coverage</summary><p>Estimate where a handheld could reach this selected network. This is a terrain-based link prediction, not measured coverage or packet-delivery reliability.</p></details>
+          <h2>Live coverage</h2>
+          <details class="help-disclosure"><summary>Help: live coverage</summary><p>Every endpoint and router on the map shows where a handheld can reach it, calculated from terrain with the same radio model as the route search. Moving a site redraws its coverage straight away: a coarse preview follows the marker while you drag and a detailed map replaces it when you let go. Colour shows the strongest usable margin after the fade margin; areas below 0 dB are left clear. These are predictions, not measurements.</p></details>
+          <div id="live-coverage-no-terrain" class="coverage-empty-state" hidden>
+            <p>Coverage needs ground terrain. Download terrain for the route first; coverage then appears automatically.</p>
+            <button id="live-coverage-open-terrain" type="button">Open terrain setup</button>
+          </div>
+          <label class="check-line"><input id="live-enabled" type="checkbox" data-display-only checked> Show live coverage on the map</label>
+          <div id="live-coverage-sites" class="live-site-list" aria-label="Coverage per site"></div>
+          <nav class="coverage-section-nav" aria-label="Coverage settings sections">
+            <button type="button" data-coverage-section="display" aria-controls="coverage-section-display" aria-pressed="true">Display</button>
+            <button type="button" data-coverage-section="range" aria-controls="coverage-section-range" aria-pressed="false">Sources &amp; range</button>
+            <button type="button" data-coverage-section="handheld" aria-controls="coverage-section-handheld" aria-pressed="false">Handheld</button>
+            <button type="button" data-coverage-section="runs" aria-controls="coverage-section-runs" aria-pressed="false">Saved runs</button>
+          </nav>
+          <div id="coverage-section-display" data-coverage-panel="display">
+            <div class="fields">
+              <label>Colour map<select id="live-colormap" data-display-only></select></label>
+              <label>Colour scale top · dB<select id="live-scale" data-display-only><option value="20">20 dB</option><option value="30">30 dB</option><option value="40">40 dB</option><option value="60">60 dB</option></select></label>
+            </div>
+            <label class="check-line"><input id="live-overlap" type="checkbox" data-display-only> Highlight where coverage overlaps</label>
+            <label class="live-color-field">Overlap colour<input id="live-overlap-color" type="color" data-display-only value="#ff2d95"></label>
+            <p class="hint">Overlap areas are reached by two or more sites. Three or more use a darker shade.</p>
+            <label class="check-line"><input id="live-show-unknown" type="checkbox" data-display-only checked> Hatch areas without terrain data</label>
+          </div>
+          <div id="coverage-section-range" data-coverage-panel="range" hidden>
+            <fieldset class="live-source-groups">
+              <legend>Show coverage for</legend>
+              <label class="check-line"><input id="live-src-endpoints" type="checkbox" data-display-only checked> Endpoints A and B</label>
+              <label class="check-line"><input id="live-src-proposed" type="checkbox" data-display-only checked> Proposed routers</label>
+              <label class="check-line"><input id="live-src-route" type="checkbox" data-display-only checked> Routers in the selected route</label>
+              <label class="check-line"><input id="live-src-existing" type="checkbox" data-display-only checked> Existing routers included in the search</label>
+            </fieldset>
+            <div class="fields">
+              <label>Coverage view<select id="live-mode" data-display-only></select></label>
+              <label>Radius · km<input id="live-radius" type="number" min="1" max="80" step="1" value="20" data-display-only aria-describedby="live-radius-error"></label>
+              <span id="live-radius-error" class="field-error" hidden></span>
+              <label>Detail<select id="live-detail" data-display-only></select></label>
+            </div>
+            <p class="hint">Finer detail and larger radii take longer to calculate.</p>
+            <div id="live-terrain-gap" class="live-terrain-gap" hidden>
+              <p id="live-terrain-copy" class="hint"></p>
+              <button id="live-terrain-download" type="button" class="wide-button">Download terrain for coverage area</button>
+            </div>
+            <div class="live-terrain-job">
+            <progress id="coverage-terrain-progress" aria-label="Coverage terrain tiles downloaded" hidden></progress>
+            <button id="coverage-terrain-cancel" class="wide-button" hidden>Cancel coverage terrain download</button>
+            <button id="coverage-terrain-reconnect" class="wide-button" hidden>Reconnect to terrain download</button>
+            <p id="coverage-terrain-status" class="hint" role="status" hidden></p>
+            </div>
+          </div>
+          <div id="coverage-section-handheld" data-coverage-panel="handheld" hidden>
+          <details open>
+            <summary>Handheld radio assumptions</summary>
+            <p class="hint">Example profile only; adjust to match the client radio you care about.</p>
+            <div class="fields">
+              <label>Height AGL · m<input id="client-height" type="number" min="0.1" max="1000" step="any" value="1.5"></label>
+              <label>Transmit power · dBm<input id="client-tx" type="number" min="-20" max="60" step="any" value="20"></label>
+              <label>Antenna gain · dBi<input id="client-gain" type="number" min="-30" max="60" step="any" value="2.15"></label>
+              <label>Feed loss · dB<input id="client-feed" type="number" min="0" max="100" step="any" value="0"></label>
+              <label>Sensitivity · dBm<input id="client-sensitivity" type="number" min="-200" max="0" step="any" value="-130"></label>
+              <label>Other losses · dB<input id="client-loss" type="number" min="0" max="200" step="any" value="0"></label>
+            </div>
+          </details>
+          </div>
+          <div id="coverage-section-runs" data-coverage-panel="runs" hidden>
+            <p class="hint">Saved runs are fixed-grid snapshots for failure scenarios, targets, exact-point inspection and reports. The live map does not need them.</p>
           <div id="coverage-no-route" class="coverage-empty-state">
             <p>Find a certified route first to enable coverage calculations and location inspection. If you stop optimization, coverage uses the best certified route found so far.</p>
             <button id="coverage-find-route" type="button">Open route setup</button>
           </div>
-          <nav class="coverage-section-nav" aria-label="Coverage settings sections">
-            <button type="button" data-coverage-section="area" aria-controls="coverage-section-area" aria-pressed="true">Area &amp; detail</button>
-            <button type="button" data-coverage-section="sources" aria-controls="coverage-section-sources" aria-pressed="false">Sources</button>
-            <button type="button" data-coverage-section="handheld" aria-controls="coverage-section-handheld" aria-pressed="false">Handheld</button>
-            <button type="button" data-coverage-section="runs" aria-controls="coverage-section-runs" aria-pressed="false">Runs</button>
-          </nav>
-          <div id="coverage-section-area" data-coverage-panel="area">
+            <details id="saved-run-settings">
+              <summary>Saved run area, sources and calculation</summary>
+          <div id="coverage-section-area">
           <p class="hint">For a first estimate, use the area around the route and check two-way coverage. This shows where a handheld can both hear a router and reach it.</p>
-          <label>Coverage view<select id="coverage-mode" data-display-only>
+          <label>Saved run view<select id="coverage-mode" data-display-only>
             <option value="two_way">Two-way signal margin</option>
             <option value="downlink">Router → handheld</option>
             <option value="uplink">Handheld → router</option>
@@ -274,7 +335,7 @@
           </details>
           <details class="help-disclosure"><summary>Help: profile sample limit</summary><p>The sample cap never coarsens a path silently. Over-limit links are unresolved; increase the profile step or raise this cap to evaluate them.</p></details>
           </div>
-          <div id="coverage-section-sources" data-coverage-panel="sources" hidden>
+          <div id="coverage-section-sources">
           <label id="coverage-endpoints-control" class="check-line coverage-check"><input id="coverage-endpoints" type="checkbox"> Include endpoints as sources</label>
           <p id="coverage-endpoints-note" class="hint">For a direct route with no repeaters, enable endpoints to evaluate access from the two selected sites.</p>
           <details open>
@@ -282,21 +343,14 @@
             <div id="coverage-sources" class="coverage-source-list"><p class="hint">Run a route search to choose sources.</p></div>
           </details>
           </div>
-          <div id="coverage-section-handheld" data-coverage-panel="handheld" hidden>
-          <details open>
-            <summary>Handheld radio assumptions</summary>
-            <p class="hint">Example profile only; adjust to match the client radio you care about.</p>
-            <div class="fields">
-              <label>Height AGL · m<input id="client-height" type="number" min="0.1" max="1000" step="any" value="1.5"></label>
-              <label>Transmit power · dBm<input id="client-tx" type="number" min="-20" max="60" step="any" value="20"></label>
-              <label>Antenna gain · dBi<input id="client-gain" type="number" min="-30" max="60" step="any" value="2.15"></label>
-              <label>Feed loss · dB<input id="client-feed" type="number" min="0" max="100" step="any" value="0"></label>
-              <label>Sensitivity · dBm<input id="client-sensitivity" type="number" min="-200" max="0" step="any" value="-130"></label>
-              <label>Other losses · dB<input id="client-loss" type="number" min="0" max="200" step="any" value="0"></label>
-            </div>
-          </details>
-          </div>
-          <div id="coverage-section-runs" data-coverage-panel="runs" hidden>
+          <p id="coverage-job-status" class="action-status" aria-live="off">Find a certified route to calculate coverage.</p>
+          <p id="coverage-announcement" class="visually-hidden" role="status" aria-live="polite"></p>
+          <p id="coverage-result-progress-copy" class="action-status" hidden></p>
+          <progress id="coverage-result-progress" aria-label="Coverage cells loaded from the saved result" hidden></progress>
+          <button id="coverage-start" class="wide-button" disabled>Calculate saved run</button>
+          <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
+          <button id="coverage-reconnect" class="wide-button" hidden>Reconnect to coverage run</button>
+            </details>
           <section class="coverage-context" aria-labelledby="coverage-context-title">
             <h3 id="coverage-context-title">Analysis context</h3>
             <p id="coverage-context-route" class="hint">Find a certified route to see the selected mesh.</p>
@@ -323,15 +377,11 @@
               </div>
               <p id="coverage-export-status" class="hint" role="status" aria-live="polite">Choose a saved coverage run to export.</p>
             </details>
-          </div>
           <div class="coverage-actions">
             <button id="coverage-preview" class="wide-button" disabled>Quick approximate preview</button>
             <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
             <button id="coverage-terrain-download" class="wide-button" hidden>Download terrain for coverage area</button>
-            <progress id="coverage-terrain-progress" aria-label="Coverage terrain tiles downloaded" hidden></progress>
-            <button id="coverage-terrain-cancel" class="wide-button" hidden>Cancel coverage terrain download</button>
-            <button id="coverage-terrain-reconnect" class="wide-button" hidden>Reconnect to terrain download</button>
-            <p id="coverage-terrain-status" class="hint" role="status" hidden></p>
+          </div>
           </div>
         </section>
         </div>
@@ -339,8 +389,8 @@
         <section class="compare-panel">
           <h2>Scenarios &amp; targets</h2>
           <div id="compare-empty-state" class="coverage-empty-state" hidden>
-            <p>Router-failure and antenna-height scenarios start from a completed coverage run. Targets can be placed now and assessed once a run exists.</p>
-            <button id="compare-open-coverage" type="button">Open coverage</button>
+            <p>Router-failure and antenna-height scenarios start from a completed saved coverage run. Targets can be placed now and assessed once a saved run exists.</p>
+            <button id="compare-open-coverage" type="button">Open saved runs</button>
           </div>
           <details id="coverage-failure-scenarios">
             <summary>Router failure scenario</summary>
@@ -420,13 +470,8 @@
         </section>
         </div>
         <div class="workspace-action-bar" data-workspace-action="workspace-coverage" hidden>
-          <p id="coverage-job-status" class="action-status" aria-live="off">Find a certified route to calculate coverage.</p>
-          <p id="coverage-announcement" class="visually-hidden" role="status" aria-live="polite"></p>
-          <p id="coverage-result-progress-copy" class="action-status" hidden></p>
-          <progress id="coverage-result-progress" aria-label="Coverage cells loaded from the saved result" hidden></progress>
-          <button id="coverage-start" class="wide-button primary" disabled>Calculate coverage</button>
-          <button id="coverage-cancel" class="wide-button" hidden>Cancel coverage</button>
-          <button id="coverage-reconnect" class="wide-button" hidden>Reconnect to coverage run</button>
+          <p id="live-coverage-status" class="action-status" role="status" aria-live="polite">Add endpoints or routers to see their coverage.</p>
+          <button id="live-coverage-refresh" type="button" class="wide-button">Recalculate coverage</button>
         </div>
         <div class="workspace-action-bar compare-action-bar" data-workspace-action="workspace-compare" hidden>
           <p id="compare-workspace-status" class="action-status">Choose targets and a saved run to assess them.</p>
@@ -488,6 +533,29 @@
               <span>Opacity <output id="coverage-opacity-value" for="coverage-opacity" aria-hidden="true">65%</output></span>
               <input id="coverage-opacity" type="range" min="0" max="100" value="65" aria-valuetext="65%">
             </label>
+          </section>
+          <section id="live-coverage-legend" class="coverage-map-legend live-coverage-legend" aria-labelledby="live-legend-heading" hidden>
+            <div class="live-legend-head"><h3 id="live-legend-heading">Live coverage</h3><button id="live-legend-collapse" type="button" class="text-button" aria-expanded="true" aria-controls="live-legend-body">Hide</button></div>
+            <div id="live-legend-body">
+              <p id="live-legend-caption" class="live-legend-caption"></p>
+              <div id="live-legend-ramp" class="coverage-margin-ramp live-legend-ramp" role="img" aria-label="Colour scale for usable margin in dB"></div>
+              <div id="live-legend-ticks" class="live-legend-ticks" aria-hidden="true"></div>
+              <div class="coverage-legend-items">
+                <div id="live-legend-overlap-items" class="coverage-legend-items" hidden>
+                  <span><i id="live-legend-overlap-2"></i> Overlap · 2 sites</span>
+                  <span><i id="live-legend-overlap-3"></i> Overlap · 3 or more</span>
+                </div>
+                <span id="live-legend-unknown" hidden><i class="live-hatch"></i> No terrain data</span>
+                <span><i class="live-clear"></i> Below 0 dB · not covered</span>
+              </div>
+              <label class="live-legend-field">Colour map<select id="live-legend-colormap" data-display-only></select></label>
+              <label class="check-line live-legend-field"><input id="live-legend-overlap" type="checkbox" data-display-only> Highlight overlap</label>
+              <label class="coverage-opacity-control" for="live-opacity">
+                <span>Opacity <output id="live-opacity-value" for="live-opacity" aria-hidden="true">70%</output></span>
+                <input id="live-opacity" type="range" min="0" max="100" value="70" aria-valuetext="70%" data-display-only>
+              </label>
+              <p id="live-legend-status" class="live-legend-caption" role="status" aria-live="polite"></p>
+            </div>
           </section>
           </div>
           <section id="route-link-inspector" class="route-link-inspector" aria-labelledby="route-link-inspector-title" hidden>
