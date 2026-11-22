@@ -9,9 +9,12 @@ use axum::{
 };
 use repeaternet_coverage::{
     ClientRadioProfile,
-    live::{self, ElevationLookup, LiveMode, MercatorRaster, SweepGrid},
+    live::{self, ElevationLookup, LiveMode, LivePropagation, MercatorRaster, SweepGrid},
 };
-use repeaternet_rf_core::{Site, SiteKind};
+use repeaternet_rf_core::{
+    Site, SiteKind, TerminalClutter, TerrainSource, calibration::TERMINAL_CLUTTER_RADIUS_M,
+    terminal_clutter_height_m,
+};
 use repeaternet_terrain::{LonLat, Transformer};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -64,6 +67,7 @@ struct LiveSite {
     latitude: f64,
     longitude: f64,
     antenna_height_m: f64,
+    terminal_clutter: Option<TerminalClutter>,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +101,9 @@ struct Header<'a> {
     samples_per_ray: usize,
     site_ground_m: f64,
     antenna_elevation_m: f64,
+    #[serde(flatten)]
+    propagation: LivePropagation,
+    clutter_height_m: Option<f64>,
     elapsed_ms: f64,
 }
 
@@ -197,22 +204,54 @@ pub async fn evaluate(
         let raster = cache.open(&context)?;
         let transform = Transformer::new(raster.raster.crs()).map_err(terrain_invalid)?;
         let position = transform.forward(location).map_err(bad_request)?;
+        let terrain_resolution_m = raster.raster.resolution_m();
+        let kind = site.kind.into();
+        let terminal_clutter = site
+            .terminal_clutter
+            .unwrap_or(rf.antenna_settings(kind).terminal_clutter);
         let site_tiles = raster.tiles(position, 0.0, resolution_m)?;
-        let (ground, surface) = site_tiles.elevations(position);
+        let (ground, surface) = if rf.clutter_loss_enabled && site_tiles.has_surface() {
+            let (ground, surface) = site_tiles.elevations(position);
+            (ground, Some(surface))
+        } else {
+            (site_tiles.ground(position), None)
+        };
         if !ground.is_finite() {
             return Err(ApiError::conflict("No ground terrain at this site"));
         }
+        let clutter_height_m = if terminal_clutter == TerminalClutter::P2108Dom
+            && site_tiles.has_surface()
+        {
+            let tiles = raster.tiles(position, TERMINAL_CLUTTER_RADIUS_M, terrain_resolution_m)?;
+            terminal_clutter_height_m(
+                |point| Some((tiles.ground(point), tiles.surface(point)?)),
+                position,
+                terrain_resolution_m,
+            )
+        } else {
+            None
+        };
         let site = Site {
             position,
             ground_elevation_m: ground,
-            surface_elevation_m: site_tiles.has_surface().then_some(surface),
+            surface_elevation_m: surface,
             antenna_height_m: site.antenna_height_m,
-            kind: site.kind.into(),
+            kind,
+            terminal_clutter,
+            clutter_height_m,
             ..Site::new(site.id, position.x, position.y)
         };
         let tiles = raster.tiles(position, grid.sample_radius_m(), resolution_m)?;
-        let polar = live::sweep(&tiles, &site, &rf, &client.as_radio_budget(), mode, grid)
-            .map_err(terrain_invalid)?;
+        let polar = live::sweep(
+            &tiles,
+            &site,
+            &rf,
+            &client.as_radio_budget(),
+            mode,
+            grid,
+            terrain_resolution_m,
+        )
+        .map_err(terrain_invalid)?;
         let raster =
             live::resample(&polar, location, &transform, floor_db).map_err(terrain_invalid)?;
         let header = Header {
@@ -226,6 +265,8 @@ pub async fn evaluate(
             samples_per_ray: polar.samples_per_ray(),
             site_ground_m: ground,
             antenna_elevation_m: site.antenna_absolute_elevation_m(),
+            propagation: polar.propagation(),
+            clutter_height_m,
             elapsed_ms: start.elapsed().as_secs_f64() * 1_000.0,
         };
         let data = serde_json::to_vec(&header).map_err(ApiError::internal)?;

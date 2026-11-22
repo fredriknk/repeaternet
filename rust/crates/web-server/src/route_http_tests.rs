@@ -1976,6 +1976,75 @@ async fn live_coverage_validates_and_returns_a_mercator_raster_without_a_route()
 }
 
 #[tokio::test]
+async fn live_coverage_reports_model_and_applies_terminal_clutter_override() {
+    use repeaternet_rf_core::{
+        DiffractionModel, calibration::step_allowance_db, p2108_terminal_correction_db,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let (app, state) = app(root.path(), "");
+    let rf = crate::route_inputs::rf(&state.defaults["rf"]).unwrap();
+    let cookie = cookie(A);
+    let mut payload = live_request(1_000.0, 50.0);
+    payload["site"]["kind"] = json!("router");
+    payload["site"]["antenna_height_m"] = json!(3.0);
+    payload["site"]["terminal_clutter"] = json!("p2108_dom");
+    upload(
+        &app,
+        &cookie,
+        "dtm",
+        &live_fixture(250, 10.0, |_, _| 93.0),
+        StatusCode::OK,
+    )
+    .await;
+    let (header, _) = live_response(&app, &cookie, payload.clone()).await;
+    let model = match rf.diffraction_model {
+        DiffractionModel::Deygout3 => DiffractionModel::DeltaBullington,
+        model => model,
+    };
+    assert_eq!(header["diffraction_model"], json!(model));
+    assert_eq!(
+        header["diffraction_model_configured"],
+        json!(rf.diffraction_model)
+    );
+    assert_eq!(header["model_correction_db"], rf.model_correction_db);
+    assert_eq!(header["step_allowance_db"], step_allowance_db(50.0, 10.0));
+    assert_eq!(header["terminal_clutter_db"], 0.0);
+    assert!(header["clutter_height_m"].is_null());
+
+    upload(
+        &app,
+        &cookie,
+        "dom",
+        &live_fixture(250, 10.0, |_, _| 119.0),
+        StatusCode::OK,
+    )
+    .await;
+    let (header, with_clutter) = live_response(&app, &cookie, payload.clone()).await;
+    assert_eq!(header["clutter_height_m"], 26.0);
+    let expected = p2108_terminal_correction_db(rf.frequency_mhz, 3.0, 26.0);
+    assert!(expected > 0.0);
+    assert!((header["terminal_clutter_db"].as_f64().unwrap() - expected).abs() < 1e-9);
+
+    payload["site"]["terminal_clutter"] = json!("none");
+    let (header, without_clutter) = live_response(&app, &cookie, payload.clone()).await;
+    assert!(header["clutter_height_m"].is_null());
+    assert_eq!(header["terminal_clutter_db"], 0.0);
+    assert!(with_clutter[20 * 41 + 20] < without_clutter[20 * 41 + 20]);
+
+    payload["site"]["terminal_clutter"] = json!("p833");
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/live-coverage",
+        payload,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn live_site_circles_estimate_and_prepare_without_a_route_snapshot() {
     use axum::extract::Query;
     use repeaternet_terrain::{Bounds, write_elevation_tiff};
