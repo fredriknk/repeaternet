@@ -170,13 +170,15 @@ For a site you want to try, use **Place proposed router on map** or expand
 **Add a proposed router by coordinates**. Enter **Latitude**, **Longitude** and
 **Antenna height · m**, then choose **Add router at coordinates**. A site placed
 on the map starts at the configured repeater height. The coordinate form starts
-at 10 m and accepts 0.1–1,000 m. Proposed sites start **Optional**. Use the site
-row or marker to change **Antenna height · m** or **Use in search**. To move
+at 10 m and accepts 0.1–1,000 m. Proposed sites start **Optional** and are named
+**P1**, **P2** and so on. The same name labels the site's hexagonal marker on the
+map, its row and its hops in **Analysis**. Use the site row or marker to change
+**Name**, **Antenna height · m** or **Use in search**. To move
 it from the list, edit **Latitude** and **Longitude**, then choose **Apply
 coordinates**. **Show on map** centers the map on the site. **Remove** removes
 it from the plan. **Help: proposed routers** explains how to pin a route site.
 
-![A proposed router row with height, policy, map and remove controls](images/route-proposed-router.png)
+![A proposed router row with name, height, policy, map and remove controls](images/route-proposed-router.png)
 
 ### Radio
 
@@ -273,8 +275,9 @@ coordinates use latitude, longitude to six decimals.
 
 ![Right-click menu with endpoint, proposed router and coordinate actions](images/map-context-menu.png)
 
-- Drag either endpoint or a manual router to move it. Open a manual router's
-  popup to change antenna height or policy, or use **Remove**.
+- Drag either endpoint or a proposed router to move it. Open a proposed
+  router's popup to change its name, antenna height or policy, or use
+  **Remove**.
 - Open a MeshCore router marker to read its ID and activity and choose **Excluded**,
   **Optional** or **Required**.
 - Select an endpoint or router on the primary route to see its adjacent hops.
@@ -283,13 +286,14 @@ coordinates use latitude, longitude to six decimals.
   marker to open the inspector, and **Esc** to close it.
 - Drag an endpoint or proposed route site to preview the adjacent hops and
   their colours on the map as you move it. Dropping a proposed route site pins
-  it as a **Required** router. The previous route is marked stale and the
-  inspector keeps the preview for the dropped location. Use **Undo** to revert
-  the move, or run a new search to validate the edited route.
-- From the inspector, open **Site details** for a router's height, origin and
-  distance to a mapped road when available. Select a link there to open its
-  profile in **Analysis**. **Edit manual router** or **Edit MeshCore router**,
-  when shown, opens the editable site.
+  it as a new **Required** proposed router. The previous route is marked stale,
+  its site markers turn grey and dashed, and the inspector keeps the preview
+  for the dropped location. Use **Undo** to revert the move, or run a new search
+  to validate the edited route.
+- From the inspector, open **Site details** for a router's height, type, policy
+  and distance to a mapped road when available. Select a link there to open its
+  profile in **Analysis**. **Edit proposed router** or **Edit MeshCore router**,
+  when shown, opens the router's settings.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
@@ -300,6 +304,22 @@ coordinates use latitude, longitude to six decimals.
   basemap stays in place as you pan. Toggle **Live coverage**, **Terrain coverage**, **Predicted mesh coverage** (a saved run),
   **Coverage analysis area**, **Coverage difference** or **Coverage targets** as
   needed. **Map legend** explains the route lines and marker shapes.
+
+Each site has one marker, and its shape says what kind of site it is:
+
+| Marker | Meaning |
+| --- | --- |
+| Green **A** and blue **B** circles | Endpoints |
+| Dark hexagon with a name (**P1**) | A proposed router you placed |
+| Brown square (**R1**, **R2**…) | A new site the search found |
+| Round purple dot | A MeshCore router. Light purple means **Optional**, dark purple means **Required**, a small grey dot means **Excluded** |
+| Purple pill with a name | A MeshCore router used by the route |
+| Small dark pin badge | The router is **Required** in every route |
+| Grey dashed marker | A site in a stale route |
+
+When a route is current, the route marker replaces the router's own marker,
+so a proposed router in the route keeps its name and pin badge instead of
+appearing twice. When the route goes stale, the routers' own markers return.
 
 ![Existing router popup with Excluded, Optional and Required buttons](images/map-router-policy.png)
 

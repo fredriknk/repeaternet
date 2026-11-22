@@ -97,6 +97,15 @@ The layout has one owner per job. Put new features where users already look:
 - Show people's labels, not IDs: route sites are `R1, R2…` or the router's name
   via `routeSiteLabel(id)`, endpoints are `A`/`B`. Raw IDs and hashes belong in
   tooltips, popups and exports only.
+- One marker per place. Shape says the kind of site: endpoints are circles,
+  your proposed routers are hexagonal tags named `P1, P2…`, sites found by the
+  search are squares `R1, R2…`, MeshCore routers are round. **Required** is a
+  pin badge, never just a thicker border. When a current route uses a router,
+  the route marker replaces the router's own marker (`syncRoutedRouterMarkers`).
+  Never set `position` on a Leaflet marker icon class; Leaflet positions icons
+  absolutely, and overriding it makes markers drift off their coordinates.
+  (Added 2026-11-22 after users could not tell which router belonged to which
+  point.)
 - Lead with the judgement, then the evidence. Analysis order is verdict line →
   four key figures → alternatives → links → profile → detailed budgets. Saved-run
   labels lead with time, grid and heights, never a hash.

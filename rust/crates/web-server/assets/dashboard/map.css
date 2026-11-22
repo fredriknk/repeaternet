@@ -6,7 +6,7 @@
   --map-invalid: #b52b37;
   --map-proposed: #87421f;
   --map-existing: #443579;
-  --map-manual: #704870;
+  --map-manual: #2d3b45;
   --map-known-required: #61418a;
   --map-known-optional: #c9b3df;
   --map-known-excluded: #a8b1aa;
@@ -217,9 +217,10 @@
   grid-template-columns: auto auto;
   gap: 6px 12px;
   padding: 4px 10px 10px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
+.map-legend-grid > div { display: grid; align-content: start; gap: 6px; }
 .map-legend-grid span { display: flex; align-items: center; gap: 6px; }
 .map-legend-grid i { display: inline-block; flex: 0 0 17px; text-align: center; }
 :where(.map-legend-grid) i::before, .legend-endpoints::after {
@@ -233,18 +234,36 @@
 .legend-endpoints { color: #176750; }
 .legend-endpoints::before, .legend-endpoints::after { width: 7px; height: 7px; border-radius: 50%; }
 .legend-endpoints::after { color: #41699e; margin-left: 2px; }
-.legend-proposed { color: var(--map-proposed); }
-.legend-existing { color: var(--map-existing); }
-.legend-existing::before { border-radius: 6px; width: 14px; }
-.legend-manual { color: var(--map-manual); }
-.legend-manual::before { transform: rotate(45deg); }
-.legend-required::before, .legend-optional::before, .legend-excluded::before { border-radius: 50%; }
-.legend-required { color: var(--map-known-required); }
-.legend-required::before { border: 2px solid currentColor; background: #fff; }
+.map-legend-grid i.legend-site { flex-basis: 26px; }
+.map-legend-grid .legend-site::before { display: none; }
+.legend-site b {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 14px;
+  padding: 0 3px;
+  color: #fff;
+  font: 700 9px/1 Inter, "Segoe UI", sans-serif;
+}
+.legend-proposed b { border-radius: 3px; background: var(--map-proposed); }
+.legend-existing b { border-radius: 7px; background: var(--map-existing); }
+.legend-manual b {
+  padding: 0 5px;
+  background: var(--map-manual);
+  clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 50%, calc(100% - 4px) 100%, 4px 100%, 0 50%);
+}
+.legend-stale-site b { border: 1px dashed #fff; border-radius: 3px; background: var(--map-stale); outline: 1px solid var(--map-stale); }
+.legend-required::before, .legend-optional::before, .legend-excluded::before, .legend-candidate::before { border-radius: 50%; }
+.legend-required { color: #61418a; }
+.legend-required::before { border: 2px solid #3f2c66; }
 .legend-optional { color: var(--map-known-optional); }
-.legend-optional::before { border: 1px solid var(--map-known-required); }
+.legend-optional::before { border: 2px solid #3f2c66; }
 .legend-excluded { color: var(--map-known-excluded); }
 .legend-excluded::before { width: 6px; height: 6px; }
+.legend-candidate { color: #778e7d; }
+.map-legend-grid .legend-candidate::before { width: 6px; height: 6px; border: 1px solid currentColor; background: transparent; }
+.map-legend-grid i.legend-pin::before { display: none; }
+.legend-pin .map-pin-badge { position: static; display: inline-grid; }
 .legend-strong { color: var(--map-strong); }
 .legend-good { color: var(--map-good); }
 .legend-marginal { color: var(--map-marginal); }
@@ -261,14 +280,16 @@
   background: repeating-linear-gradient(to right, currentColor 0 4px, transparent 4px 7px);
 }
 
+/* Leaflet positions marker icons absolutely; never override that here, or icons
+   stack in normal flow and drift away from their coordinates. */
 .map-site {
-  position: relative;
   display: grid;
   place-items: center;
   color: #fff;
   font: 700 12px/1 Inter, "Segoe UI", sans-serif;
 }
-.map-site span { position: relative; }
+.map-site-content { display: contents; }
+.map-site-label { position: relative; z-index: 1; white-space: nowrap; }
 .map-site::before {
   content: "";
   position: absolute;
@@ -278,14 +299,51 @@
 }
 .map-site-proposed::before { border-radius: 5px; background: var(--map-proposed); }
 .map-site-existing::before { border-radius: 14px; background: var(--map-existing); }
+/* Proposed routers (placed by the user) are hexagonal tags, so they never look
+   like a search result (square) or a MeshCore router (round). */
+.map-site-manual { filter: drop-shadow(0 2px 3px #0005); }
 .map-site-manual::before {
-  inset: 4px;
-  transform: rotate(45deg);
-  border-radius: 3px;
-  background: var(--map-manual);
+  border: 0;
+  box-shadow: none;
+  background: #fff;
+  clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 9px 100%, 0 50%);
 }
-.map-site-manual.is-excluded::before { background: #686069; }
-.map-site-manual.is-required::before { border-width: 3px; }
+.map-site-manual::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  background: var(--map-manual);
+  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 8px 100%, 0 50%);
+}
+.map-site-manual.is-excluded { opacity: .75; }
+.map-site-manual.is-excluded::after { background: #9aa39d; }
+.map-site-manual.is-excluded .map-site-label { color: #1d2b33; }
+/* A route site whose result no longer matches the inputs: grey, dashed, behind
+   the editable markers. */
+.map-site.is-stale { opacity: .8; }
+.map-site.is-stale::before { border-style: dashed; background: var(--map-stale); }
+.map-site-manual.is-stale::before { background: repeating-linear-gradient(90deg, #fff 0 4px, transparent 4px 7px); }
+.map-site-manual.is-stale::after { background: var(--map-stale); }
+.map-site.is-stale .map-pin-badge { display: none; }
+
+.map-pin-badge {
+  position: absolute;
+  z-index: 2;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+  background: #1d2b33;
+  box-shadow: 0 1px 3px #0006;
+}
+.map-pin-badge svg { width: 11px; height: 11px; fill: #fff; }
+.map-pin-marker { pointer-events: none; }
+.map-pin-marker .map-pin-badge { position: static; }
 
 .map-popup .leaflet-popup-content {
   min-width: 170px;

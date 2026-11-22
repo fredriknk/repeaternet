@@ -118,7 +118,7 @@ test('terrain source and fallback round-trip through plan and load and record an
     invalidate: () => actions.push('invalidate'),
     scheduleCoverageCheck: () => actions.push('scheduleCoverageCheck'),
     buildSettings() {}, syncCoverageInputs() {}, mark() {}, renderMeshcoreRouters() {},
-    renderManualRouters() {}, renderCoverageTargets() {}, selectedKnownRouters: () => [],
+    renderManualRouters() {}, ensureManualRouterNames() {}, renderCoverageTargets() {}, selectedKnownRouters: () => [],
     baseCandidates: {}, defaultCoverageSettings: { client: {} },
     selectedKnownRouterId: null, clone: structuredClone,
   });

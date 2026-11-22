@@ -17,6 +17,7 @@ test('applying blank router coordinates preserves the saved site, while zero is 
     children: [],
     append(...children) { this.children.push(...children); },
     replaceChildren() { this.children.length = 0; },
+    setAttribute() {},
   });
   const list = element(), errors = [];
   const router = { id: 'router', latitude: 59.93, longitude: 10.82, antenna_height_m: 8 };
@@ -24,11 +25,13 @@ test('applying blank router coordinates preserves the saved site, while zero is 
   const context = vm.createContext({
     $: () => list, document: { createElement: element },
     manualRouters: [router], manualLayer: { clearLayers() {} }, selectedManualRouterId: null,
+    manualMapMarkers: new Map(), ensureManualRouterNames() {}, routedRouterIds: () => new Set(),
+    manualRouterName: item => item.name || item.id, shortMapLabel: label => label, routerPolicyLabels: { optional: 'Optional' },
     L: { divIcon() {}, marker: () => ({ bindTooltip() { return this; }, bindPopup() { return this; }, on() {}, addTo() {} }) },
     busy: false, coverageBusy: false, switchingProject: false,
     mapEditsLocked: () => false, mapEditControl: control => control, mapPoint: site => [site.latitude, site.longitude],
     updateManualMarker() {}, mapText: () => element(), coordinateLabel: () => '', mapPopupOptions: () => ({}),
-    manualRouterControls: () => () => ({ heightLabel: element(), policyLabel: element(), remove: element() }),
+    manualRouterControls: () => () => ({ nameLabel: element(), heightLabel: element(), policyLabel: element(), remove: element() }),
     focusManualRouter() {}, syncMapEditControls() {}, bindLiveCoverageDrag() {}, liveCoverageSiteHeight: value => value,
     recordEdit() { edits++; }, invalidate() {}, scheduleCoverageCheck() {},
     status(message, isError) { if (isError) errors.push(message); },
@@ -257,7 +260,7 @@ test('invalidating a certified route replaces its verdict until a current result
     predictedCoverageLayer: layer, coverageDiffLayer: layer, inspectionLayer: layer, routeLayer: layer,
     routeLinkInspector: null, closeRouteLinkInspector() {},
     clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
-    updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {},
+    updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {}, syncRoutedRouterMarkers() {},
   });
   vm.runInContext(section('function invalidate(', 'function updatePlanReadiness(') +
     section('function renderRouteVerdict(', 'function render(){'), context);
