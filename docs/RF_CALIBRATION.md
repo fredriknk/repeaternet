@@ -532,6 +532,25 @@ negative means the planner is optimistic.
   obstructed ones (+8 dB for v 3–6). Survivorship inflates that last number,
   because only the strong obstructed links are heard.
 
+### Norway sensitivity checks
+
+Same configurations and held-out test as the Norway table.
+
+| Subset | Heard / never heard | Best DTM configurations (Δ log score) | Planner bias as configured | DOM as obstacle |
+| --- | --- | --- | ---: | --- |
+| All CoreScope (main table) | 101 / 389 | Deygout + P.2108 +0.088 ± 0.015, Giovaneli + P.2108 +0.081 ± 0.014 | −5.2 | +21 dB bias |
+| Without one-byte relay prefixes | 81 / 389 | Deygout + P.2108 +0.111 ± 0.015, Giovaneli + P.2108 +0.106 ± 0.013 | −2.4 | +24 dB bias; best AUC-driven score (+0.15 ± 0.03) |
+| Zero-hop adverts only | 52 / 0 | All DTM engines within ±0.05 of Bullington; P.2108 slightly worse (−0.10 ± 0.07) | −1.5 | −0.47 to −0.53, +25 dB bias |
+
+- **Holds in every subset:** diffract over DTM rather than DOM. Coarse steps
+  are worse (200 m: −0.04). Delta-Bullington is never worse than Bullington.
+- **The planner's optimism is partly attribution noise.** It falls from about
+  5 dB on all links to 1.5–2.5 dB on the cleanest subsets.
+- **The P.2108 terminal correction helps relay-to-observer links** (rooftop
+  and mast repeaters) but not zero-hop links, where the sender is often a
+  companion device near the observer. Make it a per-site option rather than a
+  global default.
+
 ### World (Copernicus GLO-30, 30 m)
 
 CoreScope Benelux: 139 heard links and 2,211 never-heard pairs. Meshtastic:
