@@ -24,26 +24,22 @@ def read_jsonl(path):
 
 
 def atomic_text(path, content):
-    with tempfile.NamedTemporaryFile(
+    stream = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", newline="\n", dir=path.parent, delete=False
-    ) as stream:
-        staged = Path(stream.name)
-        try:
+    )
+    staged = Path(stream.name)
+    try:
+        with stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        except BaseException:
-            stream.close()
-            staged.unlink()
-            raise
-    try:
         staged.replace(path)
     finally:
         staged.unlink(missing_ok=True)
 
 
 def finite(value):
-    return value is not None and np.isfinite(value)
+    return value is not None and bool(np.isfinite(value))
 
 
 def usable(row):
@@ -246,7 +242,8 @@ def horizon_fit(rows):
         rx, flight, ratio = zip(*endpoints)
         ratio = np.asarray(ratio)
         log_k = 2.0 * np.log(ratio)
-        fitted = float(np.exp(np.median(log_k)))
+        center = np.median(log_k)
+        fitted = float(np.exp(center))
         result.update({
             "apparent_k": fitted,
             "cluster_interval_95": crossed_interval(log_k, rx, flight),
@@ -258,7 +255,7 @@ def horizon_fit(rows):
             "heard_beyond_smooth_horizon": {
                 "k1": int(np.sum(ratio > 1.0)),
                 "k4_3": int(np.sum(ratio > np.sqrt(4.0 / 3.0))),
-                "fitted": int(np.sum(log_k > np.log(fitted))),
+                "fitted": int(np.sum(log_k > center)),
             },
         })
     return result
@@ -343,7 +340,7 @@ def report(results):
         "that place those last receptions on the smooth-earth horizon. The interval resamples "
         "receivers and flights. Receiver activity, detection thresholds, distant obstacles and "
         "antenna heights are uncertain. These endpoints cannot identify the physical k.", "",
-        f"Complete Bullington profiles in the export: {results['shadow_profiles']}.", "",
+        f"The export contains {results['shadow_profiles']} complete Bullington profiles.", "",
     ]
     for region, row in results["regions"].items():
         lines.extend([
@@ -427,10 +424,11 @@ def main():
     if any(path.resolve().is_relative_to(protected) for path in paths):
         parser.error("refusing to use the real RepeaterNet data directory")
     results = analyze(*(read_jsonl(path) for path in files))
+    encoded = json.dumps(results, indent=2, allow_nan=False) + "\n"
     output.mkdir(parents=True, exist_ok=True)
-    atomic_text(output / "results.json", json.dumps(results, indent=2, allow_nan=False) + "\n")
     atomic_text(output / "report.md", report(results))
-    print(report(results))
+    atomic_text(output / "results.json", encoded)
+    print("Wrote report-sondehub/results.json and report-sondehub/report.md")
 
 
 if __name__ == "__main__":

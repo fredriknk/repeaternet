@@ -603,7 +603,9 @@ the planner's Kartverket NHM coverage polygon selects the Norway group and
 use 30 m GLO-30. Receiver terrain is estimated by group, using twice
 uncached composed raw size. The 20 GB cap applies before any terrain fetch.
 The estimate for extra shadow chords is checked against the remaining budget.
-Fetches are sequential through the shared terrain cache.
+Fetches are sequential through the shared terrain cache. Unavailable tiles
+leave incomplete terrain and the command reports the number of failures.
+Confirmed download bytes count successful tile fetches.
 
 The receiver horizon samples 0.5° bearings, out to 10 km or the bin's
 transmitter distance, at the terrain raster step. A missing terrain sample
@@ -625,7 +627,8 @@ excluded. Auto RX offsets combine receive gain, effective noise and
 decoder response. The JSON reports the implied effective noise floor at
 zero assumed receive gain, which is conditional on that gain assumption.
 
-The horizon check uses the last bin per receiver and flight. It requires a
+The horizon check uses the last bin per receiver and flight, whose
+representative position can precede its final packet. It requires a
 descending sonde, at least 80 km range, elevation within ±1° at k = 1, a
 clear sampled receiver horizon and independent reception continuing for
 at least two minutes. Each endpoint gives an apparent k by equating its
@@ -641,6 +644,54 @@ one per receiver–flight pair and up to four per receiver. The RF core
 samples complete DTM chords and computes Bullington at k = 1 and k = 4/3.
 Measured extra loss is the signal deficit against that receiver's clear-path
 offset. Selection is conditional on reception and nominal transmit power.
+
+**Snapshot results (2026-11-22).** The snapshot contains archive objects
+from 14–19 November. The run exported 3,572 bins from 13 Norway receivers
+and 75 flights, and 71,319 bins from 199 world receivers and 1,583 flights.
+The world estimate included one additional receiver without exportable
+bins. A complete local horizon was available for all 3,572 Norway bins
+and 66,313 world bins.
+
+| Group | Metric | Receivers | Flights | Receiver–flights | Receiver offset σ | Bin residual σ | Receiver–flight residual σ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Norway | rdz RSSI | 1 | 13 | 13 | — | 2.61 dB | 2.18 dB |
+| Norway | Auto RX SNR | 5 | 37 | 46 | 8.83 dB | 3.27 dB | 2.34 dB |
+| World | rdz RSSI | 61 | 707 | 1,149 | 8.99 dB | 3.35 dB | 2.51 dB |
+| World | Auto RX SNR | 90 | 968 | 1,788 | 6.08 dB | 4.30 dB | 3.57 dB |
+
+The world RSSI within-flight mean was 3.64 dB lower at 30–60° and
+9.46 dB lower at 60–90° than at 5–15°. Its residual σ rose from 3.05 dB
+at 2–5° to 4.12 dB at 60–90°. Norway Auto RX SNR fell by 3.38 dB at
+30–60° across nine receiver–flights. The direction is consistent with
+reduced high-angle antenna gain, with sonde orientation and receiver
+selection also affecting the contrast. Every qualifying RSSI bin used
+matched sonde heights. Norway had one RSSI receiver, so its between-receiver
+RSSI spread is unavailable.
+
+| Group | Last-heard receiver–flights | Receivers | Apparent k (95% crossed interval) | Median range / k = 1 horizon | Median range / k = 4/3 horizon |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Norway | 3 | 2 | 0.90 (0.74–0.95) | 0.95 | 0.82 |
+| World | 350 | 69 | 0.45 (0.37–0.51) | 0.67 | 0.58 |
+
+The fitted horizon puts the median endpoint at roughly 100% of tangent
+range in each group by construction. One world endpoint reached beyond
+the k = 1 smooth-earth horizon. The low apparent k and short median range
+indicate that this last-heard sample rarely reaches the smooth-earth
+horizon. The intervals describe sampling variation for these selected
+endpoints. They provide insufficient evidence to recalibrate the physical
+k = 1 default.
+
+There were four complete Norway shadow profiles from one Auto RX receiver
+on four flights. Median measured extra loss was 21.44 dB, versus
+36.56 dB from Bullington at k = 1 and 36.33 dB at k = 4/3. Median
+absolute errors were 15.07 dB and 14.84 dB respectively. This comparison
+covers one receiver and paths where it still decoded the sonde.
+
+The first receiver estimate was 1.088 GB for Norway and 2.755 GB for
+world terrain. A Kartverket HTTP 504 interrupted that run. The retry's
+receiver estimate was 3.555 GB, plus a later 0.128 GB shadow estimate.
+The retry fetched 2.631 GB of upstream terrain with no failed tiles.
+The first attempt had confirmed at least 0.043 GB before it stopped.
 
 ### Recommendations
 

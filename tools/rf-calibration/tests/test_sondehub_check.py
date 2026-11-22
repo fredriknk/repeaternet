@@ -82,7 +82,14 @@ class SondeHubCheck(unittest.TestCase):
         self.assertAlmostEqual(result["k4_3"]["median_absolute_error_db"], 0.0)
 
     def test_report_and_atomic_replacement(self):
-        result = check.analyze([], [], [], [])
+        rows = [
+            {**sample("a", flight, 10.0, 1.0), "link_id": index, "tx_msl_m": 2100.0,
+             "observed_at_ms": 0}
+            for index, flight in enumerate(("one", "two"))
+        ]
+        receiver = {"receiver": "a", "antenna_msl_m": 100.0, "region": "norway"}
+        result = check.analyze(rows, [receiver], rows, [])
+        self.assertEqual(result["regions"]["norway"]["bins_with_local_horizon"], 2)
         report = check.report(result)
         self.assertIn("# SondeHub air-to-ground check", report)
         with tempfile.TemporaryDirectory() as root:
