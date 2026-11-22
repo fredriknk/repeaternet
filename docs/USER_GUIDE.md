@@ -212,14 +212,23 @@ objective** for how feasible alternatives are ranked.
 | **Minimum infrastructure cost** | A planning proxy based on installations and mast heights. |
 | **Maximum reliability** | Independent paths, then RF quality among equally redundant options. It can favor extra routers. |
 
-**Search effort** sets how many candidate sites the search places in the
-corridor. **Quick · up to 600 candidate sites** and **Balanced · up to 2,000
-candidate sites** (the default) respect lower configured limits. **Thorough ·
-configured candidate limit** uses **Maximum candidate sites** (5,000 by
-default) and can take a minute over a large area. At every level the search
+The number of candidate sites follows the route length, and so does the
+search time. There is no fixed limit. Candidate sites are dense within half the
+route length of the A–B line, at least 5 km and at most the corridor
+half-width. Between that band and the corridor half-width, only the highest
+point of each 4 km square is kept, so a short route can still use a dominant
+summit some distance away. With the default 15 km corridor, a 5 km route gets
+about 300 candidate sites and a 50 km route about 2,000.
+
+**Search effort** sets how densely candidate sites are placed near the route:
+**Quick · fewer candidate sites** keeps 2 per 2 km square, **Balanced ·
+standard density** (the default) keeps 3, and **Thorough · densest, slowest**
+keeps 6. Doubling the density roughly quadruples the search time, so Thorough
+can take a few minutes on routes over 100 km. At every level the search
 checks every plausible link between candidate sites, not only nearby ones, so
 long hops between distant hilltops are found. It also places extra candidates
-around A and B, where the first and last hops are usually hardest.
+around A and B, where the first and last hops are usually hardest. The
+Analysis diagnostics report how many candidate sites were generated.
 
 The search then returns the route with the strongest weakest hop for each
 router count. A route with more routers is listed only when it is stronger than
@@ -236,15 +245,13 @@ twice. Smaller searches can miss stronger alternatives. **Help: search effort**
 summarizes the trade-off. **Only suggest sites near roads** adds the optional
 [road filter](#road-filter).
 
-Open **Advanced search limits** to adjust the search area, candidate density or
-final terrain sampling. The configured defaults below apply before the effort
-caps.
+Open **Advanced search limits** to adjust the search area, candidate grid or
+final terrain sampling.
 
 | Control | Default and effect |
 | --- | --- |
-| **Corridor half-width · m (each side and around endpoints)** | 15,000 m. The 30 km wide, square-ended band extends 15 km past A and B. It guides generated candidates, route terrain downloads and the nearby MeshCore lookup. |
+| **Corridor half-width · m (each side and around endpoints)** | 15,000 m. The 30 km wide, square-ended band extends 15 km past A and B. It is the outer limit for generated candidates and guides route terrain downloads and the nearby MeshCore lookup. Candidates are dense only within half the route length of the line (at least 5 km). |
 | **Candidate grid spacing · m** | 1,000 m between candidate grid points. Smaller spacing explores more possible locations. |
-| **Maximum candidate sites** | 5,000, up to 10,000. A quarter at most is reserved for sites around A, B and required routers. |
 | **Maximum total routers** | 6 intermediate routers. |
 | **Maximum hop length · m (blank = auto)** | 50,000 m. Clearing the value removes the explicit distance cap. |
 | **Refinement radius · m** and **Refinement step · m** | After the route is found, each generated router may move up to 250 m to strengthen its hops. Positions are sampled every 50 m, or at the terrain resolution if that is coarser. Your own proposed and existing routers never move. |
@@ -252,7 +259,7 @@ caps.
 
 ![Search step with route objective, effort and the enabled road filter controls](images/route-search.png)
 
-![Advanced search settings for area, candidate limits, hop distance and final terrain sampling](images/route-search-advanced.png)
+![Advanced search settings for area, candidate grid, hop distance and final terrain sampling](images/route-search-advanced.png)
 
 ## Editing on the map
 
@@ -650,7 +657,7 @@ To try the workflow with synthetic terrain, upload the [two-ridges GeoTIFF](../e
 as ground terrain in a new project. Set **Start point** to **60.344700, 10.499586**
 and **Destination** to **60.344700, 10.654851**. Under **Advanced search limits**,
 set the corridor half-width to 1,200 m, candidate spacing to 250 m and maximum
-hop length to 5,500 m. Choose **Quick · up to 600 candidate sites**, then
+hop length to 5,500 m. Choose **Quick · fewer candidate sites**, then
 **Find repeater route**. The elevations in this sample are synthetic. They are
 for practicing the workflow.
 

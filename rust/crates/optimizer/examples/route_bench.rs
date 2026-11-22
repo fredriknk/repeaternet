@@ -82,14 +82,14 @@ fn main() {
     }
     let mut settings = effort.resolve(&CandidateSettings::default());
     let env = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<f64>().ok());
-    if let Some(value) = env("BENCH_CANDIDATES") {
-        settings.maximum_candidates = value as usize;
-    }
     if let Some(value) = env("BENCH_CELL") {
         settings.cell_size_m = value;
     }
     if let Some(value) = env("BENCH_PER_CELL") {
         settings.candidates_per_cell = value as usize;
+    }
+    if let Some(value) = env("BENCH_CORRIDOR") {
+        settings.corridor_width_m = value;
     }
     if let Some(value) = env("BENCH_SPACING") {
         settings.grid_spacing_m = value;
@@ -103,6 +103,7 @@ fn main() {
         (bounds.max_y - bounds.min_y) / 1000.0,
         a.distance_to(&b) / 1000.0
     );
+    let route_km = a.distance_to(&b) / 1000.0;
     let started = Instant::now();
     let mut last_stage = None;
     let mut stage_started = Instant::now();
@@ -138,6 +139,23 @@ fn main() {
         started.elapsed().as_secs_f64(),
         result.candidates.len(),
         result.search_links.len()
+    );
+    let summary: Vec<_> = result
+        .alternatives
+        .iter()
+        .map(|solution| {
+            let bottleneck = solution
+                .primary_links()
+                .map(|link| link.worst_margin_db())
+                .fold(f64::INFINITY, f64::min);
+            format!("{}:{bottleneck:.1}", solution.router_count())
+        })
+        .collect();
+    println!(
+        "SUMMARY km={route_km:.1} candidates={} seconds={:.2} alternatives={}",
+        result.candidates.len(),
+        started.elapsed().as_secs_f64(),
+        summary.join(" ")
     );
     for diagnostic in &result.diagnostics {
         println!("  diag: {diagnostic}");

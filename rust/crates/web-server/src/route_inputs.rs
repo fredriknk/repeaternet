@@ -183,7 +183,6 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         }
     }
     for (key, min, max) in [
-        ("maximum_candidates", 2.0, 10000.0),
         ("maximum_neighbors_per_site", 1.0, 200.0),
         ("refine_radius_m", 0.0, 2000.0),
         ("maximum_road_distance_m", 10.0, 20_000.0),
@@ -214,7 +213,6 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         grid_spacing_m: n("grid_spacing_m"),
         cell_size_m: n("cell_size_m"),
         candidates_per_cell: i("candidates_per_cell"),
-        maximum_candidates: i("maximum_candidates"),
         maximum_neighbors_per_site: i("maximum_neighbors_per_site"),
         exhaustive_screening: true,
         maximum_solution_routers: i("maximum_solution_routers"),
@@ -448,11 +446,6 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         return Err(ApiError::invalid("Place endpoints at different locations"));
     }
     let fixed = &locations[2..];
-    if fixed.len() > candidates.maximum_candidates {
-        return Err(ApiError::invalid(
-            "Selected routers exceed the Max candidates setting",
-        ));
-    }
     if fixed
         .iter()
         .filter(|site| site.policy == RouterPolicy::Required)
@@ -471,14 +464,10 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         plan["search_effort"] = json!("balanced");
     }
     plan["resolved_search"] = json!({
-        "candidate_limit": candidates.maximum_candidates,
-        "requested_candidate_limit": requested.maximum_candidates,
+        "candidates_per_cell": candidates.candidates_per_cell,
+        "requested_candidates_per_cell": requested.candidates_per_cell,
         "neighbor_limit": candidates.maximum_neighbors_per_site,
-        "generated_candidate_limit": if candidates.infrastructure_policy == InfrastructurePolicy::ExistingOnly {
-            0
-        } else {
-            candidates.maximum_candidates - fixed.len()
-        },
+        "generates_candidates": candidates.infrastructure_policy != InfrastructurePolicy::ExistingOnly,
         "known_router_count": known,
         "excluded_router_count": excluded_known,
         "manual_router_count": fixed.len() - known,
