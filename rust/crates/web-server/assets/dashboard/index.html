@@ -572,18 +572,25 @@
           <details class="route-map-legend">
             <summary>Map legend</summary>
             <div class="map-legend-grid">
-              <span><i class="legend-endpoints"></i> Endpoints A / B</span>
-              <span><i class="legend-strong"></i> Strong ≥ 10 dB</span>
-              <span><i class="legend-proposed"></i> Proposed route site</span>
-              <span><i class="legend-good"></i> Good 5–&lt;10 dB</span>
-              <span><i class="legend-existing"></i> Existing route site</span>
-              <span><i class="legend-marginal"></i> Marginal 0–&lt;5 dB</span>
-              <span><i class="legend-manual"></i> Manual router</span>
-              <span><i class="legend-invalid"></i> Invalid link</span>
-              <span><i class="legend-required"></i> Required known router</span>
-              <span><i class="legend-stale"></i> Stale link</span>
-              <span><i class="legend-optional"></i> Optional known router</span>
-              <span><i class="legend-excluded"></i> Excluded known router</span>
+              <div>
+                <span><i class="legend-endpoints"></i> Endpoints A / B</span>
+                <span><i class="legend-site legend-manual"><b>P1</b></i> Your proposed router</span>
+                <span><i class="legend-site legend-proposed"><b>R1</b></i> New site found by search</span>
+                <span><i class="legend-site legend-existing"><b>Hill</b></i> MeshCore router in route</span>
+                <span><i class="legend-required"></i> MeshCore router · required</span>
+                <span><i class="legend-optional"></i> MeshCore router · optional</span>
+                <span><i class="legend-excluded"></i> MeshCore router · excluded</span>
+                <span><i class="legend-pin"><span class="map-pin-badge"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5.5 1.5h5l-.8 4.2 2.6 3.1H8.8V14L8 15.3 7.2 14V8.8H3.7l2.6-3.1z"/></svg></span></i> Required in every route</span>
+              </div>
+              <div>
+                <span><i class="legend-strong"></i> Strong ≥ 10 dB</span>
+                <span><i class="legend-good"></i> Good 5–&lt;10 dB</span>
+                <span><i class="legend-marginal"></i> Marginal 0–&lt;5 dB</span>
+                <span><i class="legend-invalid"></i> Invalid link</span>
+                <span><i class="legend-stale"></i> Stale link</span>
+                <span><i class="legend-site legend-stale-site"><b>R1</b></i> Site in a stale route</span>
+                <span><i class="legend-candidate"></i> Searched candidate site</span>
+              </div>
             </div>
           </details>
         </div>

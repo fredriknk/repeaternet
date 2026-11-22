@@ -288,7 +288,7 @@ function createWorkflow(run) {
     await crop('route-meshcore', '#meshcore-list');
     if (wants('map-router-policy')) {
       await $('#meshcore-list .router-focus').first().click();
-      await $('.leaflet-overlay-pane path[stroke="#61418a"]').first().click();
+      await $('.leaflet-overlay-pane path[stroke="#3f2c66"]').first().click();
       await shot('map-router-policy', '.leaflet-popup');
       await $('.leaflet-popup-close-button').click();
     }
