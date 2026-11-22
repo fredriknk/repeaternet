@@ -355,6 +355,8 @@
 .map-popup strong { font-size: 14px; }
 .map-popup label { color: #344b42; }
 .map-popup input:not([type=checkbox]), .map-popup select { padding: 6px 8px; margin-top: 3px; }
+.map-popup .router-terminal-clutter select { min-height: 36px; font-size: 13px; }
+@media (max-width: 650px) { .map-popup .router-terminal-clutter select { min-height: 44px; } }
 .map-popup button { padding: 5px 8px; font-size: 12px; }
 .map-popup .map-remove-router { justify-self: start; color: #9c2534; }
 .map-popup .map-link-list { margin: 0; padding-left: 16px; }
@@ -378,6 +380,8 @@
   overflow: auto;
   pointer-events: auto;
 }
+/* Router popup controls and the live legend share the top of the map. */
+.map-wrap:has(.leaflet-popup .router-terminal-clutter) .live-coverage-legend { visibility: hidden; }
 .live-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .live-legend-head h3 { margin: 0; }
 .live-legend-head button { min-height: 32px; padding: 2px 8px; font-size: 12px; }

@@ -10,7 +10,7 @@ use repeaternet_coverage::{
 use repeaternet_coverage_store::{
     CurrentIdentity, Error, Store, comparison_mismatch, fingerprint, reason,
 };
-use repeaternet_rf_core::{HeightReference, Site, SiteKind};
+use repeaternet_rf_core::{HeightReference, Site, SiteKind, calibration::CERTIFICATION_MAX_STEP_M};
 use repeaternet_terrain::{Point, Transformer};
 use serde_json::{Map, Value, json};
 
@@ -80,6 +80,12 @@ pub(crate) fn source_sites(job: &Value) -> ApiResult<Vec<Site>> {
                 ground_elevation_m: number("ground_elevation_m")?,
                 surface_elevation_m: site["surface_elevation_m"].as_f64(),
                 antenna_height_m: number("antenna_height_m")?,
+                terminal_clutter: site
+                    .get("terminal_clutter")
+                    .map(|model| serde_json::from_value(model.clone()).map_err(|_| invalid()))
+                    .transpose()?
+                    .unwrap_or_default(),
+                clutter_height_m: site["clutter_height_m"].as_f64(),
                 height_reference: match site["height_reference"].as_str() {
                     Some("ground_dtm") | None => HeightReference::GroundDtm,
                     Some("surface_dom") => HeightReference::SurfaceDom,
@@ -437,7 +443,7 @@ pub async fn assess(
 pub(crate) fn final_sample_step(radio: &Value) -> f64 {
     radio["candidates"]["final_sample_step_m"]
         .as_f64()
-        .unwrap_or(10.0)
+        .unwrap_or(CERTIFICATION_MAX_STEP_M)
 }
 
 pub async fn reports(State(app): State<AppState>, workspace: Workspace) -> ApiResult<Json<Value>> {

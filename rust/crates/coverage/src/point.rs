@@ -5,8 +5,8 @@ use repeaternet_terrain::LonLat;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    engine::client_site, invalid, ClientRadioProfile, CoverageError, CoverageEvaluator,
-    CoverageSettings, CoverageSourceResult, Rejection,
+    invalid, ClientRadioProfile, CoverageError, CoverageEvaluator, CoverageSettings,
+    CoverageSourceResult, Rejection,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,13 +117,13 @@ impl<T: TerrainSource + ?Sized> CoverageEvaluator<'_, T> {
         }
         coverage.surface_sample_available = Some(coverage.surface_elevation_m.is_some());
         let client = settings.client.as_radio_budget();
-        let target = client_site(
+        let target = self.client_site(
             "coverage-inspection-client".into(),
             position,
             ground,
             coverage.surface_elevation_m,
             &client,
-        );
+        )?;
         for source in sources {
             if cancelled() {
                 return Err(CoverageError::Cancelled);

@@ -173,6 +173,143 @@ fn link_request() -> Value {
 }
 
 #[tokio::test]
+async fn state_serves_calibrated_rf_defaults_and_metadata() {
+    use repeaternet_rf_core::calibration as c;
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let defaults = state(&app, &cookie(A)).await;
+    assert_eq!(
+        defaults["rf"]["diffraction_model"],
+        json!(c::DEFAULT_DIFFRACTION_MODEL)
+    );
+    assert_eq!(
+        defaults["rf"]["obstacle_surface"],
+        json!(c::DEFAULT_OBSTACLE_SURFACE)
+    );
+    assert_eq!(
+        defaults["rf"]["model_correction_db"],
+        json!(c::MODEL_CORRECTION_DB)
+    );
+    assert_eq!(defaults["rf"]["k_factor"], json!(c::K_FACTOR));
+    for role in ["endpoint_a", "endpoint_b", "router"] {
+        assert_eq!(
+            defaults["rf"][role]["terminal_clutter"],
+            json!(c::DEFAULT_TERMINAL_CLUTTER)
+        );
+    }
+    assert_eq!(
+        defaults["candidates"]["final_sample_step_m"],
+        json!(c::CERTIFICATION_MAX_STEP_M)
+    );
+    assert_eq!(
+        defaults["calibration"],
+        json!({
+            "model_correction_db": c::MODEL_CORRECTION_DB,
+            "new_site_sigma_db": c::NEW_SITE_SIGMA_DB,
+            "time_variability_sigma_db": c::TIME_VARIABILITY_SIGMA_DB,
+            "certification_max_step_m": c::CERTIFICATION_MAX_STEP_M,
+            "coarse_step_allowance_db": c::COARSE_STEP_ALLOWANCE_DB,
+            "terminal_clutter_radius_m": c::TERMINAL_CLUTTER_RADIUS_M,
+            "source": "docs/RF_CALIBRATION.md, 2026-11-22",
+        })
+    );
+}
+
+#[test]
+fn calibrated_plan_fields_change_route_and_saved_radio_identities() {
+    use crate::{coverage_runs, route_http, route_inputs};
+    use repeaternet_rf_core::calibration;
+
+    let root = tempfile::tempdir().unwrap();
+    let (_, app) = app(root.path(), "");
+    let mut plan = plan();
+    let mut known = plan["manual_routers"][0].clone();
+    known["id"] = json!("K-site");
+    plan["known_routers"] = json!([known]);
+    // A current-format plan; legacy plans without it drop a stored Bullington.
+    plan["rf"]["obstacle_surface"] = json!("ground");
+    let identities = |plan: &Value| {
+        let inputs = route_inputs::parse(plan.clone(), &app.defaults).unwrap();
+        let route = json!({"rf_settings": inputs.rf_payload});
+        let radio = coverage_runs::radio(&app, plan, &route).unwrap();
+        (
+            route_http::cache_version(&json!([]), &route["rf_settings"], plan).unwrap(),
+            repeaternet_coverage_store::fingerprint(&radio),
+        )
+    };
+    let baseline = identities(&plan);
+    for (path, value) in [
+        ("/rf/diffraction_model", json!("bullington")),
+        ("/rf/diffraction_model", json!("deygout3")),
+        ("/rf/obstacle_surface", json!("surface")),
+        (
+            "/rf/model_correction_db",
+            json!(calibration::MODEL_CORRECTION_DB + 1.0),
+        ),
+        ("/rf/endpoint_a/terminal_clutter", json!("p2108_dom")),
+        ("/rf/endpoint_b/terminal_clutter", json!("p2108_dom")),
+        ("/rf/router/terminal_clutter", json!("p2108_dom")),
+        ("/manual_routers/0/terminal_clutter", json!("p2108_dom")),
+        ("/known_routers/0/terminal_clutter", json!("none")),
+    ] {
+        let mut changed = plan.clone();
+        match path.split('/').collect::<Vec<_>>().as_slice() {
+            ["", "rf", key] => changed["rf"][key] = value,
+            ["", "rf", role, key] => changed["rf"][role][key] = value,
+            ["", list, "0", key] => changed[list][0][key] = value,
+            _ => unreachable!(),
+        }
+        let (cache, radio) = identities(&changed);
+        assert_ne!(cache, baseline.0, "{path}");
+        assert_ne!(radio, baseline.1, "{path}");
+    }
+
+    plan["rf"]["router"]["terminal_clutter"] = json!("p2108_dom");
+    plan["known_routers"][0]["terminal_clutter"] = json!("none");
+    let inputs = route_inputs::parse(plan.clone(), &app.defaults).unwrap();
+    let modes: std::collections::BTreeMap<_, _> = inputs
+        .locations
+        .iter()
+        .map(|site| (site.id.as_str(), json!(site.terminal_clutter)))
+        .collect();
+    assert_eq!(modes["M-alternative"], "p2108_dom");
+    assert_eq!(modes["K-site"], "none");
+
+    for (key, invalid) in [
+        ("diffraction_model", json!("free_space")),
+        ("obstacle_surface", json!("water")),
+        ("model_correction_db", json!(-1)),
+        ("model_correction_db", json!(21)),
+        ("model_correction_db", json!("3")),
+        ("endpoint_a", json!({"terminal_clutter": "unknown"})),
+    ] {
+        let mut changed = plan.clone();
+        changed["rf"][key] = invalid;
+        assert!(
+            route_inputs::parse(changed, &app.defaults).is_err(),
+            "{key}"
+        );
+    }
+    for list in ["manual_routers", "known_routers"] {
+        let mut changed = plan.clone();
+        changed[list][0]["terminal_clutter"] = Value::Null;
+        changed[list][0]["policy"] = json!("excluded");
+        assert!(
+            route_inputs::parse(changed, &app.defaults).is_err(),
+            "{list}"
+        );
+    }
+    plan["candidates"]["final_sample_step_m"] = json!(calibration::CERTIFICATION_MAX_STEP_M + 1.0);
+    let error = route_inputs::parse(plan, &app.defaults).err().unwrap();
+    assert!(error.detail().contains("final_sample_step_m"));
+    assert!(
+        error
+            .detail()
+            .contains(&calibration::CERTIFICATION_MAX_STEP_M.to_string())
+    );
+}
+
+#[tokio::test]
 async fn link_evaluation_uses_route_terrain_and_current_radio_settings() {
     let root = tempfile::tempdir().unwrap();
     let (app, _) = app(root.path(), "");
@@ -194,6 +331,19 @@ async fn link_evaluation_uses_route_terrain_and_current_radio_settings() {
     assert!(baseline["profile"].is_null());
     assert!(baseline["los_clear"].is_boolean());
     assert!(baseline["minimum_fresnel_clearance_ratio"].is_number());
+    assert_eq!(
+        baseline["diffraction_model"],
+        json!(repeaternet_rf_core::calibration::DEFAULT_DIFFRACTION_MODEL)
+    );
+    for direction in ["forward", "reverse"] {
+        let budget = &baseline[direction];
+        assert_eq!(
+            budget["model_correction_db"],
+            json!(repeaternet_rf_core::calibration::MODEL_CORRECTION_DB)
+        );
+        assert_eq!(budget["terminal_clutter_db"], 0.0);
+        assert_eq!(budget["step_allowance_db"], 0.0);
+    }
 
     let mut plan = plan();
     let power = baseline["forward"]["tx_power_dbm"].as_f64().unwrap();
@@ -225,6 +375,61 @@ async fn link_evaluation_uses_route_terrain_and_current_radio_settings() {
             .len(),
         distances.len()
     );
+}
+
+#[tokio::test]
+async fn link_profile_uses_the_selected_surface_and_router_clutter_override() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    let ground = live_fixture(100, 8.0, |_, _| 0.0);
+    let surface = live_fixture(100, 8.0, |_, _| 40.0);
+    upload(&app, &cookie, "dtm", &ground, StatusCode::OK).await;
+    upload(&app, &cookie, "dom", &surface, StatusCode::OK).await;
+
+    let mut plan = plan();
+    let a = geographic(499_900.0, 6_650_000.0);
+    let b = geographic(500_100.0, 6_650_000.0);
+    plan["manual_routers"][0]["terminal_clutter"] = json!("p2108_dom");
+    let request = json!({
+        "source": {"id": "M-alternative", "kind": "router", "latitude": a.latitude,
+                   "longitude": a.longitude, "antenna_height_m": 3.0},
+        "target": {"id": "B", "kind": "endpoint_b", "latitude": b.latitude,
+                   "longitude": b.longitude, "antenna_height_m": 3.0},
+        "include_profile": true,
+    });
+    for (obstacle_surface, override_mode) in [("ground", "p2108_dom"), ("surface", "none")] {
+        plan["rf"]["obstacle_surface"] = json!(obstacle_surface);
+        plan["rf"]["diffraction_model"] = json!("bullington");
+        plan["manual_routers"][0]["terminal_clutter"] = json!(override_mode);
+        api(
+            &app,
+            &cookie,
+            Method::POST,
+            "/api/projects/autosave",
+            json!({"plan": plan}),
+            StatusCode::OK,
+        )
+        .await;
+        let link = api(
+            &app,
+            &cookie,
+            Method::POST,
+            "/api/link/evaluate",
+            request.clone(),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(link["diffraction_model"], "bullington");
+        assert_eq!(link["los_clear"], obstacle_surface == "ground");
+        assert_eq!(link["profile"]["surface_elevation_m"][1], 40.0);
+        assert_eq!(
+            link["forward"]["terminal_clutter_db"],
+            link["reverse"]["terminal_clutter_db"]
+        );
+        let clutter = link["forward"]["terminal_clutter_db"].as_f64().unwrap();
+        assert_eq!(clutter > 0.0, override_mode == "p2108_dom");
+    }
 }
 
 #[tokio::test]
@@ -1976,6 +2181,75 @@ async fn live_coverage_validates_and_returns_a_mercator_raster_without_a_route()
 }
 
 #[tokio::test]
+async fn live_coverage_reports_model_and_applies_terminal_clutter_override() {
+    use repeaternet_rf_core::{
+        DiffractionModel, calibration::step_allowance_db, p2108_terminal_correction_db,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let (app, state) = app(root.path(), "");
+    let rf = crate::route_inputs::rf(&state.defaults["rf"]).unwrap();
+    let cookie = cookie(A);
+    let mut payload = live_request(1_000.0, 50.0);
+    payload["site"]["kind"] = json!("router");
+    payload["site"]["antenna_height_m"] = json!(3.0);
+    payload["site"]["terminal_clutter"] = json!("p2108_dom");
+    upload(
+        &app,
+        &cookie,
+        "dtm",
+        &live_fixture(250, 10.0, |_, _| 93.0),
+        StatusCode::OK,
+    )
+    .await;
+    let (header, _) = live_response(&app, &cookie, payload.clone()).await;
+    let model = match rf.diffraction_model {
+        DiffractionModel::Deygout3 => DiffractionModel::DeltaBullington,
+        model => model,
+    };
+    assert_eq!(header["diffraction_model"], json!(model));
+    assert_eq!(
+        header["diffraction_model_configured"],
+        json!(rf.diffraction_model)
+    );
+    assert_eq!(header["model_correction_db"], rf.model_correction_db);
+    assert_eq!(header["step_allowance_db"], step_allowance_db(50.0, 10.0));
+    assert_eq!(header["terminal_clutter_db"], 0.0);
+    assert!(header["clutter_height_m"].is_null());
+
+    upload(
+        &app,
+        &cookie,
+        "dom",
+        &live_fixture(250, 10.0, |_, _| 119.0),
+        StatusCode::OK,
+    )
+    .await;
+    let (header, with_clutter) = live_response(&app, &cookie, payload.clone()).await;
+    assert_eq!(header["clutter_height_m"], 26.0);
+    let expected = p2108_terminal_correction_db(rf.frequency_mhz, 3.0, 26.0);
+    assert!(expected > 0.0);
+    assert!((header["terminal_clutter_db"].as_f64().unwrap() - expected).abs() < 1e-9);
+
+    payload["site"]["terminal_clutter"] = json!("none");
+    let (header, without_clutter) = live_response(&app, &cookie, payload.clone()).await;
+    assert!(header["clutter_height_m"].is_null());
+    assert_eq!(header["terminal_clutter_db"], 0.0);
+    assert!(with_clutter[20 * 41 + 20] < without_clutter[20 * 41 + 20]);
+
+    payload["site"]["terminal_clutter"] = json!("p833");
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/live-coverage",
+        payload,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn live_site_circles_estimate_and_prepare_without_a_route_snapshot() {
     use axum::extract::Query;
     use repeaternet_terrain::{Bounds, write_elevation_tiff};
@@ -2447,4 +2721,15 @@ async fn meshcore_records_can_be_routed_with_overpass_overlay() {
     .await;
     assert!(problem["detail"].as_str().unwrap().contains("CoreScope"));
     task.abort();
+}
+
+#[test]
+fn legacy_plans_without_obstacle_surface_use_the_calibrated_model() {
+    let defaults = crate::catalog::dashboard_defaults();
+    let legacy = json!({"rf": {"diffraction_model": "bullington"}});
+    let rf = crate::route_inputs::merged(&defaults, &legacy, "rf").unwrap();
+    assert_eq!(rf["diffraction_model"], defaults["rf"]["diffraction_model"]);
+    let chosen = json!({"rf": {"diffraction_model": "bullington", "obstacle_surface": "ground"}});
+    let rf = crate::route_inputs::merged(&defaults, &chosen, "rf").unwrap();
+    assert_eq!(rf["diffraction_model"], "bullington");
 }

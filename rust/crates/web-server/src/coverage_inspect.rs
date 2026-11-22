@@ -270,13 +270,18 @@ async fn run(
 }
 
 fn compute(
-    inputs: Inspection,
+    mut inputs: Inspection,
     control: &Control,
     coverage_cache: &CoverageMetricsCache,
 ) -> ApiResult<Value> {
     let (terrain, revision) = coverage_http::open_coverage_terrain(&inputs.context)?;
     let transform = Transformer::new(terrain.crs()).map_err(terrain_invalid)?;
     let rf = route_inputs::rf(&inputs.radio["rf"])?;
+    for source in &mut inputs.sources {
+        source
+            .sample_terminal_clutter(&terrain)
+            .map_err(terrain_invalid)?;
+    }
     let point = CoverageEvaluator::new(&terrain, &rf, &transform)
         .with_cache(coverage_cache, revision)
         .evaluate_point(
@@ -306,6 +311,14 @@ fn compute(
             .find(|site| site["id"] == id)
     });
     result["selected_source"] = json!(selected);
+    if let Some(source) = inputs
+        .sources
+        .iter()
+        .find(|source| Some(source.id.as_str()) == point.coverage.selected_source_id.as_deref())
+        && result["selected_source"].is_object()
+    {
+        result["selected_source"]["clutter_height_m"] = json!(source.clutter_height_m);
+    }
     result["selected_source_component"] = Value::Null;
     result["selected_source_component_size"] = Value::Null;
     if let Some(id) = point.coverage.selected_source_id.as_deref() {

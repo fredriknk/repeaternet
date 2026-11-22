@@ -253,6 +253,9 @@ input:not([type="checkbox"]), select { font-size: 14px; }
 .workspace-action-bar .action-status { flex: 1 1 auto; }
 .workspace-action-bar .wide-button { width: auto; min-height: 44px; flex: 0 0 auto; font-size: 13px; padding: 8px 12px; }
 .workspace-action-bar progress { width: 72px; flex: 0 1 72px; margin: 0; }
+[data-workspace-action="workspace-coverage"] { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+#live-coverage-refresh { grid-column: 2; grid-row: 1; }
+#live-coverage-model-note { grid-column: 1 / -1; white-space: normal; }
 .compare-action-bar { padding-block: 7px; }
 .project-tool-status { grid-column: 1 / -1; padding-top: 7px; border-top: 1px solid var(--border); }
 .project-tool-status .hint { margin: 3px 0 7px; }
@@ -308,8 +311,15 @@ input:not([type="checkbox"]), select { font-size: 14px; }
 .archived-project-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px; border: 1px solid var(--border); border-radius: 7px; }
 .archived-project-item span { min-width: 0; color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
 .archived-project-item button { flex: 0 0 auto; }
-#budget-table { min-width: 620px; }
-#budget-table td, #budget-table th { font-variant-numeric: tabular-nums; }
+#budget-table td, #budget-table th { font-size: 12px; font-variant-numeric: tabular-nums; }
+#prediction-spread { margin: 8px 0 12px; }
+#budget { color: var(--muted); font-size: 12px; }
+.propagation-role { min-width: 0; margin: 12px 0; padding: 0 0 12px; border: 0; border-bottom: 1px solid var(--border); }
+.propagation-role legend { padding: 0; font-weight: 650; }
+.propagation-model-settings > label { margin: 8px 0; }
+.propagation-model-settings h3 { font-size: 14px; margin: 12px 0 0; }
+#propagation-model-help summary { min-height: 36px; font-size: 13px; }
+@media (max-width: 650px) { #propagation-model-help summary { min-height: 44px; } }
 #profile-details { margin-top: 12px; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {

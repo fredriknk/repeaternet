@@ -107,7 +107,10 @@
           "tx_power_dbm": 14,
           "tx_feed_loss_db": 1.0,
           "rx_feed_loss_db": 1.0,
-          "miscellaneous_loss_db": 0.0
+          "miscellaneous_loss_db": 0.0,
+          "model_correction_db": 0.0,
+          "terminal_clutter_db": 0.0,
+          "step_allowance_db": 0.0
         },
         "reverse": {
           "source_id": "B",
@@ -129,7 +132,10 @@
           "tx_power_dbm": 14,
           "tx_feed_loss_db": 1.0,
           "rx_feed_loss_db": 1.0,
-          "miscellaneous_loss_db": 0.0
+          "miscellaneous_loss_db": 0.0,
+          "model_correction_db": 0.0,
+          "terminal_clutter_db": 0.0,
+          "step_allowance_db": 0.0
         },
         "valid": true,
         "los_clear": true,
@@ -148,7 +154,8 @@
           }
         ],
         "profile": null,
-        "worst_margin_db": 39.51932776682199
+        "worst_margin_db": 39.51932776682199,
+        "diffraction_model": "bullington"
       },
       {
         "source_id": "R-2</script><img src=x onerror=\"alert(1)\">",
@@ -174,7 +181,10 @@
           "tx_power_dbm": 14,
           "tx_feed_loss_db": 1.0,
           "rx_feed_loss_db": 1.0,
-          "miscellaneous_loss_db": 0.0
+          "miscellaneous_loss_db": 0.0,
+          "model_correction_db": 0.0,
+          "terminal_clutter_db": 0.0,
+          "step_allowance_db": 0.0
         },
         "reverse": {
           "source_id": "R-1",
@@ -196,7 +206,10 @@
           "tx_power_dbm": 14,
           "tx_feed_loss_db": 1.0,
           "rx_feed_loss_db": 1.0,
-          "miscellaneous_loss_db": 0.0
+          "miscellaneous_loss_db": 0.0,
+          "model_correction_db": 0.0,
+          "terminal_clutter_db": 0.0,
+          "step_allowance_db": 0.0
         },
         "valid": true,
         "los_clear": false,
@@ -215,7 +228,8 @@
           }
         ],
         "profile": null,
-        "worst_margin_db": 1.0
+        "worst_margin_db": 1.0,
+        "diffraction_model": "bullington"
       },
       {
         "source_id": "A",
@@ -241,7 +255,10 @@
           "tx_power_dbm": 14,
           "tx_feed_loss_db": 1.0,
           "rx_feed_loss_db": 1.0,
-          "miscellaneous_loss_db": 0.0
+          "miscellaneous_loss_db": 0.0,
+          "model_correction_db": 0.0,
+          "terminal_clutter_db": 0.0,
+          "step_allowance_db": 0.0
         },
         "reverse": {
           "source_id": "R-1",
@@ -263,7 +280,10 @@
           "tx_power_dbm": 14,
           "tx_feed_loss_db": 1.0,
           "rx_feed_loss_db": 1.0,
-          "miscellaneous_loss_db": 0.0
+          "miscellaneous_loss_db": 0.0,
+          "model_correction_db": 0.0,
+          "terminal_clutter_db": 0.0,
+          "step_allowance_db": 0.0
         },
         "valid": true,
         "los_clear": true,
@@ -282,7 +302,8 @@
           }
         ],
         "profile": null,
-        "worst_margin_db": 31.15088138134047
+        "worst_margin_db": 31.15088138134047,
+        "diffraction_model": "bullington"
       }
     ],
     "diagnostics": [
@@ -579,7 +600,7 @@
     "road_access_classes": "all_drivable"
   },
   "stamp": "2026-01-01T00:00:00+00:00",
-  "csv": "hop,from,to,distance_km,fspl_db,diffraction_loss_db,total_path_loss_db,rx_power_dbm,sensitivity_dbm,raw_margin_db,fade_adjusted_margin_db,reverse_margin_db,worst_margin_db,minimum_fresnel_clearance_percent,los_clear,valid\r\n1,\"R-2</script><img src=x onerror=\"\"alert(1)\"\">\",B,1.200,92.81,3.97,96.78,-80.48,-130.00,49.52,39.52,39.52,39.52,38.7,True,True\r\n2,\"R-2</script><img src=x onerror=\"\"alert(1)\"\">\",R-1,1.200,92.81,36.63,129.44,-113.14,-130.00,16.86,1.00,2.00,1.00,-349.7,False,True\r\n3,A,R-1,1.200,92.81,12.34,105.15,-88.85,-130.00,41.15,31.15,31.15,31.15,0.2,True,True\r\n",
+  "csv": "hop,from,to,distance_km,fspl_db,diffraction_loss_db,total_path_loss_db,rx_power_dbm,sensitivity_dbm,raw_margin_db,fade_adjusted_margin_db,reverse_margin_db,worst_margin_db,minimum_fresnel_clearance_percent,los_clear,valid,diffraction_model,forward_model_correction_db,reverse_model_correction_db,forward_terminal_clutter_db,reverse_terminal_clutter_db,forward_step_allowance_db,reverse_step_allowance_db\r\n1,\"R-2</script><img src=x onerror=\"\"alert(1)\"\">\",B,1.200,92.81,3.97,96.78,-80.48,-130.00,49.52,39.52,39.52,39.52,38.7,True,True,bullington,0.00,0.00,0.00,0.00,0.00,0.00\r\n2,\"R-2</script><img src=x onerror=\"\"alert(1)\"\">\",R-1,1.200,92.81,36.63,129.44,-113.14,-130.00,16.86,1.00,2.00,1.00,-349.7,False,True,bullington,0.00,0.00,0.00,0.00,0.00,0.00\r\n3,A,R-1,1.200,92.81,12.34,105.15,-88.85,-130.00,41.15,31.15,31.15,31.15,0.2,True,True,bullington,0.00,0.00,0.00,0.00,0.00,0.00\r\n",
   "geojson": {
     "type": "FeatureCollection",
     "features": [
@@ -688,7 +709,18 @@
           "fresnel_clearance_percent": 38.695443016973115,
           "diffraction_loss_db": 3.971655585450883,
           "los_clear": true,
-          "valid": true
+          "valid": true,
+          "diffraction_model": "bullington",
+          "forward": {
+            "model_correction_db": 0.0,
+            "terminal_clutter_db": 0.0,
+            "step_allowance_db": 0.0
+          },
+          "reverse": {
+            "model_correction_db": 0.0,
+            "terminal_clutter_db": 0.0,
+            "step_allowance_db": 0.0
+          }
         }
       },
       {
@@ -716,7 +748,18 @@
           "fresnel_clearance_percent": -349.72270529274454,
           "diffraction_loss_db": 36.62629103285815,
           "los_clear": false,
-          "valid": true
+          "valid": true,
+          "diffraction_model": "bullington",
+          "forward": {
+            "model_correction_db": 0.0,
+            "terminal_clutter_db": 0.0,
+            "step_allowance_db": 0.0
+          },
+          "reverse": {
+            "model_correction_db": 0.0,
+            "terminal_clutter_db": 0.0,
+            "step_allowance_db": 0.0
+          }
         }
       },
       {
@@ -744,7 +787,18 @@
           "fresnel_clearance_percent": 0.24994455541041752,
           "diffraction_loss_db": 12.340101970932421,
           "los_clear": true,
-          "valid": true
+          "valid": true,
+          "diffraction_model": "bullington",
+          "forward": {
+            "model_correction_db": 0.0,
+            "terminal_clutter_db": 0.0,
+            "step_allowance_db": 0.0
+          },
+          "reverse": {
+            "model_correction_db": 0.0,
+            "terminal_clutter_db": 0.0,
+            "step_allowance_db": 0.0
+          }
         }
       }
     ]

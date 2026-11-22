@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "repeaternet"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1707,6 +1707,26 @@ dependencies = [
  "tempfile",
  "thiserror",
  "unicode-casefold",
+ "url",
+]
+
+[[package]]
+name = "repeaternet-rf-calibration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "flate2",
+ "geo",
+ "getrandom 0.4.3",
+ "repeaternet-providers",
+ "repeaternet-rf-core",
+ "repeaternet-terrain",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "url",
 ]
 

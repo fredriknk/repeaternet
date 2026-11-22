@@ -5,7 +5,8 @@ use repeaternet_optimizer::{
     SearchEffort, SiteOrigin,
 };
 use repeaternet_rf_core::{
-    AntennaPattern, AntennaSettings, LoRaSettings, RfSettings, SiteKind, ValidationMode,
+    AntennaPattern, AntennaSettings, DiffractionModel, LoRaSettings, ObstacleSurface, RfSettings,
+    SiteKind, TerminalClutter, ValidationMode, calibration::CERTIFICATION_MAX_STEP_M,
 };
 use repeaternet_terrain::LonLat;
 use serde_json::{Value, json};
@@ -21,6 +22,7 @@ pub struct Location {
     pub policy: RouterPolicy,
     pub height: f64,
     pub height_override: bool,
+    pub terminal_clutter: TerminalClutter,
 }
 
 pub struct RouteInputs {
@@ -102,7 +104,38 @@ fn antenna(value: &Value) -> ApiResult<AntennaSettings> {
         pattern: AntennaPattern::ConstantGain(value["gain_dbi"].as_f64().unwrap()),
         feed_loss_db: value["feed_loss_db"].as_f64().unwrap(),
         height_agl_m,
+        terminal_clutter: terminal_clutter(&value["terminal_clutter"])?,
     })
+}
+
+fn terminal_clutter(value: &Value) -> ApiResult<TerminalClutter> {
+    match value.as_str() {
+        Some("none") => Ok(TerminalClutter::None),
+        Some("p2108_dom") => Ok(TerminalClutter::P2108Dom),
+        _ => Err(ApiError::invalid(
+            "terminal_clutter must be none or p2108_dom",
+        )),
+    }
+}
+
+pub(crate) fn router_clutter_overrides(plan: &Value) -> ApiResult<BTreeMap<&str, TerminalClutter>> {
+    let mut overrides = BTreeMap::new();
+    for key in ["manual_routers", "known_routers"] {
+        let Some(items) = plan.get(key) else { continue };
+        for item in items
+            .as_array()
+            .ok_or_else(|| ApiError::invalid(format!("{key} must be a list")))?
+        {
+            if let Some(value) = item.get("terminal_clutter") {
+                let model = terminal_clutter(value)?;
+                let id = item["id"].as_str().ok_or_else(|| {
+                    ApiError::invalid(format!("Each {key} entry needs a valid id"))
+                })?;
+                overrides.insert(id, model);
+            }
+        }
+    }
+    Ok(overrides)
 }
 
 pub(crate) fn rf(value: &Value) -> ApiResult<RfSettings> {
@@ -110,9 +143,17 @@ pub(crate) fn rf(value: &Value) -> ApiResult<RfSettings> {
     let validation_mode = choice!(value, "validation_mode", {
         "rf_propagation" => ValidationMode::Propagation, "strict_los" => ValidationMode::StrictLos,
     });
-    if value["diffraction_model"] != "bullington" {
-        return Err(ApiError::invalid("Invalid diffraction_model"));
-    }
+    let diffraction_model = choice!(value, "diffraction_model", {
+        "bullington" => DiffractionModel::Bullington,
+        "delta_bullington" => DiffractionModel::DeltaBullington,
+        "deygout3" => DiffractionModel::Deygout3,
+    });
+    let obstacle_surface = choice!(value, "obstacle_surface", {
+        "ground" => ObstacleSurface::Ground, "surface" => ObstacleSurface::Surface,
+    });
+    let model_correction_db = number(&value["model_correction_db"])
+        .filter(|db| (0.0..=20.0).contains(db))
+        .ok_or_else(|| ApiError::invalid("model_correction_db must be between 0 and 20 dB"))?;
     for key in ["frequency_mhz", "k_factor"] {
         if n(key) <= 0.0 {
             return Err(ApiError::invalid(format!("{key} must be positive")));
@@ -135,6 +176,9 @@ pub(crate) fn rf(value: &Value) -> ApiResult<RfSettings> {
         fade_margin_db: n("fade_margin_db"),
         miscellaneous_loss_db: n("miscellaneous_loss_db"),
         k_factor: n("k_factor"),
+        diffraction_model,
+        obstacle_surface,
+        model_correction_db,
         required_fresnel_clearance: n("required_fresnel_clearance"),
         validation_mode,
         endpoint_a: antenna(&value["endpoint_a"])?,
@@ -183,6 +227,7 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         }
     }
     for (key, min, max) in [
+        ("final_sample_step_m", 0.0, CERTIFICATION_MAX_STEP_M),
         ("maximum_neighbors_per_site", 1.0, 200.0),
         ("refine_radius_m", 0.0, 2000.0),
         ("maximum_road_distance_m", 10.0, 20_000.0),
@@ -279,6 +324,7 @@ fn locations(
     rf: &RfSettings,
     policy: InfrastructurePolicy,
 ) -> ApiResult<(Vec<Location>, usize)> {
+    let clutter_overrides = router_clutter_overrides(plan)?;
     let mut locations = Vec::new();
     let mut ids = HashSet::new();
     let mut excluded_known = 0;
@@ -301,6 +347,7 @@ fn locations(
             policy: RouterPolicy::Optional,
             height: antenna.height_agl_m,
             height_override: false,
+            terminal_clutter: antenna.terminal_clutter,
         });
     }
     for (key, prefix, origin, eligible) in [
@@ -396,6 +443,10 @@ fn locations(
                 policy: router_policy,
                 height,
                 height_override,
+                terminal_clutter: clutter_overrides
+                    .get(id)
+                    .copied()
+                    .unwrap_or(rf.router.terminal_clutter),
             });
         }
     }
@@ -405,9 +456,26 @@ fn locations(
 pub(crate) fn merged(defaults: &Value, plan: &Value, key: &str) -> ApiResult<Value> {
     let mut result = defaults[key].clone();
     if let Some(value) = plan.get(key) {
-        merge(&mut result, value)?;
+        merge(&mut result, &without_legacy_model(key, value))?;
     }
     Ok(result)
+}
+
+/// Plans saved before the calibrated engine stored the then-only
+/// `"bullington"` model. They have no `obstacle_surface`, so their model
+/// falls back to the calibrated default instead of pinning Bullington.
+fn without_legacy_model<'a>(key: &str, value: &'a Value) -> std::borrow::Cow<'a, Value> {
+    if key != "rf"
+        || value.get("obstacle_surface").is_some()
+        || value.get("diffraction_model") != Some(&json!("bullington"))
+    {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    let mut value = value.clone();
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("diffraction_model");
+    }
+    std::borrow::Cow::Owned(value)
 }
 
 pub(crate) fn terrain_candidates(plan: &Value, defaults: &Value) -> ApiResult<CandidateSettings> {

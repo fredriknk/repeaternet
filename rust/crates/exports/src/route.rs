@@ -10,7 +10,7 @@ use crate::{invalid, project, rows, site_coordinate, ExportError, Transform};
 use serde_json::{json, Value};
 use std::{collections::HashMap, io::Write};
 
-const CSV_FIELDS: [&str; 16] = [
+const CSV_FIELDS: [&str; 23] = [
     "hop",
     "from",
     "to",
@@ -27,6 +27,13 @@ const CSV_FIELDS: [&str; 16] = [
     "minimum_fresnel_clearance_percent",
     "los_clear",
     "valid",
+    "diffraction_model",
+    "forward_model_correction_db",
+    "reverse_model_correction_db",
+    "forward_terminal_clutter_db",
+    "reverse_terminal_clutter_db",
+    "forward_step_allowance_db",
+    "reverse_step_allowance_db",
 ];
 
 /// Stream the route DTO's active links in their persisted order.
@@ -45,6 +52,7 @@ pub fn write_route_csv(output: impl Write, route: &Value) -> Result<(), ExportEr
     };
     for (i, link) in rows(&route["links"]).iter().enumerate() {
         let f = &link["forward"];
+        let r = &link["reverse"];
         csv.write_record([
             (i + 1).to_string(),
             id(link, "source_id").into(),
@@ -67,6 +75,13 @@ pub fn write_route_csv(output: impl Write, route: &Value) -> Result<(), ExportEr
             ),
             boolean(&link["los_clear"]).into(),
             boolean(&link["valid"]).into(),
+            id(link, "diffraction_model").into(),
+            decimal(f["model_correction_db"].as_f64(), 2),
+            decimal(r["model_correction_db"].as_f64(), 2),
+            decimal(f["terminal_clutter_db"].as_f64(), 2),
+            decimal(r["terminal_clutter_db"].as_f64(), 2),
+            decimal(f["step_allowance_db"].as_f64(), 2),
+            decimal(r["step_allowance_db"].as_f64(), 2),
         ])?;
     }
     csv.flush()?;
@@ -156,6 +171,14 @@ pub fn write_route_geojson(
             })
         };
         let endpoints = [coord("source_id")?, coord("target_id")?];
+        let budget = |direction: &str| {
+            let fields = &link[direction];
+            json!({
+                "model_correction_db": fields["model_correction_db"],
+                "terminal_clutter_db": fields["terminal_clutter_db"],
+                "step_allowance_db": fields["step_allowance_db"],
+            })
+        };
         write!(out, ",")?;
         serde_json::to_writer(
             &mut out,
@@ -167,6 +190,8 @@ pub fn write_route_geojson(
                     "reverse_margin_db": link["reverse"]["usable_margin_db"],
                     "fresnel_clearance_percent": link["minimum_fresnel_clearance_ratio"].as_f64().map(|n| n * 100.0),
                     "diffraction_loss_db": link["diffraction_loss_db"], "los_clear": link["los_clear"], "valid": link["valid"],
+                    "diffraction_model": link["diffraction_model"],
+                    "forward": budget("forward"), "reverse": budget("reverse"),
                 },
             }),
         )?;

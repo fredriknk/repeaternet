@@ -123,7 +123,7 @@ fn python_coverage_oracle_and_html() {
 }
 
 #[test]
-fn python_route_oracle() {
+fn route_export_fixture() {
     let fixture: Value = serde_json::from_str(include_str!("fixtures/route.json")).unwrap();
     let route = &fixture["route"];
     let mut output = Vec::new();
@@ -164,6 +164,14 @@ fn python_route_oracle() {
     assert!(
         html.contains("<details class=\"hop-budget\"><summary>Directional link budget</summary>")
     );
+    assert!(html.contains("Diffraction model · Bullington"));
+    for label in [
+        "Model correction",
+        "Terminal clutter",
+        "Terrain sampling allowance",
+    ] {
+        assert!(html.contains(label));
+    }
     assert!(!html.contains("L.tileLayer("));
     assert!(!html.contains("<img src=x"));
 }
@@ -263,7 +271,7 @@ fn bounded_profile_and_streaming_output() {
     terrain[1234] = 95;
     let route = json!({"route":[{"id":"A"},{"id":"B"}],"links":[{
         "source_id":"B","target_id":"A","distance_m":2000,"minimum_clearance_distance_m":766,
-        "profile":{"distances_m":distances,"dtm_elevation_m":terrain,"earth_bulge_m":heights,
+        "profile":{"distances_m":distances,"dtm_elevation_m":terrain,"surface_elevation_m":terrain,"earth_bulge_m":heights,
         "effective_obstruction_m":terrain,"los_elevation_m":heights,"fresnel_radius_m":heights,
         "clearance_m":heights,"surface_available":true}
     }]});

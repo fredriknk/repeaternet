@@ -132,6 +132,24 @@ test('registry definitions populate the layer control and a failed GET leaves th
   assert.ok(visible.has(controls[2].addedOverlays[0].layer), 'refresh keeps active overlays');
 });
 
+test('legacy RF settings inherit calibrated defaults while explicit model choices are preserved', () => {
+  const baseRf = {
+    diffraction_model: 'delta_bullington', obstacle_surface: 'ground', model_correction_db: 3,
+    endpoint_a: { terminal_clutter: 'none', height_agl_m: 3 },
+    endpoint_b: { terminal_clutter: 'none' }, router: { terminal_clutter: 'none' },
+  };
+  const context = vm.createContext({ baseRf });
+  vm.runInContext(section('function loadRfSettings(', "$('save').onclick"), context);
+  const legacy = context.loadRfSettings({ diffraction_model: 'bullington', endpoint_a: { height_agl_m: 8 } });
+  assert.equal(legacy.diffraction_model, baseRf.diffraction_model);
+  assert.equal(legacy.obstacle_surface, baseRf.obstacle_surface);
+  assert.equal(legacy.model_correction_db, baseRf.model_correction_db);
+  assert.deepEqual({ ...legacy.endpoint_a }, { terminal_clutter: 'none', height_agl_m: 8 });
+  const current = context.loadRfSettings({ diffraction_model: 'bullington', obstacle_surface: 'ground', model_correction_db: 0 });
+  assert.equal(current.diffraction_model, 'bullington');
+  assert.equal(current.model_correction_db, 0);
+});
+
 test('terrain source and fallback round-trip through plan and load and record an edit', () => {
   const elements = new Map(), actions = [];
   const $ = id => {
@@ -157,7 +175,7 @@ test('terrain source and fallback round-trip through plan and load and record an
     scheduleCoverageCheck: () => actions.push('scheduleCoverageCheck'),
     buildSettings() {}, syncCoverageInputs() {}, mark() {}, renderMeshcoreRouters() {},
     renderManualRouters() {}, ensureManualRouterNames() {}, renderCoverageTargets() {}, selectedKnownRouters: () => [],
-    baseCandidates: {}, defaultCoverageSettings: { client: {} },
+    baseRf: {}, baseCandidates: {}, defaultCoverageSettings: { client: {} },
     selectedKnownRouterId: null, clone: structuredClone,
   });
   vm.runInContext(

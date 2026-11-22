@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>RepeaterNet · RF Router Planner</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/leaflet/leaflet.css">
     <link rel="stylesheet" href="/assets/style.css">
     <link rel="stylesheet" href="/assets/meshcore.css">
@@ -157,7 +158,7 @@
           <div class="file-row"><span id="dtm-count">No ground tiles</span><button data-clear="dtm" class="text-button">Clear</button></div>
           <label class="upload secondary">＋ Add surface terrain<small>Optional DOM · trees and buildings</small><input id="dom" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
           <div class="file-row"><span id="dom-count">No surface tiles</span><button data-clear="dom" class="text-button">Clear</button></div>
-          <p id="surface-note" class="hint">Surface obstruction data unavailable — terrain only.</p>
+          <p id="surface-note" class="hint">Surface data unavailable. Predictions use ground elevations.</p>
           </details>
           <p id="coverage-note" class="hint">Coverage outlines appear after terrain is loaded.</p>
             </section>
@@ -232,7 +233,7 @@
         <div class="workspace-view" id="workspace-coverage" aria-label="Coverage analysis" hidden>
         <section class="coverage-panel">
           <h2>Live coverage</h2>
-          <details class="help-disclosure"><summary>Help: live coverage</summary><p>Every endpoint and router on the map shows where a handheld can reach it, calculated from terrain with the same radio model as the route search. Moving a site redraws its coverage straight away: a coarse preview follows the marker while you drag and a detailed map replaces it when you let go. Colour shows the strongest usable margin after the fade margin; areas below 0 dB are left clear. These are predictions, not measurements.</p></details>
+          <details class="help-disclosure"><summary>Help: live coverage</summary><p>Each endpoint and router shows where a handheld can reach it. The calibrated default is Delta-Bullington diffraction over ground terrain. Live coverage includes model correction, any terminal clutter set for the site, and a sampling allowance for the selected detail level. If you select Deygout for route search, the live map uses Delta-Bullington.</p><p>A coarse preview follows a marker while you drag. The detailed map replaces it when you let go. Colour shows the predicted usable margin after the fade margin. Areas below 0 dB stay clear.</p></details>
           <div id="live-coverage-no-terrain" class="coverage-empty-state" hidden>
             <p>Coverage needs ground terrain. Download terrain for the route first; coverage then appears automatically.</p>
             <button id="live-coverage-open-terrain" type="button">Open terrain setup</button>
@@ -470,6 +471,7 @@
         </div>
         <div class="workspace-action-bar" data-workspace-action="workspace-coverage" hidden>
           <p id="live-coverage-status" class="action-status" role="status" aria-live="polite">Add endpoints or routers to see their coverage.</p>
+          <p id="live-coverage-model-note" class="action-status" role="status" hidden></p>
           <p id="coverage-announcement" class="visually-hidden" role="status" aria-live="polite"></p>
           <button id="live-coverage-refresh" type="button" class="wide-button">Recalculate coverage</button>
         </div>
@@ -603,6 +605,9 @@
             <div id="route-export-status" class="hint" role="status"></div>
           </div>
           <div id="result-details">
+          <div id="route-verdict" class="route-verdict" hidden></div>
+          <div id="metrics"></div>
+          <p id="prediction-spread" class="hint" hidden></p>
           <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>
           <p id="candidate-search-diagnostic" class="hint" hidden></p>
           <p id="rf-validation-note" class="hint" hidden></p>
@@ -616,8 +621,6 @@
               <div id="alternative-cards" class="alternative-cards"></div>
             </details>
           </div>
-          <div id="route-verdict" class="route-verdict" hidden></div>
-          <div id="metrics"></div>
           <div class="analysis-detail-grid">
           <details id="hops-disclosure" open hidden>
             <summary>Links <span class="hint">· select a row to show its terrain profile</span></summary>
@@ -632,7 +635,7 @@
             <canvas id="chart" height="230" aria-label="Terrain, direct line of sight and Fresnel profile" role="img"></canvas>
             <p class="chart-legend" aria-hidden="true"><span><i style="background:#94785d"></i>Terrain + curvature</span><span><i style="background:#508c62"></i>Surface</span><span><i style="background:#457bab"></i>Line of sight</span><span><i style="border-top:3px dashed #b36e14"></i>Required Fresnel boundary</span></p>
             <p id="profile-description" class="hint" role="status"></p>
-            <details id="directional-budget"><summary>Forward and reverse link budget</summary><div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th>Direction</th><th>TX power</th><th>Path loss</th><th>Received</th><th>Sensitivity</th><th>Usable margin</th></tr></thead><tbody></tbody></table></div></details>
+            <details id="directional-budget"><summary>Forward and reverse link budget</summary><div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th scope="col">Budget item</th><th id="budget-forward" scope="col">Forward</th><th id="budget-reverse" scope="col">Reverse</th></tr></thead><tbody></tbody></table></div></details>
             <details id="profile-details"><summary>Detailed radio budget and assumptions</summary><pre id="budget"></pre></details>
           </div>
           </div>

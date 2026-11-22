@@ -105,10 +105,13 @@ releases are published from version tags (v0.1.0 onward) and the workflow packag
 2. **Terrain fidelity:** sub-cell narrow-ridge tests and conservative/adaptive
    final-profile sampling. Current final spacing does not guarantee every
    obstacle was sampled.
-3. **RF reference validation:** compare Bullington LOS/single-/multi-ridge
-   profiles to an independent implementation, then calibrate against measured
-   links. Full terrain/climate models and richer antenna patterns are future
-   work, not implemented capabilities.
+3. **RF reference validation:** a first calibration against measured MeshCore
+   links is wired into rf-core (delta-Bullington over DTM by default, optional
+   Deygout and P.2108 terminal clutter, 3 dB model correction; see
+   [RF calibration](RF_CALIBRATION.md#wired-into-rf-core)). Next steps: rerun it
+   on several weeks of captures and revise `rf-core/src/calibration.rs`, and
+   speed up the O(n) line-of-sight scan in live coverage. Full climate models
+   and richer antenna patterns are future work, not implemented capabilities.
 4. **Resource management:** benchmark concurrent memory and cache behavior before
    tuning worker counts or batch sizes. A retention/storage-pressure policy
    remains open; present limits fail explicitly and do not automatically evict.

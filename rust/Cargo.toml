@@ -8,6 +8,7 @@ members = [
     "crates/optimizer",
     "crates/project-store",
     "crates/providers",
+    "crates/rf-calibration",
     "crates/rf-core",
     "crates/sondehub-import",
     "crates/terrain",

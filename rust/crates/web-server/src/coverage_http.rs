@@ -108,10 +108,13 @@ async fn evaluate(
         let transform = Transformer::new(terrain.crs()).map_err(terrain_invalid)?;
         let rf = route_inputs::rf(&route["rf_settings"])?;
         let evaluator = CoverageEvaluator::new(&terrain, &rf, &transform);
-        let sources = select_sources(&sites, &sites, &settings).map_err(terrain_invalid)?;
+        let mut sources = select_sources(&sites, &sites, &settings).map_err(terrain_invalid)?;
         let area = resolve_area(&settings, &transform, &sources, &sites, corridor, map_bounds)
             .map_err(terrain_invalid)?;
         let mut response = if preview {
+            for source in &mut sources {
+                source.sample_terminal_clutter(&terrain).map_err(terrain_invalid)?;
+            }
             let grid = evaluator.with_cache(&coverage_cache, revision)
                 .calculate(&sources, &settings.preview_settings(), &area, RunOptions::default())
                 .map_err(terrain_invalid)?;

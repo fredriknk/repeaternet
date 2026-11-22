@@ -2,27 +2,38 @@
 //! the caller through [TerrainSource].
 
 pub mod antennas;
+pub mod calibration;
 pub mod curvature;
+mod delta_bullington;
 pub mod diffraction;
 pub mod fresnel;
 pub mod link;
+mod multi_edge;
 pub mod profile;
 pub mod propagation;
 pub mod settings;
 pub mod site;
+pub mod terminal_clutter;
 
 pub use antennas::{elevation_angle_deg, AntennaPattern, ElevationPattern};
 pub use curvature::{earth_bulge_m, EARTH_MEAN_RADIUS_M};
+pub use delta_bullington::{
+    delta_bullington_loss_db, smooth_earth_heights, spherical_earth_loss_db, DeltaBullington,
+};
 pub use diffraction::{
     bullington_edge_loss_db, bullington_loss_db, knife_edge_loss_db, knife_edge_v,
-    DiffractionObstacle, DiffractionResult,
+    DiffractionModel, DiffractionObstacle, DiffractionResult,
 };
 pub use fresnel::{first_fresnel_radius_m, SPEED_OF_LIGHT_M_S};
 pub use link::{free_space_path_loss_db, received_power_dbm, DirectionResult, LinkResult};
-pub use profile::{sample_profile, TerrainLayer, TerrainProfile, TerrainSource};
+pub use multi_edge::{deygout3_loss_db, Edge, MultiEdge};
+pub use profile::{sample_profile, ObstacleSurface, TerrainLayer, TerrainProfile, TerrainSource};
 pub use propagation::{EvaluationOptions, LinkEvaluator};
 pub use settings::{AntennaSettings, LoRaSettings, RadioBudget, RfSettings, ValidationMode};
 pub use site::{HeightReference, Point, Site, SiteKind};
+pub use terminal_clutter::{
+    p2108_terminal_correction_db, terminal_clutter_height_m, TerminalClutter,
+};
 
 use std::{error, fmt};
 

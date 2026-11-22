@@ -314,13 +314,13 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
         move |(mut cell, elevation), cancelled| {
             if let Some(elevation) = elevation {
                 if elevation.is_finite() {
-                    let target = client_site(
+                    let target = self.client_site(
                         format!("coverage-cell-{}", cell.index),
                         cell.position(),
                         elevation,
                         None,
                         &client,
-                    );
+                    )?;
                     self.evaluate_cell(&mut cell, sources, &target, settings, &client, cancelled)?;
                 } else {
                     cell.state = CoverageState::UnknownTerrain;
@@ -511,7 +511,14 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<LinkResult>, CoverageError> {
         check_cancelled(cancelled)?;
-        let result = LinkEvaluator::new(self.terrain, self.rf).evaluate(source, target, options);
+        let result = LinkEvaluator::new(self.terrain, self.rf).evaluate(
+            source,
+            target,
+            EvaluationOptions {
+                step_allowance: true,
+                ..options
+            },
+        );
         check_cancelled(cancelled)?;
         match result {
             Ok(link) => Ok(Some(link)),
@@ -519,23 +526,27 @@ impl<'a, T: TerrainSource + ?Sized> CoverageEvaluator<'a, T> {
             Err(error) => Err(error.into()),
         }
     }
-}
-
-pub(crate) fn client_site(
-    id: String,
-    position: Point,
-    ground: f64,
-    surface: Option<f64>,
-    client: &RadioBudget,
-) -> Site {
-    Site {
-        id,
-        position,
-        kind: SiteKind::Client,
-        ground_elevation_m: ground,
-        surface_elevation_m: surface,
-        antenna_height_m: client.antenna.height_agl_m,
-        height_reference: HeightReference::GroundDtm,
+    pub(crate) fn client_site(
+        &self,
+        id: String,
+        position: Point,
+        ground: f64,
+        surface: Option<f64>,
+        client: &RadioBudget,
+    ) -> Result<Site, CoverageError> {
+        let mut site = Site {
+            id,
+            position,
+            kind: SiteKind::Client,
+            ground_elevation_m: ground,
+            surface_elevation_m: surface,
+            antenna_height_m: client.antenna.height_agl_m,
+            height_reference: HeightReference::GroundDtm,
+            terminal_clutter: self.rf.antenna_settings(SiteKind::Client).terminal_clutter,
+            clutter_height_m: None,
+        };
+        site.sample_terminal_clutter(self.terrain)?;
+        Ok(site)
     }
 }
 

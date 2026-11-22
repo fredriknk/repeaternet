@@ -70,6 +70,7 @@ impl ClientRadioProfile {
                 pattern: AntennaPattern::ConstantGain(self.gain_dbi),
                 feed_loss_db: self.feed_loss_db,
                 height_agl_m: self.height_agl_m,
+                terminal_clutter: Default::default(),
             },
             tx_power_dbm: self.tx_power_dbm,
             sensitivity_dbm: self.sensitivity_dbm,

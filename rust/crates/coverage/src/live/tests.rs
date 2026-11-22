@@ -1,6 +1,6 @@
 use repeaternet_rf_core::{
-    AntennaSettings, ElevationPattern, EvaluationOptions, LinkEvaluator, SiteKind, TerrainLayer,
-    TerrainSource,
+    delta_bullington_loss_db, AntennaSettings, ElevationPattern, EvaluationOptions, LinkEvaluator,
+    SiteKind, TerrainLayer, TerrainSource,
 };
 use repeaternet_terrain::{ArrayTerrain, TerrainCrs};
 
@@ -39,6 +39,7 @@ fn hull_queries_match_brute_force_for_every_prefix() {
                 .unwrap();
             assert!((hull.support(slope) - support).abs() < 1e-12);
             assert!((hull.tangent(receiver) - tangent).abs() < 1e-12);
+            assert!((hull.raw_tangent(receiver) - tangent).abs() < 1e-12);
         }
     }
 }
@@ -74,6 +75,13 @@ fn polar_interpolation_wraps_and_preserves_nearest_unknown_state() {
         margins: vec![
             0.0, 0.0, 10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 30.0, 30.0, 30.0, 40.0,
         ],
+        propagation: LivePropagation {
+            diffraction_model: DiffractionModel::Bullington,
+            diffraction_model_configured: DiffractionModel::Bullington,
+            model_correction_db: 0.0,
+            step_allowance_db: 0.0,
+            terminal_clutter_db: 0.0,
+        },
     };
     assert!((polar.margin_at(-1.0, 1.0, 15.0) - 20.0).abs() < 1e-12);
     assert_eq!(polar.margin_at(0.0, 3.0, 3.0), 0.0);
@@ -197,7 +205,7 @@ fn sweeps_match_link_evaluator_in_all_modes() {
             pixel,
             origin,
         };
-        let site = Site {
+        let mut site = Site {
             kind: SiteKind::Router,
             antenna_height_m: 18.0,
             ground_elevation_m: terrain.ground(Point::default()),
@@ -206,58 +214,312 @@ fn sweeps_match_link_evaluator_in_all_modes() {
         };
         rf.clutter_loss_enabled = clutter_enabled;
         rf.validation_mode = validation_mode;
-        let evaluator = LinkEvaluator::new(&terrain, &rf);
-        for mode in [LiveMode::TwoWay, LiveMode::Downlink, LiveMode::Uplink] {
-            let polar = sweep(&terrain, &site, &rf, &client, mode, grid).unwrap();
-            for ray in [0, 17, 47, 87, 122, 164, 220, 309, 387, 510, 690] {
-                let azimuth = ray as f64 * TAU / grid.rays as f64;
-                let (sin, cos) = azimuth.sin_cos();
-                // Verify the production sweep's f64 arithmetic before its f32 storage rounding.
-                Sweep::new(&site, &rf, &client, mode, grid).unwrap().ray(&terrain, azimuth, |k, margin| {
-                    assert_eq!(polar.ray(ray)[k], margin as f32);
-                    if k < 2 {
-                        return; // RF profiles use at least three points.
+        for model in [
+            DiffractionModel::Bullington,
+            DiffractionModel::DeltaBullington,
+            DiffractionModel::Deygout3,
+        ] {
+            rf.diffraction_model = model;
+            let mut batch_rf = rf.clone();
+            if model == DiffractionModel::Deygout3 {
+                batch_rf.diffraction_model = DiffractionModel::DeltaBullington;
+            }
+            for surface in [ObstacleSurface::Ground, ObstacleSurface::Surface] {
+                rf.obstacle_surface = surface;
+                batch_rf.obstacle_surface = surface;
+                let evaluator = LinkEvaluator::new(&terrain, &batch_rf);
+                for terminal in [TerminalClutter::None, TerminalClutter::P2108Dom] {
+                    site.terminal_clutter = terminal;
+                    site.clutter_height_m = dom.then_some(25.0);
+                    for mode in [LiveMode::TwoWay, LiveMode::Downlink, LiveMode::Uplink] {
+                        let polar =
+                            sweep(&terrain, &site, &rf, &client, mode, grid, pixel).unwrap();
+                        assert_eq!(polar.propagation().diffraction_model_configured, model);
+                        assert_eq!(
+                            polar.propagation().diffraction_model,
+                            batch_rf.diffraction_model
+                        );
+                        let sweep = Sweep::new(&site, &rf, &client, mode, grid, pixel).unwrap();
+                        compare_with_evaluator(&terrain, &evaluator, &sweep, &polar, &mut observed);
                     }
-                    let distance = k as f64 * step;
-                    let position = Point { x: distance * sin, y: distance * cos };
-                    if (position.distance_to(site.position) / step).ceil() > k as f64 {
-                        return; // Coordinate rounding can put the endpoint one ulp past the exact step.
-                    }
-                    let target = Site {
-                        position,
-                        ground_elevation_m: terrain.ground(position),
-                        antenna_height_m: client.antenna.height_agl_m,
-                        kind: SiteKind::Client,
-                        ..Site::new("client", 0.0, 0.0)
-                    };
-                    let link = evaluator.evaluate(&site, &target, EvaluationOptions {
-                        sample_step_m: Some(step), include_profile: false,
-                        target_radio: Some(&client), ..EvaluationOptions::default()
-                    }).unwrap();
-                    let expected = if validation_mode == ValidationMode::StrictLos && !link.los_clear {
-                        observed[0] += 1;
-                        f64::NEG_INFINITY
-                    } else {
-                        observed[1] += usize::from(link.los_clear && link.diffraction_loss_db == 0.0);
-                        observed[2] += usize::from(link.los_clear && link.diffraction_loss_db > 0.0);
-                        observed[3] += usize::from(!link.los_clear && link.diffraction_loss_db > 0.0);
-                        let down = link.forward.usable_margin_db;
-                        let up = link.reverse.usable_margin_db;
-                        match mode {
-                            LiveMode::TwoWay => down.min(up),
-                            LiveMode::Downlink => down,
-                            LiveMode::Uplink => up,
-                        }
-                    };
-                    assert!(margin == expected || (margin - expected).abs() < 1e-6,
-                        "ray {ray}, k {k}, DOM {dom}, clutter {clutter_enabled}, {mode:?}: {margin} vs {expected}");
-                    assert_eq!(polar.ray(ray)[k], expected as f32);
-                });
-                assert_eq!(polar.ray(ray)[0], polar.ray(ray)[1]);
+                }
             }
         }
     }
     assert!(observed.iter().all(|&count| count > 100), "{observed:?}");
+}
+
+fn compare_with_evaluator(
+    terrain: &Nearest,
+    evaluator: &LinkEvaluator<'_, Nearest>,
+    sweep: &Sweep<'_>,
+    polar: &PolarMargins,
+    observed: &mut [usize; 4],
+) {
+    let site = sweep.site;
+    let client = sweep.client;
+    let step = sweep.step;
+    let exact = sweep.propagation.diffraction_model == DiffractionModel::Bullington;
+    // Only live delta-Bullington interpolates the smooth-earth correction.
+    let tolerance = if exact { 1e-6 } else { 0.05 };
+    for ray in [0, 17, 47, 87, 122, 164, 220, 309, 387, 510, 690] {
+        let azimuth = ray as f64 * TAU / polar.ray_count() as f64;
+        let (sin, cos) = azimuth.sin_cos();
+        // Verify the production sweep before and after its f32 storage rounding.
+        sweep.ray(terrain, azimuth, |k, margin| {
+            assert_eq!(polar.ray(ray)[k], margin as f32);
+            if k < 2 {
+                return; // RF profiles use at least three points.
+            }
+            let distance = k as f64 * step;
+            let position = Point {
+                x: distance * sin,
+                y: distance * cos,
+            };
+            if (position.distance_to(site.position) / step).ceil() > k as f64 {
+                return; // Coordinate rounding can put the endpoint one ulp past the exact step.
+            }
+            let target = Site {
+                position,
+                ground_elevation_m: terrain.ground(position),
+                antenna_height_m: client.antenna.height_agl_m,
+                kind: SiteKind::Client,
+                terminal_clutter: TerminalClutter::None,
+                ..Site::new("client", 0.0, 0.0)
+            };
+            let link = evaluator
+                .evaluate(
+                    site,
+                    &target,
+                    EvaluationOptions {
+                        sample_step_m: Some(step),
+                        include_profile: false,
+                        step_allowance: true,
+                        target_radio: Some(client),
+                        ..EvaluationOptions::default()
+                    },
+                )
+                .unwrap();
+            let expected =
+                if sweep.rf.validation_mode == ValidationMode::StrictLos && !link.los_clear {
+                    observed[0] += 1;
+                    f64::NEG_INFINITY
+                } else {
+                    observed[1] += usize::from(link.los_clear && link.diffraction_loss_db == 0.0);
+                    observed[2] += usize::from(link.los_clear && link.diffraction_loss_db > 0.0);
+                    observed[3] += usize::from(!link.los_clear && link.diffraction_loss_db > 0.0);
+                    let down = link.forward.usable_margin_db;
+                    let up = link.reverse.usable_margin_db;
+                    match sweep.mode {
+                        LiveMode::TwoWay => down.min(up),
+                        LiveMode::Downlink => down,
+                        LiveMode::Uplink => up,
+                    }
+                };
+            assert!(
+                margin == expected || (margin - expected).abs() <= tolerance,
+                "ray {ray}, sample {k}, {:?}, {:?}, {:?}, {:?}: {margin} vs {expected}",
+                sweep.mode,
+                sweep.rf.diffraction_model,
+                sweep.rf.obstacle_surface,
+                site.terminal_clutter,
+            );
+            if exact {
+                assert_eq!(polar.ray(ray)[k], expected as f32);
+            }
+        });
+        assert_eq!(polar.ray(ray)[0], polar.ray(ray)[1]);
+    }
+}
+
+#[test]
+fn incremental_delta_matches_batch_on_fractal_and_smooth_rays() {
+    struct Profile<'a> {
+        elevations: &'a [f64],
+        step: f64,
+    }
+
+    impl ElevationLookup for Profile<'_> {
+        fn ground(&self, p: Point) -> f64 {
+            self.elevations[(p.y / self.step).round() as usize]
+        }
+        fn surface(&self, p: Point) -> Option<f64> {
+            panic!("Unexpected DOM lookup at {p:?}");
+        }
+        fn has_surface(&self) -> bool {
+            false
+        }
+    }
+
+    let mut seed = 0x8352_04bc_u32;
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(seed) / f64::from(u32::MAX)
+    };
+    let mut max_error: f64 = 0.0;
+    let mut near_grazing = 0;
+    let mut flat_transhorizon = 0;
+    let mut rough_delta = 0;
+    for case in 0..24 {
+        let (step, count) = match case % 4 {
+            0 => (120.0, 500),
+            1 => (10.0, 900),
+            2 => (30.0, 1000),
+            _ => (500.0, 120),
+        };
+        let smooth = case < 8;
+        let mut elevations = vec![100.0; count + 1];
+        if !smooth {
+            for stride in [128, 32, 8, 2] {
+                let anchors: Vec<_> = (0..=count / stride + 1).map(|_| next()).collect();
+                let amplitude = (stride as f64).sqrt() * (1.0 + 10.0 * next());
+                for (i, z) in elevations.iter_mut().enumerate() {
+                    let left = i / stride;
+                    let fraction = (i % stride) as f64 / stride as f64;
+                    let noise = mix_margin(anchors[left], anchors[left + 1], fraction);
+                    *z += amplitude * (1.0 - (2.0 * noise - 1.0).abs());
+                }
+            }
+        }
+        let terrain = Profile {
+            elevations: &elevations,
+            step,
+        };
+        let rf = RfSettings {
+            diffraction_model: DiffractionModel::DeltaBullington,
+            frequency_mhz: [150.0, 433.0, 869.5, 2400.0][case % 4],
+            k_factor: [1.0, 1.33, 0.8][case % 3],
+            ..RfSettings::default()
+        };
+        let site = Site {
+            antenna_height_m: if smooth {
+                2.0 + case as f64 * 4.0
+            } else {
+                2.0 + 20.0 * next()
+            },
+            ground_elevation_m: elevations[0],
+            ..Site::new("tx", 0.0, 0.0)
+        };
+        let mut client = ClientRadioProfile::default().as_radio_budget();
+        client.antenna.height_agl_m = if smooth {
+            2.0 + case as f64 * 3.0
+        } else {
+            1.0 + 10.0 * next()
+        };
+        let grid = SweepGrid::new(step * count as f64, step).unwrap();
+        let sweep = Sweep::new(&site, &rf, &client, LiveMode::Downlink, grid, 10.0).unwrap();
+        let distances: Vec<_> = (0..=count).map(|i| i as f64 * step).collect();
+        sweep.ray(&terrain, 0.0, |j, margin| {
+            if j < 2 {
+                return; // The live first step has no interior; link profiles have at least one.
+            }
+            let d = distances[j];
+            let hr = elevations[j] + client.antenna.height_agl_m;
+            let los: Vec<_> = distances[..=j]
+                .iter()
+                .map(|x| sweep.ht + (hr - sweep.ht) * x / d)
+                .collect();
+            let bulges: Vec<_> = distances[..=j]
+                .iter()
+                .map(|x| x * (d - x) / sweep.ed)
+                .collect();
+            let batch = delta_bullington_loss_db(
+                &distances[..=j],
+                &elevations[..=j],
+                &bulges,
+                &los,
+                rf.frequency_mhz,
+                rf.k_factor,
+            )
+            .unwrap();
+            let expected = sweep.margin(d, hr, sweep.samples[j - 1].loss_db + batch.loss_db);
+            let error = (margin - expected).abs();
+            assert!(error <= 0.05, "case {case}, {d} m: {margin} vs {expected}");
+            max_error = max_error.max(error);
+            let horizon =
+                sweep.ed.sqrt() * batch.smooth_agl_m.iter().map(|h| h.sqrt()).sum::<f64>();
+            if smooth && batch.loss_db > batch.bullington_db {
+                near_grazing += usize::from(d < horizon && batch.smooth_bullington_db > 0.0);
+                flat_transhorizon +=
+                    usize::from(d >= horizon && (30_000.0..=60_000.0).contains(&d));
+            }
+            rough_delta += usize::from(!smooth && batch.loss_db > batch.bullington_db);
+        });
+    }
+    assert!(near_grazing > 100 && flat_transhorizon > 100 && rough_delta > 100,
+        "{near_grazing} near grazing, {flat_transhorizon} flat transhorizon, {rough_delta} rough with delta");
+    println!("Maximum error vs batch: {max_error:.3e} dB");
+}
+
+#[test]
+fn live_smooth_earth_interpolation_is_bounded() {
+    let site = Site::new("tx", 0.0, 0.0);
+    let client = ClientRadioProfile::default().as_radio_budget();
+    let mut seed = 0xd597_51a9_u32;
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(seed) / f64::from(u32::MAX)
+    };
+    let mut max_spherical_error = 0.0_f64;
+    let mut max_delta_error = 0.0_f64;
+    for k in 0..=6 {
+        let k_factor = 0.5 + (4.0 / 3.0 - 0.5) * (f64::from(k) / 6.0);
+        for frequency in 0..=13 {
+            let rf = RfSettings {
+                diffraction_model: DiffractionModel::DeltaBullington,
+                frequency_mhz: 400.0 + 200.0 * f64::from(frequency),
+                k_factor,
+                ..RfSettings::default()
+            };
+            let step = [10.0, 30.0, 50.0][((k + frequency) % 3) as usize];
+            let grid = SweepGrid::new(60_000.0, step).unwrap();
+            let sweep = Sweep::new(&site, &rf, &client, LiveMode::Downlink, grid, 10.0).unwrap();
+            let spherical = sweep.spherical.as_ref().unwrap();
+            for case in 0..4096 {
+                // Sample both short and long distances densely.
+                let short = (100.0_f64 / step).ceil() as usize;
+                let j = short + (next().powi(2) * (sweep.samples.len() - short) as f64) as usize;
+                let sample = &sweep.samples[j - 1];
+                let d = sample.distance;
+                let grazing = d.powi(2) / (4.0 * sweep.ed);
+                let clear = grazing + 0.276 * (d * sweep.wavelength).sqrt();
+                let [ht, hr] = match case % 8 {
+                    0 => [500.0 * next(), 500.0 * next()],
+                    1 => [500.0 * next().powi(4), 500.0 * next().powi(4)],
+                    2 => [grazing * (0.9 + 0.2 * next()), grazing],
+                    3 => [clear * (0.96 + 0.08 * next()), clear],
+                    4 => [0.0, 500.0 * next()],
+                    5 => [500.0 * next(), 0.000_001],
+                    6 => [0.01 + 3.0 * next(), 500.0 * next().powi(4)],
+                    _ => [500.0 * next().powi(4), 0.01 + 3.0 * next()],
+                }
+                .map(|h| h.min(500.0));
+                let exact = spherical_earth_loss_db(d, [ht, hr], sweep.ed / 2.0, sweep.wavelength);
+                let actual = spherical.loss(j - 1, d, [ht, hr]).0;
+                let spherical_error = (actual - exact).abs();
+                let exact_delta = (exact - sweep.smooth_bullington(sample, j, ht, hr)).max(0.0);
+                let delta = sweep.smooth_earth_correction(sample, j, ht, hr);
+                let delta_error = (delta - exact_delta).abs();
+                // With a zero endpoint and a collapsed clearance point the
+                // exact implementation can return NaN. Preserve that case.
+                assert!(
+                    (actual.is_nan() && exact.is_nan()) || spherical_error <= 0.05,
+                    "{d} m, [{ht}, {hr}] m, k={k_factor}, {} MHz: spherical error {spherical_error}",
+                    rf.frequency_mhz,
+                );
+                assert!(
+                    delta_error <= 0.05,
+                    "{d} m, [{ht}, {hr}] m, k={k_factor}, {} MHz: delta error {delta_error}",
+                    rf.frequency_mhz,
+                );
+                max_spherical_error = max_spherical_error.max(spherical_error);
+                max_delta_error = max_delta_error.max(delta_error);
+            }
+        }
+    }
+    println!(
+        "Maximum error over 401,408 paths: spherical {max_spherical_error:.6} dB, delta {max_delta_error:.6} dB"
+    );
 }
 
 #[test]
@@ -272,11 +534,7 @@ fn first_step_has_no_interior_and_ground_gaps_stop_the_ray() {
             }
         }
         fn surface(&self, p: Point) -> Option<f64> {
-            Some(if (p.y - 50.0).abs() < 1.0 {
-                1000.0
-            } else {
-                f64::NAN
-            })
+            panic!("Ground-only coverage should not sample DOM at {p:?}");
         }
         fn has_surface(&self) -> bool {
             true
@@ -289,13 +547,15 @@ fn first_step_has_no_interior_and_ground_gaps_stop_the_ray() {
         ..RfSettings::default()
     };
     let client = ClientRadioProfile::default().as_radio_budget();
-    let polar = sweep(&Gap, &site, &rf, &client, LiveMode::Downlink, grid).unwrap();
+    let polar = sweep(&Gap, &site, &rf, &client, LiveMode::Downlink, grid, 10.0).unwrap();
     let ray = polar.ray(0);
     let expected = received_power_dbm(
         rf.tx_power_dbm,
         2.15,
         1.0,
-        free_space_path_loss_db(100.0, rf.frequency_mhz).unwrap(),
+        free_space_path_loss_db(100.0, rf.frequency_mhz).unwrap()
+            + rf.model_correction_db
+            + step_allowance_db(100.0, 10.0),
         2.15,
         0.0,
         rf.miscellaneous_loss_db,

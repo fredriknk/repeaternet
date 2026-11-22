@@ -1,5 +1,8 @@
 use axum::{Json, extract::State};
-use repeaternet_rf_core::{EvaluationOptions, HeightReference, LinkEvaluator, Site, SiteKind};
+use repeaternet_rf_core::{
+    EvaluationOptions, HeightReference, LinkEvaluator, Site, SiteKind,
+    calibration::CERTIFICATION_MAX_STEP_M,
+};
 use repeaternet_terrain::{
     TerrainLayer, TerrainSource, Transformer, profile::bounded_profile_step,
 };
@@ -12,7 +15,6 @@ use crate::{
     terrain_http::{TerrainContext, terrain_invalid},
 };
 
-const SAMPLE_STEP_M: f64 = 10.0;
 const MAX_PROFILE_SAMPLES: usize = 65_536;
 
 pub async fn evaluate(
@@ -35,7 +37,7 @@ pub async fn evaluate(
         None => false,
     };
     let project_id = body.get("project_id").cloned();
-    let (context, rf) = workspace
+    let (context, rf, mut source, mut target) = workspace
         .run(app, move |app, key, session| {
             if project_id.is_some_and(|id| id.as_str() != Some(&session.project_id)) {
                 return Err(ApiError::conflict("The active project changed"));
@@ -43,7 +45,15 @@ pub async fn evaluate(
             let context = TerrainContext::capture(app, key, session, false)?;
             let plan = active_project(&app.store, key, session)?.plan;
             let rf = route_inputs::rf(&route_inputs::merged(&app.defaults, &plan, "rf")?)?;
-            Ok((context, rf))
+            let overrides = route_inputs::router_clutter_overrides(&plan)?;
+            for site in [&mut source, &mut target] {
+                site.terminal_clutter = overrides
+                    .get(site.id.as_str())
+                    .filter(|_| site.kind == SiteKind::Router)
+                    .copied()
+                    .unwrap_or_else(|| rf.antenna_settings(site.kind).terminal_clutter);
+            }
+            Ok((context, rf, source, target))
         })
         .await?;
 
@@ -69,10 +79,12 @@ pub async fn evaluate(
         {
             site.position = position;
             site.ground_elevation_m = elevation;
+            site.sample_terminal_clutter(&terrain)
+                .map_err(terrain_invalid)?;
         }
         if !bounded_profile_step(
             source.distance_to(&target),
-            SAMPLE_STEP_M,
+            CERTIFICATION_MAX_STEP_M,
             terrain.resolution_m(),
             MAX_PROFILE_SAMPLES,
         )
@@ -88,7 +100,7 @@ pub async fn evaluate(
                 &source,
                 &target,
                 EvaluationOptions {
-                    sample_step_m: Some(SAMPLE_STEP_M),
+                    sample_step_m: Some(CERTIFICATION_MAX_STEP_M),
                     include_profile,
                     ..EvaluationOptions::default()
                 },

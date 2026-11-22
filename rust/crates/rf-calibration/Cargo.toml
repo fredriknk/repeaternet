@@ -1,0 +1,26 @@
+[package]
+name = "repeaternet-rf-calibration"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Measured-link dataset extraction and RF engine calibration harness"
+
+[[bin]]
+name = "rf-calibration"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1"
+geo = { version = "0.33.1", default-features = false }
+getrandom = "0.4"
+repeaternet-providers = { path = "../providers" }
+repeaternet-rf-core = { path = "../rf-core" }
+repeaternet-terrain = { path = "../terrain" }
+rusqlite = { version = "0.43", features = ["bundled", "functions", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11"
+tempfile = "3"
+url = "2"

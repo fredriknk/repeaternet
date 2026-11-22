@@ -147,6 +147,8 @@ pub struct SourceEstimate {
     pub requested_resolution_m: f64,
     pub effective_resolution_m: f64,
     pub estimated_raw_mib: f64,
+    /// Raw Float32 size of the composed tiles absent from the cache.
+    pub estimated_uncached_raw_mib: f64,
     pub estimated_disk_mib: f64,
     pub available_disk_mib: f64,
     pub cache_hits: usize,
@@ -181,6 +183,8 @@ pub struct FetchedTiles {
     pub paths: Vec<PathBuf>,
     pub warnings: Vec<String>,
     pub providers_used: BTreeSet<String>,
+    /// Terrain response body bytes read from upstream, including retries.
+    pub bytes_fetched: u64,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -445,6 +449,7 @@ impl TerrainDownloader {
         let mut cache_hits = 0;
         let mut cache_total = 0;
         let mut raw = 0.0;
+        let mut uncached_raw = 0.0;
         let mut uncovered = 0.0;
         let mut warnings = BTreeSet::new();
         for (product, grid) in [(Product::Dtm, &plan.dtm), (Product::Dom, &plan.dom)] {
@@ -461,6 +466,8 @@ impl TerrainDownloader {
                 if cache.is_file() {
                     cache_hits += 1;
                     warnings.extend(read_report(&cache).warnings);
+                } else {
+                    uncached_raw += tile.pixel_count() as f64 * 4.0 / MIB;
                 }
                 if let Some(first) = ranked.first() {
                     grouped
@@ -512,6 +519,7 @@ impl TerrainDownloader {
                 grid.effective_resolution_m
             }),
             estimated_raw_mib: raw,
+            estimated_uncached_raw_mib: uncached_raw,
             estimated_disk_mib: raw * 2.0,
             available_disk_mib: fs2::available_space(directory)? as f64 / MIB,
             cache_hits,
@@ -592,6 +600,7 @@ impl TerrainDownloader {
             fetched.providers_used.extend(report.providers_used);
         }
         context.check()?;
+        fetched.bytes_fetched = context.bytes.load(Ordering::Relaxed);
         Ok(fetched)
     }
 
