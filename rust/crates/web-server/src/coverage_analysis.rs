@@ -80,6 +80,8 @@ pub(crate) fn source_sites(job: &Value) -> ApiResult<Vec<Site>> {
                 ground_elevation_m: number("ground_elevation_m")?,
                 surface_elevation_m: site["surface_elevation_m"].as_f64(),
                 antenna_height_m: number("antenna_height_m")?,
+                terminal_clutter: Default::default(),
+                clutter_height_m: None,
                 height_reference: match site["height_reference"].as_str() {
                     Some("ground_dtm") | None => HeightReference::GroundDtm,
                     Some("surface_dom") => HeightReference::SurfaceDom,

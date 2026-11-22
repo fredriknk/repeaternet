@@ -1,6 +1,6 @@
 //! Scalar link budget and evaluation results.
 
-use crate::{require_positive, DiffractionObstacle, RfError, TerrainProfile};
+use crate::{require_positive, DiffractionModel, DiffractionObstacle, RfError, TerrainProfile};
 
 /// Free-space path loss using the horizontal distance in metres and frequency in MHz.
 pub fn free_space_path_loss_db(distance_m: f64, frequency_mhz: f64) -> Result<f64, RfError> {
@@ -33,6 +33,9 @@ pub struct DirectionResult {
     pub fspl_db: f64,
     pub diffraction_loss_db: f64,
     pub clutter_loss_db: f64,
+    pub model_correction_db: f64,
+    pub terminal_clutter_db: f64,
+    pub step_allowance_db: f64,
     pub total_path_loss_db: f64,
     pub tx_gain_dbi: f64,
     pub rx_gain_dbi: f64,
@@ -67,7 +70,9 @@ pub struct LinkResult {
     /// Distance from the source to the minimum Fresnel clearance ratio.
     pub minimum_clearance_distance_m: f64,
     pub maximum_fresnel_radius_m: f64,
+    pub diffraction_model: DiffractionModel,
     pub diffraction_loss_db: f64,
+    pub terminal_clutter_db: f64,
     pub dominant_obstacles: Vec<DiffractionObstacle>,
     pub profile: Option<TerrainProfile>,
 }

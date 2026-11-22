@@ -102,6 +102,7 @@ fn antenna(value: &Value) -> ApiResult<AntennaSettings> {
         pattern: AntennaPattern::ConstantGain(value["gain_dbi"].as_f64().unwrap()),
         feed_loss_db: value["feed_loss_db"].as_f64().unwrap(),
         height_agl_m,
+        terminal_clutter: Default::default(),
     })
 }
 
@@ -157,6 +158,7 @@ pub(crate) fn rf(value: &Value) -> ApiResult<RfSettings> {
         },
         clutter_loss_enabled: value["clutter_loss_enabled"].as_bool().unwrap(),
         clutter_loss_db_per_m: n("clutter_loss_db_per_m"),
+        ..RfSettings::default()
     };
     settings
         .effective_sensitivity_dbm()

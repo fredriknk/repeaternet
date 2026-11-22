@@ -168,10 +168,6 @@ fn site(id: &str, x: f64, y: f64, kind: SiteKind, antenna_height_m: f64) -> Site
 fn scalar_link_matches_full_profile_with_and_without_surface() {
     let a = site("A", 0.0, 0.0, SiteKind::EndpointA, 30.0);
     let b = site("B", 1200.0, 0.0, SiteKind::EndpointB, 40.0);
-    let settings = RfSettings {
-        clutter_loss_enabled: true,
-        ..RfSettings::default()
-    };
     let blocked = TestTerrain {
         surface: Some(|x| {
             if x < 400.0 {
@@ -185,23 +181,37 @@ fn scalar_link_matches_full_profile_with_and_without_surface() {
         ..flat(10.0)
     };
     for terrain in [flat(10.0), blocked] {
-        let evaluator = LinkEvaluator::new(&terrain, &settings);
-        let mut full = evaluator
-            .evaluate(&a, &b, EvaluationOptions::default())
-            .unwrap();
-        let scalar = evaluator
-            .evaluate(
-                &a,
-                &b,
-                EvaluationOptions {
-                    include_profile: false,
-                    ..EvaluationOptions::default()
-                },
-            )
-            .unwrap();
-        full.profile = None;
-        assert_eq!(scalar, full);
-        assert_eq!(format!("{scalar:?}"), format!("{full:?}"));
+        for obstacle_surface in [ObstacleSurface::Ground, ObstacleSurface::Surface] {
+            for diffraction_model in [
+                DiffractionModel::Bullington,
+                DiffractionModel::DeltaBullington,
+                DiffractionModel::Deygout3,
+            ] {
+                let settings = RfSettings {
+                    obstacle_surface,
+                    diffraction_model,
+                    clutter_loss_enabled: true,
+                    clutter_loss_db_per_m: 0.1,
+                    ..RfSettings::default()
+                };
+                let evaluator = LinkEvaluator::new(&terrain, &settings);
+                let mut full = evaluator
+                    .evaluate(&a, &b, EvaluationOptions::default())
+                    .unwrap();
+                let scalar = evaluator
+                    .evaluate(
+                        &a,
+                        &b,
+                        EvaluationOptions {
+                            include_profile: false,
+                            ..EvaluationOptions::default()
+                        },
+                    )
+                    .unwrap();
+                full.profile = None;
+                assert_eq!(scalar, full);
+            }
+        }
     }
 }
 
@@ -282,11 +292,255 @@ fn profile_uses_surface_obstructions_and_ground_fallback() {
     assert!(link.profile.is_none());
 }
 
+#[test]
+fn obstacle_surface_controls_clearance_and_dom_sampling() {
+    let terrain = TestTerrain {
+        surface: Some(|x| if x == 500.0 { 40.0 } else { 0.0 }),
+        ..flat(10.0)
+    };
+    let no_dom_reads = TestTerrain {
+        surface: Some(|_| panic!("unexpected DOM sample")),
+        ..flat(10.0)
+    };
+    let clean = flat(10.0);
+    let a = site("A", 0.0, 0.0, SiteKind::EndpointA, 20.0);
+    let b = site("B", 1000.0, 0.0, SiteKind::EndpointB, 20.0);
+    let ground = RfSettings::default();
+    let surface = RfSettings {
+        obstacle_surface: ObstacleSurface::Surface,
+        ..ground.clone()
+    };
+    let options = EvaluationOptions::default();
+    let mut on_ground = LinkEvaluator::new(&terrain, &ground)
+        .evaluate(&a, &b, options)
+        .unwrap();
+    let on_surface = LinkEvaluator::new(&terrain, &surface)
+        .evaluate(&a, &b, options)
+        .unwrap();
+    assert!(on_ground.los_clear && on_ground.fresnel_clear);
+    assert!(!on_surface.los_clear && !on_surface.fresnel_clear);
+    assert!(on_surface.diffraction_loss_db > on_ground.diffraction_loss_db);
+    let profile = on_ground.profile.take().unwrap();
+    assert!(profile.surface_available);
+    assert_eq!(profile.surface_elevation_m[50], 40.0);
+    assert_eq!(
+        profile.effective_obstruction_m[50],
+        profile.earth_bulge_m[50]
+    );
+    let scalar = EvaluationOptions {
+        include_profile: false,
+        ..options
+    };
+    assert_eq!(
+        on_ground,
+        LinkEvaluator::new(&no_dom_reads, &ground)
+            .evaluate(&a, &b, scalar)
+            .unwrap()
+    );
+    assert_eq!(
+        on_ground,
+        LinkEvaluator::new(&clean, &ground)
+            .evaluate(&a, &b, scalar)
+            .unwrap()
+    );
+}
+
+#[test]
+fn delta_bullington_matches_bullington_on_short_los_and_adds_spherical_loss() {
+    let terrain = flat(10.0);
+    let delta = RfSettings::default();
+    let bull = RfSettings {
+        diffraction_model: DiffractionModel::Bullington,
+        ..delta.clone()
+    };
+    let a = Site::new("A", 0.0, 0.0);
+    for distance in [100.0, 30_000.0] {
+        let b = Site::new("B", distance, 0.0);
+        let options = EvaluationOptions::default();
+        let actual = LinkEvaluator::new(&terrain, &delta)
+            .evaluate(&a, &b, options)
+            .unwrap();
+        let baseline = LinkEvaluator::new(&terrain, &bull)
+            .evaluate(&a, &b, options)
+            .unwrap();
+        assert_eq!(actual.diffraction_model, DiffractionModel::DeltaBullington);
+        assert_eq!(actual.dominant_obstacles, baseline.dominant_obstacles);
+        assert_eq!(baseline.los_clear, distance == 100.0);
+        if distance == 100.0 {
+            assert_eq!(actual.diffraction_loss_db, baseline.diffraction_loss_db);
+        } else {
+            assert!(actual.diffraction_loss_db > baseline.diffraction_loss_db);
+            near(actual.diffraction_loss_db, 52.456, 0.05);
+        }
+    }
+}
+
+#[test]
+fn deygout_link_reports_both_selected_ridges() {
+    let terrain = TestTerrain {
+        ground: |x| match x {
+            1000.0 => 23.0 - earth_bulge_m(x, 3000.0, calibration::K_FACTOR).unwrap(),
+            2000.0 => 18.0 - earth_bulge_m(x, 3000.0, calibration::K_FACTOR).unwrap(),
+            _ => 0.0,
+        },
+        ..flat(1000.0)
+    };
+    let settings = RfSettings {
+        frequency_mhz: SPEED_OF_LIGHT_M_S / 1e6,
+        diffraction_model: DiffractionModel::Deygout3,
+        ..RfSettings::default()
+    };
+    let a = Site::new("A", 0.0, 0.0);
+    let b = Site::new("B", 3000.0, 0.0);
+    let link = LinkEvaluator::new(&terrain, &settings)
+        .evaluate(&a, &b, EvaluationOptions::default())
+        .unwrap();
+    assert_eq!(link.diffraction_model, DiffractionModel::Deygout3);
+    near(link.diffraction_loss_db, 23.291_301_363_541_344, 1e-10);
+    assert_eq!(link.dominant_obstacles.len(), 2);
+    assert_eq!(link.dominant_obstacles[0].distance_m, 1000.0);
+    assert_eq!(link.dominant_obstacles[0].elevation_m, 23.0);
+    assert_eq!(link.dominant_obstacles[1].distance_m, 2000.0);
+    assert_eq!(link.dominant_obstacles[1].elevation_m, 18.0);
+}
+
+#[test]
+fn reciprocal_budget_includes_model_terminal_clutter_and_step_allowance() {
+    let terrain = flat(10.0);
+    let settings = RfSettings::default();
+    let a = Site {
+        terminal_clutter: TerminalClutter::P2108Dom,
+        clutter_height_m: Some(12.0),
+        ..Site::new("A", 0.0, 0.0)
+    };
+    let b = Site {
+        terminal_clutter: TerminalClutter::P2108Dom,
+        clutter_height_m: Some(15.0),
+        surface_elevation_m: Some(5.0),
+        height_reference: HeightReference::SurfaceDom,
+        ..Site::new("B", 100.0, 0.0)
+    };
+    let evaluator = LinkEvaluator::new(&terrain, &settings);
+    let options = EvaluationOptions {
+        sample_step_m: Some(50.0),
+        step_allowance: true,
+        ..EvaluationOptions::default()
+    };
+    let with_clutter = evaluator.evaluate(&a, &b, options).unwrap();
+    let a_loss = p2108_terminal_correction_db(settings.frequency_mhz, 3.0, 12.0);
+    let b_loss = p2108_terminal_correction_db(settings.frequency_mhz, 8.0, 15.0);
+    assert!(a_loss > 0.0 && b_loss > 0.0);
+    assert_eq!(with_clutter.terminal_clutter_db, a_loss + b_loss);
+    for direction in [&with_clutter.forward, &with_clutter.reverse] {
+        assert_eq!(
+            direction.model_correction_db,
+            calibration::MODEL_CORRECTION_DB
+        );
+        assert_eq!(direction.terminal_clutter_db, a_loss + b_loss);
+        assert_eq!(direction.step_allowance_db, 1.6);
+        near(
+            direction.total_path_loss_db,
+            direction.fspl_db + direction.diffraction_loss_db + 3.0 + a_loss + b_loss + 1.6,
+            1e-12,
+        );
+    }
+    let a = Site {
+        terminal_clutter: TerminalClutter::None,
+        ..a
+    };
+    let b = Site {
+        clutter_height_m: None,
+        ..b
+    };
+    let baseline = evaluator
+        .evaluate(&a, &b, EvaluationOptions::default())
+        .unwrap();
+    assert_eq!(baseline.terminal_clutter_db, 0.0);
+    assert_eq!(baseline.forward.step_allowance_db, 0.0);
+    let optimistic = evaluator.optimistic_margin_db(&a, &b).unwrap();
+    let uncorrected = RfSettings {
+        model_correction_db: 0.0,
+        ..settings
+    };
+    near(
+        LinkEvaluator::new(&terrain, &uncorrected)
+            .optimistic_margin_db(&a, &b)
+            .unwrap()
+            - optimistic,
+        3.0,
+        1e-12,
+    );
+}
+
+#[test]
+fn calibrated_step_allowance_uses_log_interpolation_and_native_baseline() {
+    use calibration::step_allowance_db;
+
+    assert_eq!(step_allowance_db(10.0, 10.0), 0.0);
+    assert_eq!(step_allowance_db(50.0, 10.0), 1.6);
+    assert_eq!(step_allowance_db(200.0, 10.0), 4.2);
+    assert_eq!(step_allowance_db(30.0, 30.0), 0.0);
+    assert_eq!(step_allowance_db(10.0, 30.0), 0.0);
+    near(step_allowance_db(100.0, 50.0), 1.3, 1e-12);
+    near(step_allowance_db(400.0, 10.0), 5.5, 1e-12);
+    assert_eq!(step_allowance_db(10_000.0, 10.0), 8.0);
+    for resolution in [10.0, 30.0, 200.0] {
+        let allowances = [10.0, 30.0, 50.0, 100.0, 200.0, 400.0, 10_000.0]
+            .map(|step| step_allowance_db(step, resolution));
+        assert!(allowances.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+}
+
+#[test]
+fn p2108_and_terminal_clutter_disc_median() {
+    assert_eq!(p2108_terminal_correction_db(869.5, 12.0, 12.0), 0.0);
+    assert!(
+        p2108_terminal_correction_db(869.5, 2.0, 12.0)
+            > p2108_terminal_correction_db(869.5, 5.0, 12.0)
+    );
+    for freq in [29.0, 3001.0] {
+        assert_eq!(p2108_terminal_correction_db(freq, 2.0, 12.0), 0.0);
+    }
+    for freq in [30.0, 3000.0] {
+        assert!(p2108_terminal_correction_db(freq, 2.0, 12.0) > 0.0);
+    }
+
+    let centre = Point {
+        x: 100.0,
+        y: -100.0,
+    };
+    let sampled = std::cell::Cell::new(0);
+    let median = terminal_clutter_height_m(
+        |point| {
+            assert!(point.distance_to(centre) <= 30.0);
+            sampled.set(sampled.get() + 1);
+            match (point.x - centre.x, point.y - centre.y) {
+                (0.0, 0.0) => Some((20.0, 15.0)),
+                (0.0, 20.0) => Some((20.0, 24.0)),
+                (20.0, 20.0) => Some((20.0, 28.0)),
+                (-20.0, 0.0) => Some((20.0, 32.0)),
+                _ => None,
+            }
+        },
+        centre,
+        20.0,
+    );
+    assert_eq!(sampled.get(), 9);
+    assert_eq!(median, Some(6.0));
+    assert_eq!(
+        terminal_clutter_height_m(|_| Some((10.0, 12.0)), centre, 50.0),
+        Some(2.0)
+    );
+    assert_eq!(terminal_clutter_height_m(|_| None, centre, 10.0), None);
+}
+
 // Reference profiles and client radio fixture from tests/test_coverage.py.
 #[test]
 fn strict_los_flat_ridge_and_valley_match_python() {
     let settings = RfSettings {
         validation_mode: ValidationMode::StrictLos,
+        diffraction_model: DiffractionModel::Bullington,
+        model_correction_db: 0.0,
         ..RfSettings::default()
     };
     let a = site("router", 200.0, 1000.0, SiteKind::Router, 100.0);
@@ -328,7 +582,10 @@ fn strict_los_flat_ridge_and_valley_match_python() {
             near(result.diffraction_loss_db, 47.98844327794896, 1e-10);
             near(result.worst_margin_db(), 1.0037653421579193, 1e-10);
             assert_eq!(result.minimum_clearance_distance_m, 800.0);
-            let propagation = RfSettings::default();
+            let propagation = RfSettings {
+                validation_mode: ValidationMode::Propagation,
+                ..settings.clone()
+            };
             let rf_only = LinkEvaluator::new(&terrain, &propagation)
                 .evaluate(&a, &b, EvaluationOptions::default())
                 .unwrap();
@@ -361,7 +618,11 @@ fn asymmetric_client_radio_changes_transmit_and_receive_budgets() {
     };
     let a = site("router", 0.0, 50.0, SiteKind::Router, 10.0);
     let b = site("client", 1000.0, 50.0, SiteKind::Client, 1.2);
-    let link = LinkEvaluator::new(&flat(10.0), &RfSettings::default())
+    let settings = RfSettings {
+        diffraction_model: DiffractionModel::Bullington,
+        ..RfSettings::default()
+    };
+    let link = LinkEvaluator::new(&flat(10.0), &settings)
         .evaluate(
             &a,
             &b,
@@ -380,10 +641,10 @@ fn asymmetric_client_radio_changes_transmit_and_receive_budgets() {
     assert_eq!(link.reverse.tx_power_dbm, 14.0);
     assert_eq!(link.forward.miscellaneous_loss_db, 0.0);
     assert_eq!(link.reverse.miscellaneous_loss_db, 2.0);
-    near(link.forward.received_power_dbm, -73.40021559174679, 1e-10);
-    near(link.reverse.received_power_dbm, -83.40021559174677, 1e-10);
-    near(link.forward.usable_margin_db, 38.599784408253214, 1e-10);
-    near(link.reverse.usable_margin_db, 36.59978440825323, 1e-10);
+    near(link.forward.received_power_dbm, -76.40021559174679, 1e-10);
+    near(link.reverse.received_power_dbm, -86.40021559174677, 1e-10);
+    near(link.forward.usable_margin_db, 35.599784408253214, 1e-10);
+    near(link.reverse.usable_margin_db, 33.59978440825323, 1e-10);
     near(link.forward.departure_angle_deg, -0.5041898451633419, 1e-12);
     near(
         link.reverse.departure_angle_deg,

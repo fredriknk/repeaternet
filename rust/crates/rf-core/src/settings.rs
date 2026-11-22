@@ -2,6 +2,10 @@
 
 use std::{collections::BTreeMap, path::Path};
 
+use crate::{
+    calibration::{K_FACTOR, MODEL_CORRECTION_DB},
+    DiffractionModel, ObstacleSurface, TerminalClutter,
+};
 use crate::{require_positive, AntennaPattern, ElevationPattern, RfError, SiteKind};
 
 /// Structural condition required in addition to the usable RF margin.
@@ -68,6 +72,8 @@ pub struct AntennaSettings {
     pub pattern: AntennaPattern,
     pub feed_loss_db: f64,
     pub height_agl_m: f64,
+    /// Terminal clutter model for sites constructed from this role's antenna settings.
+    pub terminal_clutter: TerminalClutter,
 }
 
 impl Default for AntennaSettings {
@@ -76,6 +82,7 @@ impl Default for AntennaSettings {
             pattern: AntennaPattern::ConstantGain(2.15),
             feed_loss_db: 1.0,
             height_agl_m: 3.0,
+            terminal_clutter: TerminalClutter::default(),
         }
     }
 }
@@ -107,6 +114,9 @@ pub struct RfSettings {
     pub fade_margin_db: f64,
     pub miscellaneous_loss_db: f64,
     pub k_factor: f64,
+    pub diffraction_model: DiffractionModel,
+    pub obstacle_surface: ObstacleSurface,
+    pub model_correction_db: f64,
     pub required_fresnel_clearance: f64,
     pub validation_mode: ValidationMode,
     pub endpoint_a: AntennaSettings,
@@ -125,7 +135,10 @@ impl Default for RfSettings {
             receiver_sensitivity_dbm: -130.0,
             fade_margin_db: 10.0,
             miscellaneous_loss_db: 0.0,
-            k_factor: 1.0,
+            k_factor: K_FACTOR,
+            diffraction_model: DiffractionModel::default(),
+            obstacle_surface: ObstacleSurface::default(),
+            model_correction_db: MODEL_CORRECTION_DB,
             required_fresnel_clearance: 0.60,
             validation_mode: ValidationMode::Propagation,
             endpoint_a: AntennaSettings::default(),

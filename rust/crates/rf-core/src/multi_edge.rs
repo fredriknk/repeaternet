@@ -1,15 +1,20 @@
 //! Three-edge approximations using a common Deygout selection.
 
-use repeaternet_rf_core::{knife_edge_loss_db, knife_edge_v};
+use crate::{knife_edge_loss_db, knife_edge_v};
 use serde::Serialize;
 
-#[derive(Serialize)]
+/// A selected edge in the capped multi-edge calculation.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Edge {
     pub distance_m: f64,
+    #[serde(skip)]
+    pub elevation_m: f64,
     pub v: f64,
     pub j_db: f64,
 }
 
+/// Losses for the three approximations, using the same Deygout edge selection.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MultiEdge {
     pub deygout: f64,
     pub epstein_peterson: f64,
@@ -95,7 +100,13 @@ impl Profile<'_> {
     }
 }
 
-pub fn evaluate(x: &[f64], z: &[f64], freq: f64) -> MultiEdge {
+/// Select up to three Deygout edges and calculate losses for all three approximations.
+/// Distances must be increasing and match the curvature-adjusted elevations,
+/// with antenna elevations substituted at both endpoints.
+pub fn deygout3_loss_db(x: &[f64], z: &[f64], freq: f64) -> MultiEdge {
+    if x.len() < 3 {
+        return MultiEdge::default();
+    }
     let profile = Profile { x, z, freq };
     let last = x.len() - 1;
     let mut pending: Vec<_> = profile.candidate(0, last).into_iter().collect();
@@ -128,6 +139,7 @@ pub fn evaluate(x: &[f64], z: &[f64], freq: f64) -> MultiEdge {
         .into_iter()
         .map(|edge| Edge {
             distance_m: profile.x[edge.i],
+            elevation_m: profile.z[edge.i],
             v: edge.v,
             j_db: knife_edge_loss_db(edge.v),
         })

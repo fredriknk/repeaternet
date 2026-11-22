@@ -1,6 +1,8 @@
 //! Terminal corrections for paired ground and surface profiles.
 
-use repeaternet_rf_core::{EARTH_MEAN_RADIUS_M, Site, knife_edge_loss_db};
+use repeaternet_rf_core::{
+    EARTH_MEAN_RADIUS_M, Site, calibration::TERMINAL_CLUTTER_RADIUS_M, p2108_terminal_correction_db,
+};
 use serde::Serialize;
 
 use crate::dataset::{PathFeatures, ProfileRecord};
@@ -30,17 +32,6 @@ pub struct Clutter {
     pub p833_db: f64,
 }
 
-fn p2108(freq: f64, antenna: f64, representative: f64) -> f64 {
-    let gap = representative - antenna;
-    if gap <= 0.0 {
-        return 0.0;
-    }
-    // Both forest and urban use Eq. (2a) and the same default width.
-    let theta = (gap / 27.0).atan().to_degrees();
-    let v = 0.342 * (freq / 1000.0 * gap * theta).sqrt();
-    (knife_edge_loss_db(v) - 6.03).max(0.0)
-}
-
 fn p833(canopy_ray_m: f64) -> f64 {
     -MAX_WOODLAND_LOSS_DB * (-canopy_ray_m * GAMMA_DB_PER_M / MAX_WOODLAND_LOSS_DB).exp_m1()
 }
@@ -57,7 +48,8 @@ fn terminal(
     let last = dom.len() - 1;
     let at = |i: usize| if reverse { last - i } else { i };
     let excess = |i: usize| dom[at(i)] - profile.dtm[at(i)];
-    let mut nearby = (1..=last).take_while(|i| *i as f64 * profile.step_m <= 30.0);
+    let mut nearby =
+        (1..=last).take_while(|i| *i as f64 * profile.step_m <= TERMINAL_CLUTTER_RADIUS_M);
     // A variable, sustained obstruction is a rough proxy for canopy.
     let cover = if nearby.any(|i| {
         let (left, right) = (excess(i - 1), excess(i));
@@ -127,9 +119,10 @@ pub fn evaluate(
     let [tx_r, rx_r] = if reverse { [b, a] } else { [a, b] };
     let tx_clutter = terminal(profile, dom, tx, rx, tx_r, k, reverse);
     let rx_clutter = terminal(profile, dom, rx, tx, rx_r, k, !reverse);
-    let p2108_db = (30.0..=3000.0)
-        .contains(&freq)
-        .then(|| p2108(freq, tx.antenna_height_m, tx_r) + p2108(freq, rx.antenna_height_m, rx_r));
+    let p2108_db = (30.0..=3000.0).contains(&freq).then(|| {
+        p2108_terminal_correction_db(freq, tx.antenna_height_m, tx_r)
+            + p2108_terminal_correction_db(freq, rx.antenna_height_m, rx_r)
+    });
     // A continuous woodland ray can belong to both ends. Count its length once.
     let ray_distance = tx
         .distance_to(rx)
@@ -151,9 +144,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_corrections_are_bounded() {
-        assert_eq!(p2108(869.5, 12.0, 12.0), 0.0);
-        assert!(p2108(869.5, 2.0, 12.0) > p2108(869.5, 5.0, 12.0));
+    fn woodland_correction_is_bounded() {
         assert_eq!(p833(0.0), 0.0);
         assert!((p833(0.001) / 0.001 - GAMMA_DB_PER_M).abs() < 1e-6);
         assert_eq!(p833(10000.0), MAX_WOODLAND_LOSS_DB);

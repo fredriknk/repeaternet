@@ -2,49 +2,93 @@
 
 use std::f64::consts::PI;
 
-use repeaternet_rf_core::{
-    EARTH_MEAN_RADIUS_M, RfError, SPEED_OF_LIGHT_M_S, TerrainProfile, bullington_loss_db,
+use crate::{
+    bullington_loss_db, require_positive, DiffractionObstacle, DiffractionResult, RfError,
+    EARTH_MEAN_RADIUS_M, SPEED_OF_LIGHT_M_S,
 };
 
-pub struct Delta {
-    pub loss: f64,
-    pub smooth_bullington: f64,
-    pub spherical: f64,
-    pub smooth_agl: [f64; 2],
+/// Delta-Bullington loss and its constituent diffraction losses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeltaBullington {
+    pub loss_db: f64,
+    pub bullington_db: f64,
+    pub smooth_bullington_db: f64,
+    pub spherical_db: f64,
+    pub smooth_agl_m: [f64; 2],
+    pub obstacles: Vec<DiffractionObstacle>,
 }
 
-pub fn evaluate(
-    profile: &TerrainProfile,
+/// P.526 delta-Bullington on an endpoint-to-endpoint profile in metres.
+/// Distances start at zero. Supply raw obstacle elevations with ground DTM at
+/// both endpoints, the corresponding Earth bulges and the antenna LOS chord.
+pub fn delta_bullington_loss_db(
+    distances_m: &[f64],
+    obstacle_elevations_m: &[f64],
+    earth_bulge_m: &[f64],
+    los_elevations_m: &[f64],
+    frequency_mhz: f64,
+    k_factor: f64,
+) -> Result<DeltaBullington, RfError> {
+    require_positive(k_factor, "K-factor must be positive")?;
+    if distances_m.first() != Some(&0.0)
+        || earth_bulge_m.len() != distances_m.len()
+        || obstacle_elevations_m.len() != distances_m.len()
+    {
+        return Err(RfError::InvalidInput(
+            "Delta-Bullington requires matching profiles starting at zero",
+        ));
+    }
+    let curved: Vec<_> = obstacle_elevations_m
+        .iter()
+        .zip(earth_bulge_m)
+        .map(|(height, bulge)| height + bulge)
+        .collect();
+    let actual = bullington_loss_db(distances_m, &curved, los_elevations_m, frequency_mhz)?;
+    delta_from_bullington(
+        distances_m,
+        obstacle_elevations_m,
+        earth_bulge_m,
+        los_elevations_m,
+        frequency_mhz,
+        k_factor,
+        actual,
+    )
+}
+
+pub(crate) fn delta_from_bullington(
+    x: &[f64],
+    h: &[f64],
+    earth_bulge_m: &[f64],
+    los: &[f64],
     frequency_mhz: f64,
     k: f64,
-    actual_bullington: f64,
-) -> Result<Delta, RfError> {
-    let x = &profile.distances_m;
+    actual: DiffractionResult,
+) -> Result<DeltaBullington, RfError> {
     let last = x.len() - 1;
     let d = x[last];
-    let mut h = profile.surface_elevation_m.clone();
-    h[0] = profile.dtm_elevation_m[0];
-    h[last] = profile.dtm_elevation_m[last];
-    let los = &profile.los_elevation_m;
-    let [st, sr] = smooth_heights(x, &h, los);
+    let [st, sr] = smooth_earth_heights(x, h, los);
     let smooth_agl = [los[0] - st, los[last] - sr];
     let smooth_ray: Vec<_> = x
         .iter()
         .map(|&position| smooth_agl[0] + (smooth_agl[1] - smooth_agl[0]) * position / d)
         .collect();
     let smooth_bullington =
-        bullington_loss_db(x, &profile.earth_bulge_m, &smooth_ray, frequency_mhz)?.loss_db;
+        bullington_loss_db(x, earth_bulge_m, &smooth_ray, frequency_mhz)?.loss_db;
     let wavelength = SPEED_OF_LIGHT_M_S / (frequency_mhz * 1e6);
-    let spherical = spherical_loss(d, smooth_agl, EARTH_MEAN_RADIUS_M * k, wavelength);
-    Ok(Delta {
-        loss: actual_bullington + (spherical - smooth_bullington).max(0.0),
-        smooth_bullington,
-        spherical,
-        smooth_agl,
+    let spherical = spherical_earth_loss_db(d, smooth_agl, EARTH_MEAN_RADIUS_M * k, wavelength);
+    Ok(DeltaBullington {
+        loss_db: actual.loss_db + (spherical - smooth_bullington).max(0.0),
+        bullington_db: actual.loss_db,
+        smooth_bullington_db: smooth_bullington,
+        spherical_db: spherical,
+        smooth_agl_m: smooth_agl,
+        obstacles: actual.obstacles,
     })
 }
 
-fn smooth_heights(x: &[f64], h: &[f64], los: &[f64]) -> [f64; 2] {
+/// Fit endpoint-clipped smooth terrain to uncurved obstacles, with DTM at both endpoints.
+/// Distances must start at zero and increase, with one elevation and chord sample per distance.
+pub fn smooth_earth_heights(x: &[f64], h: &[f64], los: &[f64]) -> [f64; 2] {
     let last = x.len() - 1;
     let d = x[last];
     let (v1, v2) = x
@@ -76,7 +120,9 @@ fn smooth_heights(x: &[f64], h: &[f64], los: &[f64]) -> [f64; 2] {
     [st.min(h[0]), sr.min(h[last])]
 }
 
-fn spherical_loss(d: f64, [ht, hr]: [f64; 2], radius: f64, wavelength: f64) -> f64 {
+/// P.526 spherical diffraction over land for a path length, antenna heights above
+/// the fitted smooth earth, effective Earth radius and wavelength, all in metres.
+pub fn spherical_earth_loss_db(d: f64, [ht, hr]: [f64; 2], radius: f64, wavelength: f64) -> f64 {
     let first_term = |a: f64| {
         // Vertical polarization over land with beta = 1.
         let (eps, sigma) = (22.0_f64, 0.003);

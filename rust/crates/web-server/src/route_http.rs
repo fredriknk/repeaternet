@@ -330,6 +330,8 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
                 .then_some(surface),
                 antenna_height_m: location.height,
                 height_reference: HeightReference::GroundDtm,
+                terminal_clutter: Default::default(),
+                clutter_height_m: None,
             },
             origin: location.origin,
             policy: location.policy,

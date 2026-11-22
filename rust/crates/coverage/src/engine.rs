@@ -536,6 +536,8 @@ pub(crate) fn client_site(
         surface_elevation_m: surface,
         antenna_height_m: client.antenna.height_agl_m,
         height_reference: HeightReference::GroundDtm,
+        terminal_clutter: Default::default(),
+        clutter_height_m: None,
     }
 }
 

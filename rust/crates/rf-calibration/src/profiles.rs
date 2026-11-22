@@ -14,6 +14,7 @@ use repeaternet_providers::sources::{
     DownloadArea, FetchedTiles, PlanOptions, Product, ProviderRegistry, SourceChoice, SourcePlan,
     TerrainDownloader, TileLimits,
 };
+use repeaternet_rf_core::calibration::TERMINAL_CLUTTER_RADIUS_M;
 use repeaternet_terrain::{
     Bounds, GeoTiff, LonLat, Point, RasterTerrain, TerrainCrs, TerrainLayer, Transformer,
     corridor::corridor_geometry,
@@ -460,7 +461,8 @@ fn path_features(profile: &ProfileRecord) -> PathFeatures {
     };
     if let Some(dom) = &profile.dom {
         let excess: Vec<_> = dom.iter().zip(&profile.dtm).map(|(s, g)| s - g).collect();
-        let count = ((30.0 / profile.step_m).floor() as usize + 1).min(excess.len());
+        let count =
+            ((TERMINAL_CLUTTER_RADIUS_M / profile.step_m).floor() as usize + 1).min(excess.len());
         let median = |slice: &[f64]| {
             let mut slice = slice.to_vec();
             slice.sort_by(f64::total_cmp);

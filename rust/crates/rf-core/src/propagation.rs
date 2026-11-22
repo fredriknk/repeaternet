@@ -1,12 +1,16 @@
 //! Two-way terrain-aware link evaluation and optimistic routing margins.
 
 use crate::{
-    bullington_loss_db, elevation_angle_deg, free_space_path_loss_db, received_power_dbm,
-    AntennaSettings, DirectionResult, LinkResult, RadioBudget, RfError, RfSettings, Site,
-    TerrainSource, ValidationMode,
+    bullington_loss_db, deygout3_loss_db, elevation_angle_deg, free_space_path_loss_db,
+    p2108_terminal_correction_db, received_power_dbm, AntennaSettings, DeltaBullington,
+    DiffractionModel, DiffractionObstacle, DiffractionResult, DirectionResult, LinkResult,
+    ObstacleSurface, RadioBudget, RfError, RfSettings, Site, TerminalClutter, TerrainSource,
+    ValidationMode,
 };
 
-use crate::profile::sample_path;
+use crate::{
+    calibration::step_allowance_db, delta_bullington::delta_from_bullington, profile::sample_path,
+};
 
 /// Link-specific sampling options and radio overrides.
 #[derive(Clone, Copy, Debug)]
@@ -14,6 +18,8 @@ pub struct EvaluationOptions<'a> {
     pub sample_step_m: Option<f64>,
     /// Retain sampled terrain and clearance arrays in the result.
     pub include_profile: bool,
+    /// Add the calibrated allowance for a nominal step coarser than the native raster.
+    pub step_allowance: bool,
     pub source_radio: Option<&'a RadioBudget>,
     pub target_radio: Option<&'a RadioBudget>,
 }
@@ -23,6 +29,7 @@ impl Default for EvaluationOptions<'_> {
         Self {
             sample_step_m: None,
             include_profile: true,
+            step_allowance: false,
             source_radio: None,
             target_radio: None,
         }
@@ -56,7 +63,10 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             rx.feed_loss_db,
             self.settings.miscellaneous_loss_db,
         );
-        Ok(power - self.settings.effective_sensitivity_dbm()? - self.settings.fade_margin_db)
+        Ok(power
+            - self.settings.effective_sensitivity_dbm()?
+            - self.settings.fade_margin_db
+            - self.settings.model_correction_db)
     }
 
     /// Evaluate both directions using one sampled path and a shared propagation loss.
@@ -66,6 +76,7 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
         target: &Site,
         options: EvaluationOptions<'_>,
     ) -> Result<LinkResult, RfError> {
+        let obstacle_surface = self.settings.obstacle_surface;
         let samples = sample_path(
             self.terrain,
             source,
@@ -73,7 +84,15 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             self.settings.frequency_mhz,
             self.settings.k_factor,
             options.sample_step_m,
+            options.include_profile
+                || self.settings.clutter_loss_enabled
+                || obstacle_surface == ObstacleSurface::Surface,
         )?;
+        let step_allowance_db = if options.step_allowance {
+            step_allowance_db(samples.nominal_step_m, samples.resolution_m)
+        } else {
+            0.0
+        };
         let clutter_loss_db = if self.settings.clutter_loss_enabled {
             samples
                 .clutter_excess()
@@ -82,12 +101,28 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             0.0
         };
         let (distance_m, metrics, diffraction, profile) = if options.include_profile {
-            let profile = samples.into_profile()?;
-            let diffraction = bullington_loss_db(
+            let profile = samples.into_profile(obstacle_surface)?;
+            let diffraction = self.diffraction(
                 &profile.distances_m,
                 &profile.effective_obstruction_m,
                 &profile.los_elevation_m,
-                self.settings.frequency_mhz,
+                |actual| {
+                    let raw = obstacle_surface.ground_anchored_elevations(
+                        &profile.dtm_elevation_m,
+                        profile
+                            .surface_available
+                            .then_some(&profile.surface_elevation_m),
+                    );
+                    delta_from_bullington(
+                        &profile.distances_m,
+                        &raw,
+                        &profile.earth_bulge_m,
+                        &profile.los_elevation_m,
+                        self.settings.frequency_mhz,
+                        self.settings.k_factor,
+                        actual,
+                    )
+                },
             )?;
             (
                 *profile.distances_m.last().unwrap(),
@@ -96,12 +131,26 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
                 Some(profile),
             )
         } else {
-            let scalar = samples.into_scalar()?;
-            let diffraction = bullington_loss_db(
+            let scalar = samples.into_scalar(
+                obstacle_surface,
+                self.settings.diffraction_model == DiffractionModel::DeltaBullington,
+            )?;
+            let diffraction = self.diffraction(
                 &scalar.distances,
                 &scalar.obstructions,
                 &scalar.los,
-                self.settings.frequency_mhz,
+                |actual| {
+                    let delta = scalar.delta.as_ref().expect("delta terrain retained");
+                    delta_from_bullington(
+                        &scalar.distances,
+                        &delta.elevations,
+                        &delta.bulges,
+                        &scalar.los,
+                        self.settings.frequency_mhz,
+                        self.settings.k_factor,
+                        actual,
+                    )
+                },
             )?;
             (
                 *scalar.distances.last().unwrap(),
@@ -112,11 +161,16 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
         };
         let los_clear = metrics.clearance >= 0.0;
         let fresnel_clear = metrics.ratio >= self.settings.required_fresnel_clearance;
+        let terminal_clutter_db =
+            self.terminal_clutter_db(source) + self.terminal_clutter_db(target);
         let path = LinkPath {
             distance_m,
             fspl_db: free_space_path_loss_db(distance_m, self.settings.frequency_mhz)?,
             diffraction_loss_db: diffraction.loss_db,
             clutter_loss_db,
+            model_correction_db: self.settings.model_correction_db,
+            terminal_clutter_db,
+            step_allowance_db,
         };
         let departure = elevation_angle_deg(
             distance_m,
@@ -154,10 +208,66 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             minimum_fresnel_clearance_ratio: metrics.ratio,
             minimum_clearance_distance_m: metrics.ratio_distance,
             maximum_fresnel_radius_m: metrics.maximum_radius,
+            diffraction_model: self.settings.diffraction_model,
             diffraction_loss_db: diffraction.loss_db,
+            terminal_clutter_db,
             dominant_obstacles: diffraction.obstacles,
             profile,
         })
+    }
+
+    fn diffraction(
+        &self,
+        distances: &[f64],
+        obstructions: &[f64],
+        los: &[f64],
+        delta: impl FnOnce(DiffractionResult) -> Result<DeltaBullington, RfError>,
+    ) -> Result<DiffractionResult, RfError> {
+        let frequency = self.settings.frequency_mhz;
+        match self.settings.diffraction_model {
+            DiffractionModel::Bullington => {
+                bullington_loss_db(distances, obstructions, los, frequency)
+            }
+            DiffractionModel::DeltaBullington => {
+                let actual = bullington_loss_db(distances, obstructions, los, frequency)?;
+                let result = delta(actual)?;
+                Ok(DiffractionResult {
+                    loss_db: result.loss_db,
+                    obstacles: result.obstacles,
+                })
+            }
+            DiffractionModel::Deygout3 => {
+                let mut elevations = obstructions.to_vec();
+                let last = elevations.len() - 1;
+                elevations[0] = los[0];
+                elevations[last] = los[last];
+                let result = deygout3_loss_db(distances, &elevations, frequency);
+                Ok(DiffractionResult {
+                    loss_db: result.deygout,
+                    obstacles: result
+                        .edges
+                        .into_iter()
+                        .map(|edge| DiffractionObstacle {
+                            distance_m: edge.distance_m,
+                            elevation_m: edge.elevation_m,
+                            v: edge.v,
+                            loss_db: edge.j_db,
+                        })
+                        .collect(),
+                })
+            }
+        }
+    }
+
+    fn terminal_clutter_db(&self, site: &Site) -> f64 {
+        match (site.terminal_clutter, site.clutter_height_m) {
+            (TerminalClutter::P2108Dom, Some(height)) => p2108_terminal_correction_db(
+                self.settings.frequency_mhz,
+                site.antenna_absolute_elevation_m() - site.ground_elevation_m,
+                height,
+            ),
+            _ => 0.0,
+        }
     }
 
     fn site_radio<'b>(
@@ -197,6 +307,9 @@ struct LinkPath {
     fspl_db: f64,
     diffraction_loss_db: f64,
     clutter_loss_db: f64,
+    model_correction_db: f64,
+    terminal_clutter_db: f64,
+    step_allowance_db: f64,
 }
 
 impl LinkPath {
@@ -210,7 +323,12 @@ impl LinkPath {
         let arrival_angle_deg = -departure_angle_deg;
         let tx_gain_dbi = source.antenna.pattern.gain_at(departure_angle_deg);
         let rx_gain_dbi = target.antenna.pattern.gain_at(arrival_angle_deg);
-        let total_path_loss_db = self.fspl_db + self.diffraction_loss_db + self.clutter_loss_db;
+        let total_path_loss_db = self.fspl_db
+            + self.diffraction_loss_db
+            + self.clutter_loss_db
+            + self.model_correction_db
+            + self.terminal_clutter_db
+            + self.step_allowance_db;
         let power = received_power_dbm(
             source.tx_power_dbm,
             tx_gain_dbi,
@@ -229,6 +347,9 @@ impl LinkPath {
             fspl_db: self.fspl_db,
             diffraction_loss_db: self.diffraction_loss_db,
             clutter_loss_db: self.clutter_loss_db,
+            model_correction_db: self.model_correction_db,
+            terminal_clutter_db: self.terminal_clutter_db,
+            step_allowance_db: self.step_allowance_db,
             total_path_loss_db,
             tx_gain_dbi,
             rx_gain_dbi,

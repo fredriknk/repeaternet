@@ -1,8 +1,25 @@
 //! ITU-R P.526 knife-edge and Bullington diffraction.
 
-use crate::{RfError, SPEED_OF_LIGHT_M_S};
+use serde::{Deserialize, Serialize};
 
-/// Dominant Bullington edge relative to the start of a profile.
+use crate::{calibration::DEFAULT_DIFFRACTION_MODEL, RfError, SPEED_OF_LIGHT_M_S};
+
+/// Diffraction engine used for link evaluation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffractionModel {
+    Bullington,
+    DeltaBullington,
+    Deygout3,
+}
+
+impl Default for DiffractionModel {
+    fn default() -> Self {
+        DEFAULT_DIFFRACTION_MODEL
+    }
+}
+
+/// Selected diffraction edge relative to the start of a profile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiffractionObstacle {
     pub distance_m: f64,

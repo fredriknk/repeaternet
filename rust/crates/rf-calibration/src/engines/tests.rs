@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use repeaternet_rf_core::{
-    EvaluationOptions, LinkEvaluator, RfSettings, SPEED_OF_LIGHT_M_S, bullington_loss_db,
+    DiffractionModel, EvaluationOptions, LinkEvaluator, ObstacleSurface, RfSettings,
+    SPEED_OF_LIGHT_M_S, bullington_loss_db, delta_bullington_loss_db, deygout3_loss_db,
     earth_bulge_m, sample_profile,
 };
 use serde::Deserialize;
@@ -61,11 +62,20 @@ fn short_flat_path_has_no_excess() {
     let clearance = Clearance::from_profile(&p, FREQ);
     assert!(clearance.los);
     assert!(clearance.direct_v < -0.78);
-    assert_eq!(delta::evaluate(&p, FREQ, 1.0, 0.0).unwrap().loss, 0.0);
+    let delta = delta_bullington_loss_db(
+        &p.distances_m,
+        &p.dtm_elevation_m,
+        &p.earth_bulge_m,
+        &p.los_elevation_m,
+        FREQ,
+        1.0,
+    )
+    .unwrap();
+    assert_eq!(delta.loss_db, 0.0);
     let mut z = p.effective_obstruction_m;
     z[0] = 3.0;
     z[10] = 3.0;
-    let multi = multi_edge::evaluate(&p.distances_m, &z, FREQ);
+    let multi = deygout3_loss_db(&p.distances_m, &z, FREQ);
     assert!(multi.edges.is_empty());
     assert_eq!(
         [multi.deygout, multi.epstein_peterson, multi.giovaneli],
@@ -79,7 +89,7 @@ fn single_edge_matches_knife_edge_formula() {
     let z = [0.0, 5.0, 0.0];
     let v = 5.0 * (8.0 * FREQ * 1e6 / (100.0 * SPEED_OF_LIGHT_M_S)).sqrt();
     let j = 6.9 + 20.0 * ((v - 0.1).hypot(1.0) + v - 0.1).log10();
-    let multi = multi_edge::evaluate(&x, &z, FREQ);
+    let multi = deygout3_loss_db(&x, &z, FREQ);
     for loss in [multi.deygout, multi.epstein_peterson, multi.giovaneli] {
         check(loss, j, 1e-10);
     }
@@ -93,7 +103,7 @@ fn two_ridges_match_hand_calculation() {
     // Wavelength 1 m. First ridge is primary. EP sees it 12.5 m above
     // the left terminal to second ridge chord. Giovaneli's right support
     // projects to 10 m at the receiver, giving 20 - 10/3 m residual.
-    let m = multi_edge::evaluate(
+    let m = deygout3_loss_db(
         &[0.0, 1000.0, 2000.0, 3000.0],
         &[0.0, 20.0, 15.0, 0.0],
         SPEED_OF_LIGHT_M_S / 1e6,
@@ -120,17 +130,18 @@ fn smooth_earth_matches_p526_reference() {
         surface: false,
     };
     let p = sample_profile(&terrain, &a, &b, FREQ, 1.0, None).unwrap();
-    let b = bullington_loss_db(
+    let d = delta_bullington_loss_db(
         &p.distances_m,
-        &p.effective_obstruction_m,
+        &p.dtm_elevation_m,
+        &p.earth_bulge_m,
         &p.los_elevation_m,
         FREQ,
+        1.0,
     )
     .unwrap();
-    let d = delta::evaluate(&p, FREQ, 1.0, b.loss_db).unwrap();
-    check(d.smooth_bullington, 19.780, 0.05);
-    check(d.spherical, 52.454, 0.05);
-    check(d.loss, 52.456, 0.05);
+    check(d.smooth_bullington_db, 19.780, 0.05);
+    check(d.spherical_db, 52.454, 0.05);
+    check(d.loss_db, 52.456, 0.05);
 }
 
 #[test]
@@ -182,6 +193,9 @@ fn stored_terrain_matches_rfcore_on_the_same_samples() {
     let rf = RfSettings {
         frequency_mhz: FREQ,
         k_factor: 4.0 / 3.0,
+        diffraction_model: DiffractionModel::Bullington,
+        obstacle_surface: ObstacleSurface::Surface,
+        model_correction_db: 0.0,
         ..RfSettings::default()
     };
     for (tx, rx) in [(&a, &b), (&b, &a)] {
@@ -234,7 +248,7 @@ fn drammenmesh_link_zero_matches_review() {
     let bull = bullington_loss_db(x, &z, &p.los_elevation_m, FREQ).unwrap();
     z[0] = p.los_elevation_m[0];
     z[last] = p.los_elevation_m[last];
-    let m = multi_edge::evaluate(x, &z, FREQ);
+    let m = deygout3_loss_db(x, &z, FREQ);
     check(bull.loss_db, 35.02, 0.05);
     check(m.deygout, 38.18, 0.05);
     check(m.epstein_peterson, 21.73, 0.05);

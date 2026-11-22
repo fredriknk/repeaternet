@@ -1,8 +1,6 @@
 //! Rust engines share RF core's terrain sampling and curved-Earth geometry.
 
 pub(crate) mod clutter;
-pub(crate) mod delta;
-pub(crate) mod multi_edge;
 
 use repeaternet_rf_core::{
     RfError, Site, TerrainLayer, TerrainProfile, TerrainSource, knife_edge_v,

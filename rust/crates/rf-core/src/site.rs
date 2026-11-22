@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::TerminalClutter;
+
 /// A projected coordinate in metres.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
@@ -46,6 +48,11 @@ pub struct Site {
     /// Height above the selected terrain reference.
     pub antenna_height_m: f64,
     pub height_reference: HeightReference,
+    #[serde(default)]
+    pub terminal_clutter: TerminalClutter,
+    /// Representative height of surrounding clutter above ground DTM.
+    #[serde(default)]
+    pub clutter_height_m: Option<f64>,
 }
 
 impl Site {
@@ -59,6 +66,8 @@ impl Site {
             surface_elevation_m: None,
             antenna_height_m: 3.0,
             height_reference: HeightReference::GroundDtm,
+            terminal_clutter: TerminalClutter::default(),
+            clutter_height_m: None,
         }
     }
 

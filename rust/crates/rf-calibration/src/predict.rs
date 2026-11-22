@@ -4,7 +4,8 @@ use std::{collections::HashMap, path::Path, thread, time::Instant};
 
 use anyhow::{Context, Result, ensure};
 use repeaternet_rf_core::{
-    EvaluationOptions, LinkEvaluator, RfSettings, Site, free_space_path_loss_db,
+    DiffractionModel, EvaluationOptions, LinkEvaluator, ObstacleSurface, RfSettings, Site,
+    delta_bullington_loss_db, deygout3_loss_db, free_space_path_loss_db,
 };
 use serde_json::{Value, json};
 
@@ -12,7 +13,7 @@ use crate::{
     dataset::{LinkRecord, PathFeatures, PredictionRecord, ProfileRecord, SCHEMA_VERSION},
     engines::{
         self, Clearance, DELTA, DEYGOUT, EPSTEIN_PETERSON, GIOVANELI, IDS, RFCORE, StoredTerrain,
-        clutter, delta, multi_edge,
+        clutter,
     },
     jsonl::{self, AtomicWriter},
     paths,
@@ -73,6 +74,13 @@ impl Scenario<'_> {
         let rf = RfSettings {
             frequency_mhz: self.freq,
             k_factor: self.k,
+            diffraction_model: DiffractionModel::Bullington,
+            obstacle_surface: if surface {
+                ObstacleSurface::Surface
+            } else {
+                ObstacleSurface::Ground
+            },
+            model_correction_db: 0.0,
             clutter_loss_enabled: surface,
             ..RfSettings::default()
         };
@@ -98,23 +106,33 @@ impl Scenario<'_> {
         rows.push(row);
 
         if self.step == profile.resolution_m && self.k == 1.0 {
-            let delta = delta::evaluate(sampled, self.freq, self.k, result.diffraction_loss_db)?;
-            let mut row = self.row(DELTA, label, delta.loss, &geometry);
-            if let Some(edge) = result.dominant_obstacles.first() {
+            let mut raw = sampled.surface_elevation_m.clone();
+            let last = raw.len() - 1;
+            raw[0] = sampled.dtm_elevation_m[0];
+            raw[last] = sampled.dtm_elevation_m[last];
+            let delta = delta_bullington_loss_db(
+                &sampled.distances_m,
+                &raw,
+                &sampled.earth_bulge_m,
+                &sampled.los_elevation_m,
+                self.freq,
+                self.k,
+            )?;
+            let mut row = self.row(DELTA, label, delta.loss_db, &geometry);
+            if let Some(edge) = delta.obstacles.first() {
                 row.v_max = Some(edge.v);
             }
-            row.diag = engines::bullington_diag(&result.dominant_obstacles);
-            row.diag["lbull_db"] = json!(result.diffraction_loss_db);
-            row.diag["lbs_db"] = json!(delta.smooth_bullington);
-            row.diag["lsph_db"] = json!(delta.spherical);
-            row.diag["smooth_agl_m"] = json!(delta.smooth_agl);
+            row.diag = engines::bullington_diag(&delta.obstacles);
+            row.diag["lbull_db"] = json!(delta.bullington_db);
+            row.diag["lbs_db"] = json!(delta.smooth_bullington_db);
+            row.diag["lsph_db"] = json!(delta.spherical_db);
+            row.diag["smooth_agl_m"] = json!(delta.smooth_agl_m);
             rows.push(row);
 
             let mut z = sampled.effective_obstruction_m.clone();
-            let last = z.len() - 1;
             z[0] = self.tx.antenna_absolute_elevation_m();
             z[last] = self.rx.antenna_absolute_elevation_m();
-            let multi = multi_edge::evaluate(&sampled.distances_m, &z, self.freq);
+            let multi = deygout3_loss_db(&sampled.distances_m, &z, self.freq);
             let diag = json!({ "edges": multi.edges });
             for (id, loss) in [
                 (DEYGOUT, multi.deygout),

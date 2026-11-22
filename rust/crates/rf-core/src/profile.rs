@@ -1,6 +1,44 @@
 //! Terrain sampling and RF path geometry.
 
-use crate::{require_positive, Point, RfError, Site, EARTH_MEAN_RADIUS_M, SPEED_OF_LIGHT_M_S};
+use std::borrow::Cow;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    calibration::DEFAULT_OBSTACLE_SURFACE, require_positive, Point, RfError, Site,
+    EARTH_MEAN_RADIUS_M, SPEED_OF_LIGHT_M_S,
+};
+
+/// Terrain layer used for diffraction and geometric clearance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObstacleSurface {
+    Ground,
+    Surface,
+}
+
+impl Default for ObstacleSurface {
+    fn default() -> Self {
+        DEFAULT_OBSTACLE_SURFACE
+    }
+}
+
+impl ObstacleSurface {
+    pub(crate) fn ground_anchored_elevations<'a>(
+        self,
+        ground: &'a [f64],
+        surface: Option<&[f64]>,
+    ) -> Cow<'a, [f64]> {
+        if let (Self::Surface, Some(surface)) = (self, surface) {
+            let mut elevations = surface.to_vec();
+            let last = elevations.len() - 1;
+            elevations[0] = ground[0];
+            elevations[last] = ground[last];
+            return Cow::Owned(elevations);
+        }
+        Cow::Borrowed(ground)
+    }
+}
 
 /// Raster layer sampled along the path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +81,8 @@ pub struct TerrainProfile {
 /// Sample the endpoint chord and calculate effective Earth curvature and Fresnel clearance.
 /// Uses at least three samples including both endpoints. The nominal sampling step
 /// defaults to terrain resolution and is clamped to at least that resolution.
+/// This standalone sampler keeps surface-based geometry when DOM is available.
+/// Use [crate::LinkEvaluator] for geometry that follows the configured obstacle surface.
 pub fn sample_profile<T: TerrainSource + ?Sized>(
     terrain: &T,
     source: &Site,
@@ -58,8 +98,9 @@ pub fn sample_profile<T: TerrainSource + ?Sized>(
         frequency_mhz,
         k_factor,
         sample_step_m,
+        true,
     )?
-    .into_profile()
+    .into_profile(ObstacleSurface::Surface)
 }
 
 pub(crate) struct TerrainSamples {
@@ -68,6 +109,8 @@ pub(crate) struct TerrainSamples {
     ground: Vec<f64>,
     surface: Option<Vec<f64>>,
     geometry: PathGeometry,
+    pub(crate) nominal_step_m: f64,
+    pub(crate) resolution_m: f64,
 }
 
 struct PathGeometry {
@@ -79,10 +122,10 @@ struct PathGeometry {
 }
 
 impl PathGeometry {
-    fn at(&self, d: f64, surface: f64) -> Result<[f64; 6], RfError> {
+    fn at(&self, d: f64, obstacle: f64) -> Result<[f64; 6], RfError> {
         let remaining = self.distance - d;
         let bulge = d * remaining / self.earth_diameter;
-        let obstruction = surface + bulge;
+        let obstruction = obstacle + bulge;
         let los = self.tx_elevation + (d / self.distance) * (self.rx_elevation - self.tx_elevation);
         if !d.is_finite() || d < 0.0 || !remaining.is_finite() || remaining < 0.0 {
             return Err(RfError::InvalidInput(
@@ -149,6 +192,12 @@ pub(crate) struct ScalarProfile {
     pub obstructions: Vec<f64>,
     pub los: Vec<f64>,
     pub metrics: ClearanceMetrics,
+    pub delta: Option<DeltaProfile>,
+}
+
+pub(crate) struct DeltaProfile {
+    pub elevations: Vec<f64>,
+    pub bulges: Vec<f64>,
 }
 
 impl TerrainSamples {
@@ -163,17 +212,33 @@ impl TerrainSamples {
         )
     }
 
-    pub(crate) fn into_scalar(self) -> Result<ScalarProfile, RfError> {
+    pub(crate) fn into_scalar(
+        self,
+        obstacle_surface: ObstacleSurface,
+        include_delta: bool,
+    ) -> Result<ScalarProfile, RfError> {
         // Diffraction needs the obstruction and chord elevations, so keep just
-        // those arrays and overwrite the sampled terrain with the obstructions.
-        let mut obstructions = self.surface.unwrap_or(self.ground);
+        // those arrays and overwrite the samples, retaining raw terrain for the delta fit.
+        let mut delta = include_delta.then(|| DeltaProfile {
+            elevations: obstacle_surface
+                .ground_anchored_elevations(&self.ground, self.surface.as_deref())
+                .into_owned(),
+            bulges: Vec::with_capacity(self.distances.len()),
+        });
+        let mut obstructions = match obstacle_surface {
+            ObstacleSurface::Ground => self.ground,
+            ObstacleSurface::Surface => self.surface.unwrap_or(self.ground),
+        };
         let mut los = Vec::with_capacity(obstructions.len());
         let mut metrics = ClearanceMetrics::new();
         let last = self.distances.len() - 1;
         for (index, (&d, elevation)) in self.distances.iter().zip(&mut obstructions).enumerate() {
-            let [_, obstruction, chord, radius, clearance, ratio] =
+            let [bulge, obstruction, chord, radius, clearance, ratio] =
                 self.geometry.at(d, *elevation)?;
             *elevation = obstruction;
+            if let Some(delta) = &mut delta {
+                delta.bulges.push(bulge);
+            }
             los.push(chord);
             metrics.observe(index, last, d, radius, clearance, ratio);
         }
@@ -182,10 +247,14 @@ impl TerrainSamples {
             obstructions,
             los,
             metrics,
+            delta,
         })
     }
 
-    pub(crate) fn into_profile(self) -> Result<TerrainProfile, RfError> {
+    pub(crate) fn into_profile(
+        self,
+        obstacle_surface: ObstacleSurface,
+    ) -> Result<TerrainProfile, RfError> {
         let count = self.distances.len();
         let surface_available = self.surface.is_some();
         let mut profile = TerrainProfile {
@@ -201,9 +270,13 @@ impl TerrainSamples {
             fresnel_clearance_ratio: Vec::with_capacity(count),
             surface_available,
         };
-        for (&d, &surface) in profile.distances_m.iter().zip(&profile.surface_elevation_m) {
+        let obstacles = match obstacle_surface {
+            ObstacleSurface::Ground => &profile.dtm_elevation_m,
+            ObstacleSurface::Surface => &profile.surface_elevation_m,
+        };
+        for (&d, &elevation) in profile.distances_m.iter().zip(obstacles) {
             let [bulge, obstruction, los, radius, clearance, ratio] =
-                self.geometry.at(d, surface)?;
+                self.geometry.at(d, elevation)?;
             profile.earth_bulge_m.push(bulge);
             profile.effective_obstruction_m.push(obstruction);
             profile.los_elevation_m.push(los);
@@ -240,6 +313,7 @@ pub(crate) fn sample_path<T: TerrainSource + ?Sized>(
     frequency_mhz: f64,
     k_factor: f64,
     sample_step_m: Option<f64>,
+    include_surface: bool,
 ) -> Result<TerrainSamples, RfError> {
     let distance = source.distance_to(target);
     require_positive(
@@ -292,7 +366,7 @@ pub(crate) fn sample_path<T: TerrainSource + ?Sized>(
     {
         return Err(RfError::MissingTerrain);
     }
-    let surface = if terrain.has_surface() {
+    let surface = if include_surface && terrain.has_surface() {
         let mut surface = sample_layer(terrain, &points, TerrainLayer::SurfaceDom)?;
         for (surface, &ground) in surface.iter_mut().zip(&dtm_elevation_m) {
             if !surface.is_finite() {
@@ -308,6 +382,8 @@ pub(crate) fn sample_path<T: TerrainSource + ?Sized>(
         points,
         ground: dtm_elevation_m,
         surface,
+        nominal_step_m: step,
+        resolution_m: resolution,
         geometry: PathGeometry {
             distance,
             tx_elevation,
