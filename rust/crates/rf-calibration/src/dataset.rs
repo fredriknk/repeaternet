@@ -1,15 +1,14 @@
 //! File contracts shared by every calibration stage.
 //!
-//! All files are JSON Lines under the calibration work directory
+//! These records use JSON Lines under the calibration work directory
 //! (see [`crate::paths`]). Each stage reads the previous stage's files and
 //! never edits them in place. Field names are part of the contract with the
 //! Python tools in `tools/rf-calibration/`; change them together with
 //! `docs/RF_CALIBRATION.md`.
 //!
 //! Identities are pseudonymous: `node` is the first 16 hex digits of
-//! `SHA-256(salt || source_namespace || ":" || raw_id)`, where the salt lives
-//! in `<work>/salt.txt` and is never committed. Exact coordinates stay in the
-//! work directory only; committed docs and fixtures carry aggregates.
+//! `SHA-256(salt || source_namespace || ":" || lowercase(raw_id))`. The salt lives
+//! in `<work>/salt.txt`. Exact coordinates stay in the work directory only.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Where a measurement came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Evidence {
     /// CoreScope reception whose final resolved relay is the transmitter.
@@ -35,7 +34,7 @@ pub enum Evidence {
 }
 
 /// Which terrain family will be used for the path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Region {
     /// Both endpoints inside the Kartverket NHM coverage polygon.
@@ -58,11 +57,14 @@ pub struct Stat {
     pub max: f64,
 }
 
-/// Radio configuration best known for the link. `basis` says where each
-/// value came from (for example `observer_snapshot`, `node_radio`,
-/// `preset_default`, `assumed`). Unknown values are `null`, never guessed here.
+/// Radio configuration best known for the link. `field_basis` identifies the
+/// source of each populated field, and `basis` lists the distinct sources.
+/// Unknown values are `null`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Radio {
+    /// Reported regulatory region (for example Meshtastic `EU_868`).
+    #[serde(default)]
+    pub lora_region: Option<String>,
     pub freq_mhz: Option<f64>,
     pub bw_khz: Option<f64>,
     pub sf: Option<u8>,
@@ -70,6 +72,8 @@ pub struct Radio {
     pub tx_power_dbm: Option<f64>,
     pub modem_preset: Option<String>,
     pub basis: Vec<String>,
+    #[serde(default)]
+    pub field_basis: std::collections::BTreeMap<String, String>,
 }
 
 /// One endpoint of a link.
@@ -137,7 +141,7 @@ pub struct Detection {
     pub basis: String,
 }
 
-/// One node with everything known about it across sources.
+/// Latest known state for one node in one capture source.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeRecord {
     pub schema: u32,

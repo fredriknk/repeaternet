@@ -1716,6 +1716,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "getrandom 0.4.3",
  "repeaternet-providers",
  "repeaternet-rf-core",
  "repeaternet-terrain",
@@ -1724,6 +1725,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "url",
 ]
 
 [[package]]
