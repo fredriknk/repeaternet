@@ -39,6 +39,7 @@ fn hull_queries_match_brute_force_for_every_prefix() {
                 .unwrap();
             assert!((hull.support(slope) - support).abs() < 1e-12);
             assert!((hull.tangent(receiver) - tangent).abs() < 1e-12);
+            assert!((hull.raw_tangent(receiver) - tangent).abs() < 1e-12);
         }
     }
 }
@@ -258,6 +259,9 @@ fn compare_with_evaluator(
     let site = sweep.site;
     let client = sweep.client;
     let step = sweep.step;
+    let exact = sweep.propagation.diffraction_model == DiffractionModel::Bullington;
+    // Only live delta-Bullington interpolates the smooth-earth correction.
+    let tolerance = if exact { 1e-6 } else { 0.05 };
     for ray in [0, 17, 47, 87, 122, 164, 220, 309, 387, 510, 690] {
         let azimuth = ray as f64 * TAU / polar.ray_count() as f64;
         let (sin, cos) = azimuth.sin_cos();
@@ -313,14 +317,16 @@ fn compare_with_evaluator(
                     }
                 };
             assert!(
-                margin == expected || (margin - expected).abs() < 1e-6,
+                margin == expected || (margin - expected).abs() <= tolerance,
                 "ray {ray}, sample {k}, {:?}, {:?}, {:?}, {:?}: {margin} vs {expected}",
                 sweep.mode,
                 sweep.rf.diffraction_model,
                 sweep.rf.obstacle_surface,
                 site.terminal_clutter,
             );
-            assert_eq!(polar.ray(ray)[k], expected as f32);
+            if exact {
+                assert_eq!(polar.ray(ray)[k], expected as f32);
+            }
         });
         assert_eq!(polar.ray(ray)[0], polar.ray(ray)[1]);
     }
@@ -428,7 +434,7 @@ fn incremental_delta_matches_batch_on_fractal_and_smooth_rays() {
             .unwrap();
             let expected = sweep.margin(d, hr, sweep.samples[j - 1].loss_db + batch.loss_db);
             let error = (margin - expected).abs();
-            assert!(error < 1e-6, "case {case}, {d} m: {margin} vs {expected}");
+            assert!(error <= 0.05, "case {case}, {d} m: {margin} vs {expected}");
             max_error = max_error.max(error);
             let horizon =
                 sweep.ed.sqrt() * batch.smooth_agl_m.iter().map(|h| h.sqrt()).sum::<f64>();
@@ -443,6 +449,77 @@ fn incremental_delta_matches_batch_on_fractal_and_smooth_rays() {
     assert!(near_grazing > 100 && flat_transhorizon > 100 && rough_delta > 100,
         "{near_grazing} near grazing, {flat_transhorizon} flat transhorizon, {rough_delta} rough with delta");
     println!("Maximum error vs batch: {max_error:.3e} dB");
+}
+
+#[test]
+fn live_smooth_earth_interpolation_is_bounded() {
+    let site = Site::new("tx", 0.0, 0.0);
+    let client = ClientRadioProfile::default().as_radio_budget();
+    let mut seed = 0xd597_51a9_u32;
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(seed) / f64::from(u32::MAX)
+    };
+    let mut max_spherical_error = 0.0_f64;
+    let mut max_delta_error = 0.0_f64;
+    for k in 0..=6 {
+        let k_factor = 0.5 + (4.0 / 3.0 - 0.5) * (f64::from(k) / 6.0);
+        for frequency in 0..=13 {
+            let rf = RfSettings {
+                diffraction_model: DiffractionModel::DeltaBullington,
+                frequency_mhz: 400.0 + 200.0 * f64::from(frequency),
+                k_factor,
+                ..RfSettings::default()
+            };
+            let step = [10.0, 30.0, 50.0][((k + frequency) % 3) as usize];
+            let grid = SweepGrid::new(60_000.0, step).unwrap();
+            let sweep = Sweep::new(&site, &rf, &client, LiveMode::Downlink, grid, 10.0).unwrap();
+            let spherical = sweep.spherical.as_ref().unwrap();
+            for case in 0..4096 {
+                // Sample both short and long distances densely.
+                let short = (100.0_f64 / step).ceil() as usize;
+                let j = short + (next().powi(2) * (sweep.samples.len() - short) as f64) as usize;
+                let sample = &sweep.samples[j - 1];
+                let d = sample.distance;
+                let grazing = d.powi(2) / (4.0 * sweep.ed);
+                let clear = grazing + 0.276 * (d * sweep.wavelength).sqrt();
+                let [ht, hr] = match case % 8 {
+                    0 => [500.0 * next(), 500.0 * next()],
+                    1 => [500.0 * next().powi(4), 500.0 * next().powi(4)],
+                    2 => [grazing * (0.9 + 0.2 * next()), grazing],
+                    3 => [clear * (0.96 + 0.08 * next()), clear],
+                    4 => [0.0, 500.0 * next()],
+                    5 => [500.0 * next(), 0.000_001],
+                    6 => [0.01 + 3.0 * next(), 500.0 * next().powi(4)],
+                    _ => [500.0 * next().powi(4), 0.01 + 3.0 * next()],
+                }
+                .map(|h| h.min(500.0));
+                let exact = spherical_earth_loss_db(d, [ht, hr], sweep.ed / 2.0, sweep.wavelength);
+                let actual = spherical.loss(j - 1, d, [ht, hr]).0;
+                let spherical_error = (actual - exact).abs();
+                let exact_delta = (exact - sweep.smooth_bullington(sample, j, ht, hr)).max(0.0);
+                let delta = sweep.smooth_earth_correction(sample, j, ht, hr);
+                let delta_error = (delta - exact_delta).abs();
+                // With a zero endpoint and a collapsed clearance point the
+                // exact implementation can return NaN. Preserve that case.
+                assert!(
+                    (actual.is_nan() && exact.is_nan()) || spherical_error <= 0.05,
+                    "{d} m, [{ht}, {hr}] m, k={k_factor}, {} MHz: spherical error {spherical_error}",
+                    rf.frequency_mhz,
+                );
+                assert!(
+                    delta_error <= 0.05,
+                    "{d} m, [{ht}, {hr}] m, k={k_factor}, {} MHz: delta error {delta_error}",
+                    rf.frequency_mhz,
+                );
+                max_spherical_error = max_spherical_error.max(spherical_error);
+                max_delta_error = max_delta_error.max(delta_error);
+            }
+        }
+    }
+    println!(
+        "Maximum error over 401,408 paths: spherical {max_spherical_error:.6} dB, delta {max_delta_error:.6} dB"
+    );
 }
 
 #[test]
