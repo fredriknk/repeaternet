@@ -1717,6 +1717,7 @@ dependencies = [
  "anyhow",
  "clap",
  "geo",
+ "getrandom 0.4.3",
  "repeaternet-providers",
  "repeaternet-rf-core",
  "repeaternet-terrain",
@@ -1725,6 +1726,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "url",
 ]
 
 [[package]]

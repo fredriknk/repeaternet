@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 geo = { version = "0.33.1", default-features = false }
+getrandom = "0.4"
 repeaternet-providers = { path = "../providers" }
 repeaternet-rf-core = { path = "../rf-core" }
 repeaternet-terrain = { path = "../terrain" }
@@ -21,3 +22,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"
 tempfile = "3"
+url = "2"
