@@ -88,6 +88,9 @@ function createWorkflow(run) {
   }
 
   async function mapReady() {
+    // Live coverage settles before a map image is taken.
+    await run.page.waitForFunction(() => typeof liveCoverage === 'undefined'
+      || ![...liveCoverage.slots.values()].some(slot => slot.loading), undefined, { timeout: 120_000 });
     await retry('basemap tiles', async () => {
       try {
         await run.page.waitForFunction(() => {
@@ -336,13 +339,16 @@ function createWorkflow(run) {
     await click('route-show-map');
     await tab('2 Coverage');
     await coverage('display');
-    await waitForText('#live-coverage-status', 'up to date', 120_000);
+    await run.page.waitForFunction(() => liveCoverage.slots.size
+      && ![...liveCoverage.slots.values()].some(slot => slot.loading), undefined, { timeout: 120_000 });
+    const live = await $('#live-coverage-status').textContent();
+    if (!live.includes('up to date')) throw new Error(`${live} ${await $('#live-coverage-sites').innerText()}`);
     await shot('live-coverage-map', null, mapReady);
     await $('#live-legend-overlap').check();
     await shot('live-coverage-overlap', null, mapReady);
     await $('#live-legend-overlap').uncheck();
     await coverage('handheld');
-    await shot('coverage-handheld', '#coverage-section-handheld');
+    await taller(() => shot('coverage-handheld', '#coverage-section-handheld'));
     await savedRunSettings();
     await openDetails(sampling);
     await field('#coverage-cell-size', 700);

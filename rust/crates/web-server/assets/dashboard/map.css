@@ -340,3 +340,5 @@
   .live-coverage-legend #live-opacity { height: 44px; }
   .live-legend-head button { min-height: 44px; }
 }
+/* The link inspector owns the right side of the map while it is open. */
+.map-wrap:has(#route-link-inspector:not([hidden])) .live-coverage-legend { display: none; }

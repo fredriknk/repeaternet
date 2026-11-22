@@ -295,6 +295,7 @@ function scheduleLiveCoverage(delay = 80) {
 /* Match slots to the current sites and queue detailed rasters for changed sites. */
 function syncLiveCoverage() {
   if (!liveCoverage.layer || switchingProject || !projectInfo || !rf) return;
+  restoreDisplacedLiveCoverage();
   const projectId = projectInfo?.active_id ?? null;
   const sites = liveCoverage.settings.enabled ? liveCoverageSites() : [];
   const present = new Set(sites.map(site => site.slot));
@@ -369,6 +370,7 @@ async function loadLiveCoverageSlot(slot) {
     const raster = await fetchLiveCoverage(liveCoverageRequest(slot.site, liveCoverage.settings.detail_m), controller.signal);
     liveCoverageCachePut(key, raster);
     liveCoverage.noTerrain = '';
+    slot.retries = 0;
     if (slot.key !== key || liveCoverage.slots.get(slot.slot) !== slot) return;
     const previous = slot.raster;
     slot.raster = raster;
@@ -376,6 +378,15 @@ async function loadLiveCoverageSlot(slot) {
     redrawLiveCoverage(previous, raster);
   } catch (error) {
     if (error.name === 'AbortError' || slot.key !== key) return;
+    // Radio settings or terrain changed while this site was calculated: try again.
+    if (error.status === 409 && /changed during the request/i.test(error.message) && (slot.retries = (slot.retries || 0) + 1) <= 3) {
+      setTimeout(() => {
+        if (liveCoverage.slots.get(slot.slot) !== slot || slot.key !== key) return;
+        liveCoverage.queue.push(slot);
+        pumpLiveCoverage();
+      }, 300 * slot.retries);
+      return;
+    }
     slot.loading = false;
     slot.error = error.message;
     if (error.status === 409 && /terrain/i.test(error.message) && /download/i.test(error.message)) liveCoverage.noTerrain = error.message;
@@ -440,6 +451,7 @@ function liveCoverageProgress() {
 function liveCoverageStatusText() {
   const {total, loading, errors} = liveCoverageProgress();
   if (!liveCoverage.settings.enabled) return 'Live coverage is off.';
+  if (liveCoverage.displaced) return 'Live coverage is hidden while a saved run is shown on the map.';
   if (liveCoverage.noTerrain) return liveCoverage.noTerrain;
   if (!total) return 'Add endpoints or routers to see their coverage.';
   if (loading) return `Updating coverage · ${total - loading} of ${total} sites ready…`;
@@ -557,6 +569,7 @@ function showLiveCoverageHover(event) {
 function setLiveCoverageEnabled(enabled) {
   liveCoverage.settings.enabled = enabled;
   liveCoverageSaveSettings();
+  liveCoverage.displaced = false;
   if (enabled && !map.hasLayer(liveCoverage.layer)) {
     if (map.hasLayer(predictedCoverageLayer)) map.removeLayer(predictedCoverageLayer);
     liveCoverage.layer.addTo(map);
@@ -647,7 +660,13 @@ function bindLiveCoverageControls() {
   };
   // Keep the map usable on phones: the legend collapses at phone widths.
   const phone = window.matchMedia('(max-width: 650px)');
-  const fitLegend = () => { if (phone.matches && collapse.getAttribute('aria-expanded') === 'true') collapse.click(); };
+  let autoCollapsed = false;
+  const fitLegend = () => {
+    const expanded = collapse.getAttribute('aria-expanded') === 'true';
+    if (phone.matches && expanded) { collapse.click(); autoCollapsed = true; }
+    else if (!phone.matches && !expanded && autoCollapsed) { collapse.click(); autoCollapsed = false; }
+  };
+  collapse.addEventListener('click', event => { if (event.isTrusted) autoCollapsed = false; });
   phone.addEventListener('change', fitLegend);
   fitLegend();
 }
@@ -686,6 +705,16 @@ async function requestLiveCoverageTerrain() {
   }
 }
 
+function restoreDisplacedLiveCoverage() {
+  // A saved run that is still calculating or loading keeps its place on the map.
+  const savedRunShown = map.hasLayer(predictedCoverageLayer)
+    && (predictedCoverageLayer.getLayers().length || coverageBusy || coverageLoadingRun);
+  if (!liveCoverage.displaced || savedRunShown) return;
+  liveCoverage.displaced = false;
+  if (liveCoverage.settings.enabled) liveCoverage.layer.addTo(map);
+  renderLiveCoverageSites();
+}
+
 /* Called once from app.js after the map, plan and controls exist. */
 function initLiveCoverage() {
   const LiveCoverageLayer = L.GridLayer.extend({
@@ -704,12 +733,20 @@ function initLiveCoverage() {
   mapLayerControl?.addOverlay(liveCoverage.layer, 'Live coverage');
   liveCoverage.layer.on('add remove', event => {
     const enabled = event.type === 'add';
-    if (liveCoverage.settings.enabled !== enabled) { liveCoverage.settings.enabled = enabled; liveCoverageSaveSettings(); syncLiveCoverageControls(); syncLiveCoverage(); }
+    if (enabled) liveCoverage.displaced = false;
+    if (!liveCoverage.displaced && liveCoverage.settings.enabled !== enabled) { liveCoverage.settings.enabled = enabled; liveCoverageSaveSettings(); syncLiveCoverageControls(); syncLiveCoverage(); }
     if (!enabled) liveCoverage.hover.remove();
     renderLiveCoverageLegend();
   });
   // A saved fixed-grid run and the live map would paint the same pane: show one at a time.
-  predictedCoverageLayer.on('add', () => { if (map.hasLayer(liveCoverage.layer)) map.removeLayer(liveCoverage.layer); });
+  // The live layer steps aside without turning off and returns when the saved run goes.
+  predictedCoverageLayer.on('add', () => {
+    if (!map.hasLayer(liveCoverage.layer)) return;
+    liveCoverage.displaced = true;
+    map.removeLayer(liveCoverage.layer);
+    renderLiveCoverageSites();
+  });
+  predictedCoverageLayer.on('remove', restoreDisplacedLiveCoverage);
   map.on('mousemove', showLiveCoverageHover).on('mouseout movestart', () => liveCoverage.hover.remove());
   bindLiveCoverageControls();
   syncLiveCoverageControls();

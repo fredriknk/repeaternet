@@ -190,6 +190,7 @@ pub async fn evaluate(
         .await
         .map_err(ApiError::internal)?;
     let cache = app.live_terrain.clone();
+    let used_rf = rf.clone();
     let (context, response) = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let start = Instant::now();
@@ -247,9 +248,23 @@ pub async fn evaluate(
     })
     .await
     .map_err(ApiError::internal)??;
+    // The raster depends only on the project, its terrain files and the radio
+    // settings; other plan edits made meanwhile (such as moving a different
+    // site) leave it valid.
     workspace
         .run(app, move |app, key, session| {
-            context.verify(app, key, session)?;
+            let current = TerrainContext::capture(app, key, session, true)?;
+            let plan = active_project(&app.store, key, session)?.plan;
+            let rf = route_inputs::rf(&route_inputs::merged(&app.defaults, &plan, "rf")?)?;
+            if context.project_id != session.project_id
+                || context.directory != current.directory
+                || context.fingerprint != current.fingerprint
+                || rf != used_rf
+            {
+                return Err(ApiError::conflict(
+                    "Radio settings or terrain changed during the request",
+                ));
+            }
             Ok(response)
         })
         .await
