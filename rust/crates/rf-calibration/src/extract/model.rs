@@ -255,83 +255,82 @@ impl Source {
         coverage: &Coverage,
         quality: &PositionQuality,
     ) -> (Vec<LinkRecord>, Vec<NodeRecord>) {
-        let links = self
-            .links
-            .iter()
-            .map(|((tx, rx, evidence), group)| {
-                let samples = &group.samples;
-                let reference = samples.get(samples.len() / 2);
-                let ms = reference
-                    .map(|s| s.ms)
-                    .or(group.opportunity_ms)
-                    .expect("link reference time");
-                let a = &self.nodes[tx];
-                let b = &self.nodes[rx];
-                let tx_position = a
-                    .position(ms, self.meshtastic)
-                    .expect("located transmitter");
-                let rx_position = b.position(ms, self.meshtastic).expect("located receiver");
-                let distance_m = quality::distance(tx_position.point, rx_position.point);
-                let tx_radio = a.metadata(ms).radio;
-                let rx_radio = b.metadata(ms).radio;
-                let mut flags = group.flags.clone();
-                if samples.len() < 5 {
-                    flags.insert("few_samples");
-                }
-                if tx_radio
-                    .zip(rx_radio)
-                    .is_some_and(|(a, b)| quality::radio_mismatch(a, b))
-                {
-                    flags.insert("radio_mismatch");
-                }
-                let (signal, noise): (Vec<_>, Vec<_>) = samples
-                    .iter()
-                    .filter_map(|s| Some(stats::split_power(s.rssi?, s.snr?)))
-                    .unzip();
-                let signal = stats::summarize(signal);
-                let freq_mhz = tx_radio
-                    .or(rx_radio)
-                    .and_then(|radio| radio.freq_mhz)
-                    .unwrap_or(869.5);
-                if signal
-                    .as_ref()
-                    .is_some_and(|s| quality::implausible_signal(s.median, distance_m, freq_mhz))
-                {
-                    flags.insert("implausible_signal");
-                }
-                LinkRecord {
-                    schema: SCHEMA_VERSION,
-                    link_id: format!("{}:{tx}>{rx}:{}", self.id, evidence.as_str()),
-                    source: self.id.clone(),
-                    evidence: *evidence,
-                    region: if coverage.contains(tx_position.point)
-                        && coverage.contains(rx_position.point)
+        let links =
+            self.links
+                .iter()
+                .map(|((tx, rx, evidence), group)| {
+                    let samples = &group.samples;
+                    let reference = samples.get(samples.len() / 2);
+                    let ms = reference
+                        .map(|s| s.ms)
+                        .or(group.opportunity_ms)
+                        .expect("link reference time");
+                    let a = &self.nodes[tx];
+                    let b = &self.nodes[rx];
+                    let tx_position = a
+                        .position(ms, self.meshtastic)
+                        .expect("located transmitter");
+                    let rx_position = b.position(ms, self.meshtastic).expect("located receiver");
+                    let distance_m = quality::distance(tx_position.point, rx_position.point);
+                    let tx_radio = a.metadata(ms).radio;
+                    let rx_radio = b.metadata(ms).radio;
+                    let mut flags = group.flags.clone();
+                    if samples.len() < 5 {
+                        flags.insert("few_samples");
+                    }
+                    if tx_radio
+                        .zip(rx_radio)
+                        .is_some_and(|(a, b)| quality::radio_mismatch(a, b))
                     {
-                        Region::Norway
-                    } else {
-                        Region::World
-                    },
-                    tx: a.endpoint(tx, tx_position, ms, quality),
-                    rx: b.endpoint(rx, rx_position, ms, quality),
-                    distance_m,
-                    radio: link_radio(
-                        tx_radio,
-                        rx_radio,
-                        self.meshtastic,
-                        reference.and_then(|s| s.region.as_deref()),
-                    ),
-                    n: samples.len() as u32,
-                    first_ms: samples.first().map(|s| s.ms),
-                    last_ms: samples.last().map(|s| s.ms),
-                    rssi_dbm: stats::summarize(samples.iter().filter_map(|s| s.rssi).collect()),
-                    snr_db: stats::summarize(samples.iter().filter_map(|s| s.snr).collect()),
-                    signal_dbm: signal,
-                    noise_dbm: stats::summarize(noise),
-                    detection: group.detection.clone(),
-                    flags: flags.into_iter().map(str::to_owned).collect(),
-                }
-            })
-            .collect();
+                        flags.insert("radio_mismatch");
+                    }
+                    let (signal, noise): (Vec<_>, Vec<_>) = samples
+                        .iter()
+                        .filter_map(|s| Some(stats::split_power(s.rssi?, s.snr?)))
+                        .unzip();
+                    let signal = stats::summarize(signal);
+                    let freq_mhz = tx_radio
+                        .or(rx_radio)
+                        .and_then(|radio| radio.freq_mhz)
+                        .unwrap_or(869.5);
+                    if signal.as_ref().is_some_and(|s| {
+                        quality::implausible_signal(s.median, distance_m, freq_mhz)
+                    }) {
+                        flags.insert("implausible_signal");
+                    }
+                    LinkRecord {
+                        schema: SCHEMA_VERSION,
+                        link_id: format!("{}:{tx}>{rx}:{}", self.id, evidence.as_str()),
+                        source: self.id.clone(),
+                        evidence: *evidence,
+                        region: if coverage.contains(tx_position.point)
+                            && coverage.contains(rx_position.point)
+                        {
+                            Region::Norway
+                        } else {
+                            Region::World
+                        },
+                        tx: a.endpoint(tx, tx_position, ms, quality),
+                        rx: b.endpoint(rx, rx_position, ms, quality),
+                        distance_m,
+                        radio: link_radio(
+                            tx_radio,
+                            rx_radio,
+                            self.meshtastic,
+                            reference.and_then(|s| s.region.as_deref()),
+                        ),
+                        n: samples.len() as u32,
+                        first_ms: samples.first().map(|s| s.ms),
+                        last_ms: samples.last().map(|s| s.ms),
+                        rssi_dbm: stats::summarize(samples.iter().filter_map(|s| s.rssi).collect()),
+                        snr_db: stats::summarize(samples.iter().filter_map(|s| s.snr).collect()),
+                        signal_dbm: signal,
+                        noise_dbm: stats::summarize(noise),
+                        detection: group.detection.clone(),
+                        flags: flags.into_iter().map(str::to_owned).collect(),
+                    }
+                })
+                .collect();
         let nodes = self
             .nodes
             .iter()

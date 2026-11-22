@@ -377,7 +377,11 @@ fn corescope_attributes_only_flood_routes_and_flags_suspect_links() {
         .into_iter()
         .filter(|link| link.evidence == Evidence::CorescopeLastHop)
         .collect();
-    assert_eq!(links.len(), 3, "the direct-route reception is not attributed");
+    assert_eq!(
+        links.len(),
+        3,
+        "the direct-route reception is not attributed"
+    );
     let flags = |lat: f64| {
         links
             .iter()
