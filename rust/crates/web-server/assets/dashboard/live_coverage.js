@@ -317,7 +317,7 @@ function liveCoverageSites() {
   if (sources.proposed) {
     manualRouters.forEach((router, index) => add({slot: `manual:${router.id}`, id: router.id, label: router.name || `M${index + 1}`,
       group: 'Proposed router', kind: 'router', latitude: Number(router.latitude), longitude: Number(router.longitude),
-      antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight)}));
+      antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight), terminal_clutter: router.terminal_clutter}));
   }
   if (sources.route && result?.found && !resultStale) {
     const active = result.alternatives?.find(item => item.id === result.active_alternative_id)?.route || result.route || [];
@@ -326,7 +326,7 @@ function liveCoverageSites() {
       const known = site.origin === 'known';
       add({slot: known ? `known:${site.id}` : `route:${site.id}`, id: site.id, label: routeSiteLabel(site.id),
         group: known ? 'Existing router on route' : 'Route repeater', kind: 'router', latitude: Number(site.latitude),
-        longitude: Number(site.longitude), antenna_height_m: liveCoverageSiteHeight(site.antenna_height_m, routerHeight)});
+        longitude: Number(site.longitude), antenna_height_m: liveCoverageSiteHeight(site.antenna_height_m, routerHeight), terminal_clutter: site.terminal_clutter});
     }
   }
   if (sources.existing) {
@@ -334,7 +334,7 @@ function liveCoverageSites() {
       if (router.policy === 'excluded') continue;
       add({slot: `known:${router.id}`, id: router.id, label: router.name || router.id, group: 'Existing router', kind: 'router',
         latitude: Number(router.latitude), longitude: Number(router.longitude),
-        antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight)});
+        antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight), terminal_clutter: router.terminal_clutter});
     }
   }
   return sites;
@@ -348,7 +348,8 @@ function liveCoverageRequest(site, resolution) {
   const {mode, radius_km} = liveCoverage.settings;
   return {project_id: projectInfo?.active_id, mode, radius_m: radius_km * 1000, resolution_m: resolution,
     client: coverageSettings.client, site: {id: String(site.id).slice(0, 64), kind: site.kind, latitude: site.latitude,
-      longitude: site.longitude, antenna_height_m: site.antenna_height_m}};
+      longitude: site.longitude, antenna_height_m: site.antenna_height_m,
+      terminal_clutter: site.terminal_clutter ?? rf?.[site.kind]?.terminal_clutter}};
 }
 
 function liveCoverageKey(site, resolution = liveCoverage.settings.detail_m) {
@@ -385,6 +386,9 @@ function scheduleLiveCoverage(delay = 80) {
 /* Match slots to the current sites and queue detailed rasters for changed sites. */
 function syncLiveCoverage() {
   if (!liveCoverage.layer || switchingProject || !projectInfo || !rf) return;
+  // The server reads radio settings from the saved plan. Do not cache a
+  // response under new settings while autosave is still committing them.
+  if (savedRevision < saveRevision) return;
   restoreDisplacedLiveCoverage();
   const projectId = projectInfo?.active_id ?? null;
   const sites = liveCoverage.settings.enabled ? liveCoverageSites() : [];
@@ -554,6 +558,16 @@ function renderLiveCoverageSites() {
   const status = liveCoverageStatusText();
   const action = $('live-coverage-status');
   if (action && action.textContent !== status) { action.textContent = status; action.title = status; }
+  const fallback = $('live-coverage-model-note');
+  const header = [...liveCoverage.slots.values()]
+    .filter(slot => !slot.loading && !slot.error)
+    .map(slot => slot.raster?.header)
+    .find(header => header?.diffraction_model_configured && header.diffraction_model_configured !== header.diffraction_model);
+  if (header && liveCoverage.settings.enabled && !liveCoverage.displaced) {
+    const note = `Live coverage uses ${diffractionModelName(header.diffraction_model)}. ${diffractionModelName(header.diffraction_model_configured)} applies to route search.`;
+    if (fallback.textContent !== note) fallback.textContent = note;
+    fallback.hidden = false;
+  } else fallback.hidden = true;
   if (!list) return;
   const noTerrain = $('live-coverage-no-terrain');
   if (noTerrain) noTerrain.hidden = !liveCoverage.noTerrain;

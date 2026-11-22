@@ -7,8 +7,8 @@ const projectName = 'Oslo to Harestua';
 const dialog = '#action-dialog';
 const menu = '.project-menu > summary';
 const searchDetails = '#search-settings details > summary';
-const radioDetails = '#settings details:first-of-type > summary';
-const antennaDetails = '#settings details:nth-of-type(2) > summary';
+const radioDetails = '#settings > details:first-of-type > summary';
+const antennaDetails = '#settings > details:nth-of-type(2) > summary';
 const sampling = '#coverage-sampling-controls > summary';
 const heightControls = '#coverage-comparison-controls';
 const targets = '#coverage-targets-controls';
@@ -209,7 +209,7 @@ function createWorkflow(run) {
     await taller(() => shot('route-radio', '.plan-step[data-step=radio-setup]'));
     await $(radioDetails).click();
     await openDetails(antennaDetails);
-    await crop('route-radio-antenna', antennaDetails, '#settings details:nth-of-type(2) > .fields:nth-of-type(1)');
+    await crop('route-radio-antenna', antennaDetails, '#settings .propagation-role:first-of-type');
     await $(antennaDetails).click();
 
     await step('router');
