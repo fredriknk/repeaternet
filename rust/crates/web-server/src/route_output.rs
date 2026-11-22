@@ -1,4 +1,6 @@
-use repeaternet_optimizer::{NetworkSolution, OptimizationResult, PlanningSite, SiteOrigin};
+use repeaternet_optimizer::{
+    NetworkSolution, OptimizationResult, PlanningSite, ROUTE_MODEL_VERSION, SiteOrigin,
+};
 use repeaternet_rf_core::{DirectionResult, HeightReference, LinkResult, SiteKind, TerrainProfile};
 use repeaternet_terrain::Transformer;
 use serde::{Deserialize, Serialize};
@@ -32,6 +34,8 @@ fn site(site: &PlanningSite, transform: &Transformer) -> Value {
         "ground_elevation_m": rf.ground_elevation_m,
         "surface_elevation_m": rf.surface_elevation_m,
         "antenna_height_m": rf.antenna_height_m,
+        "terminal_clutter": rf.terminal_clutter,
+        "clutter_height_m": rf.clutter_height_m,
         "height_reference": match rf.height_reference {
             HeightReference::GroundDtm => "ground_dtm", HeightReference::SurfaceDom => "surface_dom",
         },
@@ -56,6 +60,9 @@ fn direction(direction: &DirectionResult) -> Value {
         fspl_db,
         diffraction_loss_db,
         clutter_loss_db,
+        model_correction_db,
+        terminal_clutter_db,
+        step_allowance_db,
         total_path_loss_db,
         tx_gain_dbi,
         rx_gain_dbi,
@@ -117,6 +124,7 @@ pub(crate) fn link(link: &LinkResult) -> Value {
         minimum_fresnel_clearance_ratio,
         minimum_clearance_distance_m,
         maximum_fresnel_radius_m,
+        diffraction_model,
         diffraction_loss_db
     );
     value["forward"] = direction(&link.forward);
@@ -221,6 +229,7 @@ pub fn select(payload: &mut Value, alternatives: &[Alternative], index: usize) {
 pub fn summary(payload: &Value, plan: &str, terrain: &Value) -> Value {
     let mut summary = json!({
         "plan_fingerprint": plan, "terrain_fingerprint": terrain,
+        "route_model_version": ROUTE_MODEL_VERSION,
         "saved_at": crate::route_http::now(),
     });
     for key in [

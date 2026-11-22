@@ -7,8 +7,8 @@ use std::{
 
 use lru::LruCache;
 use repeaternet_rf_core::{
-    AntennaPattern, HeightReference, LinkResult, RadioBudget, RfSettings, Site, TerrainSource,
-    ValidationMode,
+    AntennaPattern, HeightReference, LinkResult, RadioBudget, RfSettings, Site, TerminalClutter,
+    TerrainSource, ValidationMode,
 };
 use sha2::{Digest, Sha256};
 
@@ -84,6 +84,8 @@ pub(crate) struct Key {
 struct SiteKey {
     geometry: [u64; 5],
     flags: [u8; 3],
+    terminal_clutter: TerminalClutter,
+    clutter_height: Option<u64>,
 }
 
 impl From<&Site> for SiteKey {
@@ -104,6 +106,8 @@ impl From<&Site> for SiteKey {
                 u8::from(site.height_reference == HeightReference::SurfaceDom),
                 u8::from(site.surface_elevation_m.is_some()),
             ],
+            terminal_clutter: site.terminal_clutter,
+            clutter_height: site.clutter_height_m.map(f64::to_bits),
         }
     }
 }

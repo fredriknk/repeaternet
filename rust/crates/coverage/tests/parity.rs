@@ -6,7 +6,8 @@ use std::{
 
 use repeaternet_coverage::*;
 use repeaternet_rf_core::{
-    Point, RfError, RfSettings, Site, SiteKind, TerrainLayer, TerrainSource, ValidationMode,
+    DiffractionModel, ObstacleSurface, Point, RfError, RfSettings, Site, SiteKind, TerrainLayer,
+    TerrainSource, ValidationMode,
 };
 use repeaternet_terrain::{ArrayTerrain, LonLat, TerrainCrs, Transformer};
 use serde_json::{json, Value};
@@ -73,7 +74,12 @@ fn full_python_grid_fixture_matches_real_rf_and_wire_defaults() {
                 ..ClientRadioProfile::default()
             };
         }
+        // The Python oracle used Bullington over the surface with no model correction.
+        // This fixture samples at the native raster resolution, so no step allowance applies.
         let rf = RfSettings {
+            diffraction_model: DiffractionModel::Bullington,
+            obstacle_surface: ObstacleSurface::Surface,
+            model_correction_db: 0.0,
             validation_mode: if strict {
                 ValidationMode::StrictLos
             } else {

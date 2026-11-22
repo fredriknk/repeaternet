@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::TerminalClutter;
+use crate::{terminal_clutter::sample_clutter_height, RfError, TerminalClutter, TerrainSource};
 
 /// A projected coordinate in metres.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -56,6 +56,20 @@ pub struct Site {
 }
 
 impl Site {
+    /// Refresh the configured terminal correction's height after positioning a site.
+    pub fn sample_terminal_clutter(
+        &mut self,
+        terrain: &(impl TerrainSource + ?Sized),
+    ) -> Result<(), RfError> {
+        self.clutter_height_m =
+            if self.terminal_clutter == TerminalClutter::P2108Dom && terrain.has_surface() {
+                sample_clutter_height(terrain, self.position)?
+            } else {
+                None
+            };
+        Ok(())
+    }
+
     /// Candidate site with the default 3 m antenna height and zero ground elevation.
     pub fn new(id: impl Into<String>, x: f64, y: f64) -> Self {
         Self {

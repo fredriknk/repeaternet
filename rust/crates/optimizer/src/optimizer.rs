@@ -11,8 +11,8 @@ use crate::{
     OptimizationPriority, PlanningSite, RoutingGraph, SiteFilter, SiteOrigin,
 };
 use repeaternet_rf_core::{
-    EvaluationOptions, LinkEvaluator, LinkResult, Point, RfError, RfSettings, Site, SiteKind,
-    TerrainLayer, TerrainSource,
+    calibration::CERTIFICATION_MAX_STEP_M, EvaluationOptions, LinkEvaluator, LinkResult, Point,
+    RfError, RfSettings, Site, SiteKind, TerminalClutter, TerrainLayer, TerrainSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -321,6 +321,8 @@ impl<'a> RouteOptimizer<'a> {
                 } else {
                     None
                 };
+                trial.rf.terminal_clutter = self.rf.router.terminal_clutter;
+                trial.rf.sample_terminal_clutter(self.terrain)?;
                 let Some(left) = evaluate(&previous.rf, &trial.rf)? else {
                     continue;
                 };
@@ -348,6 +350,7 @@ impl<'a> RouteOptimizer<'a> {
     /// The caller supplies the route to adjust; `optimize` does not call this helper.
     pub fn reduce_mast_heights(&self, route: &mut [PlanningSite]) -> Result<(), OptimizationError> {
         let settings = self.settings;
+        validate_final_step(settings.final_sample_step_m)?;
         let step = settings.router_height_step_m;
         let heights = steps(
             settings.minimum_router_height_m,
@@ -623,6 +626,29 @@ impl<'a> RouteOptimizer<'a> {
                     self.site_filter,
                     cancelled,
                 )?;
+                let mut clutter_heights = BTreeMap::new();
+                let mut configure_clutter = |site: &mut Site| {
+                    site.terminal_clutter = self.rf.router.terminal_clutter;
+                    if site.terminal_clutter == TerminalClutter::P2108Dom
+                        && self.terrain.has_surface()
+                    {
+                        let position = (site.position.x.to_bits(), site.position.y.to_bits());
+                        site.clutter_height_m = match clutter_heights.entry(position) {
+                            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                site.sample_terminal_clutter(self.terrain)?;
+                                *entry.insert(site.clutter_height_m)
+                            }
+                        };
+                    }
+                    Ok::<_, OptimizationError>(())
+                };
+                for site in &mut generated {
+                    if cancelled() {
+                        break;
+                    }
+                    configure_clutter(&mut site.rf)?;
+                }
                 let search_height_m = if settings.optimize_heights {
                     settings.maximum_router_height_m
                 } else {
@@ -691,6 +717,7 @@ impl<'a> RouteOptimizer<'a> {
                     search_height_m,
                     &valid_access_link,
                     &mut refine_access,
+                    &mut configure_clutter,
                     cancelled,
                 )?;
                 if self.site_filter.is_some() {
@@ -769,14 +796,23 @@ fn steps(
 }
 
 fn validate_search_settings(settings: &CandidateSettings) -> Result<(), OptimizationError> {
-    if [settings.coarse_sample_step_m, settings.final_sample_step_m]
-        .into_iter()
+    validate_final_step(settings.final_sample_step_m)?;
+    if std::iter::once(settings.coarse_sample_step_m)
         .chain(settings.maximum_link_distance_m)
         .any(|value| !value.is_finite() || value <= 0.0)
     {
         return Err(OptimizationError::InvalidInput(
             "RF sample steps and maximum distance must be positive and finite".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_final_step(step_m: f64) -> Result<(), OptimizationError> {
+    if !step_m.is_finite() || step_m <= 0.0 || step_m > CERTIFICATION_MAX_STEP_M {
+        return Err(OptimizationError::InvalidInput(format!(
+            "final_sample_step_m must be above zero and at most {CERTIFICATION_MAX_STEP_M} m"
+        )));
     }
     Ok(())
 }

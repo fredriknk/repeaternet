@@ -22,8 +22,12 @@ pub use optimizer::{
 pub use screening::{backbone_site_indices, screening_pair_indices};
 pub use topology::{select_active_solution_index, solve_topologies, ClientPaths, NetworkSolution};
 
-use repeaternet_rf_core::{LinkResult, RfError, Site, SiteKind};
+use repeaternet_rf_core::{
+    calibration::CERTIFICATION_MAX_STEP_M, LinkResult, RfError, Site, SiteKind,
+};
 use std::{error, fmt};
+
+pub const ROUTE_MODEL_VERSION: &str = "route-rust-v2";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OptimizationPriority {
@@ -186,7 +190,7 @@ impl Default for CandidateSettings {
             parallel_workers: 0,
             coarse_sample_step_m: 200.0,
             medium_sample_step_m: 50.0,
-            final_sample_step_m: 10.0,
+            final_sample_step_m: CERTIFICATION_MAX_STEP_M,
             maximum_link_distance_m: Some(50_000.0),
             refine_radius_m: 250.0,
             refine_step_m: 50.0,

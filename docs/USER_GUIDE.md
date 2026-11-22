@@ -399,6 +399,8 @@ features. Open the downloaded HTML file directly in a browser, even offline.
 It contains an interactive map of the route, nearby roads when available, site
 details and terrain profiles. Expand **Directional link budget** below a chart
 to see the budget for that hop. Printing includes the budgets automatically.
+Route exports include the diffraction model for each hop and the model
+correction, terminal clutter and terrain sampling allowance in each direction.
 
 ![Route export links for CSV, GeoJSON and the HTML report](images/route-exports.png)
 
@@ -431,8 +433,8 @@ replaces it when you let go. Editing coordinates, antenna heights, router
 policies or radio settings in the sidebar recalculates the affected sites the
 same way. Other sites keep their maps, so only the site you changed is redrawn.
 
-The model is the one the route search uses: free-space loss, Bullington
-diffraction over the terrain and surface model, Earth curvature with the
+The live model combines free-space loss, Bullington diffraction over terrain
+and the surface model, Earth curvature with the
 configured k-factor, optional clutter loss, antenna patterns and both link
 directions. In **Strict LOS** validation mode, places without line of sight are
 shown as not covered; the Fresnel clearance requirement is not applied to the
@@ -865,16 +867,21 @@ for you. Use the bar to return to setup after reading the map or analysis.
 
 ## Interpreting RF results
 
-The model combines free-space loss, antenna gains and feed losses, effective
-Earth curvature, Fresnel clearance, Bullington terrain diffraction, optional
-configured clutter loss and receiver sensitivity. It calculates forward and
-reverse budgets separately. Both directions must pass before a route edge can
-be certified.
+Route search and saved coverage combine free-space loss, antenna gains and feed
+losses, Earth curvature, Fresnel clearance, terrain diffraction and receiver
+sensitivity. Delta-Bullington over bare-earth terrain is the default. The model
+correction accounts for measured optimism in the link budget. An optional
+terminal clutter correction estimates the effect of nearby buildings or trees
+using the difference between the surface and ground elevations around a site.
+Saved coverage also applies an allowance for profiles sampled more coarsely
+than the native terrain. Both directions must pass before a route hop can be
+certified.
 
 ~~~text
 FSPL = 32.44 + 20 log10(distance_km) + 20 log10(frequency_MHz)
 received power = TX power + TX gain - TX feed loss
                  - FSPL - diffraction - clutter
+                 - model correction - terminal clutter - terrain sampling allowance
                  + RX gain - RX feed loss - miscellaneous loss
 usable margin = received power - receiver sensitivity - required fade margin
 ~~~
@@ -885,9 +892,7 @@ its budget still closes. **Strict line of sight + Fresnel** also requires clear
 line of sight and the configured Fresnel zone clearance. The first Fresnel
 zone is the region around the direct radio path where obstacles affect the
 signal. The Earth k-factor scales the radius used to calculate curvature.
-The default of 1.0 uses the mean Earth radius, which models more curvature than
-k = 4/3. The diffraction implementation uses the Bullington terrain component.
-The full delta-Bullington and spherical-Earth terms are outside the model.
+The default uses the mean Earth radius.
 
 | Usable margin | Interpretation |
 | --- | --- |

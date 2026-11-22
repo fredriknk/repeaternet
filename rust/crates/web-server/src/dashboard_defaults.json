@@ -5,26 +5,29 @@
     "receiver_sensitivity_dbm": -130.0,
     "fade_margin_db": 10.0,
     "miscellaneous_loss_db": 0.0,
-    "k_factor": 1.0,
+    "k_factor": null,
     "required_fresnel_clearance": 0.6,
     "validation_mode": "rf_propagation",
     "endpoint_a": {
       "gain_dbi": 2.15,
       "feed_loss_db": 1.0,
       "height_agl_m": 3.0,
-      "pattern_csv": null
+      "pattern_csv": null,
+      "terminal_clutter": null
     },
     "endpoint_b": {
       "gain_dbi": 2.15,
       "feed_loss_db": 1.0,
       "height_agl_m": 3.0,
-      "pattern_csv": null
+      "pattern_csv": null,
+      "terminal_clutter": null
     },
     "router": {
       "gain_dbi": 2.15,
       "feed_loss_db": 1.0,
       "height_agl_m": 3.0,
-      "pattern_csv": null
+      "pattern_csv": null,
+      "terminal_clutter": null
     },
     "lora": {
       "enabled": false,
@@ -44,7 +47,9 @@
     },
     "clutter_loss_enabled": false,
     "clutter_loss_db_per_m": 0.0,
-    "diffraction_model": "bullington"
+    "diffraction_model": null,
+    "obstacle_surface": null,
+    "model_correction_db": null
   },
   "candidates": {
     "infrastructure_policy": "existing_and_proposed",
@@ -59,7 +64,7 @@
     "parallel_workers": 0,
     "coarse_sample_step_m": 200.0,
     "medium_sample_step_m": 50.0,
-    "final_sample_step_m": 10.0,
+    "final_sample_step_m": null,
     "maximum_link_distance_m": 50000.0,
     "refine_radius_m": 250.0,
     "refine_step_m": 50.0,

@@ -15,7 +15,8 @@ use axum::{
 };
 use repeaternet_optimizer::{
     Cancellation, InfrastructurePolicy, OptimizationRequest, PlanningSite, Progress,
-    RouteOptimizer, RouterPolicy, SearchHooks, SiteOrigin, candidate_grid_spacing,
+    ROUTE_MODEL_VERSION, RouteOptimizer, RouterPolicy, SearchHooks, SiteOrigin,
+    candidate_grid_spacing,
 };
 use repeaternet_project_store::{Project, ProjectStore};
 use repeaternet_rf_core::{HeightReference, Site};
@@ -52,6 +53,9 @@ pub(crate) fn restore(
         return Ok(());
     };
     if !matches!(project.run_state.as_str(), "complete" | "stopped") {
+        return Ok(());
+    }
+    if summary["route_model_version"] != ROUTE_MODEL_VERSION {
         return Ok(());
     }
     let plan = catalog::plan_fingerprint(&project.plan, true);
@@ -319,8 +323,8 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
         .zip(points)
         .zip(elevations)
         .zip(surfaces)
-        .map(|(((location, position), ground), surface)| PlanningSite {
-            rf: Site {
+        .map(|(((location, position), ground), surface)| {
+            let mut rf = Site {
                 id: location.id.clone(),
                 position,
                 kind: location.kind,
@@ -330,18 +334,23 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
                 .then_some(surface),
                 antenna_height_m: location.height,
                 height_reference: HeightReference::GroundDtm,
-                terminal_clutter: Default::default(),
+                terminal_clutter: location.terminal_clutter,
                 clutter_height_m: None,
-            },
-            origin: location.origin,
-            policy: location.policy,
-            enabled: true,
-            locked: location.origin != SiteOrigin::Optimized,
-            height_override: location.height_override,
-            terrain_slope: 0.0,
-            site_quality: 0.0,
+            };
+            rf.sample_terminal_clutter(&terrain)
+                .map_err(terrain_http::terrain_invalid)?;
+            Ok(PlanningSite {
+                rf,
+                origin: location.origin,
+                policy: location.policy,
+                enabled: true,
+                locked: location.origin != SiteOrigin::Optimized,
+                height_override: location.height_override,
+                terrain_slope: 0.0,
+                site_quality: 0.0,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<ApiResult<Vec<_>>>()?;
     let fixed_routers = sites.split_off(2);
     let request = OptimizationRequest {
         clients: sites,
@@ -665,7 +674,7 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         #[cfg(test)]
         app.scheduler.pause_after_snapshot();
     };
-    let cache_version = json!([job.context.fingerprint, inputs.rf_payload]).to_string();
+    let cache_version = cache_version(&job.context.fingerprint, &inputs.rf_payload, &inputs.plan)?;
     let optimizer = RouteOptimizer::new(&terrain, &inputs.rf, &inputs.candidates).with_cache(
         &app.cache,
         &job.context.project_id,
@@ -691,6 +700,16 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         add_overlay(&mut output)?;
     }
     Ok(output)
+}
+
+pub(crate) fn cache_version(terrain: &Value, rf: &Value, plan: &Value) -> ApiResult<String> {
+    Ok(json!([
+        ROUTE_MODEL_VERSION,
+        terrain,
+        rf,
+        route_inputs::router_clutter_overrides(plan)?,
+    ])
+    .to_string())
 }
 
 fn finish(

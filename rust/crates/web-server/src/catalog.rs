@@ -11,8 +11,9 @@ use std::{
 };
 
 use repeaternet_coverage::CoverageMetricsCache;
-use repeaternet_optimizer::LinkMetricsCache;
+use repeaternet_optimizer::{LinkMetricsCache, ROUTE_MODEL_VERSION};
 use repeaternet_project_store::{Project, ProjectStore};
+use repeaternet_rf_core::calibration;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
@@ -59,10 +60,7 @@ impl AppState {
             #[cfg(test)]
             coverage_terrain_resolution: None,
             corescope_endpoint: repeaternet_providers::corescope::DEFAULT_BASE_URL.into(),
-            defaults: Arc::new(
-                serde_json::from_str(include_str!("dashboard_defaults.json"))
-                    .expect("embedded dashboard defaults are valid JSON"),
-            ),
+            defaults: Arc::new(dashboard_defaults()),
             sessions: Arc::default(),
             scheduler: Arc::new(crate::route_http::Scheduler::from_env()),
             uploads: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -104,6 +102,31 @@ impl AppState {
             .or_default()
             .clone()
     }
+}
+
+pub(crate) fn dashboard_defaults() -> Value {
+    let mut defaults: Value = serde_json::from_str(include_str!("dashboard_defaults.json"))
+        .expect("embedded dashboard defaults are valid JSON");
+    // Null placeholders in the embedded JSON are filled from the RF model.
+    let rf = &mut defaults["rf"];
+    rf["diffraction_model"] = json!(calibration::DEFAULT_DIFFRACTION_MODEL);
+    rf["obstacle_surface"] = json!(calibration::DEFAULT_OBSTACLE_SURFACE);
+    rf["model_correction_db"] = json!(calibration::MODEL_CORRECTION_DB);
+    rf["k_factor"] = json!(calibration::K_FACTOR);
+    for role in ["endpoint_a", "endpoint_b", "router"] {
+        rf[role]["terminal_clutter"] = json!(calibration::DEFAULT_TERMINAL_CLUTTER);
+    }
+    defaults["candidates"]["final_sample_step_m"] = json!(calibration::CERTIFICATION_MAX_STEP_M);
+    defaults["calibration"] = json!({
+        "model_correction_db": calibration::MODEL_CORRECTION_DB,
+        "new_site_sigma_db": calibration::NEW_SITE_SIGMA_DB,
+        "time_variability_sigma_db": calibration::TIME_VARIABILITY_SIGMA_DB,
+        "certification_max_step_m": calibration::CERTIFICATION_MAX_STEP_M,
+        "coarse_step_allowance_db": calibration::COARSE_STEP_ALLOWANCE_DB,
+        "terminal_clutter_radius_m": calibration::TERMINAL_CLUTTER_RADIUS_M,
+        "source": "docs/RF_CALIBRATION.md, 2026-11-22",
+    });
+    defaults
 }
 
 // Project selection and publication of route/coverage state share this lock.
@@ -245,8 +268,11 @@ pub(crate) fn historical_result(
     let recorded_plan = summary_fields
         .get("plan_fingerprint")
         .and_then(Value::as_str);
-    let stale = (recorded_plan != Some(&plan_fingerprint(&project.plan, true))
-        && recorded_plan != Some(&plan_fingerprint(&project.plan, false)))
+    let stale = (summary_fields
+        .get("route_model_version")
+        .is_some_and(|model| model != ROUTE_MODEL_VERSION))
+        || (recorded_plan != Some(&plan_fingerprint(&project.plan, true))
+            && recorded_plan != Some(&plan_fingerprint(&project.plan, false)))
         || terrain
             .fingerprint(directory, None)
             .is_none_or(|current| summary_fields.get("terrain_fingerprint") != Some(&current));

@@ -32,6 +32,7 @@ pub(crate) fn recover(
         search_height_m,
         valid_link,
         &mut |_| Ok(Vec::new()),
+        &mut |_| Ok(()),
         cancelled,
     )
 }
@@ -45,6 +46,7 @@ pub(crate) fn recover_with_refinement(
     search_height_m: f64,
     valid_link: &dyn Fn(&Site, &Site) -> Result<bool, OptimizationError>,
     refine: &mut dyn FnMut(Point) -> Result<Vec<PlanningSite>, OptimizationError>,
+    configure_clutter: &mut dyn FnMut(&mut Site) -> Result<(), OptimizationError>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<usize, OptimizationError> {
     if settings.candidates_per_cell == 0 || settings.maximum_solution_routers == 0 || cancelled() {
@@ -146,6 +148,7 @@ pub(crate) fn recover_with_refinement(
             }
             let mut site = dropped[index].planning_site(format!("C-access-{}", index + 1));
             site.rf.antenna_height_m = search_height_m;
+            configure_clutter(&mut site.rf)?;
             checks += 1;
             if valid_link(&client.rf, &site.rf)? {
                 visible.push(site);
@@ -166,6 +169,7 @@ pub(crate) fn recover_with_refinement(
                     continue;
                 }
                 site.rf.antenna_height_m = search_height_m;
+                configure_clutter(&mut site.rf)?;
                 checks += 1;
                 if valid_link(&client.rf, &site.rf)? {
                     visible.push(site);
@@ -397,6 +401,7 @@ mod tests {
                 assert_eq!(point.x, 0.0);
                 Ok(vec![Site::new("fine", 50.0, 0.0).into()])
             },
+            &mut |_| Ok(()),
             &|| false,
         )
         .unwrap();

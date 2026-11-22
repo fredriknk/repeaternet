@@ -10,7 +10,9 @@ use std::{
 
 use repeaternet_coverage::*;
 use repeaternet_rf_core::{
-    HeightReference, Point, RfError, RfSettings, Site, SiteKind, TerrainLayer, TerrainSource,
+    calibration::{step_allowance_db, COARSE_STEP_ALLOWANCE_DB},
+    HeightReference, Point, RfError, RfSettings, Site, SiteKind, TerminalClutter, TerrainLayer,
+    TerrainSource,
 };
 use repeaternet_terrain::{LonLat, TerrainCrs, Transformer};
 
@@ -188,6 +190,15 @@ fn warm_grid_matches_uncached_and_rf_input_changes_recompute() {
             kind: SiteKind::EndpointA,
             ..site.clone()
         },
+        Site {
+            terminal_clutter: TerminalClutter::P2108Dom,
+            ..site.clone()
+        },
+        Site {
+            terminal_clutter: TerminalClutter::P2108Dom,
+            clutter_height_m: Some(40.0),
+            ..site.clone()
+        },
     ] {
         evaluate(&terrain, &rf, REVISION, &variant, &config);
     }
@@ -210,6 +221,49 @@ fn warm_grid_matches_uncached_and_rf_input_changes_recompute() {
     let cell = &grid(&eval, &relabelled, &downlink, &area).cells[0];
     assert_eq!(cell.sources[0].source_id, "new label");
     assert_eq!(cache.stats().hits, before.hits + 1);
+}
+
+#[test]
+fn saved_grid_and_point_budget_apply_the_calibrated_step_allowance() {
+    let terrain = Terrain::default();
+    let rf = RfSettings::default();
+    let transform = Transformer::new(CRS).unwrap();
+    let evaluator = CoverageEvaluator::new(&terrain, &rf, &transform);
+    let source = source();
+    let sources = std::slice::from_ref(&source);
+    let step = COARSE_STEP_ALLOWANCE_DB[2].0;
+    let allowance = step_allowance_db(step, terrain.resolution_m());
+    let area = area(500_950.0);
+    let fine = settings();
+    let coarse = CoverageSettings {
+        profile_step_m: step,
+        ..fine.clone()
+    };
+    let fine_grid = grid(&evaluator, &source, &fine, &area);
+    let coarse_grid = grid(&evaluator, &source, &coarse, &area);
+    let coarse_cell = &coarse_grid.cells[0];
+    let margin = fine_grid.cells[0].best_margin_db.unwrap() - coarse_cell.best_margin_db.unwrap();
+    assert!((margin - allowance).abs() < 0.01);
+
+    let link = evaluator
+        .evaluate_point(
+            LonLat {
+                longitude: coarse_cell.longitude,
+                latitude: coarse_cell.latitude,
+            },
+            sources,
+            &coarse,
+            ExactPointOptions {
+                final_sample_step_m: step,
+                include_serving_profile: true,
+                cancelled: &|| false,
+            },
+        )
+        .unwrap()
+        .profile_link
+        .unwrap();
+    assert_eq!(link.forward.step_allowance_db, allowance);
+    assert_eq!(link.reverse.step_allowance_db, allowance);
 }
 
 #[test]
