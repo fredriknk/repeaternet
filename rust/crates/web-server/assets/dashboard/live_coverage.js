@@ -122,35 +122,39 @@ function liveCoverageVisibleRasters() {
 }
 
 function drawLiveCoverageTile(canvas, coords) {
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 256, 256);
-  const m = liveCoverageWorld / (256 * 2 ** coords.z);
-  const west = coords.x * 256 * m - liveCoverageWorld / 2, north = liveCoverageWorld / 2 - coords.y * 256 * m;
-  const east = west + 256 * m, south = north - 256 * m;
+  const {west, north} = liveCoverageTileBounds(coords);
+  const step = liveCoverageWorld / (256 * 2 ** coords.z);
   const rasters = liveCoverageVisibleRasters().map(item => item.raster)
-    .filter(r => r.west < east && r.east > west && r.south < north && r.north > south);
+    .filter(r => r.west < west + 256 * step && r.east > west && r.south < north && r.north > north - 256 * step);
+  drawLiveCoverageRaster(canvas, rasters, west, north, step, coords.x * 256 + coords.y * 256);
+}
+
+function drawLiveCoverageRaster(canvas, rasters, west, north, step, stripeOffset = 0) {
+  const ctx = canvas.getContext('2d');
+  const {width, height} = canvas;
+  ctx.clearRect(0, 0, width, height);
   if (!rasters.length) return;
-  const best = new Float32Array(65536).fill(-Infinity), count = new Uint8Array(65536), unknown = new Uint8Array(65536);
+  const size = width * height;
+  const best = new Float32Array(size).fill(-Infinity), count = new Uint8Array(size), unknown = new Uint8Array(size);
   for (const raster of rasters) {
-    const ps = raster.header.pixel_size;
-    const px0 = Math.max(0, Math.ceil((raster.west - west) / m - .5)), px1 = Math.min(255, Math.floor((raster.east - west) / m - .5));
-    const py0 = Math.max(0, Math.ceil((north - raster.north) / m - .5)), py1 = Math.min(255, Math.floor((north - raster.south) / m - .5));
-    if (px0 > px1 || py0 > py1 || !(ps > 0)) continue;
+    const px0 = Math.max(0, Math.ceil((raster.west - west) / step - .5)), px1 = Math.min(width - 1, Math.floor((raster.east - west) / step - .5));
+    const py0 = Math.max(0, Math.ceil((north - raster.north) / step - .5)), py1 = Math.min(height - 1, Math.floor((north - raster.south) / step - .5));
+    if (px0 > px1 || py0 > py1 || !(raster.header.pixel_size > 0)) continue;
     for (let py = py0; py <= py1; py++) {
-      const y = north - (py + .5) * m;
-      for (let px = px0, i = py * 256 + px0; px <= px1; px++, i++) {
-        const margin = liveCoverageSample(raster, west + (px + .5) * m, y);
+      const y = north - (py + .5) * step;
+      for (let px = px0, i = py * width + px0; px <= px1; px++, i++) {
+        const margin = liveCoverageSample(raster, west + (px + .5) * step, y);
         if (margin === null) { unknown[i] = 1; continue; }
         if (!(margin >= 0)) continue;
-        count[i]++;
+        if (count[i] < 3) count[i]++;
         if (margin > best[i]) best[i] = margin;
       }
     }
   }
   const settings = liveCoverage.settings, palette = liveCoverage.palette, scaleMax = settings.scale_max_db;
   const overlap = liveCoverageHex(settings.overlap_color), overlapDark = overlap.map(value => value * .62);
-  const image = ctx.createImageData(256, 256), out = image.data;
-  for (let i = 0, p = 0; i < 65536; i++, p += 4) {
+  const image = ctx.createImageData(width, height), out = image.data;
+  for (let i = 0, p = 0; i < size; i++, p += 4) {
     if (count[i]) {
       let rgb;
       if (settings.overlap && count[i] >= 2) rgb = count[i] >= 3 ? overlapDark : overlap;
@@ -162,13 +166,99 @@ function drawLiveCoverageTile(canvas, coords) {
       // Fade the weakest few dB so the edge of coverage and the basemap stay readable.
       out[p + 3] = 255 * (.5 + .5 * Math.min(1, best[i] / 4));
     } else if (unknown[i] && settings.show_unknown) {
-      const gx = coords.x * 256 + (i & 255), gy = coords.y * 256 + (i >> 8);
-      const stripe = (gx + gy) % 10 < 3;
+      const stripe = (stripeOffset + i % width + Math.floor(i / width)) % 10 < 3;
       out[p] = out[p + 1] = out[p + 2] = stripe ? 88 : 150;
       out[p + 3] = stripe ? 150 : 60;
     }
   }
   ctx.putImageData(image, 0, 0);
+}
+
+function liveCoverageReportSnapshot() {
+  const settings = liveCoverage.settings;
+  if (!map.hasLayer(liveCoverage.layer) || !settings.opacity || resultStale) return null;
+  const sites = liveCoverageSites().filter(site => !liveCoverage.hidden.has(site.slot));
+  const rasters = [];
+  for (const site of sites) {
+    const slot = liveCoverage.slots.get(site.slot);
+    if (slot?.raster && !slot.raster.preview && !slot.loading && !slot.error
+      && slot.key === liveCoverageKey(site)) rasters.push(slot.raster);
+  }
+  if (!rasters.length) return null;
+  let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity, finest = Infinity;
+  for (const raster of rasters) {
+    west = Math.min(west, raster.west);
+    south = Math.min(south, raster.south);
+    east = Math.max(east, raster.east);
+    north = Math.max(north, raster.north);
+    finest = Math.min(finest, raster.header.pixel_size);
+  }
+  const step = Math.max(finest, Math.max(east - west, north - south) / 768);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.min(768, Math.ceil((east - west) / step));
+  canvas.height = Math.min(768, Math.ceil((north - south) / step));
+  drawLiveCoverageRaster(canvas, rasters, west, north, step);
+  const corner = (x, y) => {
+    const {lat, lng} = L.CRS.EPSG3857.unproject(L.point(x, y));
+    return [lat, lng];
+  };
+  const symbols = [];
+  if (settings.overlap) symbols.push(
+    ['Two sources', settings.overlap_color],
+    ['Three or more sources', `rgb(${liveCoverageHex(settings.overlap_color).map(c => Math.round(c * .62)).join(',')})`]
+  );
+  if (settings.show_unknown) symbols.push(['Unknown terrain', 'repeating-linear-gradient(135deg,#666 0 2px,#ddd 2px 5px)']);
+  return {
+    image: canvas.toDataURL('image/png'),
+    bounds: [corner(west, north - canvas.height * step), corner(west + canvas.width * step, north)],
+    opacity: settings.opacity / 100,
+    gradient: liveCoverageGradientCss(settings.colormap, settings.scale_max_db),
+    max: settings.scale_max_db, mode: liveCoverageModes[settings.mode], symbols,
+    ready: rasters.length, total: sites.length
+  };
+}
+
+async function downloadLiveCoverageReport(event) {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  const link = event.currentTarget, status = $('route-export-status');
+  if (link.getAttribute('aria-busy') === 'true') { event.preventDefault(); return; }
+  status.textContent = '';
+  let snapshot;
+  try { snapshot = liveCoverageReportSnapshot(); }
+  catch (error) {
+    event.preventDefault();
+    status.textContent = `Could not prepare live coverage. ${error.message}`;
+    return;
+  }
+  if (!snapshot) return;
+  event.preventDefault();
+  const identity = [result.job_id, result.snapshot_version];
+  link.setAttribute('aria-busy', 'true');
+  status.textContent = 'Preparing HTML report…';
+  try {
+    const response = await fetch(link.href);
+    if (!response.ok) throw Error(`Could not download the report (HTTP ${response.status}).`);
+    const html = await response.text();
+    // Fill the report's inert JSON slot only when it describes the captured route.
+    const slot = /<script id="report-live-coverage" type="application\/json">([^<]*)<\/script>/.exec(html);
+    if (!slot || JSON.stringify(JSON.parse(slot[1])) !== JSON.stringify(identity)) {
+      throw Error('The route changed during export. Download the report again.');
+    }
+    const data = JSON.stringify([...identity, snapshot]).replaceAll('<', '\\u003c');
+    const start = slot.index + slot[0].indexOf('>') + 1;
+    const blob = new Blob([html.slice(0, start), data, html.slice(start + slot[1].length)], {type: 'text/html;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const download = document.createElement('a');
+    download.href = url;
+    download.download = 'route-report.html';
+    download.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.textContent = '';
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    link.removeAttribute('aria-busy');
+  }
 }
 
 function liveCoverageTileBounds(coords) {
@@ -717,6 +807,7 @@ function restoreDisplacedLiveCoverage() {
 
 /* Called once from app.js after the map, plan and controls exist. */
 function initLiveCoverage() {
+  $('route-export-html').addEventListener('click', downloadLiveCoverageReport);
   const LiveCoverageLayer = L.GridLayer.extend({
     createTile(coords) {
       const canvas = L.DomUtil.create('canvas', 'live-coverage-tile');

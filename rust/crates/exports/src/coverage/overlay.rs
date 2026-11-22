@@ -58,7 +58,7 @@ impl CoverageOverlay {
         };
         write!(
             out,
-            "<section id=\"coverage\"><h2>Predicted coverage</h2><p class=\"muted\">{}</p><dl>",
+            "<section id=\"coverage\"><h2>Predicted coverage · saved run</h2><p class=\"muted\">{}</p><dl>",
             html(&self.metadata["prediction_warning"])
         )?;
         for (label, value) in [

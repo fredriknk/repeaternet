@@ -194,7 +194,7 @@ fn render(
                 "No route found"
             });
     let stamp = options.generated_at;
-    write!(out, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>RF route report</title><style>{}\n{}</style></head><body><main><header><div><h1>RF route report</h1><p>{}</p><p class=\"muted\">Generated <time datetime=\"{}\">{}</time></p></div><button class=\"print\" type=\"button\" onclick=\"window.print()\">Print report</button></header><section><h2>Route summary</h2>",
+    write!(out, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:\"><title>RF route report</title><style>{}\n{}</style></head><body><main><header><div><h1>RF route report</h1><p>{}</p><p class=\"muted\">Generated <time datetime=\"{}\">{}</time></p></div><button class=\"print\" type=\"button\" onclick=\"window.print()\">Print report</button></header><section><h2>Route summary</h2>",
         include_str!("assets/leaflet.css"), include_str!("assets/report.css"), escape(selected), escape(stamp), escape(&stamp.replace('T', " ").replace("+00:00", " UTC").replace('Z', " UTC")))?;
     let position = |index: usize, kind: &str| {
         options.endpoint_coordinates[index].or_else(|| {
@@ -303,7 +303,7 @@ fn render(
     } else {
         write!(
             out,
-            "<p class=\"muted\">{}</p>",
+            "<p class=\"muted\" id=\"saved-coverage-omission\">{}</p>",
             options
                 .coverage_omission
                 .unwrap_or(CoverageOmission::NoCompletedRun)
@@ -392,14 +392,27 @@ fn render(
             hop,
             rf["required_fresnel_clearance"].as_f64().unwrap_or(0.6),
         )?;
+        write!(
+            out,
+            "<details class=\"hop-budget\"><summary>Directional link budget</summary>"
+        )?;
         budget(out, hop)?;
-        write!(out, "</section>")?;
+        write!(out, "</details></section>")?;
     }
     write!(out, "</main>")?;
     if let Some(map) = map {
         let safe = serde_json::to_string(&map)?.replace('<', "\\u003c");
-        write!(out, "<script id=\"route-map-data\" type=\"application/json\">{safe}</script><script>{}</script><script>{}</script>", include_str!("assets/leaflet.js"), include_str!("assets/map.js"))?;
+        // The dashboard fills this slot with the displayed live raster, if available.
+        let snapshot = json!([route["job_id"], route["snapshot_version"]])
+            .to_string()
+            .replace('<', "\\u003c");
+        let leaflet = include_str!("assets/leaflet.js");
+        let leaflet = leaflet
+            .split_once("//# sourceMappingURL=")
+            .map_or(leaflet, |(script, _)| script);
+        write!(out, "<script id=\"route-map-data\" type=\"application/json\">{safe}</script><script id=\"report-live-coverage\" type=\"application/json\">{snapshot}</script><script>{leaflet}</script><script>{}</script>", include_str!("assets/map.js"))?;
     }
+    write!(out, "<script>{}</script>", include_str!("assets/print.js"))?;
     write!(out, "</body></html>")?;
     Ok(())
 }
@@ -588,7 +601,9 @@ fn map_section(
         labels.push(("Nearby roads", "#525c62", "line"));
     }
     legend(out, labels, "div")?;
+    write!(out, "<div id=\"live-coverage-legend\" hidden></div>")?;
     if let Some(coverage) = coverage {
+        write!(out, "<div id=\"saved-coverage-legend\">")?;
         legend(
             out,
             coverage
@@ -596,11 +611,9 @@ fn map_section(
                 .map(|(label, color)| (label, color, "square")),
             "div",
         )?;
+        write!(out, "</div>")?;
     }
-    write!(
-        out,
-        "<p class=\"muted\">Basemap: Kartverket topographic map. Tiles require internet access.</p></section>"
-    )?;
+    write!(out, "</section>")?;
     Ok(Some(
         json!({"sites": markers, "links": links, "roads": roads,
         "coverage": coverage.map(|overlay| json!({"image": overlay.image(), "bounds": overlay.bounds()}))}),
@@ -692,7 +705,7 @@ fn budget(out: &mut dyn Write, hop: &Hop<'_>) -> Result<(), ExportError> {
             &format!("Forward · {}", hop.name()),
             &format!("Reverse · {} → {}", hop.target(), hop.source()),
         ],
-        Some("Directional link budget"),
+        None,
     )?;
     let directions = hop.budgets();
     for (label, key) in [

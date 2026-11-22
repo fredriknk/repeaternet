@@ -150,15 +150,20 @@ pub(super) fn write_profile(
         important.extend((0..remaining).map(|i| i * (count - 1) / (remaining - 1)));
         important
     };
-    let x = |d: f64| 66.0 + 663.0 * (d / length);
+    let x = |d: f64| 125.0 + 560.0 * (d / length);
     let y = |z: f64| 230.0 - 210.0 * ((z - low) / (high - low));
-    write!(out, "<figure><div class=\"profile-scroll\"><svg class=\"profile-chart\" viewBox=\"0 0 760 264\" role=\"img\" aria-label=\"Elevation profile for {}\" data-profile-points=\"{}\">", escape(&hop.name()), indices.len())?;
+    write!(out, "<figure><svg class=\"profile-chart\" viewBox=\"0 0 760 276\" role=\"img\" aria-label=\"Elevation profile for {}\" data-profile-points=\"{}\">", escape(&hop.name()), indices.len())?;
     for i in 0..5 {
         let fraction = f64::from(i) / 4.0;
         let elevation = low + fraction * (high - low);
         let py = y(elevation);
         let d = fraction * length;
-        write!(out, "<path d=\"M66 {py:.1}H729\" stroke=\"#d5dfda\"/><text x=\"59\" y=\"{:.1}\" text-anchor=\"end\">{elevation:.1} m</text><text x=\"{:.1}\" y=\"253\" text-anchor=\"middle\">{:.2} km</text>", py + 4.0, x(d), d / 1000.0)?;
+        let class = if i % 2 == 1 {
+            " class=\"intermediate-tick\""
+        } else {
+            ""
+        };
+        write!(out, "<path d=\"M125 {py:.1}H685\" stroke=\"#d5dfda\" vector-effect=\"non-scaling-stroke\"/><text{class} x=\"118\" y=\"{:.1}\" text-anchor=\"end\">{elevation:.1} m</text><text{class} x=\"{:.1}\" y=\"263\" text-anchor=\"middle\">{:.2} km</text>", py + 4.0, x(d), d / 1000.0)?;
     }
     let mut labels = Vec::new();
     for line in &lines {
@@ -183,7 +188,7 @@ pub(super) fn write_profile(
         }
         write!(
             out,
-            "\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"><title>{}</title></path>",
+            "\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" vector-effect=\"non-scaling-stroke\"><title>{}</title></path>",
             escape(&line.label)
         )?;
     }
@@ -205,7 +210,7 @@ pub(super) fn write_profile(
             labels.push((label, color, shape));
         }
     }
-    write!(out, "</svg></div>")?;
+    write!(out, "</svg>")?;
     legend(out, labels, "figcaption")?;
     write!(out, "</figure>")?;
     Ok(())

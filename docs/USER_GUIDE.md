@@ -395,17 +395,21 @@ assumptions** shows the individual terms and model settings.
 
 Use **CSV ↓**, **GeoJSON ↓** or **HTML report ↓** in **Analysis** to export the
 selected certified route. CSV provides tabular results and GeoJSON provides map
-features. The printable HTML report bundles a route map, site details, profiles
-and directional budgets. The route and coverage layers in the report work
-offline. Loading its OpenStreetMap background requires internet access.
+features. Open the downloaded HTML file directly in a browser, even offline.
+It contains an interactive map of the route, nearby roads when available, site
+details and terrain profiles. Expand **Directional link budget** below a chart
+to see the budget for that hop. Printing includes the budgets automatically.
 
 ![Route export links for CSV, GeoJSON and the HTML report](images/route-exports.png)
 
-The HTML report includes the latest completed coverage run when it
-matches the selected route, terrain and coverage settings and has no unresolved
-or unevaluated cells. The report explains an omission. Coverage counts use the
-full grid. The map includes a size-limited layer preview that can be toggled.
-For an explicit saved run or historical coverage, use
+The report includes a snapshot of the live coverage layer when it is visible
+and at least one source has finished calculating. The legend shows how many
+sources were included. Wait for the enabled sources to finish before exporting
+to capture them all. The report also includes the latest completed saved run
+when it matches the route, terrain and settings and has no unresolved or
+unevaluated cells. Saved coverage counts use the full grid. Use **Map layer**
+in the report to switch between the available coverage previews or hide them.
+For a specific saved run or historical coverage, use
 [coverage exports](#coverage-exports-and-reports).
 
 ## Coverage

@@ -161,6 +161,10 @@ fn python_route_oracle() {
     assert!(html.contains("Primary route first (3 hops)"));
     assert!(html.contains("1. A → R-1"));
     assert!(html.contains("different route, terrain or settings"));
+    assert!(
+        html.contains("<details class=\"hop-budget\"><summary>Directional link budget</summary>")
+    );
+    assert!(!html.contains("L.tileLayer("));
     assert!(!html.contains("<img src=x"));
 }
 

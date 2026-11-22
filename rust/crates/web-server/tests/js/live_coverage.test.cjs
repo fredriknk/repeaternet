@@ -56,7 +56,7 @@ test('sampling interpolates margins, falls back to nearest at unknown terrain an
 
 test('tiles paint the best margin, highlight overlap and hatch unknown terrain', () => {
   let painted;
-  const canvas = { getContext: () => ({ clearRect() {}, createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData(image) { painted = image.data; } }) };
+  const canvas = { width: 256, height: 256, getContext: () => ({ clearRect() {}, createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData(image) { painted = image.data; } }) };
   const context = load();
   const { decodeLiveCoverage, liveCoveragePalette, drawLiveCoverageTile, liveCoverage } = context;
   // At zoom 0 a tile pixel spans about 156 km, so build rasters covering one pixel each.
