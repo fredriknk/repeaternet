@@ -288,6 +288,17 @@ impl Source {
                     .iter()
                     .filter_map(|s| Some(stats::split_power(s.rssi?, s.snr?)))
                     .unzip();
+                let signal = stats::summarize(signal);
+                let freq_mhz = tx_radio
+                    .or(rx_radio)
+                    .and_then(|radio| radio.freq_mhz)
+                    .unwrap_or(869.5);
+                if signal
+                    .as_ref()
+                    .is_some_and(|s| quality::implausible_signal(s.median, distance_m, freq_mhz))
+                {
+                    flags.insert("implausible_signal");
+                }
                 LinkRecord {
                     schema: SCHEMA_VERSION,
                     link_id: format!("{}:{tx}>{rx}:{}", self.id, evidence.as_str()),
@@ -314,7 +325,7 @@ impl Source {
                     last_ms: samples.last().map(|s| s.ms),
                     rssi_dbm: stats::summarize(samples.iter().filter_map(|s| s.rssi).collect()),
                     snr_db: stats::summarize(samples.iter().filter_map(|s| s.snr).collect()),
-                    signal_dbm: stats::summarize(signal),
+                    signal_dbm: signal,
                     noise_dbm: stats::summarize(noise),
                     detection: group.detection.clone(),
                     flags: flags.into_iter().map(str::to_owned).collect(),

@@ -32,7 +32,15 @@ import calib_model as cm  # noqa: E402
 PLANNER_BUDGET_DB = 22.0 + 2 * (2.15 - 1.0)
 PLANNER_HEIGHT_M = 3.0
 
-EXCLUDE_LINK_FLAGS = {"over_300km", "mqtt_suspect", "via_mqtt", "relayed", "self_link", "radio_mismatch"}
+EXCLUDE_LINK_FLAGS = {
+    "over_300km",
+    "mqtt_suspect",
+    "via_mqtt",
+    "relayed",
+    "self_link",
+    "radio_mismatch",
+    "implausible_signal",
+}
 EXCLUDE_ENDPOINT_FLAGS = {"default_position", "moved"}
 SNR_SATURATION_DB = 9.0
 DEFAULT_SIGMA_T = 2.5

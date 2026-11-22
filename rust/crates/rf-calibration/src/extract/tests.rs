@@ -59,11 +59,12 @@ fn corescope_positions_and_detection_use_packet_hash_activity_and_attribution() 
     let insert = |hash: &str, observer: &str, first: i64, seen: i64, resolved: &str| {
         db.execute(
             "INSERT INTO observations(endpoint, packet_id, observation_key, packet_hash, observer_id,
-                    first_seen, timestamp, rssi, snr, path_prefixes, resolved_path, direction)
+                    first_seen, timestamp, rssi, snr, path_prefixes, resolved_path, direction,
+                    route_type)
              VALUES (?1, (SELECT count(*) + 1 FROM observations), 'rx', ?2, ?3,
                    strftime('%Y-%m-%dT%H:%M:%fZ', ?4/1000.0, 'unixepoch'),
                    strftime('%Y-%m-%dT%H:%M:%fZ', ?5/1000.0, 'unixepoch'),
-                   -100, -5, '[\"aa\"]', ?6, 'rx')",
+                   -100, -5, '[\"aa\"]', ?6, 'rx', 1)",
              params![host, hash, observer, first, seen, resolved],
         ).unwrap();
     };
@@ -315,4 +316,77 @@ fn extraction_keeps_existing_dataset_if_a_snapshot_cannot_be_read() {
         lines::<Value>(&dataset.join("summary.json")),
         [serde_json::json!({})]
     );
+}
+
+#[test]
+fn corescope_attributes_only_flood_routes_and_flags_suspect_links() {
+    let work = tempfile::tempdir().unwrap();
+    let snapshots = work.path().join("snapshots");
+    let dataset = work.path().join("dataset");
+    fs::create_dir(&snapshots).unwrap();
+    fs::write(work.path().join("salt.txt"), "salt").unwrap();
+    let host = "https://routes.example.test";
+    let db = core_snapshot(&snapshots.join("corescope-capture-routes.sqlite3"), host);
+    // (hash, observer, rssi, prefixes, resolved, route type)
+    let rows = [
+        // Flood, two-byte prefix, AA -> BB (about 1.1 km): attributed.
+        ("h1", "BB", -100.0, r#"["aaaa"]"#, r#"["AA"]"#, 1),
+        // Direct route: the path is the route ahead, so not attributed.
+        ("h2", "CC", -100.0, r#"["aaaa"]"#, r#"["AA"]"#, 2),
+        // Flood, one-byte prefix, AA -> EE.
+        ("h3", "EE", -100.0, r#"["aa"]"#, r#"["AA"]"#, 1),
+        // Flood, AA -> DD (about 222 km) at -40 dBm: impossible over free space.
+        ("h4", "DD", -40.0, r#"["aaaa"]"#, r#"["AA"]"#, 0),
+    ];
+    // A zero-hop advert is direct-routed with an empty path; its sender transmitted.
+    db.execute(
+        "INSERT INTO observations(endpoint, packet_id, observation_key, packet_hash, observer_id,
+                first_seen, timestamp, rssi, snr, path_prefixes, resolved_path, direction,
+                route_type, sender_pubkey)
+         VALUES (?1, 99, 'rx', 'h5', 'BB', '1970-01-01T00:00:10Z', '1970-01-01T00:00:10Z',
+               -90, 5, '[]', '[]', 'rx', 2, 'AA')",
+        params![host],
+    )
+    .unwrap();
+    for (i, (hash, observer, rssi, prefixes, resolved, route)) in rows.into_iter().enumerate() {
+        db.execute(
+            "INSERT INTO observations(endpoint, packet_id, observation_key, packet_hash, observer_id,
+                    first_seen, timestamp, rssi, snr, path_prefixes, resolved_path, direction,
+                    route_type)
+             VALUES (?1, ?2, 'rx', ?3, ?4, '1970-01-01T00:00:10Z', '1970-01-01T00:00:10Z',
+                   ?5, 5, ?6, ?7, 'rx', ?8)",
+            params![host, i as i64 + 1, hash, observer, rssi, prefixes, resolved, route],
+        )
+        .unwrap();
+    }
+    drop(db);
+    run(&snapshots, &dataset).unwrap();
+    let all: Vec<LinkRecord> = fs::read_to_string(dataset.join("links.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        all.iter()
+            .filter(|link| link.evidence == Evidence::CorescopeZeroHop)
+            .count(),
+        1,
+        "a direct-routed zero-hop advert is attributed to its sender"
+    );
+    let links: Vec<_> = all
+        .into_iter()
+        .filter(|link| link.evidence == Evidence::CorescopeLastHop)
+        .collect();
+    assert_eq!(links.len(), 3, "the direct-route reception is not attributed");
+    let flags = |lat: f64| {
+        links
+            .iter()
+            .find(|link| (link.rx.lat - lat).abs() < 1e-9)
+            .map(|link| link.flags.clone())
+            .unwrap()
+    };
+    assert!(!flags(60.01).contains(&"short_relay_prefix".to_string()));
+    assert!(!flags(60.01).contains(&"implausible_signal".to_string()));
+    assert!(flags(60.04).contains(&"short_relay_prefix".to_string()));
+    assert!(flags(62.00).contains(&"implausible_signal".to_string()));
 }

@@ -155,3 +155,17 @@ pub(super) fn radio_mismatch(tx: &Radio, rx: &Radio) -> bool {
         || differs(tx.bw_khz, rx.bw_khz)
         || tx.sf.zip(rx.sf).is_some_and(|(a, b)| a != b)
 }
+
+/// Largest plausible EIRP plus receive antenna gain, dBm: 30 dBm into a
+/// 6 dBi antenna at both ends. A link received more strongly than free space
+/// allows with this budget has a wrong position or a misattributed relay.
+pub(super) const MAX_PLAUSIBLE_BUDGET_DBM: f64 = 30.0 + 6.0 + 6.0;
+
+/// True when `signal_dbm` exceeds what free space allows over `distance_m`.
+pub(super) fn implausible_signal(signal_dbm: f64, distance_m: f64, freq_mhz: f64) -> bool {
+    if distance_m <= 1.0 {
+        return false;
+    }
+    let fspl = 32.45 + 20.0 * freq_mhz.log10() + 20.0 * (distance_m / 1000.0).log10();
+    signal_dbm > MAX_PLAUSIBLE_BUDGET_DBM - fspl
+}

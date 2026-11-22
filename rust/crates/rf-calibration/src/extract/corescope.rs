@@ -50,7 +50,10 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
             packet_hash, observer_id, rssi, snr,
             CASE WHEN json_valid(path_prefixes) AND json_type(path_prefixes) = 'array'
                  THEN json_array_length(path_prefixes) END,
-            resolved_path, sender_pubkey, advert_lat, advert_lon, direction
+            resolved_path, sender_pubkey, advert_lat, advert_lon, direction,
+            route_type,
+            CASE WHEN json_valid(path_prefixes) AND json_type(path_prefixes) = 'array'
+                 THEN length(json_extract(path_prefixes, '$[#-1]')) END
          FROM observations ORDER BY seen_ms, endpoint, packet_id, observation_key",
     )?;
     let mut rows = query.query([])?;
@@ -121,6 +124,23 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
         let path: Option<Vec<Option<String>>> = row
             .get::<_, Option<String>>(7)?
             .and_then(|json| serde_json::from_str(&json).ok());
+        // MeshCore flood packets (route types 0 and 1) accumulate the relays
+        // that already forwarded them, so the final entry transmitted the
+        // copy this observer heard. Direct packets carry the route ahead and
+        // each relay strips itself, so their last relay is unknown. A
+        // zero-hop advert is a direct packet with an empty path: its sender
+        // is the transmitter whatever the route type.
+        let route_type: Option<i64> = row.get(12)?;
+        if prefix_count != Some(0) && !matches!(route_type, Some(0 | 1)) {
+            if valid_metrics {
+                source.count("receptions_direct_route_unattributed");
+            }
+            if let Some(packet) = packet {
+                packet.unknown_tx.insert(rx);
+            }
+            continue;
+        }
+        let last_prefix_hex: Option<i64> = row.get(13)?;
         let zero_hop = prefix_count == Some(0);
         let (tx, evidence, complete) = if zero_hop {
             (sender, Evidence::CorescopeZeroHop, true)
@@ -175,12 +195,19 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
                     snr,
                     region: None,
                 },
+                // A one-byte relay hash (two hex digits) is often ambiguous.
+                !zero_hop && last_prefix_hex.is_some_and(|len| len <= 2),
             ));
         }
     }
     source.prepare_nodes();
-    for (tx, rx, evidence, sample) in samples {
-        source.add_sample(&tx, &rx, evidence, sample, &[]);
+    for (tx, rx, evidence, sample, short_prefix) in samples {
+        let flags: &[&'static str] = if short_prefix {
+            &["short_relay_prefix"]
+        } else {
+            &[]
+        };
+        source.add_sample(&tx, &rx, evidence, sample, flags);
     }
     attach_detection(&mut source, &activity, packets);
     Ok(source)
