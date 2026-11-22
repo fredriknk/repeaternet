@@ -215,11 +215,11 @@
           </div>
           <label for="search-effort">Search effort</label>
           <select id="search-effort">
-            <option value="quick">Quick · up to 600 candidate sites</option>
-            <option value="balanced" selected>Balanced · up to 2,000 candidate sites</option>
-            <option value="thorough">Thorough · configured candidate limit</option>
+            <option value="quick">Quick · fewer candidate sites</option>
+            <option value="balanced" selected>Balanced · standard density</option>
+            <option value="thorough">Thorough · densest, slowest</option>
           </select>
-          <details class="help-disclosure"><summary>Help: search effort</summary><p>Every effort level checks every plausible link between candidate sites and returns the strongest route for each router count, then refines router positions. Quick and Balanced use fewer candidate sites and may miss a better hilltop. Thorough uses your configured candidate limit (5,000 by default) and can take a minute on large areas.</p></details>
+          <details class="help-disclosure"><summary>Help: search effort</summary><p>Every effort level checks every plausible link between candidate sites and returns the strongest route for each router count, then refines router positions. The number of candidate sites follows the route length: sites are dense within half the route length of the A–B line (at least 5 km) and sparse out to the corridor half-width, where only the highest point of each 4 km square is kept. Quick, Balanced and Thorough place 2, 3 and 6 sites per 2 km square near the route. Quick may miss a better hilltop. Thorough can take a few minutes on routes over 100 km.</p></details>
             </section>
           </div>
         </div>

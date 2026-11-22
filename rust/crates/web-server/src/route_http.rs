@@ -281,9 +281,7 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
             "Route profiles exceed 65,536 samples with the selected terrain and link settings",
         ));
     }
-    if settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly
-        && inputs.locations.len() - 2 < settings.maximum_candidates
-    {
+    if settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly {
         let mut extrema = [points[0].x, points[0].y, points[0].x, points[0].y];
         for (location, point) in inputs.locations.iter().zip(&points) {
             if location.origin == SiteOrigin::Optimized || location.policy == RouterPolicy::Required

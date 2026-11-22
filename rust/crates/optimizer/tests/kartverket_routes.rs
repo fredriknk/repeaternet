@@ -33,7 +33,6 @@ fn strict_route_across_95_km_fits_the_router_budget() {
             priority: OptimizationPriority::MaximumReliability,
             grid_spacing_m: spacing,
             maximum_neighbors_per_site: neighbors,
-            maximum_candidates: 800,
             maximum_solution_routers: limit,
             ..CandidateSettings::default()
         };
@@ -48,7 +47,10 @@ fn strict_route_across_95_km_fits_the_router_budget() {
             )
             .unwrap();
         assert!(result.search_complete);
-        assert!(result.candidates.len() <= settings.maximum_candidates + 2);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.starts_with("Candidate sites: ")));
         assert!(result.diagnostics.iter().any(|diagnostic| {
             diagnostic.contains(&format!("Effective candidate grid spacing: {spacing:.1} m"))
         }));

@@ -1,5 +1,7 @@
 use crate::cache::CacheKey;
-use crate::candidates::{candidate_grid_spacing, generate_with_access_pool, sample};
+use crate::candidates::{
+    candidate_grid_spacing, dense_corridor_half_width_m, generate_with_access_pool, sample,
+};
 use crate::parallel::{for_each_batched, worker_count};
 use crate::screening::screened_pairs;
 use crate::topology::solve_graph;
@@ -417,12 +419,43 @@ impl<'a> RouteOptimizer<'a> {
         search.sites = sites;
         search.access_budget = access_budget;
         search.generated_candidates = automatic_candidates;
-        if automatic_candidates && self.settings.maximum_candidates > 0 {
+        if automatic_candidates && self.settings.candidates_per_cell > 0 {
             let spacing = candidate_grid_spacing(self.terrain, self.settings);
             search.diagnostics.push(format!(
                 "Effective candidate grid spacing: {spacing:.1} m (requested {:.1} m).",
                 self.settings.grid_spacing_m
             ));
+            let generated = search
+                .sites
+                .iter()
+                .filter(|site| site.origin == SiteOrigin::Optimized && !site.is_client())
+                .count();
+            let terminals: Vec<_> = search
+                .sites
+                .iter()
+                .filter(|site| site.is_client() || site.is_required())
+                .map(|site| site.rf.position)
+                .collect();
+            let extent = terminals
+                .iter()
+                .flat_map(|a| terminals.iter().map(move |b| a.distance_to(*b)))
+                .fold(0.0, f64::max);
+            let corridor = self.settings.corridor_width_m;
+            let dense = dense_corridor_half_width_m(extent, corridor);
+            search.diagnostics.push(if dense < corridor {
+                format!(
+                    "Candidate sites: {generated} generated for a {:.1} km route, dense within {:.1} km and sparse out to {:.1} km.",
+                    extent / 1000.0,
+                    dense / 1000.0,
+                    corridor / 1000.0
+                )
+            } else {
+                format!(
+                    "Candidate sites: {generated} generated for a {:.1} km route, within {:.1} km.",
+                    extent / 1000.0,
+                    corridor / 1000.0
+                )
+            });
         }
         if let Some([kept, checked]) = filter_counts {
             search.diagnostics.push(format!(
@@ -494,7 +527,6 @@ impl<'a> RouteOptimizer<'a> {
                 return Err(duplicate_site());
             }
         }
-        let mut fixed_count = 0;
         let mut fixed_ids = BTreeSet::new();
         for site in fixed_routers.into_iter().filter(permitted) {
             if site.is_client() {
@@ -514,7 +546,6 @@ impl<'a> RouteOptimizer<'a> {
             if !ids.insert(site.rf.id.clone()) {
                 return Err(duplicate_site());
             }
-            fixed_count += 1;
             sites.push(site);
         }
         let mut filter_counts = None;
@@ -547,22 +578,16 @@ impl<'a> RouteOptimizer<'a> {
                     }
                     return Err(duplicate_site());
                 }
-                fixed_count +=
-                    usize::from(!site.is_client() && site.origin != SiteOrigin::Optimized);
                 sites.push(site);
             }
         } else if policy != InfrastructurePolicy::ExistingOnly {
             let mut settings = self.settings.clone();
-            settings.maximum_candidates = settings.maximum_candidates.saturating_sub(fixed_count);
             let terminals: Vec<_> = sites
                 .iter()
                 .filter(|s| s.is_client() || s.is_required())
                 .collect();
-            if settings.exhaustive_screening {
-                // Keep terminal access sites inside the candidate budget.
-                access_budget = (access::ACCESS_PER_TERMINAL * terminals.len())
-                    .min(settings.maximum_candidates / 4);
-                settings.maximum_candidates -= access_budget;
+            if settings.exhaustive_screening && settings.candidates_per_cell > 0 {
+                access_budget = access::ACCESS_PER_TERMINAL * terminals.len();
             }
             let network = terminals.len() > 2;
             let (mut low, mut high) = (terminals[0].rf.position, terminals[1].rf.position);
@@ -583,7 +608,7 @@ impl<'a> RouteOptimizer<'a> {
             if self.site_filter.is_some() {
                 filter_counts = Some([0; 2]);
             }
-            if settings.maximum_candidates > 0 {
+            if settings.candidates_per_cell > 0 {
                 let bounds = terrain_bounds.ok_or_else(|| {
                     OptimizationError::InvalidInput(
                         "Terrain bounds are required for candidate generation".into(),
@@ -642,7 +667,6 @@ impl<'a> RouteOptimizer<'a> {
                     let local_settings = CandidateSettings {
                         grid_spacing_m: step,
                         refine_radius_m: 0.0,
-                        maximum_candidates: 289,
                         candidates_per_cell: 289,
                         ..settings.clone()
                     };
@@ -685,12 +709,6 @@ impl<'a> RouteOptimizer<'a> {
         }
         if cancelled() {
             return Ok((sites, filter_counts, access_budget));
-        }
-        if fixed_count > self.settings.maximum_candidates {
-            return Err(OptimizationError::InvalidInput(format!(
-                "{fixed_count} fixed routers exceed the candidate budget of {}",
-                self.settings.maximum_candidates
-            )));
         }
         let required = sites.iter().filter(|site| site.is_required()).count();
         if required > self.settings.maximum_solution_routers {

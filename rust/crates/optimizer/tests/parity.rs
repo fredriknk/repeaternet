@@ -639,7 +639,6 @@ fn candidate_grid_respects_refinement_spacing_and_applies_filter_before_thinning
         grid_spacing_m: 1_000.0,
         cell_size_m: 1_000.0,
         candidates_per_cell: 1,
-        maximum_candidates: 100,
         refine_radius_m: 250.0,
         ..CandidateSettings::default()
     };
@@ -677,14 +676,15 @@ fn candidate_grid_respects_refinement_spacing_and_applies_filter_before_thinning
 }
 
 #[test]
-fn fixed_router_policies_budget_and_height_override() {
+fn fixed_router_policies_and_height_override() {
     let terrain = Terrain {
         resolution: 10.0,
         ridges: &[],
     };
     let rf = strict_settings();
+    // Disable generated sites so the search sees only the fixed routers.
     let mut settings = CandidateSettings {
-        maximum_candidates: 2,
+        candidates_per_cell: 0,
         ..CandidateSettings::default()
     };
     let mut required = site("K-required", 500.0, 0.0);
@@ -706,7 +706,7 @@ fn fixed_router_policies_budget_and_height_override() {
         ..OptimizationRequest::default()
     };
     let check = RouteOptimizer::new(&terrain, &rf, &settings)
-        .with_site_filter(&|_| panic!("fixed routers consume full generation budget"))
+        .with_site_filter(&|_| panic!("candidate generation is disabled"))
         .optimize(make_request(), SearchHooks::default())
         .unwrap();
     assert_eq!(check.candidates.len(), 4);
@@ -792,23 +792,21 @@ fn native_optimizer_certifies_all_three_clients_with_locked_manual_router() {
 }
 
 #[test]
-fn search_effort_clamps_only_candidate_and_neighbor_caps() {
+fn search_effort_clamps_only_density_and_neighbor_caps() {
     let settings = CandidateSettings {
-        maximum_candidates: 5000,
         candidates_per_cell: 6,
         maximum_neighbors_per_site: 20,
         maximum_solution_routers: 4,
         ..CandidateSettings::default()
     };
     for (effort, expected) in [
-        (SearchEffort::Quick, (600, 2, 8)),
-        (SearchEffort::Balanced, (2000, 3, 12)),
-        (SearchEffort::Thorough, (5000, 6, 20)),
+        (SearchEffort::Quick, (2, 8)),
+        (SearchEffort::Balanced, (3, 12)),
+        (SearchEffort::Thorough, (6, 20)),
     ] {
         let resolved = effort.resolve(&settings);
         assert_eq!(
             (
-                resolved.maximum_candidates,
                 resolved.candidates_per_cell,
                 resolved.maximum_neighbors_per_site
             ),
@@ -818,15 +816,55 @@ fn search_effort_clamps_only_candidate_and_neighbor_caps() {
         assert!(resolved.exhaustive_screening);
     }
     let lower = CandidateSettings {
-        maximum_candidates: 300,
         candidates_per_cell: 1,
         ..settings
     };
-    let resolved = SearchEffort::Balanced.resolve(&lower);
     assert_eq!(
-        (resolved.maximum_candidates, resolved.candidates_per_cell),
-        (300, 1)
+        SearchEffort::Balanced.resolve(&lower).candidates_per_cell,
+        1
     );
+}
+
+#[test]
+fn candidate_count_follows_route_length() {
+    let terrain = Terrain {
+        resolution: 50.0,
+        ridges: &[],
+    };
+    let settings = CandidateSettings {
+        refine_radius_m: 0.0,
+        ..SearchEffort::Balanced.resolve(&CandidateSettings::default())
+    };
+    let count = |length: f64| {
+        generate_candidates(
+            &terrain,
+            [-100_000.0, -100_000.0, 200_000.0, 100_000.0],
+            [Point::default(), Point { x: length, y: 0.0 }],
+            &settings,
+            &[],
+            None,
+            &|| false,
+        )
+        .unwrap()
+        .len()
+    };
+    let (short, medium, long) = (count(5_000.0), count(25_000.0), count(100_000.0));
+    // A 5 km route has a dense band of 5 km and a sparse ring out to the 15 km
+    // corridor; a 100 km route is dense across the whole corridor.
+    assert!((150..400).contains(&short), "{short}");
+    assert!(short * 2 < medium, "{short} {medium}");
+    assert!(medium * 2 < long, "{medium} {long}");
+    // No cap: the dense corridor of a 100 km route holds 130 km x 30 km of 2 km
+    // cells with 3 sites each.
+    assert!(long > 2_500, "{long}");
+}
+
+#[test]
+fn dense_band_scales_with_length_within_the_corridor() {
+    assert_eq!(dense_corridor_half_width_m(2_000.0, 15_000.0), 5_000.0);
+    assert_eq!(dense_corridor_half_width_m(20_000.0, 15_000.0), 10_000.0);
+    assert_eq!(dense_corridor_half_width_m(80_000.0, 15_000.0), 15_000.0);
+    assert_eq!(dense_corridor_half_width_m(2_000.0, 1_000.0), 1_000.0);
 }
 
 #[test]

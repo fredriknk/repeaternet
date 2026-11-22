@@ -34,7 +34,7 @@ fn plan() -> Value {
         "format": "repeaternet-web", "version": 1,
         "a": coord(500050.0, 6650850.0), "b": coord(500290.0, 6650850.0),
         "rf": {"lora": {"enabled": true, "manual_sensitivity_override": false}},
-        "candidates": {"maximum_candidates": 10, "refine_radius_m": 0, "maximum_solution_routers": 2},
+        "candidates": {"candidates_per_cell": 1, "refine_radius_m": 0, "maximum_solution_routers": 2},
         "manual_routers": [{"id": "M-alternative", "name": "Manual site", "latitude": manual[0], "longitude": manual[1]}],
         "search_effort": "quick", "unknown_future_field": {"keep": true},
     })
@@ -1728,7 +1728,7 @@ async fn rio_cog_estimate_prepare_and_search_with_registry_change_guard() {
     let mut plan = json!({
         "a": [-22.95,-43.21], "b": [-22.948,-43.208],
         "terrain":{"source":"rio-local","fallback":false},
-        "candidates":{"corridor_width_m":100,"maximum_candidates":10,"refine_radius_m":0},
+        "candidates":{"corridor_width_m":100,"candidates_per_cell":1,"refine_radius_m":0},
         "search_effort":"quick"
     });
     let preview = call(

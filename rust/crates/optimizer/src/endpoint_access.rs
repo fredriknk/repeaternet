@@ -7,6 +7,7 @@ const CHECKS_PER_CLIENT: usize = 4_096;
 const TOTAL_CHECKS: usize = 16_384;
 const RETAINED_ACCESS_TARGET: usize = 6;
 const PROMOTIONS_PER_CLIENT: usize = 12;
+const PROMOTION_LIMIT: usize = 32;
 
 type Cell = (i64, i64);
 type Position = (u64, u64);
@@ -46,11 +47,7 @@ pub(crate) fn recover_with_refinement(
     refine: &mut dyn FnMut(Point) -> Result<Vec<PlanningSite>, OptimizationError>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<usize, OptimizationError> {
-    if settings.maximum_candidates == 0
-        || settings.candidates_per_cell == 0
-        || settings.maximum_solution_routers == 0
-        || cancelled()
-    {
+    if settings.candidates_per_cell == 0 || settings.maximum_solution_routers == 0 || cancelled() {
         return Ok(0);
     }
     let clients = fixed.iter().filter(|site| site.is_client());
@@ -59,7 +56,7 @@ pub(crate) fn recover_with_refinement(
         return Ok(0);
     }
     let checks_per_client = CHECKS_PER_CLIENT.min(TOTAL_CHECKS / client_count);
-    let promotion_limit = (settings.maximum_candidates / 16).clamp(1, 32);
+    let promotion_limit = PROMOTION_LIMIT;
     let promotion_quota = PROMOTIONS_PER_CLIENT.min(promotion_limit.div_ceil(client_count));
     let fixed_positions: BTreeSet<_> = fixed
         .iter()
@@ -204,7 +201,6 @@ pub(crate) fn recover_with_refinement(
             .total_cmp(&generated[right].site_quality)
             .then(left.cmp(&right))
     });
-    let mut generated_count = generated.len();
     for _ in 0..promotion_quota {
         for site in options.iter_mut().filter_map(Iterator::next) {
             if cancelled() {
@@ -220,25 +216,16 @@ pub(crate) fn recover_with_refinement(
             let key = cell(point);
             let cell_full =
                 cell_counts.get(&key).copied().unwrap_or(0) >= settings.candidates_per_cell;
-            let replacement = if !cell_full && generated_count < settings.maximum_candidates {
-                generated_count += 1;
+            // A full cell swaps its weakest unprotected site; otherwise the site is added.
+            let replacement = if !cell_full {
                 None
             } else {
-                let same_cell = replaceable
+                let Some(slot) = replaceable
                     .iter()
-                    .position(|&index| cell(generated[index].rf.position) == key);
-                let slot = if cell_full {
-                    same_cell
-                } else {
-                    same_cell
-                        .or_else(|| {
-                            replaceable.iter().position(|&index| {
-                                cell_counts[&cell(generated[index].rf.position)] > 1
-                            })
-                        })
-                        .or_else(|| (!replaceable.is_empty()).then_some(0))
+                    .position(|&index| cell(generated[index].rf.position) == key)
+                else {
+                    continue;
                 };
-                let Some(slot) = slot else { continue };
                 let index = replaceable.remove(slot);
                 cell_counts
                     .entry(cell(generated[index].rf.position))
@@ -316,7 +303,6 @@ mod tests {
             grid_spacing_m: 100.0,
             cell_size_m: 500.0,
             candidates_per_cell: 1,
-            maximum_candidates: 2,
             maximum_link_distance_m: Some(450.0),
             optimize_heights: true,
             ..CandidateSettings::default()

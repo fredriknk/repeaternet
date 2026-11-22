@@ -11,7 +11,9 @@ mod screening;
 mod topology;
 
 pub use cache::{CacheStats, LinkMetricsCache};
-pub use candidates::{candidate_grid_spacing, generate_candidates, SiteFilter};
+pub use candidates::{
+    candidate_grid_spacing, dense_corridor_half_width_m, generate_candidates, SiteFilter,
+};
 pub use graph::RoutingGraph;
 pub use optimizer::{
     Cancellation, LinkEvaluation, OptimizationRequest, OptimizationResult, Progress,
@@ -116,17 +118,17 @@ pub enum SearchEffort {
 }
 
 impl SearchEffort {
-    /// Apply the web planner's candidate, per-cell and neighbor caps, retaining all
-    /// other settings. Every effort screens all candidate pairs within link range;
-    /// they differ in how many candidate sites they consider.
+    /// Apply the web planner's per-cell and neighbor caps, retaining all other
+    /// settings. Every effort screens all candidate pairs within link range and
+    /// scales the candidate area with route length; they differ in how densely
+    /// candidate sites are placed in that area.
     pub fn resolve(self, requested: &CandidateSettings) -> CandidateSettings {
-        let (candidates, per_cell, neighbors) = match self {
-            Self::Quick => (600, 2, 8),
-            Self::Balanced => (2000, 3, 12),
+        let (per_cell, neighbors) = match self {
+            Self::Quick => (2, 8),
+            Self::Balanced => (3, 12),
             Self::Thorough => return requested.clone(),
         };
         CandidateSettings {
-            maximum_candidates: requested.maximum_candidates.min(candidates),
             candidates_per_cell: requested.candidates_per_cell.min(per_cell),
             maximum_neighbors_per_site: requested.maximum_neighbors_per_site.min(neighbors),
             ..requested.clone()
@@ -141,8 +143,9 @@ pub struct CandidateSettings {
     pub unrestricted_bounding_area: bool,
     pub grid_spacing_m: f64,
     pub cell_size_m: f64,
+    /// Generated sites kept per cell near the route. The candidate count follows
+    /// the route length: see [`dense_corridor_half_width_m`].
     pub candidates_per_cell: usize,
-    pub maximum_candidates: usize,
     pub maximum_neighbors_per_site: usize,
     /// Evaluate every candidate pair within link range instead of only nearby
     /// neighbours and a backbone. Two-terminal minimum-router searches then use
@@ -176,7 +179,6 @@ impl Default for CandidateSettings {
             grid_spacing_m: 1_000.0,
             cell_size_m: 2_000.0,
             candidates_per_cell: 3,
-            maximum_candidates: 800,
             maximum_neighbors_per_site: 16,
             exhaustive_screening: true,
             maximum_solution_routers: 6,

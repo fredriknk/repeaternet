@@ -1,6 +1,6 @@
 use crate::{CandidateSettings, OptimizationError, PlanningSite};
 use repeaternet_rf_core::{Point, RfError, Site, TerrainLayer, TerrainSource};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 /// Batch eligibility predicate for generated candidates (for example, road proximity).
 pub type SiteFilter<'a> = dyn Fn(&[Point]) -> Result<Vec<bool>, OptimizationError> + 'a;
@@ -14,12 +14,35 @@ pub fn candidate_grid_spacing(terrain: &dyn TerrainSource, settings: &CandidateS
     spacing.max(terrain.resolution_m())
 }
 
+/// Dense band half-width per metre of route length, and its floor.
+const DENSE_WIDTH_PER_LENGTH: f64 = 0.5;
+const MINIMUM_DENSE_HALF_WIDTH_M: f64 = 5_000.0;
+/// The sparse ring uses cells this many times wider than the dense band, keeps
+/// one site per cell and samples every second grid point on each axis.
+const SPARSE_CELL_FACTOR: f64 = 2.0;
+
+/// Half-width of the dense candidate band around the route: half the route
+/// length on each side, at least 5 km, at most the configured corridor.
+///
+/// Candidate count, and with it search time, follows the route length rather than
+/// a fixed limit. Between this band and the configured corridor, only the best site
+/// of each coarse cell is kept, so distant dominant summits remain available to
+/// short routes without paying for a dense grid there.
+pub fn dense_corridor_half_width_m(route_length_m: f64, corridor_width_m: f64) -> f64 {
+    (route_length_m * DENSE_WIDTH_PER_LENGTH)
+        .max(MINIMUM_DENSE_HALF_WIDTH_M)
+        .min(corridor_width_m)
+}
+
 struct SearchArea {
     start: Point,
     direction: Point,
     length: f64,
     width: f64,
+    dense_width: f64,
     unrestricted: bool,
+    /// Terminal extent [min x, min y, max x, max y] for an unrestricted area.
+    span: [f64; 4],
     bounds: [f64; 4],
 }
 
@@ -27,6 +50,7 @@ impl SearchArea {
     fn new(start: Point, end: Point, settings: &CandidateSettings) -> Self {
         let length = start.distance_to(end);
         let width = settings.corridor_width_m;
+        let dense_width = dense_corridor_half_width_m(length, width);
         let direction = if length == 0.0 {
             Point { x: 1.0, y: 0.0 }
         } else {
@@ -45,7 +69,14 @@ impl SearchArea {
             direction,
             length,
             width,
+            dense_width,
             unrestricted: settings.unrestricted_bounding_area,
+            span: [
+                start.x.min(end.x),
+                start.y.min(end.y),
+                start.x.max(end.x),
+                start.y.max(end.y),
+            ],
             bounds: [
                 start.x.min(end.x) - padding,
                 start.y.min(end.y) - padding,
@@ -55,18 +86,27 @@ impl SearchArea {
         }
     }
 
-    fn along(&self, point: Point) -> f64 {
-        (point.x - self.start.x) * self.direction.x + (point.y - self.start.y) * self.direction.y
+    fn within(&self, point: Point, width: f64) -> bool {
+        if self.unrestricted {
+            let [left, bottom, right, top] = self.span;
+            return point.x >= left - width
+                && point.x <= right + width
+                && point.y >= bottom - width
+                && point.y <= top + width;
+        }
+        let along = (point.x - self.start.x) * self.direction.x
+            + (point.y - self.start.y) * self.direction.y;
+        let across = (point.y - self.start.y) * self.direction.x
+            - (point.x - self.start.x) * self.direction.y;
+        along >= -width && along <= self.length + width && across.abs() <= width
     }
 
     fn includes(&self, point: Point) -> bool {
-        let along = self.along(point);
-        let across = (point.y - self.start.y) * self.direction.x
-            - (point.x - self.start.x) * self.direction.y;
-        self.unrestricted
-            || (along >= -self.width
-                && along <= self.length + self.width
-                && across.abs() <= self.width)
+        self.unrestricted || self.within(point, self.width)
+    }
+
+    fn dense(&self, point: Point) -> bool {
+        self.dense_width >= self.width || self.within(point, self.dense_width)
     }
 }
 
@@ -128,7 +168,7 @@ fn generate_grid(
     cancelled: &dyn Fn() -> bool,
     collect_access_pool: bool,
 ) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
-    if settings.maximum_candidates == 0 || settings.candidates_per_cell == 0 || cancelled() {
+    if settings.candidates_per_cell == 0 || cancelled() {
         return Ok((Vec::new(), [0; 2], Vec::new()));
     }
     let area = SearchArea::new(anchors[0], anchors[1], settings);
@@ -169,11 +209,17 @@ fn generate_grid(
             return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         let points: Vec<_> = (offset..offset.saturating_add(BATCH).min(total))
-            .map(|i| Point {
-                x: left + (i % columns) as f64 * spacing,
-                y: bottom + (i / columns) as f64 * spacing,
+            .filter_map(|i| {
+                let (column, row) = (i % columns, i / columns);
+                let point = Point {
+                    x: left + column as f64 * spacing,
+                    y: bottom + row as f64 * spacing,
+                };
+                // The sparse ring only looks for dominant summits, so half the
+                // grid resolution on each axis is enough there.
+                (area.includes(point) && (area.dense(point) || (column % 2 == 0 && row % 2 == 0)))
+                    .then_some(point)
             })
-            .filter(|&point| area.includes(point))
             .collect();
         if points.is_empty() {
             continue;
@@ -274,7 +320,14 @@ fn generate_grid(
         site.quality = (site.ground - min) / span
             - site.slope.min(1.0) * 0.35
             - (obstruction / 20.0).min(1.0) * 0.25;
-        let key = cell_key(site.point, settings.cell_size_m);
+        let key = if area.dense(site.point) {
+            (false, cell_key(site.point, settings.cell_size_m))
+        } else {
+            (
+                true,
+                cell_key(site.point, settings.cell_size_m * SPARSE_CELL_FACTOR),
+            )
+        };
         let cell = *cell_positions.entry(key).or_insert_with(|| {
             cells.push(Vec::new());
             cells.len() - 1
@@ -295,14 +348,19 @@ fn generate_grid(
             return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         cell.sort_unstable_by(rank);
+        let per_cell = if area.dense(samples[cell[0]].point) {
+            settings.candidates_per_cell
+        } else {
+            1
+        };
         // Keep the best sites in each cell apart so they cover distinct summits
         // and ridges instead of neighbouring grid points on one hilltop.
-        let separation = settings.cell_size_m / (settings.candidates_per_cell as f64).sqrt() / 2.0;
-        let mut kept: Vec<usize> = Vec::with_capacity(settings.candidates_per_cell);
+        let separation = settings.cell_size_m / (per_cell as f64).sqrt() / 2.0;
+        let mut kept: Vec<usize> = Vec::with_capacity(per_cell);
         let mut rest = Vec::with_capacity(cell.len());
         for index in cell {
             let point = samples[index].point;
-            if kept.len() < settings.candidates_per_cell
+            if kept.len() < per_cell
                 && kept
                     .iter()
                     .all(|&other| samples[other].point.distance_to(point) >= separation)
@@ -313,7 +371,7 @@ fn generate_grid(
             }
         }
         // Fill any remaining slots in rank order when the cell is too small to separate.
-        let missing = settings.candidates_per_cell.saturating_sub(kept.len());
+        let missing = per_cell.saturating_sub(kept.len());
         let fill: Vec<usize> = rest.iter().take(missing).copied().collect();
         rest.retain(|index| !fill.contains(index));
         kept.extend(fill);
@@ -324,41 +382,6 @@ fn generate_grid(
             }));
         }
         retained.extend(kept);
-    }
-    let limit = settings.maximum_candidates;
-    if retained.len() > limit {
-        let (minimum, maximum) = retained
-            .iter()
-            .map(|&i| area.along(samples[i].point))
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-                (min.min(value), max.max(value))
-            });
-        if area.length == 0.0 || minimum == maximum {
-            retained.sort_unstable_by(rank);
-            retained.truncate(limit);
-        } else {
-            let band_count = ((limit as f64).sqrt().ceil() as usize).min(limit);
-            let mut bands = vec![Vec::new(); band_count];
-            for i in retained.drain(..) {
-                let progress = (area.along(samples[i].point) - minimum) / (maximum - minimum);
-                bands[((progress * band_count as f64) as usize).min(band_count - 1)].push(i);
-            }
-            let mut queue: VecDeque<_> = bands
-                .into_iter()
-                .filter(|band| !band.is_empty())
-                .map(|mut band| {
-                    band.sort_unstable_by(rank);
-                    band.into_iter()
-                })
-                .collect();
-            while retained.len() < limit {
-                let mut band = queue.pop_front().expect("more sites than requested");
-                retained.push(band.next().expect("nonempty band"));
-                if band.len() != 0 {
-                    queue.push_back(band);
-                }
-            }
-        }
     }
     let candidates = retained
         .into_iter()
