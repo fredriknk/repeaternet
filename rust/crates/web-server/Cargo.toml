@@ -12,6 +12,7 @@ axum = { version = "0.8", features = ["multipart"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 geo = { version = "0.33.1", default-features = false }
 getrandom = "0.4"
+lru = "0.19"
 open = "5"
 repeaternet-coverage-store = { path = "../coverage-store" }
 repeaternet-exports = { path = "../exports" }

@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use crate::{
     api::{ApiError, ApiResult, ObjectBody, Workspace, active_project, ensure_idle, save_plan},
     catalog::{AppState, Session, random_id},
+    live_coverage_http,
     route_http::{self, Control},
     route_inputs,
     terrain_http::{TerrainContext, change_terrain, create_plain_directory, terrain_invalid},
@@ -510,6 +511,78 @@ async fn route_plan(
     .map_err(ApiError::internal)?
 }
 
+#[derive(Deserialize)]
+struct LiveTerrainArea {
+    sites: Vec<LiveTerrainSite>,
+    radius_m: f64,
+}
+
+#[derive(Deserialize)]
+struct LiveTerrainSite {
+    latitude: f64,
+    longitude: f64,
+}
+
+enum ExtraArea {
+    Live(Vec<LonLat>, f64),
+    Route {
+        sites: Vec<repeaternet_rf_core::Site>,
+        corridor: f64,
+        request: Box<crate::coverage_http::CoverageRequest>,
+    },
+}
+
+fn live_area(body: &Value) -> ApiResult<Option<ExtraArea>> {
+    let Some(value) = body.get("live") else {
+        return Ok(None);
+    };
+    let LiveTerrainArea { sites, radius_m } =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid live area ({error})"),
+            )
+        })?;
+    live_coverage_http::validate_radius(radius_m)?;
+    if !(1..=256).contains(&sites.len()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Live coverage requires 1 to 256 sites",
+        ));
+    }
+    let sites = sites
+        .into_iter()
+        .map(|site| live_coverage_http::coordinates(site.latitude, site.longitude))
+        .collect::<ApiResult<Vec<_>>>()?;
+    Ok(Some(ExtraArea::Live(sites, radius_m)))
+}
+
+fn circle_union(
+    transform: &Transformer,
+    sites: Vec<LonLat>,
+    radius: f64,
+) -> ApiResult<MultiPolygon<f64>> {
+    use std::f64::consts::{PI, TAU};
+    const VERTICES: usize = 256;
+    // Circumscribe each circle so the download includes its edge.
+    let outer = radius / (PI / VERTICES as f64).cos();
+    let offsets: Vec<_> = (0..VERTICES)
+        .map(|i| (i as f64 * TAU / VERTICES as f64).sin_cos())
+        .collect();
+    let circles: Vec<_> = sites
+        .into_iter()
+        .map(|site| {
+            let center = transform.forward(site).map_err(terrain_invalid)?;
+            let ring: Vec<_> = offsets
+                .iter()
+                .map(|&(sin, cos)| (center.x + outer * cos, center.y + outer * sin))
+                .collect();
+            Ok(Polygon::new(LineString::from(ring), vec![]))
+        })
+        .collect::<ApiResult<_>>()?;
+    Ok(geo::unary_union(&circles))
+}
+
 async fn extra_plan(
     app: AppState,
     workspace: Workspace,
@@ -517,9 +590,11 @@ async fn extra_plan(
     preparing: bool,
 ) -> ApiResult<Download> {
     let limits = app.terrain_limits;
+    let live = live_area(&body)?;
+    let for_live = live.is_some();
     let terrain = body.get("terrain").cloned();
     let requested_fingerprint = body.get("registry_fingerprint").cloned();
-    let (registry, choice) = workspace
+    let (registry, choice, live_context) = workspace
         .clone()
         .run(app.clone(), move |app, key, session| {
             let registry = app.provider_snapshot()?;
@@ -533,7 +608,16 @@ async fn extra_plan(
             let saved = active_project(&app.store, key, session)?.plan;
             let choice = Options::read(terrain.as_ref().or_else(|| saved.get("terrain")))?.choice();
             require_choice(&registry, &choice)?;
-            Ok((registry, choice))
+            let context = if for_live {
+                let context = TerrainContext::capture(app, key, session, true)?;
+                if context.route.paths("dtm").is_empty() {
+                    return Err(ApiError::conflict(live_coverage_http::NO_TERRAIN));
+                }
+                Some(context)
+            } else {
+                None
+            };
+            Ok((registry, choice, context))
         })
         .await?;
     let resolution = std::env::var("RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M")
@@ -550,23 +634,52 @@ async fn extra_plan(
         })?;
     #[cfg(test)]
     let resolution = app.coverage_terrain_resolution.unwrap_or(resolution);
-    let (context, route, sites, corridor, request, _permit) =
-        crate::coverage_http::capture(app, workspace, body.as_object().unwrap(), false).await?;
+    let (context, area, route_identity) = if let (Some(context), Some(area)) = (live_context, live)
+    {
+        (context, area, None)
+    } else {
+        let (context, route, sites, corridor, request, _) =
+            crate::coverage_http::capture(app, workspace, body.as_object().unwrap(), false).await?;
+        (
+            context,
+            ExtraArea::Route {
+                sites,
+                corridor,
+                request: Box::new(request),
+            },
+            Some((
+                route["snapshot_version"].clone(),
+                route["active_alternative_id"].clone(),
+            )),
+        )
+    };
     tokio::task::spawn_blocking(move || {
         let terrain = context.open()?;
         let crs = terrain.crs();
         let transform = Transformer::new(crs).map_err(terrain_invalid)?;
-        let sources = repeaternet_coverage::select_sources(&sites, &sites, &request.settings)
-            .map_err(terrain_invalid)?;
-        let area = repeaternet_coverage::resolve_area(
-            &request.settings,
-            &transform,
-            &sources,
-            &sites,
-            corridor,
-            request.map_bounds,
-        )
-        .map_err(terrain_invalid)?;
+        let area = match area {
+            ExtraArea::Live(sites, radius) => circle_union(&transform, sites, radius)?,
+            ExtraArea::Route {
+                sites,
+                corridor,
+                request,
+            } => {
+                let sources =
+                    repeaternet_coverage::select_sources(&sites, &sites, &request.settings)
+                        .map_err(terrain_invalid)?;
+                repeaternet_coverage::resolve_area(
+                    &request.settings,
+                    &transform,
+                    &sources,
+                    &sites,
+                    corridor,
+                    request.map_bounds,
+                )
+                .map_err(terrain_invalid)?
+                .geometry()
+                .clone()
+            }
+        };
         let missing = |tiles: &[repeaternet_terrain::GeoTiff]| {
             let footprints: Vec<_> = tiles
                 .iter()
@@ -579,9 +692,9 @@ async fn extra_plan(
                 })
                 .collect();
             if footprints.is_empty() {
-                area.geometry().clone()
+                area.clone()
             } else {
-                area.geometry().difference(&geo::unary_union(&footprints))
+                area.difference(&geo::unary_union(&footprints))
             }
         };
         let dtm: MultiPolygon<f64> = missing(terrain.ground_tiles());
@@ -604,10 +717,7 @@ async fn extra_plan(
             dom: plans.dom,
             estimate: json!(estimate),
             plan: None,
-            route_identity: Some((
-                route["snapshot_version"].clone(),
-                route["active_alternative_id"].clone(),
-            )),
+            route_identity,
         })
     })
     .await

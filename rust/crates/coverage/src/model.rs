@@ -77,7 +77,7 @@ impl ClientRadioProfile {
         }
     }
 
-    fn validate(&self) -> Result<(), CoverageError> {
+    pub fn validate(&self) -> Result<(), CoverageError> {
         if !(1..=80).contains(&self.name.chars().count()) {
             return Err(invalid(
                 "Client radio profile name must contain 1 to 80 characters",

@@ -78,6 +78,27 @@ current call before cancellation is observed.
    polygon. The caller binds the report to its saved run and owns report IDs,
    persistence, staleness and quotas.
 
+## Live per-site coverage
+
+Use `live::sweep` with a projected RF site, RF settings, handheld radio budget,
+and a `SweepGrid`. The `ElevationLookup` supplies ground and optional surface
+samples. Scoped workers march clockwise from north. Each ray tracks its
+transmit horizon, a convex upper hull for Bullington diffraction and the
+maximum surface excess for clutter. The result stores `f32` usable margins
+for downlink, uplink or the weaker direction for two-way operation. Missing
+ground makes every subsequent sample on that ray unknown.
+
+The first sample has no interior diffraction edge, and the site repeats
+that sample's margin. Strict LOS uses geometric clearance and omits the
+configured Fresnel clearance ratio. `live::resample` interpolates projected
+coordinates through a 33 × 33 control mesh and converts polar margins to a
+north-up Web Mercator byte raster.
+
+Run the HTTP timing benchmark from `rust/` with
+`cargo test --release --locked -p repeaternet --bin repeaternet benchmark_live_coverage -- --ignored --nocapture`.
+It reports a cold application-cache request and five warm requests per
+resolution using a synthetic hilly GeoTIFF.
+
 ## Defaults, limits and compatibility
 
 - The default is two-way coverage over a 5,000 m mesh buffer, with a requested

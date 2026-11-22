@@ -1803,6 +1803,321 @@ fn geographic(x: f64, y: f64) -> LonLat {
         .unwrap()
 }
 
+fn live_fixture(width: u32, step: f64, mut elevation: impl FnMut(f64, f64) -> f32) -> Vec<u8> {
+    use repeaternet_terrain::{Bounds, write_elevation_tiff};
+    let half = f64::from(width) * step / 2.0;
+    let mut values = Vec::with_capacity((width * width) as usize);
+    for row in 0..width {
+        for column in 0..width {
+            values.push(elevation(
+                (f64::from(column) + 0.5) * step - half,
+                half - (f64::from(row) + 0.5) * step,
+            ));
+        }
+    }
+    let mut tile = Vec::new();
+    write_elevation_tiff(
+        &mut tile,
+        TerrainCrs::Etrs89Utm33,
+        Bounds {
+            min_x: 500000.0 - half,
+            max_x: 500000.0 + half,
+            min_y: 6650000.0 - half,
+            max_y: 6650000.0 + half,
+        },
+        width,
+        width,
+        &values,
+    )
+    .unwrap();
+    tile
+}
+
+fn live_request(radius: f64, resolution: f64) -> Value {
+    let site = geographic(500000.0, 6650000.0);
+    json!({
+        "site": {"id":"A", "kind":"endpoint_a", "latitude":site.latitude,
+            "longitude":site.longitude, "antenna_height_m":55.0},
+        "radius_m":radius, "resolution_m":resolution
+    })
+}
+
+async fn live_response(app: &Router, cookie: &str, payload: Value) -> (Value, Vec<u8>) {
+    let (status, headers, bytes) = request(
+        app,
+        Some(cookie),
+        Method::POST,
+        "/api/live-coverage",
+        "application/json",
+        Body::from(payload.to_string()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes[..bytes.len().min(1024)])
+    );
+    assert_eq!(headers["content-type"], "application/octet-stream");
+    assert_eq!(headers["cache-control"], "no-store");
+    assert_eq!(
+        headers["content-length"]
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap(),
+        bytes.len()
+    );
+    assert_eq!(&bytes[..4], b"RNLC");
+    let header_end = 8 + u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let header: Value = serde_json::from_slice(&bytes[8..header_end]).unwrap();
+    let pixels = bytes[header_end..].to_vec();
+    assert_eq!(
+        pixels.len(),
+        (header["width"].as_u64().unwrap() * header["height"].as_u64().unwrap()) as usize
+    );
+    (header, pixels)
+}
+
+#[tokio::test]
+async fn live_coverage_validates_and_returns_a_mercator_raster_without_a_route() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    let path = "/api/live-coverage";
+    let payload = live_request(1_000.0, 50.0);
+    let post = |payload, status| api(&app, &cookie, Method::POST, path, payload, status);
+    let response = post(payload.clone(), StatusCode::CONFLICT).await;
+    assert_eq!(
+        response["detail"],
+        "No terrain yet. Download terrain to see coverage."
+    );
+    for (field, value) in [
+        ("mode", json!("overlap")),
+        ("radius_m", json!("1000")),
+        ("resolution_m", json!(4.99)),
+        ("floor_db", json!(0.01)),
+        ("client", json!({"height_agl_m": 0})),
+        ("project_id", Value::Null),
+    ] {
+        let mut bad = payload.clone();
+        bad[field] = value;
+        post(bad, StatusCode::BAD_REQUEST).await;
+    }
+    let mut bad = payload.clone();
+    bad["project_id"] = json!("a-different-project");
+    assert_eq!(
+        post(bad, StatusCode::CONFLICT).await["detail"],
+        "The active project changed"
+    );
+
+    upload(
+        &app,
+        &cookie,
+        "dtm",
+        &live_fixture(45, 10.0, |_, _| 93.0),
+        StatusCode::OK,
+    )
+    .await;
+    let (header, pixels) = live_response(&app, &cookie, payload.clone()).await;
+    assert_eq!(header["site_id"], "A");
+    assert_eq!(header["width"], 41);
+    assert_eq!(header["height"], 41);
+    assert_eq!(header["rays"], 360);
+    assert_eq!(header["samples_per_ray"], 20);
+    assert_eq!(header["resolution_m"], 50.0);
+    assert_eq!(header["radius_m"], 1000.0);
+    assert_eq!(header["floor_db"], -20.0);
+    assert_eq!(header["step_db"], 0.5);
+    assert_eq!(header["site_ground_m"], 93.0);
+    assert_eq!(header["antenna_elevation_m"], 148.0);
+    assert!(header["pixel_size"].as_f64().unwrap() > 50.0);
+    assert!(header["origin_x"].as_f64().unwrap() > 0.0);
+    assert!(header["origin_y"].as_f64().unwrap() > 0.0);
+    assert!(header["elapsed_ms"].as_f64().unwrap() > 0.0);
+    assert!(header["covered_fraction"].as_f64().unwrap() > 0.0);
+    assert!(header["unknown_fraction"].as_f64().unwrap() > 0.0);
+    let bounds = header["bounds_wgs84"].as_array().unwrap();
+    assert!(bounds[0].as_f64().unwrap() < payload["site"]["latitude"].as_f64().unwrap());
+    assert!(bounds[1].as_f64().unwrap() < payload["site"]["longitude"].as_f64().unwrap());
+    assert!(bounds[2].as_f64().unwrap() > payload["site"]["latitude"].as_f64().unwrap());
+    assert!(bounds[3].as_f64().unwrap() > payload["site"]["longitude"].as_f64().unwrap());
+    assert_eq!(pixels[0], 0);
+    assert!(pixels.contains(&1));
+    assert!(pixels[20 * 41 + 20] >= 43);
+
+    let mut outside = payload.clone();
+    outside["site"]["longitude"] = json!(14.8);
+    assert_eq!(
+        post(outside, StatusCode::CONFLICT).await["detail"],
+        "No ground terrain at this site"
+    );
+
+    // Replacing route terrain must invalidate previously cached tiles.
+    api(
+        &app,
+        &cookie,
+        Method::DELETE,
+        "/api/terrain/dtm",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    upload(
+        &app,
+        &cookie,
+        "dtm",
+        &live_fixture(45, 10.0, |_, _| 123.0),
+        StatusCode::OK,
+    )
+    .await;
+    let (header, _) = live_response(&app, &cookie, payload).await;
+    assert_eq!(header["site_ground_m"], 123.0);
+}
+
+#[tokio::test]
+async fn live_site_circles_estimate_and_prepare_without_a_route_snapshot() {
+    use axum::extract::Query;
+    use repeaternet_terrain::{Bounds, write_elevation_tiff};
+    use std::collections::HashMap;
+
+    let (upstream, server) = mock_upstream(Router::new().route(
+        "/wcs",
+        get(|Query(query): Query<HashMap<String, String>>| async move {
+            let bounds: Vec<f64> = query["bbox"]
+                .split(',')
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let width: u32 = query["width"].parse().unwrap();
+            let height: u32 = query["height"].parse().unwrap();
+            let mut tile = Vec::new();
+            write_elevation_tiff(
+                &mut tile,
+                TerrainCrs::Etrs89Utm33,
+                Bounds {
+                    min_x: bounds[0],
+                    min_y: bounds[1],
+                    max_x: bounds[2],
+                    max_y: bounds[3],
+                },
+                width,
+                height,
+                &vec![58.0; (width * height) as usize],
+            )
+            .unwrap();
+            ([("content-type", "image/tiff")], tile)
+        }),
+    ))
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("providers.json"),
+        json!({
+            "version": 1,
+            "terrain": [{
+                "id": "live-loopback", "name": "Test terrain", "kind": "wcs",
+                "coverage": {"type":"global"}, "resolution_m": 25.0, "attribution": "Test fixture",
+                "products": {"dtm": {
+                    "endpoint": format!("{upstream}/wcs"), "coverage":"ground", "version":"1.0.0",
+                    "format":"GeoTIFF", "native_crs":["EPSG:25833"]
+                }}
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (_, mut state) = app(root.path(), "");
+    state.coverage_terrain_resolution = Some(25.0);
+    state.terrain_limits.maximum_tile_area_km2 = 4.0;
+    let app = router_with_state(state, "", true);
+    let cookie = cookie(A);
+    let site = |x| {
+        let position = geographic(x, 6650000.0);
+        json!({"latitude":position.latitude, "longitude":position.longitude})
+    };
+    let mut payload = json!({
+        "live":{"sites":[site(499900.0),site(500250.0)],"radius_m":1000},
+        "terrain":{"source":"live-loopback","fallback":false}
+    });
+    let estimate = "/api/coverage/terrain/estimate";
+    let prepare = "/api/coverage/terrain/prepare";
+    let post = |url, data, status| api(&app, &cookie, Method::POST, url, data, status);
+    assert_eq!(
+        post(estimate, payload.clone(), StatusCode::CONFLICT).await["detail"],
+        "No terrain yet. Download terrain to see coverage."
+    );
+    upload(
+        &app,
+        &cookie,
+        "dtm",
+        &live_fixture(100, 30.0, |_, _| 42.0),
+        StatusCode::OK,
+    )
+    .await;
+    let covered = post(estimate, payload.clone(), StatusCode::OK).await;
+    assert_eq!(covered["tile_count"], 0, "{covered}");
+    assert_eq!(
+        post(prepare, payload.clone(), StatusCode::OK).await["state"],
+        "complete"
+    );
+    payload["live"]["sites"][1] = site(502000.0);
+    let missing = post(estimate, payload.clone(), StatusCode::OK).await;
+    assert!(missing["tile_count"].as_u64().unwrap() > 0, "{missing}");
+    payload["registry_fingerprint"] = json!("outdated");
+    post(prepare, payload.clone(), StatusCode::CONFLICT).await;
+    payload["registry_fingerprint"] = missing["registry_fingerprint"].clone();
+    let mut live = live_request(1_000.0, 50.0);
+    let supplemental_site = site(502000.0);
+    live["site"]["latitude"] = supplemental_site["latitude"].clone();
+    live["site"]["longitude"] = supplemental_site["longitude"].clone();
+    let unavailable = post("/api/live-coverage", live.clone(), StatusCode::CONFLICT).await;
+    assert_eq!(unavailable["detail"], "No ground terrain at this site");
+    let job = post(prepare, payload.clone(), StatusCode::OK).await;
+    assert!(job["job_id"].is_string(), "{job}");
+    let finished = coverage_terrain_terminal(&app, &cookie).await;
+    assert_eq!(
+        finished["coverage_terrain_job"]["state"], "complete",
+        "{finished}"
+    );
+    assert_eq!(
+        post(estimate, payload, StatusCode::OK).await["tile_count"],
+        0
+    );
+    let (header, _) = live_response(&app, &cookie, live).await;
+    assert_eq!(header["site_ground_m"], 58.0);
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "timing benchmark with a 44 km synthetic elevation raster"]
+async fn benchmark_live_coverage() {
+    let tile = live_fixture(2200, 20.0, |x, y| {
+        (300.0
+            + 180.0 * (x / 2100.0).sin() * (y / 2900.0).cos()
+            + 80.0 * ((x + y) / 950.0).sin()
+            + 13.0 * ((x - 2.0 * y) / 250.0).cos()) as f32
+    });
+    for resolution in [30.0, 120.0] {
+        let root = tempfile::tempdir().unwrap();
+        let (app, _) = app(root.path(), "");
+        let cookie = cookie(A);
+        upload(&app, &cookie, "dtm", &tile, StatusCode::OK).await;
+        let payload = live_request(20_000.0, resolution);
+        let (cold, _) = live_response(&app, &cookie, payload.clone()).await;
+        let mut warm = Vec::new();
+        for _ in 0..5 {
+            let (header, _) = live_response(&app, &cookie, payload.clone()).await;
+            warm.push(header["elapsed_ms"].as_f64().unwrap());
+        }
+        warm.sort_by(f64::total_cmp);
+        println!(
+            "20 km @ {resolution} m: cold {:.1} ms, warm {:?} ms",
+            cold["elapsed_ms"].as_f64().unwrap(),
+            warm
+        );
+    }
+}
+
 #[tokio::test]
 async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_and_failure() {
     use axum::{response::IntoResponse, routing::get};

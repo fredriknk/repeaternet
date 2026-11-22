@@ -1606,6 +1606,7 @@ dependencies = [
  "clap",
  "geo",
  "getrandom 0.4.3",
+ "lru",
  "open",
  "repeaternet-coverage",
  "repeaternet-coverage-store",

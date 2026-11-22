@@ -4,6 +4,7 @@ mod cache;
 mod compare;
 mod engine;
 mod grid;
+pub mod live;
 mod model;
 mod network;
 mod parallel;
