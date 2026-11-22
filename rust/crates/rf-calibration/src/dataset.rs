@@ -180,6 +180,21 @@ pub struct ProfileRecord {
     pub dom: Option<Vec<f64>>,
     /// Fraction of samples that had to be filled (NaN in the source).
     pub missing_fraction: f64,
+    /// Fingerprint of the sampling method and cache tiles intersecting the path.
+    #[serde(default)]
+    pub terrain_fingerprint: String,
+}
+
+/// Terrain binning and terminal clutter inputs for one undirected path.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PathFeatures {
+    pub schema: u32,
+    pub path_id: String,
+    pub distance_m: f64,
+    pub delta_h_m: f64,
+    pub a_clutter_height_m: Option<f64>,
+    pub b_clutter_height_m: Option<f64>,
+    pub clutter_fraction_gt_3m: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

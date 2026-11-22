@@ -1716,6 +1716,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "geo",
  "repeaternet-providers",
  "repeaternet-rf-core",
  "repeaternet-terrain",
