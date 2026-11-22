@@ -208,8 +208,10 @@ The layout has one owner per job. Put new features where users already look:
 
 1. `cargo build --release -p repeaternet`. If a running server locks the
    executable, use `--target-dir target/<name>`.
-2. Run the binary with a throwaway `--data` directory and `--port`. Never point
-   tests at the user's real data directory.
+2. Run the binary with the shared test data directory
+   (`--data %LOCALAPPDATA%\RepeaterNet\test-data`) and a `--port`. Reuse it so
+   terrain tiles in its `shared-cache` aren't downloaded again. Never point tests
+   at the user's real data directory.
 3. Drive the changed workflow in a real browser (Playwright with the installed
    Chrome is fine). Take screenshots at the viewports in §5 and **look at them**.
    Check the console for errors.

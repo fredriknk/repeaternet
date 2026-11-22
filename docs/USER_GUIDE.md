@@ -38,8 +38,9 @@ Follow the [installation and launch instructions](../README.md) for your
 platform. By default the server listens at **http://127.0.0.1:8000/**. If the
 browser does not open, use the address printed by the server. If the operator
 configured an access token, enter it in **Access token** and choose **Sign in**.
-The token protects server access. The browser's workspace cookie identifies
-your projects separately.
+On your own device, select **Keep me signed in for 30 days** to stay signed in
+when you reopen the browser. The browser must keep cookies for the same server
+address. The browser's workspace cookie identifies your projects separately.
 
 ![Sign-in form asking for the server access token](images/token-sign-in.png)
 

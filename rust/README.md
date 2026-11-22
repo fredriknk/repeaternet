@@ -255,7 +255,7 @@ comparison. [Export formats and limits](crates/exports/README.md)
 | Method and path | Request and response |
 | --- | --- |
 | `GET /` | Serves the dashboard and issues `planner_workspace` when needed. A visitor without the required access cookie receives the sign-in page. |
-| `POST /login` | URL-encoded or multipart `token` form, up to 16 KiB. Success sets `planner_access` and sends HTTP 303 to `/`. An incorrect token returns 401. |
+| `POST /login` | URL-encoded or multipart `token` form, up to 16 KiB. Success sets `planner_access` and sends HTTP 303 to `/`. The optional `remember=1` field gives the access cookie a 30-day lifetime. An incorrect token returns 401. |
 | `GET /health` | Returns `{"status":"ok","runtime":"rust"}` before sign-in or workspace initialization. |
 | `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, `GET /redoc` | Embedded discovery resources. Swagger UI and ReDoc load their rendering scripts from external CDNs. |
 | `GET /assets/{file}` | Registered dashboard files. Names are `index.html`, `login.html`, `style.css`, `meshcore.css`, `coverage.css`, `workspace.css`, `map.css`, `main_view_navigation.js`, `app.js` and `coverage_inspection.js`. |

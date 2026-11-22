@@ -161,9 +161,10 @@ fn same_origin(request: &Request, authority: Option<&Authority>, scheme: &str) -
             .is_some_and(|host| origin.as_bytes() == format!("{scheme}://{host}").as_bytes())
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Login {
     token: Option<String>,
+    remember: Option<String>,
 }
 
 pub async fn login(State(security): State<Security>, request: Request) -> Response {
@@ -172,23 +173,28 @@ pub async fn login(State(security): State<Security>, request: Request) -> Respon
         .get::<Https>()
         .copied()
         .unwrap_or_default();
-    let token = match login_token(request).await {
-        Ok(token) => token,
+    let Login { token, remember } = match login_form(request).await {
+        Ok(login) => login,
         Err(status) => return problem(status, "Could not read the access token form"),
     };
     let Some(token) = token.filter(|token| security.accepts(token)) else {
         return problem(StatusCode::UNAUTHORIZED, "Incorrect access token");
     };
+    let lifetime = if remember.as_deref() == Some("1") {
+        "; Max-Age=2592000"
+    } else {
+        ""
+    };
     set_cookie(
         Redirect::to("/").into_response(),
         ACCESS_COOKIE,
         &token,
-        "",
+        lifetime,
         https,
     )
 }
 
-async fn login_token(request: Request) -> Result<Option<String>, StatusCode> {
+async fn login_form(request: Request) -> Result<Login, StatusCode> {
     let media_type = request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -197,24 +203,27 @@ async fn login_token(request: Request) -> Result<Option<String>, StatusCode> {
         .map(str::trim);
     match media_type {
         Some("application/x-www-form-urlencoded") => {
-            let Form(Login { token }) = Form::from_request(request, &())
+            let Form(login) = Form::from_request(request, &())
                 .await
                 .map_err(|error| error.status())?;
-            Ok(token)
+            Ok(login)
         }
         Some("multipart/form-data") => {
             let mut form = Multipart::from_request(request, &())
                 .await
                 .map_err(|error| error.status())?;
-            let mut token = None;
+            let mut login = Login::default();
             while let Some(field) = form.next_field().await.map_err(|error| error.status())? {
-                if field.name() == Some("token") && field.file_name().is_none() {
-                    token = Some(field.text().await.map_err(|error| error.status())?);
-                }
+                let value = match (field.name(), field.file_name()) {
+                    (Some("token"), None) => &mut login.token,
+                    (Some("remember"), None) => &mut login.remember,
+                    _ => continue,
+                };
+                *value = Some(field.text().await.map_err(|error| error.status())?);
             }
-            Ok(token)
+            Ok(login)
         }
-        _ => Ok(None),
+        _ => Ok(Login::default()),
     }
 }
 

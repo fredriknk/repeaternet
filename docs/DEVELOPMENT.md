@@ -186,8 +186,9 @@ Put new styles in the layer that owns the feature.
 Register a new asset and its content type in
 [`src/assets.rs`](../rust/crates/web-server/src/assets.rs) and reference it
 from the page as needed. Rebuild the executable to see embedded asset changes.
-Follow the [UX design rules](UX_DESIGN_RULES.md) and use a throwaway data
-directory outside the repository for browser checks.
+Follow the [UX design rules](UX_DESIGN_RULES.md) and use the shared test data
+directory (`%LOCALAPPDATA%\RepeaterNet\test-data`) for browser checks, so cached
+terrain tiles are reused between runs.
 
 ## Verification
 

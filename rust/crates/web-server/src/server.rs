@@ -130,10 +130,31 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY");
 
-        for (origin, token, expected) in [
-            ("https://other.example", "shared+key", StatusCode::FORBIDDEN),
-            ("http://127.0.0.1:8000", "wrong", StatusCode::UNAUTHORIZED),
-            ("http://127.0.0.1:8000", "shared+key", StatusCode::SEE_OTHER),
+        for (origin, form, expected, remember) in [
+            (
+                "https://other.example",
+                "token=shared+key&remember=1",
+                StatusCode::FORBIDDEN,
+                false,
+            ),
+            (
+                "http://127.0.0.1:8000",
+                "token=wrong&remember=1",
+                StatusCode::UNAUTHORIZED,
+                false,
+            ),
+            (
+                "http://127.0.0.1:8000",
+                "token=shared+key",
+                StatusCode::SEE_OTHER,
+                false,
+            ),
+            (
+                "http://127.0.0.1:8000",
+                "token=shared+key&remember=1",
+                StatusCode::SEE_OTHER,
+                true,
+            ),
         ] {
             let response = app
                 .clone()
@@ -141,7 +162,7 @@ mod tests {
                     request(Method::POST, "/login")
                         .header(header::ORIGIN, origin)
                         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                        .body(Body::from(format!("token={token}")))
+                        .body(Body::from(form))
                         .unwrap(),
                 )
                 .await
@@ -152,6 +173,12 @@ mod tests {
                 continue;
             }
             let access = set_cookie(response.headers());
+            let attributes = response.headers()[header::SET_COOKIE].to_str().unwrap();
+            if remember {
+                assert!(attributes.contains("; Max-Age=2592000"));
+            } else {
+                assert!(!attributes.contains("; Max-Age="));
+            }
             let dashboard = app
                 .clone()
                 .oneshot(
@@ -185,6 +212,33 @@ mod tests {
             );
             assert_eq!(data["plan"], Value::Null);
         }
+    }
+
+    #[tokio::test]
+    async fn multipart_login_accepts_remember_option() {
+        let data = tempfile::tempdir().unwrap();
+        let app = test_router(data.path(), "shared-key");
+        let form = concat!(
+            "--login\r\nContent-Disposition: form-data; name=\"remember\"\r\n\r\n1\r\n",
+            "--login\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nshared-key\r\n",
+            "--login--\r\n",
+        );
+        let response = app
+            .oneshot(
+                request(Method::POST, "/login")
+                    .header(header::CONTENT_TYPE, "multipart/form-data; boundary=login")
+                    .body(Body::from(form))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(
+            response.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .contains("; Max-Age=2592000")
+        );
     }
 
     #[tokio::test]

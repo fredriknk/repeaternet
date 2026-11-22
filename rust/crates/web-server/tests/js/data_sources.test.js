@@ -11,6 +11,44 @@ function section(start, end) {
   return app.slice(first, last);
 }
 
+test('terrain estimation sends the route plan over HTTP without crypto.randomUUID', async () => {
+  const elements = new Map();
+  const $ = id => {
+    if (!elements.has(id)) elements.set(id, {});
+    return elements.get(id);
+  };
+  const plan = { a: [59.91, 10.75], b: [59.95, 10.85] };
+  const errors = [], requests = [];
+  const context = vm.createContext({
+    $,
+    crypto: { getRandomValues: bytes => bytes.fill(0xff) },
+    clone: structuredClone, plan: () => plan,
+    projectInfo: { active_id: 'project' }, saveRevision: 1, dataSourcesRevision: 1,
+    mapEditsLocked: () => false, validTerrainResolution: () => true,
+    validEndpointCoords: name => plan[name],
+    clearTerrainEstimateReview() {}, previewTerrainSources() {}, renderTerrainEstimateDetail() {}, setTerrainDomNote() {},
+    terrainEstimateReview: null, terrainEstimateCost: () => '1 tile',
+    sourceJsonRequest: (method, snapshot) => ({ method, body: JSON.stringify(snapshot) }),
+    async api(url, request) {
+      requests.push([url, request.method, JSON.parse(request.body)]);
+      return { summary: 'Terrain available' };
+    },
+    status(message, error) { if (error) errors.push(message); },
+  });
+  vm.runInContext(
+    section('function randomId(', 'function setHistoryButtons(') +
+    section('function createRouteOperation(', 'async function startRouteSearch(') +
+    section('async function estimateTerrain(', 'async function startTerrainPreparation(') +
+    section('function routeOperationIsCurrent(', 'async function pollTerrainJob('),
+    context,
+  );
+  await $('estimate-terrain').onclick();
+  assert.deepEqual(errors, []);
+  assert.deepEqual(requests, [['/api/terrain/estimate', 'POST', plan]]);
+  assert.equal(context.terrainEstimateReview.operation.id, 'ffffffff-ffff-4fff-bfff-ffffffffffff');
+  assert.equal($('prepare-terrain').hidden, false);
+});
+
 test('registry definitions populate the layer control and a failed GET leaves the fallback', async () => {
   const visible = new Set(), controls = [], plannerLayer = {};
   const tileLayer = (url, options) => ({
