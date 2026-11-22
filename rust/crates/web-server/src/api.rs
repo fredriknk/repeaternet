@@ -32,6 +32,10 @@ pub fn router(app: AppState) -> Router {
         .route("/api/result", get(result))
         .route("/api/optimize", post(route_http::start))
         .route("/api/link/evaluate", post(crate::link_http::evaluate))
+        .route(
+            "/api/live-coverage",
+            post(crate::live_coverage_http::evaluate),
+        )
         .route("/api/cancel", post(route_http::cancel))
         .route("/api/stop-and-keep", post(route_http::keep))
         .route("/api/alternatives/{id}/select", post(route_http::select))

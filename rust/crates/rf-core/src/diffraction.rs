@@ -27,6 +27,12 @@ pub fn knife_edge_loss_db(v: f64) -> f64 {
     6.9 + 20.0 * (((v - 0.1).powi(2) + 1.0).sqrt() + v - 0.1).log10()
 }
 
+/// Bullington loss for a dominant edge with parameter v over a path in metres.
+pub fn bullington_edge_loss_db(v: f64, distance_m: f64) -> f64 {
+    let knife_loss = knife_edge_loss_db(v);
+    knife_loss + (-(-knife_loss / 6.0).exp_m1()) * (10.0 + 0.02 * distance_m / 1000.0)
+}
+
 /// Single edge parameter from obstruction height relative to line of sight.
 /// A nonpositive endpoint distance returns negative infinity.
 pub fn knife_edge_v(height_above_los_m: f64, d1_m: f64, d2_m: f64, frequency_mhz: f64) -> f64 {
@@ -109,8 +115,7 @@ pub fn bullington_loss_db(
         (distance, elevation, v)
     };
 
-    let knife_loss = knife_edge_loss_db(v);
-    let loss_db = knife_loss + (-(-knife_loss / 6.0).exp_m1()) * (10.0 + 0.02 * length / 1000.0);
+    let loss_db = bullington_edge_loss_db(v, length);
     let obstacles = if loss_db == 0.0 {
         Vec::new()
     } else {

@@ -35,6 +35,8 @@ pub(crate) struct AppState {
     pub uploads: Arc<tokio::sync::Semaphore>,
     pub cache: Arc<LinkMetricsCache>,
     pub coverage_cache: Arc<CoverageMetricsCache>,
+    pub live_terrain: Arc<crate::live_terrain::LiveTerrainCache>,
+    pub live_coverage_workers: Arc<tokio::sync::Semaphore>,
     // Acquire a workspace lock before submitting blocking work, so waiting
     // requests do not occupy blocking threads or serialize other workspaces.
     sessions: Arc<Mutex<HashMap<String, SessionLock>>>,
@@ -64,6 +66,8 @@ impl AppState {
             sessions: Arc::default(),
             scheduler: Arc::new(crate::route_http::Scheduler::from_env()),
             uploads: Arc::new(tokio::sync::Semaphore::new(2)),
+            live_terrain: Arc::new(crate::live_terrain::LiveTerrainCache::from_env()),
+            live_coverage_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             cache: Arc::new(LinkMetricsCache::new(
                 std::env::var("RF_PLANNER_RF_CACHE_ENTRIES")
                     .ok()

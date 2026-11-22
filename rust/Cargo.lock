@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "repeaternet"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1606,6 +1606,7 @@ dependencies = [
  "clap",
  "geo",
  "getrandom 0.4.3",
+ "lru",
  "open",
  "repeaternet-coverage",
  "repeaternet-coverage-store",

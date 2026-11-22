@@ -309,3 +309,36 @@
   .map-tools button, .map-tools label { min-height: 35px; padding-inline: 6px; }
   .map-tool-group + .map-tool-group { padding-left: 4px; }
 }
+
+/* Live coverage legend */
+.map-top .live-coverage-legend {
+  position: static;
+  justify-self: end;
+  width: min(236px, 100%);
+  margin-right: -42px;
+  max-height: min(460px, 52vh);
+  overflow: auto;
+  pointer-events: auto;
+}
+.live-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.live-legend-head h3 { margin: 0; }
+.live-legend-head button { min-height: 32px; padding: 2px 8px; font-size: 12px; }
+.live-legend-caption { margin: 2px 0 4px; color: var(--muted); font-size: 12px; }
+.live-legend-ramp { height: 12px; border: 1px solid #68776f40; }
+.live-legend-ticks { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.live-legend-ticks span:last-child::after { content: " dB"; }
+.live-coverage-legend .coverage-legend-items { margin: 2px 0; }
+.live-hatch { background: repeating-linear-gradient(135deg, #585858 0 3px, #c4c4c4 3px 9px); }
+.live-clear { background: #fff; border-style: dashed !important; }
+.live-legend-field { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 13px; }
+.live-legend-field select { flex: 1; min-width: 0; }
+.live-legend-field input[type="checkbox"] { margin: 0; accent-color: #176750; }
+.live-coverage-legend #live-opacity { min-width: 0; width: 100%; height: 36px; margin: 0; padding: 0; accent-color: #176750; }
+.live-coverage-tooltip span { display: block; font-variant-numeric: tabular-nums; }
+@media (max-width: 650px) {
+  .map-top .live-coverage-legend { max-height: 40vh; }
+  .live-coverage-legend #live-opacity { height: 44px; }
+  .live-legend-head button { min-height: 44px; }
+}
+/* The link inspector owns the right side of the map while it is open. */
+.map-wrap:has(#route-link-inspector:not([hidden])) .live-coverage-legend { display: none; }

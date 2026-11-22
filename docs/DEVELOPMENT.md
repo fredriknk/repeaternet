@@ -78,6 +78,23 @@ worker threads. Terrain uploads use separate admission limits.
    restores a saved completed or stopped snapshot if the plan and route
    terrain fingerprints match.
 
+### Live coverage
+
+1. `live_coverage.js` lists every endpoint and router on the map and sends one
+   `POST /api/live-coverage` per site with its position, height, the handheld
+   profile, view, radius and resolution. Radio settings come from the saved
+   plan, so the dashboard flushes autosave first.
+2. The handler opens route plus supplemental terrain through a process-wide
+   tile cache of resampled elevations, then runs a radial sweep from the site.
+   Each ray keeps a running horizon and the upper convex hull of the
+   curvature-adjusted profile, so every sample's Bullington loss is evaluated
+   incrementally with the same arithmetic as the link evaluator.
+3. The polar margins are resampled to a Web Mercator raster and returned as a
+   compact binary body (`RNLC` header plus one byte per pixel).
+4. The dashboard caches rasters per site and input, previews coarsely while a
+   marker is dragged and composites best margin, overlap and missing terrain in
+   a canvas grid layer.
+
 ### Coverage run
 
 1. The dashboard sends coverage settings and the certified route snapshot and
@@ -162,7 +179,8 @@ shared cache.
 Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
 `workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
 the deferred classic scripts load in order
-`main_view_navigation.js`, `coverage_raster.js`, `app.js` and `coverage_inspection.js`.
+`main_view_navigation.js`, `coverage_raster.js`, `live_coverage.js`, `app.js`
+and `coverage_inspection.js`.
 Put new styles in the layer that owns the feature.
 
 Register a new asset and its content type in

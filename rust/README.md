@@ -53,6 +53,7 @@ the server. Windows also accepts Ctrl+Break, and Unix accepts SIGTERM.
 | `RF_PLANNER_RF_CACHE_ENTRIES` | `50000` | Process-wide route scalar-metric cache capacity. The server uses at least one entry. |
 | `RF_PLANNER_COVERAGE_CACHE_ENTRIES` | `50000` | Separate process-wide coverage scalar-metric cache capacity. The server uses at least one entry. |
 | `RF_PLANNER_TERRAIN_CACHE_MB` | Half of detected physical memory, reduced by the Linux cgroup limit when lower, or 1024 MiB if unavailable | Budget in MiB for resident decoded terrain windows shared by open rasters. Zero disables window retention. Reads still use the decoder's per-file block cache. |
+| `RF_PLANNER_LIVE_COVERAGE_CACHE_MB` | `512` | Process-wide retention budget in MiB for live coverage elevation tiles. Zero disables tile retention between requests. In-flight requests hold the tiles they use. |
 | `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` | `25` | Starting resolution for supplemental Kartverket terrain. Values must be 1 through 1,000 m. An invalid supplied number gives HTTP 422 from the coverage terrain endpoints. The tile planner can coarsen this spacing. |
 | `RF_PLANNER_CACHE_DIR` | `<data>/shared-cache` | Shared Kartverket and Overpass download cache root. |
 | `RF_PLANNER_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass interpreter used for route road access and overlays. |
@@ -121,7 +122,7 @@ server-wide and one per workspace.
 | `POST /api/terrain/coverage` | Takes endpoints, candidate settings and router inputs for readiness. Returns `covered`, `uncovered_sites`, `line_gaps`, DTM and DOM outlines, and `surface_available`. Query `route_only=true` excludes supplemental terrain. |
 | `POST /api/terrain/estimate` | Takes endpoints, eligible fixed sites, candidate settings and optional `terrain: {requested_resolution_m, auto_resolution, include_dom}` (defaults 10 m, true, true). Returns Kartverket tile counts, effective resolution, expected cache hits, transfer and disk estimates. |
 | `POST /api/terrain/prepare` | Same inputs as the estimate. Returns job status with a terrain estimate. Poll `job` in `/api/state` for progress and `terrain_ready`. Use `POST /api/cancel` to cancel. The dashboard submits route search separately after readiness. |
-| `POST /api/coverage/terrain/estimate` | Takes the coverage request below. Returns supplemental tile and storage estimates after subtracting installed footprints independently for DTM and DOM. Includes DOM when route DOM is installed. |
+| `POST /api/coverage/terrain/estimate` | Takes the coverage request below or `{live: {sites: [{latitude, longitude}, …], radius_m}, terrain?, registry_fingerprint?}`. The live form uses the union of circles around 1 to 256 sites in the installed route terrain CRS, with a radius of 1,000 to 80,000 m. Returns supplemental tile and storage estimates after subtracting installed footprints independently for DTM and DOM. Includes DOM when route DOM is installed. |
 | `POST /api/coverage/terrain/prepare` | Same inputs. Returns a job to poll under `coverage_terrain_job` in `/api/state`, or a complete status with a null job ID if no download is needed. |
 | `POST /api/coverage/terrain/{id}/cancel` | Signals cancellation of the matching active supplemental download and returns `{ok:true}`. |
 
@@ -163,6 +164,36 @@ Zero selects the optimizer's automatic worker count. See the
 [optimizer guide](crates/optimizer/README.md) for certification and cache details.
 
 ### Coverage
+
+#### Live per-site map
+
+`POST /api/live-coverage` evaluates one site using the active project's saved RF
+settings and the route and supplemental terrain. Send `site` with `id` (at most
+64 characters), `kind` (`endpoint_a`, `endpoint_b` or `router`), WGS84
+`latitude` and `longitude`, and ground-relative `antenna_height_m` (above 0
+through 1,000 m). Optional fields include `project_id`, the standard coverage
+`client` radio profile, and `mode` (`two_way` by default, `downlink` or
+`uplink`). The ranges and defaults are 1,000 to 80,000 m (20,000) for
+`radius_m`, 5 to 500 m (30) for `resolution_m`, and −60 to 0 dB (−20) for
+`floor_db`. Invalid inputs return HTTP 400. A project mismatch, unavailable
+terrain or missing ground at the site returns HTTP 409 with `detail`.
+
+The response is `application/octet-stream` with `Cache-Control: no-store`.
+Read the ASCII magic `RNLC`, a little-endian 32-bit JSON byte length, the UTF-8
+JSON header, and `width * height` unsigned bytes in north-to-south row order.
+The header includes `site_id`, `width`, `height`, `origin_x` (west edge),
+`origin_y` (north edge), `pixel_size`, `floor_db`, `step_db` (0.5),
+`radius_m`, `resolution_m`, `rays`, `samples_per_ray`, `site_ground_m`,
+`antenna_elevation_m`, `unknown_fraction`, `covered_fraction`,
+`bounds_wgs84` (south, west, north, east), and `elapsed_ms`. Origins and
+pixel size use EPSG:3857 metres. Fractions divide by the number of pixels
+inside the radius, and covered pixels have a margin of at least 0 dB.
+Pixel codes 0, 1 and 2 indicate outside, unknown terrain and below-floor
+margin, respectively. Codes 3 through 255 encode
+`floor_db + (code - 3) * step_db`. Strict LOS mode puts obstructed paths below
+the floor and uses geometric clearance.
+
+#### Certified-route coverage
 
 A coverage request supplies `snapshot_version`, the selected `alternative_id`
 and optional `settings` (defaults to coverage engine settings). `map_bounds` supplies `[south, west, north, east]` for the

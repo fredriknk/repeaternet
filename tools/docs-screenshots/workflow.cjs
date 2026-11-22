@@ -88,6 +88,9 @@ function createWorkflow(run) {
   }
 
   async function mapReady() {
+    // Live coverage settles before a map image is taken.
+    await run.page.waitForFunction(() => typeof liveCoverage === 'undefined'
+      || ![...liveCoverage.slots.values()].some(slot => slot.loading), undefined, { timeout: 120_000 });
     await retry('basemap tiles', async () => {
       try {
         await run.page.waitForFunction(() => {
@@ -335,24 +338,27 @@ function createWorkflow(run) {
     await ready('#alternative-select');
     await click('route-show-map');
     await tab('2 Coverage');
-    await coverage('area');
+    await coverage('display');
+    await run.page.waitForFunction(() => liveCoverage.slots.size
+      && ![...liveCoverage.slots.values()].some(slot => slot.loading), undefined, { timeout: 120_000 });
+    const live = await $('#live-coverage-status').textContent();
+    if (!live.includes('up to date')) throw new Error(`${live} ${await $('#live-coverage-sites').innerText()}`);
+    await shot('live-coverage-map', null, mapReady);
+    await $('#live-legend-overlap').check();
+    await shot('live-coverage-overlap', null, mapReady);
+    await $('#live-legend-overlap').uncheck();
+    await coverage('handheld');
+    await taller(() => shot('coverage-handheld', '#coverage-section-handheld'));
+    await savedRunSettings();
     await openDetails(sampling);
     await field('#coverage-cell-size', 700);
     await field('#coverage-buffer', 1300);
     await field('#coverage-profile-step', 100);
-    await shot('coverage-area-detail', '#coverage-section-area');
-    await coverage('sources');
-    await shot('coverage-sources', '#coverage-section-sources');
-    await coverage('handheld');
-    await shot('coverage-handheld', '#coverage-section-handheld');
-    await coverage('area');
   }
 
-  async function coveragePreview() {
-    await click('coverage-preview');
-    await confirm('coverage-preview-estimate');
-    await waitForText('#coverage-job-status', 'Approximate preview ·', 30_000);
-    await shot('coverage-preview-map', null, mapReady);
+  async function savedRunSettings() {
+    await coverage('runs');
+    await openDetails('#saved-run-settings > summary');
   }
 
   async function coverageRun(previous) {
@@ -374,7 +380,6 @@ function createWorkflow(run) {
     await click('coverage-start');
     await confirm('coverage-calculation-estimate');
     baseline = await coverageRun();
-    await shot('coverage-map', null, mapReady);
     await coverage('runs');
     await shot('coverage-runs', '.coverage-context');
   }
@@ -467,7 +472,7 @@ function createWorkflow(run) {
     await click('view-map-tab');
     await click('fit');
     await tab('2 Coverage');
-    await coverage('area');
+    await savedRunSettings();
     if (await $(sampling).evaluate(element => element.parentElement.open)) await $(sampling).click();
     await $('#coverage-area').selectOption('drawn');
     for (const [lat, lng] of [[60.085, 10.680], [60.113, 10.680], [60.113, 10.735], [60.085, 10.735]]) {
@@ -484,7 +489,7 @@ function createWorkflow(run) {
     await click('view-map-tab');
     await click('fit');
     await tab('2 Coverage');
-    await coverage('area');
+    await savedRunSettings();
     // Viewport bounds extend beyond the route terrain tiles even after Fit all.
     await $('#coverage-area').selectOption('view');
     await visible('#coverage-terrain-download', 20_000);
@@ -584,13 +589,10 @@ function createWorkflow(run) {
       'analysis-links', 'analysis-terrain-profile', 'route-exports',
     ], run: routeResults },
     { id: 'coverage-setup', after: ['route-search'], images: [
-      'coverage-area-detail', 'coverage-sources', 'coverage-handheld',
+      'live-coverage-map', 'live-coverage-overlap', 'coverage-handheld',
     ], run: coverageSetup },
-    { id: 'coverage-preview', after: ['coverage-setup'], images: [
-      'coverage-preview-estimate', 'coverage-preview-map',
-    ], run: coveragePreview },
     { id: 'coverage-run', after: ['coverage-setup'], images: [
-      'coverage-calculation-estimate', 'coverage-map', 'coverage-runs',
+      'coverage-calculation-estimate', 'coverage-runs',
     ], run: calculateCoverage },
     { id: 'coverage-inspection', after: ['coverage-run'], images: ['coverage-location-inspection'], run: inspectCoverage },
     { id: 'failure-scenario', after: ['coverage-run'], images: ['scenario-router-failure'], run: failureScenario },
