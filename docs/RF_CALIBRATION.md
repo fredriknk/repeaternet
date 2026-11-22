@@ -98,8 +98,8 @@ Committed docs, tests and fixtures contain only aggregates or synthetic data.
 | Meshtastic map captures (`map.868.no` Norway, others worldwide) | Gateway receptions with a confirmed transmitter, traceroute legs, neighbour reports | Gateway RSSI and SNR. Traceroutes and neighbours have SNR only. | Node `radios` history (preset, region, sometimes TX power) |
 | SondeHub | Radiosonde to ground station, 400–406 MHz | RSSI or SNR | Sonde type, sometimes TX power |
 
-SondeHub paths are mostly air to ground. They are used only to check the
-receiver and refraction side, not terrain diffraction.
+SondeHub paths are mostly air to ground. The independent analysis below
+checks receiver spread and refraction, with a small terrain-shadow comparison.
 
 Observers log every copy of a flood packet they hear, one per relay. A relay
 that is known to have forwarded a packet, because another observer heard that
@@ -112,7 +112,8 @@ Extract reads the CoreScope and Meshtastic SQLite snapshots in
 `<work>/snapshots/` in read-only mode. It stages each output in the dataset
 directory with a `.partial` suffix and replaces each file by rename, publishing
 the summary last. The snapshot layout has one file per capture source.
-Phase 1 covers terrestrial mesh links. The SondeHub snapshot is deferred.
+The terrestrial extraction uses CoreScope and Meshtastic. The SondeHub
+subcommand reads its snapshot separately.
 
 ### File contracts
 
@@ -592,6 +593,125 @@ spread is truncated, so new-site figures are lower bounds. The configured
 10 dB fade margin covers time fading on a known link. It does not cover
 location or siting uncertainty, which a single margin cannot carry honestly.
 
+### SondeHub air-to-ground check
+
+From `rust/`, run the estimate, then sample terrain if the estimate fits.
+Run the Python report from the repository root.
+
+```sh
+cargo run --release --locked -p repeaternet-rf-calibration --target-dir target/sondehub -- sondehub --estimate-only
+cargo run --release --locked -p repeaternet-rf-calibration --target-dir target/sondehub -- sondehub
+python -I tools/rf-calibration/sondehub_check.py
+```
+
+The source is the read-only `sondehub-import.sqlite3` in the default
+calibration snapshot directory. The output location follows `--work-dir` or
+`RF_CALIBRATION_DIR`. The Rust command writes versioned `links.jsonl`,
+`receivers.jsonl`, `horizons.jsonl` and `profiles.jsonl` under
+`<work>/sondehub/`. Link, horizon and profile rows join on `link_id`.
+Receiver IDs are the first 16 hex digits of
+`SHA-256(salt || "sondehub:" || receiver_key)`, preserving the source key's
+case. The existing `<work>/salt.txt` also salts flight IDs. Coordinates and
+signal bins stay in the work directory. The Python stage writes
+`results.json` with pseudonymised receiver and flight summaries and the
+aggregate `report.md` under `<work>/report-sondehub/`.
+
+Each receiver uses its most reported fixed coordinate cell. Membership in
+the planner's Kartverket NHM coverage polygon selects the Norway group and
+10 m DTM. Outside the polygon, up to 200 receivers selected by hashed ID
+use 30 m GLO-30. Receiver terrain is estimated by group, using twice
+uncached composed raw size. The 20 GB cap applies before any terrain fetch.
+The estimate for extra shadow chords is checked against the remaining budget.
+Fetches are sequential through the shared terrain cache. Unavailable tiles
+leave incomplete terrain and the command reports the number of failures.
+Confirmed download bytes count successful tile fetches.
+
+The receiver horizon samples 0.5° bearings, out to 10 km or the bin's
+transmitter distance, at the terrain raster step. A missing terrain sample
+makes that ray prefix ineligible for the fit. The receiver antenna elevation
+uses reported height as an MSL approximation when it is 2–100 m above DEM
+ground, with a 2 m mount above DEM otherwise. Sonde ellipsoid heights are
+converted with the importer's EGM96 grid. For unknown sonde datums, a
+same-flight fix supplies MSL and AGL when it is within 30 s, 3 km
+horizontally and 250 m of the unknown-datum altitude. Raw altitude and height
+provenance are retained.
+
+The clear-path fit requires more than 1 km AGL, elevation above 2° and above
+the local terrain horizon at k = 1. Nominal TX power and 3-D free-space
+loss determine each received bin's offset. Each receiver must have two
+qualifying flights. Receiver–flight pairs get equal fit weight, with each
+receiver weighted equally for offset spread. Elevation contrasts are estimated
+within receiver–flight pairs against 5–15°. RSSI bins at the rdz floor are
+excluded. Auto RX offsets combine receive gain, effective noise and
+decoder response. The JSON reports the implied effective noise floor at
+zero assumed receive gain, which is conditional on that gain assumption.
+
+The horizon check uses the last bin per receiver and flight, whose
+representative position can precede its final packet. It requires a
+descending sonde, at least 80 km range, elevation within ±1° at k = 1, a
+clear sampled receiver horizon and independent reception continuing for
+at least two minutes. Each endpoint gives an apparent k by equating its
+range to the smooth-earth tangent range. The median on the log scale and
+a crossed receiver/flight bootstrap summarize these endpoints. The fit
+assumes a horizon-limited endpoint. Finite decoder sensitivity, unknown
+receiver activity, distant terrain and uncertain antenna heights can all
+cause the last detection to fall away from the radio horizon.
+
+Low-elevation Norwegian shadow candidates have sampled terrain rising at
+least 0.1° above the sonde at k = 4/3. At most 48 paths are profiled with
+one per receiver–flight pair and up to four per receiver. The RF core
+samples complete DTM chords and computes Bullington at k = 1 and k = 4/3.
+Measured extra loss is the signal deficit against that receiver's clear-path
+offset. Selection is conditional on reception and nominal transmit power.
+
+**Snapshot results (2026-11-22).** The snapshot contains archive objects
+from 14–19 November. The run exported 3,572 bins from 13 Norway receivers
+and 75 flights, and 71,319 bins from 199 world receivers and 1,583 flights.
+The world estimate included one additional receiver without exportable
+bins. A complete local horizon was available for all 3,572 Norway bins
+and 66,313 world bins.
+
+| Group | Metric | Receivers | Flights | Receiver–flights | Receiver offset σ | Bin residual σ | Receiver–flight residual σ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Norway | rdz RSSI | 1 | 13 | 13 | — | 2.61 dB | 2.18 dB |
+| Norway | Auto RX SNR | 5 | 37 | 46 | 8.83 dB | 3.27 dB | 2.34 dB |
+| World | rdz RSSI | 61 | 707 | 1,149 | 8.99 dB | 3.35 dB | 2.51 dB |
+| World | Auto RX SNR | 90 | 968 | 1,788 | 6.08 dB | 4.30 dB | 3.57 dB |
+
+The world RSSI within-flight mean was 3.64 dB lower at 30–60° and
+9.46 dB lower at 60–90° than at 5–15°. Its residual σ rose from 3.05 dB
+at 2–5° to 4.12 dB at 60–90°. Norway Auto RX SNR fell by 3.38 dB at
+30–60° across nine receiver–flights. The direction is consistent with
+reduced high-angle antenna gain, with sonde orientation and receiver
+selection also affecting the contrast. Every qualifying RSSI bin used
+matched sonde heights. Norway had one RSSI receiver, so its between-receiver
+RSSI spread is unavailable.
+
+| Group | Last-heard receiver–flights | Receivers | Apparent k (95% crossed interval) | Median range / k = 1 horizon | Median range / k = 4/3 horizon |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Norway | 3 | 2 | 0.90 (0.74–0.95) | 0.95 | 0.82 |
+| World | 350 | 69 | 0.45 (0.37–0.51) | 0.67 | 0.58 |
+
+The fitted horizon puts the median endpoint at roughly 100% of tangent
+range in each group by construction. One world endpoint reached beyond
+the k = 1 smooth-earth horizon. The low apparent k and short median range
+indicate that this last-heard sample rarely reaches the smooth-earth
+horizon. The intervals describe sampling variation for these selected
+endpoints. They provide insufficient evidence to recalibrate the physical
+k = 1 default.
+
+There were four complete Norway shadow profiles from one Auto RX receiver
+on four flights. Median measured extra loss was 21.44 dB, versus
+36.56 dB from Bullington at k = 1 and 36.33 dB at k = 4/3. Median
+absolute errors were 15.07 dB and 14.84 dB respectively. This comparison
+covers one receiver and paths where it still decoded the sonde.
+
+The first receiver estimate was 1.088 GB for Norway and 2.755 GB for
+world terrain. A Kartverket HTTP 504 interrupted that run. The retry's
+receiver estimate was 3.555 GB, plus a later 0.128 GB shadow estimate.
+The retry fetched 2.631 GB of upstream terrain with no failed tiles.
+The first attempt had confirmed at least 0.043 GB before it stopped.
+
 ### Recommendations
 
 1. **Use DTM for diffraction and model trees and buildings as terminal
@@ -632,4 +752,3 @@ location or siting uncertainty, which a single margin cannot carry honestly.
 - CoreScope relay resolution from one-byte prefixes can still be wrong.
   Rerun with `--exclude-flag short_relay_prefix` and on zero-hop adverts
   alone as sensitivity checks.
-- SondeHub air-to-ground data is not used yet.

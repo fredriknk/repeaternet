@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use repeaternet_rf_calibration::{extract, paths, predict, profiles, snapshot};
+use repeaternet_rf_calibration::{extract, paths, predict, profiles, snapshot, sondehub};
 
 /// Measured-link calibration harness for RepeaterNet path-loss engines.
 #[derive(Parser)]
@@ -26,6 +26,15 @@ enum Command {
     },
     /// Build `<work>/dataset/{links,nodes}.jsonl` from the snapshots.
     Extract,
+    /// Check air-to-ground reception against the SondeHub snapshot.
+    Sondehub {
+        /// Maximum estimated new terrain download in decimal GB (at most 20).
+        #[arg(long, default_value_t = 20.0)]
+        max_download_gb: f64,
+        /// Estimate receiver terrain without downloading or writing exports.
+        #[arg(long)]
+        estimate_only: bool,
+    },
     /// Sample terrain profiles for every link into `<work>/profiles.jsonl`.
     Profiles {
         /// Directed link JSONL (default <work>/dataset/links.jsonl).
@@ -57,6 +66,10 @@ fn main() -> Result<()> {
             }
         }
         Command::Extract => extract::run(&work.join("snapshots"), &work.join("dataset"))?,
+        Command::Sondehub {
+            max_download_gb,
+            estimate_only,
+        } => sondehub::run(&work, max_download_gb, estimate_only)?,
         Command::Profiles {
             links,
             max_download_gb,

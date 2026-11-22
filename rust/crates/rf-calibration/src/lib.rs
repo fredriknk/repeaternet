@@ -10,3 +10,4 @@ pub mod paths;
 pub mod predict;
 pub mod profiles;
 pub mod snapshot;
+pub mod sondehub;
