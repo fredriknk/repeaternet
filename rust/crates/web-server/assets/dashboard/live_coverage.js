@@ -299,6 +299,10 @@ function syncLiveCoverage() {
   const sites = liveCoverage.settings.enabled ? liveCoverageSites() : [];
   const present = new Set(sites.map(site => site.slot));
   const changed = [];
+  // Without ground terrain every request would fail: say so once instead.
+  const waiting = !terrainLoaded, waitingCopy = 'No terrain yet. Download terrain to see coverage.';
+  if (waiting) liveCoverage.noTerrain = waitingCopy;
+  else if (liveCoverage.noTerrain === waitingCopy) liveCoverage.noTerrain = '';
   for (const [id, slot] of liveCoverage.slots) {
     if (present.has(id) && slot.projectId === projectId) continue;
     slot.controller?.abort();
@@ -316,6 +320,12 @@ function syncLiveCoverage() {
     }
     slot.site = site;
     if (liveCoverage.drag?.slot === site.slot) continue;
+    if (waiting) {
+      slot.controller?.abort();
+      slot.key = null; slot.loading = false; slot.error = '';
+      if (slot.raster) { changed.push(slot.raster); slot.raster = null; }
+      continue;
+    }
     const key = liveCoverageKey(site);
     if (slot.key === key && (slot.loading || slot.error || (slot.raster && !slot.raster.preview))) continue;
     slot.controller?.abort();
@@ -464,11 +474,12 @@ function renderLiveCoverageSites() {
     name.title = `${site.group} · ${site.id}`;
     const header = slot.raster?.header;
     if (header && !slot.raster.preview) unknown = Math.max(unknown, header.unknown_fraction || 0);
-    detail.textContent = slot.error ? slot.error
+    detail.textContent = liveCoverage.noTerrain && !slot.raster && !slot.loading ? 'Waiting for terrain'
+      : slot.error ? slot.error
       : slot.loading ? (slot.raster?.preview ? 'Preview · refining…' : 'Calculating…')
       : header ? `${(header.covered_fraction * 100).toFixed(0)}% of ${(header.radius_m / 1000).toFixed(0)} km radius${header.unknown_fraction > .005 ? ` · ${(header.unknown_fraction * 100).toFixed(0)}% no terrain` : ''}`
       : 'Waiting…';
-    if (slot.error) detail.className = 'error';
+    if (slot.error && !liveCoverage.noTerrain) detail.className = 'error';
     row.append(box, name, detail);
     rows.push(row);
   }
@@ -492,7 +503,7 @@ function renderLiveCoverageLegend() {
   const legend = $('live-coverage-legend');
   if (!legend) return;
   const settings = liveCoverage.settings, visible = liveCoverageVisibleRasters();
-  legend.hidden = !settings.enabled || !liveCoverage.layer?._map || !liveCoverage.slots.size;
+  legend.hidden = !settings.enabled || !liveCoverage.layer?._map || !visible.length;
   if (legend.hidden) return;
   $('live-legend-caption').textContent = `${liveCoverageModes[settings.mode]} · handheld ${coverageSettings.client.height_agl_m} m`;
   const ticks = $('live-legend-ticks'), max = settings.scale_max_db;
@@ -634,8 +645,11 @@ function bindLiveCoverageControls() {
     collapse.textContent = expanded ? 'Hide' : 'Show';
     $('live-legend-body').hidden = !expanded;
   };
-  // Keep the map usable on phones: the legend starts collapsed there.
-  if (window.matchMedia('(max-width: 650px)').matches) collapse.click();
+  // Keep the map usable on phones: the legend collapses at phone widths.
+  const phone = window.matchMedia('(max-width: 650px)');
+  const fitLegend = () => { if (phone.matches && collapse.getAttribute('aria-expanded') === 'true') collapse.click(); };
+  phone.addEventListener('change', fitLegend);
+  fitLegend();
 }
 
 /* Download supplemental terrain for the union of every site's coverage radius. */

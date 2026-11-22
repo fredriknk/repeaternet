@@ -396,7 +396,7 @@ the strongest usable margin from any of them. **Help: live coverage** in
 **2 Coverage** summarises the model. These are predictions from terrain and the
 radio settings, not measurements.
 
-![Live coverage from both endpoints and two proposed routers with the colour scale legend](images/live-coverage-map.png)
+![Live coverage from the endpoints and route routers with the colour scale legend](images/live-coverage-map.png)
 
 ### Moving sites
 
@@ -444,6 +444,8 @@ All four are on by default. Sites at the same position are shown once.
   **Other losses · dB**. The example client uses 1.5 m AGL, 20 dBm, 2.15 dBi,
   −130 dBm sensitivity and no losses. It is separate from the route's radio
   assumptions.
+
+![Handheld assumptions panel with client antenna height, power, gain, losses and sensitivity](images/coverage-handheld.png)
 
 Display choices and range settings are remembered by your browser. Handheld
 assumptions are saved with the project.
@@ -520,6 +522,8 @@ Open **Saved run area, sources and calculation** to set up a run:
   evaluations). Confirm to start. **Cancel coverage** stops the job and can keep
   partial cells. **Reconnect to coverage run** resumes after a lost connection.
 - **Quick approximate preview** evaluates at most 256 cells and cannot be saved.
+
+![Custom saved-run boundary drawn on the map with the area controls open](images/coverage-drawn-area.png)
 
 ![Full coverage estimate with grid spacing, cell count, source evaluations and terrain availability](images/coverage-calculation-estimate.png)
 
