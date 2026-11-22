@@ -15,11 +15,10 @@ variability?
 
 ## Pipeline
 
-All stages are run from `rust/` with
-`cargo run --release -p repeaternet-rf-calibration -- <stage>`. Python stages
-live in [`tools/rf-calibration/`](../tools/rf-calibration). Every stage reads
-the previous stage's files from the **work directory** and writes new files.
-It never edits its inputs.
+Run Rust stages from `rust/` with
+`cargo run --release -p repeaternet-rf-calibration -- <stage>` and Python
+stages from the repository root. Every stage reads the previous stage's files
+from the **work directory** and writes new files without editing its inputs.
 
 | Stage | Command | Output in the work directory |
 | --- | --- | --- |
@@ -27,7 +26,7 @@ It never edits its inputs.
 | 2. Extract | `rf-calibration extract` | `dataset/links.jsonl`, `dataset/nodes.jsonl`, `dataset/summary.json` |
 | 3. Profiles | `rf-calibration profiles` | `profiles.jsonl` (DTM and DOM, or a global DEM) |
 | 4. Predict (Rust) | `rf-calibration predict` | `predictions/<engine>.jsonl` |
-| 5. Predict (reference) | `python -I tools/rf-calibration/reference_engines.py` | `predictions/itm_p2p.jsonl`, `predictions/p1812.jsonl` |
+| 5. Predict (reference) | `python -I tools/rf-calibration/reference_engines.py` | `predictions/itm_p2p.jsonl`, `predictions/itm_p2p_t90.jsonl`, `predictions/p1812.jsonl`, `predictions/py1812_delta_bullington.jsonl` |
 | 6. Fit and report | `python -I tools/rf-calibration/calibrate.py` | `report/` tables, figures and `results.json` |
 
 The work directory defaults to `%LOCALAPPDATA%\RepeaterNet\calibration`
@@ -141,7 +140,9 @@ median SNR is at least 5 dB above the floor, where censoring is negligible.
 | `p526_delta_bullington` | Full ITU-R P.526-16 §4.5.2, ported to Rust and cross-checked against Py1812 `dl_delta_bull` |
 | `deygout3`, `giovaneli`, `epstein_peterson` | Rust multi-edge methods (P.526 J(v), at most three edges) |
 | `itm_p2p` | NTIA ITM v1.3 C++ point to point (`ITM_P2P_CR_Ex`) through ctypes |
+| `itm_p2p_t90` | NTIA ITM point to point at 90% time reliability |
 | `p1812` | ITU-R P.1812 (Py1812 core) |
+| `py1812_delta_bullington` | Py1812 `dl_delta_bull` diffraction-only cross-check |
 
 Clutter options: `none`, `rfcore_clutter` (the planner's optional surface
 clutter), `dom_p2108` (P.2108 §3.1 terminal correction with clutter height
@@ -152,6 +153,44 @@ Antenna heights are unknown. Predictions use a grid of 2, 5, 10 and 20 m above
 ground at each end. The fit estimates a per-node height from that grid, with a
 role-based prior: repeaters and rooms 6 m, companions and observers 2 m.
 Results are reported at the fitted heights and at the planner's default.
+
+### Engines: reference implementations
+
+The Python runner uses raw, uniform DTM or DOM samples in Tx-to-Rx order and
+anchors both antennas to DTM ground. The 3-D FSPL is `32.45 + 20 log10(f_MHz)
++ 20 log10(d_km)`, using `radio.freq_mhz` or 869.5 MHz. ITM uses
+`ITM_P2P_CR_Ex` from v1.3 at `652b3fa698a3c5026dd5d68ac06a84c254e29dcc`,
+continental temperate climate (5), vertical polarisation, εr = 15 and
+σ = 0.005 S/m. The sea-level input `N0 = 301 exp(h_sys / 9460)` uses the
+middle profile elevation mean after trimming `floor(intervals / 10)` samples
+at each end. This gives surface refractivity `Ns = 301` and effective
+`k ≈ 1.333`. Confidence is 50% for both outputs. The median uses 50%
+reliability and `mdvar=0` (single message, situation only). The 90% variant
+uses `mdvar=1` (accidental mode, with time varying independently).
+Mode and warning flags are in `diag`. [NTIA ITM v1.3](https://github.com/NTIA/itm/tree/v1.3) · [NTIA ITM warnings](https://github.com/NTIA/itm/blob/v1.3/ERRORS_AND_WARNINGS.md)
+
+P.1812 uses the Py1812 -8 core at `6c9061dd022e93c84169059a016643926ce89964`
+with the advised -6 troposcatter term, vertical polarisation, `p = pL = 50%`,
+`sigmaL = 0`, outdoor reception and 2.15 dBi at each antenna. The advised
+result uses bilinearly interpolated DN50 and N050 at the path centre on the
+ITU 1.5° grids. DN50 gives the median effective `k`. The sea proxy marks
+contiguous DTM runs of at least 15 samples below 2 m when the run median is
+below 0.25 m. Other samples up to 100 m are coastal and the rest inland.
+Coast distances use the midpoints of the first and last land–sea transitions,
+or zero for an endpoint at sea. DOM adds its height above DTM at interior
+samples. The `p1812_woodland` scenario raises interior cover to at least
+15 m within 100 m of either terminal. Its increment over the mapped case is
+recorded in `diag`, with the joint terrain and cover loss in `excess_db`.
+The optional published -7 diagnostic uses the common-volume DN50/N050 and
+terrain height with the named Py1812 horizon and scatter angles. The full
+height grid is the default. An optional subset is recorded in each row.
+[Py1812 pinned source](https://github.com/eeveetza/Py1812/tree/6c9061dd022e93c84169059a016643926ce89964) · [ITU-R P.1812-7 and scatter notice](https://www.itu.int/rec/R-REC-P.1812-7-202308-S) · [ITU-R P.2001-5](https://www.itu.int/rec/R-REC-P.2001-5-202308-S)
+
+The Py1812 delta-Bullington cross-check calls `dl_delta_bull` with the
+Py1812 smooth-surface diffraction heights, `k = 1`, vertical polarisation,
+no sea fraction and `flag4 = 0`. It adds the diffraction loss to the
+calibration FSPL and records actual and smooth Bullington loss and spherical
+diffraction separately. [ITU-R P.526-16 §4.5.2](https://www.itu.int/rec/R-REC-P.526-16-202511-I) · [Reference engine setup and verification](../tools/rf-calibration/README.md)
 
 ## Evaluation
 
