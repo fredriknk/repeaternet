@@ -295,18 +295,35 @@ fn generate_grid(
             return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         cell.sort_unstable_by(rank);
-        if collect_access_pool {
-            dropped.extend(
-                cell.iter()
-                    .skip(settings.candidates_per_cell)
-                    .copied()
-                    .filter(|&index| {
-                        let point = samples[index].point;
-                        point.x <= right && point.y <= top
-                    }),
-            );
+        // Keep the best sites in each cell apart so they cover distinct summits
+        // and ridges instead of neighbouring grid points on one hilltop.
+        let separation = settings.cell_size_m / (settings.candidates_per_cell as f64).sqrt() / 2.0;
+        let mut kept: Vec<usize> = Vec::with_capacity(settings.candidates_per_cell);
+        let mut rest = Vec::with_capacity(cell.len());
+        for index in cell {
+            let point = samples[index].point;
+            if kept.len() < settings.candidates_per_cell
+                && kept
+                    .iter()
+                    .all(|&other| samples[other].point.distance_to(point) >= separation)
+            {
+                kept.push(index);
+            } else {
+                rest.push(index);
+            }
         }
-        retained.extend(cell.into_iter().take(settings.candidates_per_cell));
+        // Fill any remaining slots in rank order when the cell is too small to separate.
+        let missing = settings.candidates_per_cell.saturating_sub(kept.len());
+        let fill: Vec<usize> = rest.iter().take(missing).copied().collect();
+        rest.retain(|index| !fill.contains(index));
+        kept.extend(fill);
+        if collect_access_pool {
+            dropped.extend(rest.into_iter().filter(|&index| {
+                let point = samples[index].point;
+                point.x <= right && point.y <= top
+            }));
+        }
+        retained.extend(kept);
     }
     let limit = settings.maximum_candidates;
     if retained.len() > limit {
@@ -393,7 +410,7 @@ pub(crate) fn cell_key(point: Point, cell_size_m: f64) -> (i64, i64) {
     )
 }
 
-fn excluded(point: Point, polygons: &[Vec<Point>]) -> bool {
+pub(crate) fn excluded(point: Point, polygons: &[Vec<Point>]) -> bool {
     polygons.iter().any(|polygon| {
         let mut inside = false;
         for (&a, &b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {

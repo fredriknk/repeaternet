@@ -212,27 +212,42 @@ objective** for how feasible alternatives are ranked.
 | **Minimum infrastructure cost** | A planning proxy based on installations and mast heights. |
 | **Maximum reliability** | Independent paths, then RF quality among equally redundant options. It can favor extra routers. |
 
-**Search effort** defaults to **Balanced · up to 800 candidate sites**, with an
-additional cap of 12 neighbors per site. **Quick · up to 200 candidate sites**
-caps neighbors at 8. Both respect lower configured limits. **Thorough ·
-configured candidate limit** uses the configured candidate and neighbor limits.
-Smaller searches can miss viable or stronger alternatives. **Help: search effort**
+**Search effort** sets how many candidate sites the search places in the
+corridor. **Quick · up to 600 candidate sites** and **Balanced · up to 2,000
+candidate sites** (the default) respect lower configured limits. **Thorough ·
+configured candidate limit** uses **Maximum candidate sites** (5,000 by
+default) and can take a minute over a large area. At every level the search
+checks every plausible link between candidate sites, not only nearby ones, so
+long hops between distant hilltops are found. It also places extra candidates
+around A and B, where the first and last hops are usually hardest.
+
+The search then returns the route with the strongest weakest hop for each
+router count. A route with more routers is listed only when it is stronger than
+every route with fewer. Hops with clear line of sight and Fresnel clearance are
+preferred over obstructed hops that rely on diffraction. Each planned hop is
+checked again at the final terrain sample step before it is accepted. Finally,
+each generated router is moved within the refinement radius when a nearby
+position makes its hops stronger. The Analysis diagnostics say how many links
+were screened and how many routers were moved.
+
+**Required** routers are via points: the route passes through every required
+router, in the order that gives the strongest route, and never uses a site
+twice. Smaller searches can miss stronger alternatives. **Help: search effort**
 summarizes the trade-off. **Only suggest sites near roads** adds the optional
 [road filter](#road-filter).
 
 Open **Advanced search limits** to adjust the search area, candidate density or
-final terrain sampling. The configured defaults below are before the effort
+final terrain sampling. The configured defaults below apply before the effort
 caps.
 
 | Control | Default and effect |
 | --- | --- |
 | **Corridor half-width · m (each side and around endpoints)** | 15,000 m. The 30 km wide, square-ended band extends 15 km past A and B. It guides generated candidates, route terrain downloads and the nearby MeshCore lookup. |
 | **Candidate grid spacing · m** | 1,000 m between candidate grid points. Smaller spacing explores more possible locations. |
-| **Maximum candidate sites** | 800. |
+| **Maximum candidate sites** | 5,000, up to 10,000. A quarter at most is reserved for sites around A, B and required routers. |
 | **Maximum total routers** | 6 intermediate routers. |
-| **Neighbors per site** | 16 before the effort cap. |
 | **Maximum hop length · m (blank = auto)** | 50,000 m. Clearing the value removes the explicit distance cap. |
-| **Refinement radius · m** and **Refinement step · m** | 250 m around a candidate, with positions sampled every 50 m. |
+| **Refinement radius · m** and **Refinement step · m** | After the route is found, each generated router may move up to 250 m to strengthen its hops. Positions are sampled every 50 m, or at the terrain resolution if that is coarser. Your own proposed and existing routers never move. |
 | **Final terrain sample step · m** | 10 m between samples on final route links. The earlier screening stages default to 200 m and 50 m. |
 
 ![Search step with route objective, effort and the enabled road filter controls](images/route-search.png)
@@ -255,11 +270,19 @@ coordinates use latitude, longitude to six decimals.
   popup to change antenna height or policy, or use **Remove**.
 - Open a MeshCore router marker to read its ID and activity and choose **Excluded**,
   **Optional** or **Required**.
-- Open a route-site marker to see its height, origin, distance to road when
-  available, and **Links and margins**. Select a link in the popup to open its
-  profile in **Analysis**. **Edit manual router** or **Edit MeshCore router**, when
-  shown, opens the editable site. Drag a proposed route-site marker to pin that
-  location as a **Required** proposed router. Run a fresh search after moving it.
+- Select an endpoint or router on the primary route to see its adjacent hops.
+  Each hop shows distance, usable margin, line of sight, minimum Fresnel
+  clearance and an elevation profile. Press **Enter** or **Space** on a focused
+  marker to open the inspector, and **Esc** to close it.
+- Drag an endpoint or proposed route site to preview the adjacent hops and
+  their colours on the map as you move it. Dropping a proposed route site pins
+  it as a **Required** router. The previous route is marked stale and the
+  inspector keeps the preview for the dropped location. Use **Undo** to revert
+  the move, or run a new search to validate the edited route.
+- From the inspector, open **Site details** for a router's height, origin and
+  distance to a mapped road when available. Select a link there to open its
+  profile in **Analysis**. **Edit manual router** or **Edit MeshCore router**,
+  when shown, opens the editable site.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
@@ -383,7 +406,7 @@ terrain samples along each RF path. If a profile hits the sample cap, it remains
 unresolved. A larger step or higher cap can let it complete. **Help: profile
 sample limit** explains this behavior.
 
-![Area & detail settings with coverage view, area, opacity and advanced sampling](images/coverage-area-detail.png)
+![Area & detail settings with coverage view, area and advanced sampling](images/coverage-area-detail.png)
 
 ![Custom coverage boundary drawn on the map with the area controls open](images/coverage-drawn-area.png)
 
@@ -420,7 +443,7 @@ profile is separate from the route's radio assumptions.
 
 ![Confirmation for the bounded approximate coverage preview](images/coverage-preview-estimate.png)
 
-![Approximate preview drawn with large coverage cells and an on-map legend](images/coverage-preview-map.png)
+![Approximate coverage preview with a signal margin scale](images/coverage-preview-map.png)
 
 ![Full coverage estimate with grid spacing, cell count, source evaluations and terrain availability](images/coverage-calculation-estimate.png)
 
@@ -430,15 +453,17 @@ downlink and **Handheld → router** shows uplink. **Overlapping routers** count
 usable links to multiple sources. It measures local options and does not
 measure independent backbone paths. **Best serving router** colors cells by
 the source with the best valid two-way margin. If the list is long, use
-**Filter serving routers** in the legend. Adjust **Layer opacity**, or toggle
+**Filter serving routers** in the legend. Adjust **Opacity** in that legend, or toggle
 **Predicted mesh coverage** in the map layers control.
 
-Read the **Coverage legend** with the map and hover over a cell for its summary.
-**Not usable**, **Unknown terrain**, **Unresolved profile limit**, and
-**Outside requested area** represent different outcomes. Unevaluated work in a
-partial run is also separate. For an individual place, use location inspection.
+The margin scale fades from green for strong signals (10 dB and above), through
+yellow at 5 dB, to orange at 0 dB. Terrain shadows, unusable samples, areas outside
+the grid and cells awaiting calculation leave the basemap visible. Grey hatching
+marks unknown terrain and purple hatching marks unresolved profile limits.
+Hover over the map for the underlying sample's summary. Use **Inspect a map location**
+to calculate the links at the point you select.
 
-![Completed coverage grid on synthetic terrain with the signal margin legend](images/coverage-map.png)
+![Completed coverage heatmap with the margin scale and opacity control](images/coverage-map.png)
 
 ### Additional terrain and saved runs
 
@@ -525,8 +550,9 @@ The dashboard explains incompatible selections. Compare completed runs using
 compatible project, terrain, model, radio, client and grid assumptions. Choose
 **Compare runs on map** to see **Coverage difference** for reference-connected
 coverage. The summary also reports local gains and losses, retained coverage,
-unknown cells and unresolved profiles. Use the difference legend and map layer
-control to distinguish changes from the underlying prediction.
+unknown cells and unresolved profiles. The map legend labels both displayed
+layers and its **Opacity** slider adjusts them together. Use the map layers
+control to show either layer on its own.
 
 **Apply heights to plan · undo available** saves the trial heights as plan edits.
 Edited proposed sites become **Required**. Run a new route search and calculate
@@ -624,7 +650,7 @@ To try the workflow with synthetic terrain, upload the [two-ridges GeoTIFF](../e
 as ground terrain in a new project. Set **Start point** to **60.344700, 10.499586**
 and **Destination** to **60.344700, 10.654851**. Under **Advanced search limits**,
 set the corridor half-width to 1,200 m, candidate spacing to 250 m and maximum
-hop length to 5,500 m. Choose **Quick · up to 200 candidate sites**, then
+hop length to 5,500 m. Choose **Quick · up to 600 candidate sites**, then
 **Find repeater route**. The elevations in this sample are synthetic. They are
 for practicing the workflow.
 
@@ -635,7 +661,8 @@ server. Built-in terrain providers include Kartverket NHM (1 m ground and
 surface elevation in mainland Norway), USGS 3DEP (10 m ground elevation in
 covered areas of the United States), and Copernicus GLO-30 and GLO-90 (30 m and
 90 m worldwide surface models). Built-in maps include OpenStreetMap,
-OpenTopoMap, Kartverket topo and grey, and Sentinel-2 cloudless imagery.
+OpenTopoMap, Esri Dark Gray (a dark map that makes the coverage heatmap
+stand out), Kartverket topo and grey, and Sentinel-2 cloudless imagery.
 
 Automatic selection works tile by tile. It prefers sources that cover the
 tile centre, then finer native resolution, then higher priority. Other

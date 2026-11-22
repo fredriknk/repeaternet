@@ -313,6 +313,7 @@ function createWorkflow(run) {
     await shot('dashboard-route-overview', null, mapReady);
     if (wants('map-route-site')) {
       await $('.map-site-proposed,.map-site-existing').first().click();
+      if (await $('#route-link-inspector-site').isVisible()) await click('route-link-inspector-site');
       await shot('map-route-site', '.leaflet-popup');
       await $('.leaflet-popup-close-button').click();
     }

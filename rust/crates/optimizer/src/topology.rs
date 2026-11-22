@@ -408,6 +408,55 @@ pub(crate) fn certify_installation(
     ))
 }
 
+/// Build an installation around a planned route. `path` holds graph indices from
+/// the first client to the second; the route stays the primary path even when the
+/// induced mesh offers a stronger one that skips a required router.
+pub(crate) fn path_installation(
+    graph: &RoutingGraph<'_>,
+    path: &[usize],
+    settings: &CandidateSettings,
+) -> Option<NetworkSolution> {
+    let (&first, &last) = (path.first()?, path.last()?);
+    let mut nodes = vec![first, last];
+    nodes.extend_from_slice(&path[1..path.len() - 1]);
+    let subgraph = graph.induced(&nodes);
+    let local: Vec<usize> = std::iter::once(0)
+        .chain(2..nodes.len())
+        .chain(std::iter::once(1))
+        .collect();
+    if local
+        .windows(2)
+        .any(|hop| !subgraph.edges.contains_key(&pair(hop[0], hop[1])))
+    {
+        return None;
+    }
+    let requested = settings.reliability_paths.max(1);
+    let blocked: BTreeSet<_> = local[1..local.len() - 1].iter().copied().collect();
+    let skip_direct = local.len() == 2;
+    let mut paths = vec![local];
+    paths.extend(disjoint_paths(
+        &subgraph,
+        0,
+        1,
+        requested - 1,
+        &blocked,
+        skip_direct,
+    ));
+    let achieved = paths.len().min(requested);
+    let key = (
+        subgraph.sites[0].rf.id.clone(),
+        subgraph.sites[1].rf.id.clone(),
+    );
+    let ids = paths.iter().map(|path| subgraph.path_ids(path)).collect();
+    Some(make_solution(
+        &subgraph,
+        2,
+        requested,
+        achieved,
+        BTreeMap::from([(key, ids)]),
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct PathQuality {
     los_blocked: usize,

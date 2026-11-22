@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="/assets/map.css">
     <script defer src="/leaflet/leaflet.js"></script>
     <script defer src="/assets/main_view_navigation.js"></script>
+    <script defer src="/assets/coverage_raster.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
@@ -179,7 +180,7 @@
           </div>
           <div id="meshcore-list" class="known-list"><p class="hint">Routers within the search corridor will appear here.</p></div>
           <h3>Proposed routers</h3>
-          <details class="help-disclosure"><summary>Help: proposed routers</summary><p>Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site.</p></details>
+          <details class="help-disclosure"><summary>Help: proposed routers</summary><p>Add a trial site on the map, adjust its height, or drag a proposed route marker to pin it as a required site. The search routes through every required router, in the order that gives the strongest route.</p></details>
           <button id="add-router" class="wide-button">Place proposed router on map</button>
           <details class="coordinate-entry">
             <summary>Add a proposed router by coordinates</summary>
@@ -214,11 +215,11 @@
           </div>
           <label for="search-effort">Search effort</label>
           <select id="search-effort">
-            <option value="quick">Quick · up to 200 candidate sites</option>
-            <option value="balanced" selected>Balanced · up to 800 candidate sites</option>
+            <option value="quick">Quick · up to 600 candidate sites</option>
+            <option value="balanced" selected>Balanced · up to 2,000 candidate sites</option>
             <option value="thorough">Thorough · configured candidate limit</option>
           </select>
-          <details class="help-disclosure"><summary>Help: search effort</summary><p>Quick and Balanced search fewer candidate links and may miss better routes. Thorough uses your configured limits.</p></details>
+          <details class="help-disclosure"><summary>Help: search effort</summary><p>Every effort level checks every plausible link between candidate sites and returns the strongest route for each router count, then refines router positions. Quick and Balanced use fewer candidate sites and may miss a better hilltop. Thorough uses your configured candidate limit (5,000 by default) and can take a minute on large areas.</p></details>
             </section>
           </div>
         </div>
@@ -261,7 +262,6 @@
             <button id="coverage-clear-area" class="wide-button">Clear drawn area</button>
           </div>
           <p id="coverage-area-hint" class="hint" role="status" aria-live="polite" hidden></p>
-          <label>Layer opacity<input id="coverage-opacity" data-display-only type="range" min="10" max="90" value="55"></label>
           <details id="coverage-sampling-controls">
             <summary>Advanced sampling and limits</summary>
             <p class="hint">Grid spacing controls map detail; profile spacing controls terrain detail along each radio path. Limits bound memory and compute.</p>
@@ -478,18 +478,29 @@
           </div>
           <div id="map-hint" role="status" aria-live="polite" hidden></div>
           <section id="coverage-map-legend" class="coverage-map-legend" aria-label="Coverage estimate legend" hidden>
-            <h3>Coverage legend</h3>
-            <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search" placeholder="Router name or ID"></label>
-            <div id="coverage-legend-items" class="coverage-legend-items" aria-label="Coverage states">
-              <span><i class="cov-strong"></i> ≥ 10 dB</span>
-              <span><i class="cov-good"></i> 5–10 dB</span>
-              <span><i class="cov-marginal"></i> 0–5 dB</span>
-              <span><i class="cov-none"></i> Not usable</span>
-              <span><i class="cov-unknown"></i> Unknown terrain</span>
-              <span><i class="cov-unresolved"></i> Unresolved profile limit</span>
+            <h3 id="coverage-legend-heading">Coverage</h3>
+            <div class="coverage-legend-content">
+              <label id="coverage-legend-search-wrap" hidden>Filter serving routers<input id="coverage-legend-search" type="search"></label>
+              <div id="coverage-legend-items" class="coverage-legend-items"></div>
+              <div id="coverage-difference-items" class="coverage-legend-items" aria-label="Coverage difference" hidden></div>
             </div>
+            <label class="coverage-opacity-control" for="coverage-opacity">
+              <span>Opacity <output id="coverage-opacity-value" for="coverage-opacity" aria-hidden="true">65%</output></span>
+              <input id="coverage-opacity" type="range" min="0" max="100" value="65" aria-valuetext="65%">
+            </label>
           </section>
           </div>
+          <section id="route-link-inspector" class="route-link-inspector" aria-labelledby="route-link-inspector-title" hidden>
+            <div class="route-link-inspector-header">
+              <h2 id="route-link-inspector-title" tabindex="-1"></h2>
+              <div class="route-link-inspector-actions">
+                <button type="button" id="route-link-inspector-site" hidden>Site details</button>
+                <button type="button" id="route-link-inspector-close">Close</button>
+              </div>
+            </div>
+            <p id="route-link-inspector-status" role="status" hidden></p>
+            <div id="route-link-inspector-links"></div>
+          </section>
           <details class="route-map-legend">
             <summary>Map legend</summary>
             <div class="map-legend-grid">
@@ -543,7 +554,7 @@
           <div id="profile" hidden>
             <div class="profile-heading"><h3 id="profile-title"></h3><label id="analysis-link-picker" for="analysis-link-select" hidden><span class="visually-hidden">Link terrain profile</span><select id="analysis-link-select"></select></label></div>
             <canvas id="chart" height="230" aria-label="Terrain, direct line of sight and Fresnel profile" role="img"></canvas>
-            <p class="chart-legend" aria-hidden="true"><span><i style="background:#94785d"></i>Terrain + curvature</span><span><i style="background:#508c62"></i>Surface</span><span><i style="background:#457bab"></i>Line of sight</span><span><i style="background:#d69a45"></i>Required Fresnel boundary</span></p>
+            <p class="chart-legend" aria-hidden="true"><span><i style="background:#94785d"></i>Terrain + curvature</span><span><i style="background:#508c62"></i>Surface</span><span><i style="background:#457bab"></i>Line of sight</span><span><i style="border-top:3px dashed #b36e14"></i>Required Fresnel boundary</span></p>
             <p id="profile-description" class="hint" role="status"></p>
             <details id="directional-budget"><summary>Forward and reverse link budget</summary><div class="table-scroll"><table id="budget-table" aria-label="Forward and reverse RF link budgets"><thead><tr><th>Direction</th><th>TX power</th><th>Path loss</th><th>Received</th><th>Sensitivity</th><th>Usable margin</th></tr></thead><tbody></tbody></table></div></details>
             <details id="profile-details"><summary>Detailed radio budget and assumptions</summary><pre id="budget"></pre></details>

@@ -711,7 +711,9 @@ fn fixed_router_policies_budget_and_height_override() {
         .unwrap();
     assert_eq!(check.candidates.len(), 4);
     assert_eq!(check.active_solution().unwrap().router_ids, ["K-required"]);
-    assert_eq!(check.alternatives[1].existing_router_count(), 2);
+    // Adding K-optional keeps the same bottleneck hop, so the route with more
+    // routers is not offered as an alternative.
+    assert_eq!(check.alternatives.len(), 1);
     assert_eq!(
         check
             .candidates
@@ -792,26 +794,39 @@ fn native_optimizer_certifies_all_three_clients_with_locked_manual_router() {
 #[test]
 fn search_effort_clamps_only_candidate_and_neighbor_caps() {
     let settings = CandidateSettings {
-        maximum_candidates: 900,
+        maximum_candidates: 5000,
+        candidates_per_cell: 6,
         maximum_neighbors_per_site: 20,
         maximum_solution_routers: 4,
         ..CandidateSettings::default()
     };
     for (effort, expected) in [
-        (SearchEffort::Quick, (200, 8)),
-        (SearchEffort::Balanced, (800, 12)),
-        (SearchEffort::Thorough, (900, 20)),
+        (SearchEffort::Quick, (600, 2, 8)),
+        (SearchEffort::Balanced, (2000, 3, 12)),
+        (SearchEffort::Thorough, (5000, 6, 20)),
     ] {
         let resolved = effort.resolve(&settings);
         assert_eq!(
             (
                 resolved.maximum_candidates,
+                resolved.candidates_per_cell,
                 resolved.maximum_neighbors_per_site
             ),
             expected
         );
         assert_eq!(resolved.maximum_solution_routers, 4);
+        assert!(resolved.exhaustive_screening);
     }
+    let lower = CandidateSettings {
+        maximum_candidates: 300,
+        candidates_per_cell: 1,
+        ..settings
+    };
+    let resolved = SearchEffort::Balanced.resolve(&lower);
+    assert_eq!(
+        (resolved.maximum_candidates, resolved.candidates_per_cell),
+        (300, 1)
+    );
 }
 
 #[test]
@@ -970,6 +985,8 @@ fn mock_settings(
         maximum_solution_routers,
         maximum_neighbors_per_site: 1,
         final_sample_step_m: 1.0,
+        // These scenarios exercise the neighbour-screening fallback.
+        exhaustive_screening: false,
         ..CandidateSettings::default()
     }
 }
@@ -1999,4 +2016,105 @@ fn parallel_screen_can_stop_with_the_prior_certified_snapshot() {
         ["A", "B"]
     );
     assert!(result.links()[0].profile.is_some());
+}
+
+fn exhaustive_settings(maximum_solution_routers: usize) -> CandidateSettings {
+    CandidateSettings {
+        maximum_solution_routers,
+        final_sample_step_m: 1.0,
+        ..CandidateSettings::default()
+    }
+}
+
+#[test]
+fn required_router_is_a_via_point_on_the_primary_route() {
+    let terrain = Terrain {
+        resolution: 1.0,
+        ridges: &[],
+    };
+    let rf = strict_settings();
+    let mut required = site("R", 200.0, 50.0);
+    required.policy = RouterPolicy::Required;
+    let sites = vec![
+        site("A", 0.0, 0.0),
+        site("X", 100.0, 0.0),
+        required,
+        site("Y", 300.0, 0.0),
+        site("W", 150.0, 80.0),
+        site("B", 400.0, 0.0),
+    ];
+    let mut fake = FakeRf::default();
+    // X alone would bridge A and B and leave R as a spur.
+    fake.add("A", "X", Some(20.0), Some(20.0));
+    fake.add("X", "B", Some(20.0), Some(20.0));
+    fake.add("X", "R", Some(20.0), Some(20.0));
+    fake.add("R", "Y", Some(15.0), Some(15.0));
+    fake.add("Y", "B", Some(15.0), Some(15.0));
+    // A coarse shortcut through W that fails at final resolution.
+    fake.add("A", "W", Some(30.0), Some(30.0));
+    fake.add("W", "R", Some(40.0), None);
+    let result = RouteOptimizer::new(&terrain, &rf, &exhaustive_settings(4))
+        .with_link_evaluation(&fake)
+        .optimize(request(sites), SearchHooks::default())
+        .unwrap();
+    let solution = result
+        .active_solution()
+        .unwrap_or_else(|| panic!("no route: {:?}", result.diagnostics));
+    assert_eq!(solution.primary_path_ids(), ["A", "X", "R", "Y", "B"]);
+    assert!(solution.router_ids.contains(&"R".into()));
+    assert!(solution
+        .links
+        .iter()
+        .all(|link| link.valid && link.profile.is_some()));
+    assert!(!solution
+        .links
+        .iter()
+        .any(|link| edge(&link.source_id, &link.target_id) == edge("W", "R")));
+    assert!(result
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("passes through all 1 required router")));
+}
+
+#[test]
+fn exhaustive_search_finds_long_hops_outside_nearest_neighbours() {
+    let terrain = Terrain {
+        resolution: 1.0,
+        ridges: &[],
+    };
+    let rf = strict_settings();
+    // Two distant summits connect A and B; a crowd of nearby decoys only offers
+    // weak short hops. Nearest-neighbour screening would never pair the summits.
+    let mut sites = vec![site("A", 0.0, 0.0), site("north", 100.0, 0.0)];
+    for index in 0..40 {
+        sites.push(site(&format!("decoy{index:02}"), 100.0 + index as f64, 5.0));
+    }
+    sites.push(site("south", 900.0, 0.0));
+    sites.push(site("B", 1_000.0, 0.0));
+    let mut fake = FakeRf::default();
+    fake.add("A", "north", Some(20.0), Some(20.0));
+    fake.add("north", "south", Some(18.0), Some(18.0));
+    fake.add("south", "B", Some(20.0), Some(20.0));
+    fake.add("A", "decoy00", Some(2.0), Some(2.0));
+    fake.add("decoy00", "B", Some(1.0), Some(1.0));
+    let mut settings = exhaustive_settings(4);
+    settings.maximum_neighbors_per_site = 2;
+    let result = RouteOptimizer::new(&terrain, &rf, &settings)
+        .with_link_evaluation(&fake)
+        .optimize(request(sites), SearchHooks::default())
+        .unwrap();
+    let routes: Vec<_> = result
+        .alternatives
+        .iter()
+        .map(|solution| solution.primary_path_ids().to_vec())
+        .collect();
+    assert_eq!(
+        routes,
+        [
+            vec!["A".to_string(), "decoy00".into(), "B".into()],
+            vec!["A".into(), "north".into(), "south".into(), "B".into()],
+        ]
+    );
+    // The fewest-router route is active even though the two-router route is stronger.
+    assert_eq!(result.router_count(), 1);
 }

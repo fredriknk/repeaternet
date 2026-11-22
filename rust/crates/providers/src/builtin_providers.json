@@ -227,6 +227,14 @@
       "subdomains": "abc"
     },
     {
+      "id": "esri-dark-gray",
+      "name": "Esri Dark Gray",
+      "kind": "xyz",
+      "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+      "attribution": "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community",
+      "max_zoom": 16
+    },
+    {
       "id": "kartverket-topo",
       "name": "Kartverket Topo",
       "kind": "xyz",

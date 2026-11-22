@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -65,6 +65,86 @@ pub(crate) fn for_each_batched<T: Copy + Send + Sync, R: Send, E: Send>(
         },
     )?;
     error.into_inner().map_or(Ok(()), Err)
+}
+
+/// Work-stealing evaluation for large, order-independent workloads. Workers claim
+/// chunks from a shared counter, so one slow item never stalls the others. Results
+/// reach `accept` on the caller thread in completion order; callers that need a
+/// deterministic outcome must store results by key. Cancellation is polled on the
+/// caller thread and stops further claims.
+pub(crate) fn for_each_unordered<T: Copy + Send + Sync, R: Send, E: Send>(
+    items: &[T],
+    workers: usize,
+    cancelled: &dyn Fn() -> bool,
+    evaluate: impl Fn(T) -> Result<R, E> + Sync,
+    mut accept: impl FnMut(T, R),
+) -> Result<(), E> {
+    const CHUNK: usize = 16;
+    if workers <= 1 || items.len() <= CHUNK {
+        for &item in items {
+            if cancelled() {
+                break;
+            }
+            let result = evaluate(item)?;
+            accept(item, result);
+        }
+        return Ok(());
+    }
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    thread::scope(|scope| {
+        let _stop_workers = StopWorkers(&stop);
+        let (send, receive) = mpsc::sync_channel::<Result<Vec<(T, R)>, E>>(workers * 4);
+        for _ in 0..workers {
+            let send = send.clone();
+            let (next, stop, evaluate) = (&next, &stop, &evaluate);
+            let spawned = thread::Builder::new().spawn_scoped(scope, move || loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let start = next.fetch_add(CHUNK, Ordering::Relaxed);
+                if start >= items.len() {
+                    break;
+                }
+                let mut results = Vec::with_capacity(CHUNK);
+                for &item in &items[start..(start + CHUNK).min(items.len())] {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match evaluate(item) {
+                        Ok(result) => results.push((item, result)),
+                        Err(error) => {
+                            stop.store(true, Ordering::Relaxed);
+                            let _ = send.send(Err(error));
+                            return;
+                        }
+                    }
+                }
+                if send.send(Ok(results)).is_err() {
+                    break;
+                }
+            });
+            if spawned.is_err() {
+                break;
+            }
+        }
+        drop(send);
+        loop {
+            if cancelled() {
+                return Ok(());
+            }
+            match receive.recv_timeout(Duration::from_millis(10)) {
+                Ok(Ok(batch)) => {
+                    for (item, result) in batch {
+                        accept(item, result);
+                    }
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+        }
+    })
 }
 
 struct StopWorkers<'a>(&'a AtomicBool);
@@ -169,6 +249,58 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::for_each_unordered;
+    use std::cell::Cell;
+
+    #[test]
+    fn unordered_delivers_every_result_once() {
+        let items: Vec<usize> = (0..1_000).collect();
+        let mut seen = vec![0; items.len()];
+        for_each_unordered(
+            &items,
+            8,
+            &|| false,
+            |item| Ok::<_, ()>(item * 2),
+            |item, result| {
+                assert_eq!(result, item * 2);
+                seen[item] += 1;
+            },
+        )
+        .unwrap();
+        assert!(seen.iter().all(|&count| count == 1));
+    }
+
+    #[test]
+    fn unordered_returns_the_first_error() {
+        let items: Vec<usize> = (0..1_000).collect();
+        let result = for_each_unordered(
+            &items,
+            4,
+            &|| false,
+            |item| if item == 500 { Err(item) } else { Ok(item) },
+            |_, _| {},
+        );
+        assert_eq!(result, Err(500));
+    }
+
+    #[test]
+    fn unordered_stops_when_cancelled() {
+        let items: Vec<usize> = (0..100_000).collect();
+        let accepted = Cell::new(0);
+        for_each_unordered(
+            &items,
+            4,
+            &|| accepted.get() >= 64,
+            |item| {
+                std::thread::sleep(std::time::Duration::from_micros(50));
+                Ok::<_, ()>(item)
+            },
+            |_, _| accepted.set(accepted.get() + 1),
+        )
+        .unwrap();
+        assert!(accepted.get() < items.len());
+    }
+
     use super::*;
     use std::sync::{Condvar, Mutex};
 

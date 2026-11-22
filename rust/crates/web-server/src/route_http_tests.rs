@@ -158,6 +158,99 @@ fn set_cookie(headers: &HeaderMap) -> &str {
         .unwrap()
 }
 
+fn link_request() -> Value {
+    let plan = plan();
+    let site = |id, kind, point: &Value| {
+        json!({
+            "id": id, "kind": kind, "latitude": point[0], "longitude": point[1],
+            "antenna_height_m": 20,
+        })
+    };
+    json!({
+        "source": site("A", "endpoint_a", &plan["a"]),
+        "target": site("B", "endpoint_b", &plan["b"]),
+    })
+}
+
+#[tokio::test]
+async fn link_evaluation_uses_route_terrain_and_current_radio_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    upload(&app, &cookie, "dtm", TILE, StatusCode::OK).await;
+    let path = "/api/link/evaluate";
+    let baseline = api(
+        &app,
+        &cookie,
+        Method::POST,
+        path,
+        link_request(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(baseline["source_id"], "A");
+    assert_eq!(baseline["target_id"], "B");
+    assert!((baseline["distance_m"].as_f64().unwrap() - 240.0).abs() < 0.01);
+    assert!(baseline["profile"].is_null());
+    assert!(baseline["los_clear"].is_boolean());
+    assert!(baseline["minimum_fresnel_clearance_ratio"].is_number());
+
+    let mut plan = plan();
+    let power = baseline["forward"]["tx_power_dbm"].as_f64().unwrap();
+    plan["rf"] = json!({"tx_power_dbm": power + 3.0, "required_fresnel_clearance": 0.7});
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"plan": plan}),
+        StatusCode::OK,
+    )
+    .await;
+    let mut body = link_request();
+    body["include_profile"] = json!(true);
+    let link = api(&app, &cookie, Method::POST, path, body, StatusCode::OK).await;
+    assert_eq!(link["required_fresnel_clearance"], 0.7);
+    assert_eq!(link["forward"]["tx_power_dbm"], power + 3.0);
+    let margin_change =
+        link["worst_margin_db"].as_f64().unwrap() - baseline["worst_margin_db"].as_f64().unwrap();
+    assert!((margin_change - 3.0).abs() < 0.001);
+    let distances = link["profile"]["distances_m"].as_array().unwrap();
+    assert!(distances.len() >= 3);
+    assert_eq!(distances.last(), Some(&link["distance_m"]));
+    assert_eq!(
+        link["profile"]["fresnel_radius_m"]
+            .as_array()
+            .unwrap()
+            .len(),
+        distances.len()
+    );
+}
+
+#[tokio::test]
+async fn link_evaluation_reports_invalid_sites_and_missing_ground() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    let path = "/api/link/evaluate";
+    let invalid = StatusCode::UNPROCESSABLE_ENTITY;
+    let missing = api(&app, &cookie, Method::POST, path, link_request(), invalid).await;
+    assert_eq!(missing["detail"], "Prepare or upload ground terrain first");
+    upload(&app, &cookie, "dtm", TILE, StatusCode::OK).await;
+    let mut body = link_request();
+    body["source"]["latitude"] = json!(61.0);
+    let outside = api(&app, &cookie, Method::POST, path, body.clone(), invalid).await;
+    assert_eq!(
+        outside["detail"],
+        "Ground terrain is missing at a link site"
+    );
+    body["source"]["latitude"] = json!("");
+    let bad = api(&app, &cookie, Method::POST, path, body, invalid).await;
+    assert_eq!(bad["detail"], "Invalid source coordinates");
+    let bad = api(&app, &cookie, Method::POST, path, json!({}), invalid).await;
+    assert_eq!(bad["detail"], "Invalid source coordinates");
+}
+
 async fn coverage_terminal(app: &Router, cookie: &str, path: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {

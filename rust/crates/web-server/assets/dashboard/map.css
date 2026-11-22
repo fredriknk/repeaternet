@@ -15,6 +15,56 @@
 .map-wrap #map { z-index: auto; }
 .map-wrap .leaflet-map-pane { z-index: 1; }
 
+.route-link-inspector {
+  position: absolute;
+  z-index: 445;
+  right: 12px;
+  bottom: 28px;
+  width: min(330px, calc(100% - 24px));
+  max-height: calc(100% - 98px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--map-panel-shadow);
+}
+
+.route-link-inspector-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  background: #fff;
+}
+
+.route-link-inspector h2, .route-link-inspector h3 { margin: 0; }
+.route-link-inspector h3 { font-size: 14px; }
+.route-link-inspector-actions { display: flex; flex: none; gap: 6px; }
+.route-link-inspector article { border-top: 1px solid var(--border); padding: 6px 0 4px; }
+.route-link-inspector p { margin: 6px 0; color: var(--muted); }
+.route-link-inspector p.error { color: var(--map-invalid); }
+.route-link-inspector button { min-height: 36px; padding: 5px 10px; font-size: 13px; }
+.route-link-inspector dl { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; margin: 4px 0; font-size: 13px; }
+.route-link-inspector dt { color: var(--muted); font-size: 12px; }
+.route-link-inspector dd { margin: 0; font-weight: 650; }
+.route-link-inspector canvas { display: block; height: 78px; }
+.route-link-inspector .chart-legend { gap: 4px 10px; margin: 4px 0; }
+
+@media (max-width: 650px) {
+  .route-link-inspector {
+    inset: auto 8px 26px;
+    width: auto;
+    max-height: 44%;
+  }
+  .route-link-inspector button { min-height: 44px; }
+}
+
 @media (min-width: 651px) {
   .map-pane .map-wrap { max-height: var(--map-viewport-height, 100%); }
 }
@@ -99,11 +149,13 @@
 .map-top .coverage-map-legend {
   position: static;
   justify-self: end;
-  width: min(285px, 65%);
+  width: min(224px, 100%);
   margin-right: -42px;
-  max-height: 35vh;
+  max-height: min(390px, 43vh);
   pointer-events: auto;
 }
+
+.coverage-raster { image-rendering: auto; pointer-events: none; }
 
 .map-wrap .leaflet-control-layers-toggle,
 .map-wrap .leaflet-retina .leaflet-control-layers-toggle {
@@ -137,6 +189,7 @@
 }
 @media (max-width: 650px) {
   .map-wrap .leaflet-control-layers label { min-height: 44px; }
+  .map-top .coverage-map-legend { max-height: 35vh; }
 }
 
 .route-map-legend {

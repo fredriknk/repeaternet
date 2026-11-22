@@ -6,6 +6,7 @@ mod endpoint_access;
 mod graph;
 mod optimizer;
 mod parallel;
+mod paths;
 mod screening;
 mod topology;
 
@@ -115,15 +116,18 @@ pub enum SearchEffort {
 }
 
 impl SearchEffort {
-    /// Apply the web planner's candidate and neighbor caps, retaining all other settings.
+    /// Apply the web planner's candidate, per-cell and neighbor caps, retaining all
+    /// other settings. Every effort screens all candidate pairs within link range;
+    /// they differ in how many candidate sites they consider.
     pub fn resolve(self, requested: &CandidateSettings) -> CandidateSettings {
-        let (candidates, neighbors) = match self {
-            Self::Quick => (200, 8),
-            Self::Balanced => (800, 12),
+        let (candidates, per_cell, neighbors) = match self {
+            Self::Quick => (600, 2, 8),
+            Self::Balanced => (2000, 3, 12),
             Self::Thorough => return requested.clone(),
         };
         CandidateSettings {
             maximum_candidates: requested.maximum_candidates.min(candidates),
+            candidates_per_cell: requested.candidates_per_cell.min(per_cell),
             maximum_neighbors_per_site: requested.maximum_neighbors_per_site.min(neighbors),
             ..requested.clone()
         }
@@ -140,6 +144,10 @@ pub struct CandidateSettings {
     pub candidates_per_cell: usize,
     pub maximum_candidates: usize,
     pub maximum_neighbors_per_site: usize,
+    /// Evaluate every candidate pair within link range instead of only nearby
+    /// neighbours and a backbone. Two-terminal minimum-router searches then use
+    /// the exact widest-path planner.
+    pub exhaustive_screening: bool,
     pub maximum_solution_routers: usize,
     pub reliability_paths: usize,
     pub parallel_workers: usize,
@@ -170,6 +178,7 @@ impl Default for CandidateSettings {
             candidates_per_cell: 3,
             maximum_candidates: 800,
             maximum_neighbors_per_site: 16,
+            exhaustive_screening: true,
             maximum_solution_routers: 6,
             reliability_paths: 2,
             parallel_workers: 0,
