@@ -456,9 +456,26 @@ fn locations(
 pub(crate) fn merged(defaults: &Value, plan: &Value, key: &str) -> ApiResult<Value> {
     let mut result = defaults[key].clone();
     if let Some(value) = plan.get(key) {
-        merge(&mut result, value)?;
+        merge(&mut result, &without_legacy_model(key, value))?;
     }
     Ok(result)
+}
+
+/// Plans saved before the calibrated engine stored the then-only
+/// `"bullington"` model. They have no `obstacle_surface`, so their model
+/// falls back to the calibrated default instead of pinning Bullington.
+fn without_legacy_model<'a>(key: &str, value: &'a Value) -> std::borrow::Cow<'a, Value> {
+    if key != "rf"
+        || value.get("obstacle_surface").is_some()
+        || value.get("diffraction_model") != Some(&json!("bullington"))
+    {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    let mut value = value.clone();
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("diffraction_model");
+    }
+    std::borrow::Cow::Owned(value)
 }
 
 pub(crate) fn terrain_candidates(plan: &Value, defaults: &Value) -> ApiResult<CandidateSettings> {

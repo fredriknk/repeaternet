@@ -226,6 +226,8 @@ fn calibrated_plan_fields_change_route_and_saved_radio_identities() {
     let mut known = plan["manual_routers"][0].clone();
     known["id"] = json!("K-site");
     plan["known_routers"] = json!([known]);
+    // A current-format plan; legacy plans without it drop a stored Bullington.
+    plan["rf"]["obstacle_surface"] = json!("ground");
     let identities = |plan: &Value| {
         let inputs = route_inputs::parse(plan.clone(), &app.defaults).unwrap();
         let route = json!({"rf_settings": inputs.rf_payload});
@@ -2719,4 +2721,15 @@ async fn meshcore_records_can_be_routed_with_overpass_overlay() {
     .await;
     assert!(problem["detail"].as_str().unwrap().contains("CoreScope"));
     task.abort();
+}
+
+#[test]
+fn legacy_plans_without_obstacle_surface_use_the_calibrated_model() {
+    let defaults = crate::catalog::dashboard_defaults();
+    let legacy = json!({"rf": {"diffraction_model": "bullington"}});
+    let rf = crate::route_inputs::merged(&defaults, &legacy, "rf").unwrap();
+    assert_eq!(rf["diffraction_model"], defaults["rf"]["diffraction_model"]);
+    let chosen = json!({"rf": {"diffraction_model": "bullington", "obstacle_surface": "ground"}});
+    let rf = crate::route_inputs::merged(&defaults, &chosen, "rf").unwrap();
+    assert_eq!(rf["diffraction_model"], "bullington");
 }
