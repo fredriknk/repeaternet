@@ -51,7 +51,7 @@ pub(super) fn write_profile(
             "Surface + earth bulge".into(),
             "#327845",
             (0..count)
-                .map(|i| read("effective_obstruction_m", i))
+                .map(|i| Some(read("surface_elevation_m", i)? + read("earth_bulge_m", i)?))
                 .collect(),
         ));
     }

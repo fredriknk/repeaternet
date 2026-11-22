@@ -475,8 +475,20 @@ fn assumptions(
                 "Surface data (DOM)",
                 match surface {
                     None => "Unknown",
-                    Some(true) => "Used",
+                    Some(true) => "Available",
                     Some(false) => "Unavailable",
+                }
+                .into(),
+            ),
+            (
+                "Diffraction surface",
+                match rf["obstacle_surface"].as_str() {
+                    Some("ground") => "Bare-earth terrain",
+                    Some("surface") if surface == Some(false) => {
+                        "Bare-earth terrain (surface unavailable)"
+                    }
+                    Some("surface") => "Surface model",
+                    _ => "Unknown",
                 }
                 .into(),
             ),
@@ -698,6 +710,13 @@ fn link_table(out: &mut dyn Write, links: &[Hop<'_>], primary: usize) -> Result<
 }
 
 fn budget(out: &mut dyn Write, hop: &Hop<'_>) -> Result<(), ExportError> {
+    let model = match hop.data["diffraction_model"].as_str() {
+        Some("bullington") => "Bullington",
+        Some("delta_bullington") => "Delta-Bullington",
+        Some("deygout3") => "Three-edge Deygout",
+        _ => "Unavailable",
+    };
+    write!(out, "<p>Diffraction model · {model}</p>")?;
     table_start(
         out,
         &[
@@ -715,6 +734,9 @@ fn budget(out: &mut dyn Write, hop: &Hop<'_>) -> Result<(), ExportError> {
         ("FSPL (dB)", "fspl_db"),
         ("Diffraction loss (dB)", "diffraction_loss_db"),
         ("Clutter loss (dB)", "clutter_loss_db"),
+        ("Model correction (dB)", "model_correction_db"),
+        ("Terminal clutter (dB)", "terminal_clutter_db"),
+        ("Terrain sampling allowance (dB)", "step_allowance_db"),
         ("Total path loss (dB)", "total_path_loss_db"),
         ("RX gain (dBi)", "rx_gain_dbi"),
         ("RX feed loss (dB)", "rx_feed_loss_db"),

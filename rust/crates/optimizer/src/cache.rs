@@ -1,4 +1,4 @@
-use repeaternet_rf_core::{HeightReference, LinkResult, RfError, Site, SiteKind};
+use repeaternet_rf_core::{HeightReference, LinkResult, RfError, Site, SiteKind, TerminalClutter};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -64,6 +64,8 @@ struct SiteKey {
     reference: u8,
     geometry: [u64; 4],
     surface: Option<u64>,
+    terminal_clutter: TerminalClutter,
+    clutter_height: Option<u64>,
 }
 
 impl From<&Site> for SiteKey {
@@ -87,6 +89,8 @@ impl From<&Site> for SiteKey {
             ]
             .map(f64::to_bits),
             surface: site.surface_elevation_m.map(f64::to_bits),
+            terminal_clutter: site.terminal_clutter,
+            clutter_height: site.clutter_height_m.map(f64::to_bits),
         }
     }
 }
@@ -204,5 +208,23 @@ impl LinkMetricsCache {
             .or_default()
             .entries += 1;
         state.entries.insert(key, (tick, link));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_clutter_model_and_height_change_the_link_key() {
+        let mut source = Site::new("source", 0.0, 0.0);
+        let target = Site::new("target", 1000.0, 0.0);
+        let key = |site: &Site| CacheKey::new("project", "revision", site, &target, 1.0);
+        let baseline = key(&source);
+        source.terminal_clutter = TerminalClutter::P2108Dom;
+        let enabled = key(&source);
+        assert!(baseline != enabled);
+        source.clutter_height_m = Some(0.0);
+        assert!(enabled != key(&source));
     }
 }

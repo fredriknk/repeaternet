@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     calibration::{DEFAULT_TERMINAL_CLUTTER, P2108_STREET_WIDTH_M, TERMINAL_CLUTTER_RADIUS_M},
-    knife_edge_loss_db, Point,
+    knife_edge_loss_db, Point, RfError, TerrainLayer, TerrainSource,
 };
 
 /// Terminal clutter correction configured for a site.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalClutter {
     None,
@@ -47,30 +47,65 @@ pub fn terminal_clutter_height_m(
     centre: Point,
     resolution_m: f64,
 ) -> Option<f64> {
+    median_excess(
+        clutter_points(centre, resolution_m)
+            .into_iter()
+            .filter_map(sample),
+    )
+}
+
+/// Batch the two raster reads for a terminal neighbourhood.
+pub(crate) fn sample_clutter_height(
+    terrain: &(impl TerrainSource + ?Sized),
+    centre: Point,
+) -> Result<Option<f64>, RfError> {
+    let points = clutter_points(centre, terrain.resolution_m());
+    if points.is_empty() {
+        return Ok(None);
+    }
+    let sample = |layer| {
+        let values = terrain.sample(&points, layer)?;
+        if values.len() != points.len() {
+            return Err(RfError::TerrainSampleCount {
+                expected: points.len(),
+                actual: values.len(),
+            });
+        }
+        Ok(values)
+    };
+    let ground = sample(TerrainLayer::GroundDtm)?;
+    let surface = sample(TerrainLayer::SurfaceDom)?;
+    Ok(median_excess(ground.into_iter().zip(surface)))
+}
+
+fn clutter_points(centre: Point, resolution_m: f64) -> Vec<Point> {
     if !resolution_m.is_finite() || resolution_m <= 0.0 {
-        return None;
+        return Vec::new();
     }
     // Use a disc around the site. The calibration used samples along the path within 30 m.
     let steps = (TERMINAL_CLUTTER_RADIUS_M / resolution_m).floor() as i64;
-    let mut excesses = Vec::new();
+    let mut points = Vec::new();
     for row in -steps..=steps {
         let dy = row as f64 * resolution_m;
         for col in -steps..=steps {
             let dx = col as f64 * resolution_m;
             if dx.hypot(dy) <= TERMINAL_CLUTTER_RADIUS_M {
-                let point = Point {
+                points.push(Point {
                     x: centre.x + dx,
                     y: centre.y + dy,
-                };
-                if let Some((ground, surface)) = sample(point) {
-                    let excess = surface - ground;
-                    if excess.is_finite() {
-                        excesses.push(excess.max(0.0));
-                    }
-                }
+                });
             }
         }
     }
+    points
+}
+
+fn median_excess(samples: impl Iterator<Item = (f64, f64)>) -> Option<f64> {
+    let mut excesses: Vec<_> = samples
+        .map(|(ground, surface)| surface - ground)
+        .filter(|excess| excess.is_finite())
+        .map(|excess| excess.max(0.0))
+        .collect();
     excesses.sort_unstable_by(f64::total_cmp);
     let middle = excesses.len() / 2;
     let upper = *excesses.get(middle)?;

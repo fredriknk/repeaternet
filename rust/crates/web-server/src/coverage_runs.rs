@@ -122,9 +122,11 @@ pub(crate) fn selected(
 }
 
 pub(crate) fn radio(app: &AppState, plan: &Value, route: &Value) -> ApiResult<Value> {
-    Ok(
-        json!({"rf": route["rf_settings"], "candidates": route_inputs::merged(&app.defaults, plan, "candidates")?}),
-    )
+    Ok(json!({
+        "rf": route["rf_settings"],
+        "candidates": route_inputs::merged(&app.defaults, plan, "candidates")?,
+        "router_terminal_clutter_overrides": route_inputs::router_clutter_overrides(plan)?,
+    }))
 }
 
 pub(crate) fn identity(app: &AppState, key: &str, session: &Session) -> Option<CurrentIdentity> {
@@ -203,7 +205,10 @@ pub async fn start(
         let transform = Transformer::new(terrain.crs()).map_err(terrain_invalid)?;
         let rf = route_inputs::rf(&route["rf_settings"])?;
         let sources = select_sources(&sites, &sites, &settings).map_err(terrain_invalid)?;
-        let sources = apply_height_overrides(&sources, &overrides).map_err(terrain_invalid)?;
+        let mut sources = apply_height_overrides(&sources, &overrides).map_err(terrain_invalid)?;
+        for source in &mut sources {
+            source.sample_terminal_clutter(&terrain).map_err(terrain_invalid)?;
+        }
         let area = resolve_area(&settings, &transform, &sources, &sites, corridor, request.map_bounds)
             .map_err(terrain_invalid)?;
         let evaluation = CoverageEvaluator::new(&terrain, &rf, &transform);
@@ -222,6 +227,7 @@ pub async fn start(
                 site["antenna_height_m"] = json!(source.antenna_height_m);
                 site["height_override"] = json!(true);
             }
+            site["clutter_height_m"] = json!(source.clutter_height_m);
             Ok(site)
         }).collect::<ApiResult<Vec<_>>>()?;
         let report_links: Vec<_> = route["links"].as_array().into_iter().flatten().map(|link| {

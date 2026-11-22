@@ -43,7 +43,7 @@ fn invalid(message: impl Into<String>) -> CoverageError {
 }
 
 pub const PYTHON_MODEL_VERSION: &str = "coverage-v3";
-pub const MODEL_VERSION: &str = "coverage-rust-v1";
+pub const MODEL_VERSION: &str = "coverage-rust-v2";
 pub const MAX_CELLS: usize = 16_384;
 pub const MAX_SOURCES: usize = 64;
 pub const MAX_EVALUATIONS: usize = 250_000;

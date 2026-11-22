@@ -3,7 +3,7 @@
 use super::{Cancellation, OptimizationError, Search, Stage};
 use crate::parallel::for_each_unordered;
 use crate::{link_is_clear, pair, SiteOrigin};
-use repeaternet_rf_core::{LinkResult, Point, RfError, SiteKind, TerrainLayer};
+use repeaternet_rf_core::{LinkResult, Point, RfError, Site, SiteKind, TerrainLayer};
 
 /// Ranking of a router position: clear hops first, then the weaker adjacent
 /// margin, then the weaker Fresnel clearance.
@@ -92,7 +92,7 @@ impl Search<'_, '_> {
         after: usize,
         trial_id: &str,
         positions: &[Position],
-    ) -> Result<Option<(Score, usize)>, OptimizationError> {
+    ) -> Result<Option<(Score, Site)>, OptimizationError> {
         let (rf, sites) = (&self.rf, &self.sites);
         let step = self.settings.final_sample_step_m;
         let base = &sites[index].rf;
@@ -103,6 +103,7 @@ impl Search<'_, '_> {
             trial.position = point;
             trial.ground_elevation_m = ground;
             trial.surface_elevation_m = surface;
+            trial.sample_terminal_clutter(self.terrain)?;
             let link = |other: usize| -> Result<Option<LinkResult>, OptimizationError> {
                 let other = &sites[other].rf;
                 if other.position.distance_to(trial.position) < 1.0 {
@@ -120,32 +121,32 @@ impl Search<'_, '_> {
                 }
             };
             Ok::<_, OptimizationError>(match (link(before)?, link(after)?) {
-                (Some(left), Some(right)) => Some(position_score(&left, &right)),
+                (Some(left), Some(right)) => Some((position_score(&left, &right), trial)),
                 _ => None,
             })
         };
         let cancellation = self.hooks.cancellation;
         let cancelled = || cancellation.is_some_and(|poll| poll() != Cancellation::Continue);
         let slots: Vec<usize> = (0..positions.len()).collect();
-        let mut best: Option<(Score, usize)> = None;
+        let mut best: Option<(Score, usize, Site)> = None;
         for_each_unordered(
             &slots,
             self.rf_workers(slots.len()),
             &cancelled,
             evaluate,
-            |slot, score| {
-                let Some(score) = score else {
+            |slot, result| {
+                let Some((score, site)) = result else {
                     return;
                 };
                 // Ties go to the lowest slot so the outcome is independent of scheduling.
-                if best.is_none_or(|(incumbent, incumbent_slot)| {
-                    score > incumbent || (score == incumbent && slot < incumbent_slot)
+                if best.as_ref().is_none_or(|(incumbent, incumbent_slot, _)| {
+                    score > *incumbent || (score == *incumbent && slot < *incumbent_slot)
                 }) {
-                    best = Some((score, slot));
+                    best = Some((score, slot, site));
                 }
             },
         )?;
-        Ok(best)
+        Ok(best.map(|(score, _, site)| (score, site)))
     }
 
     /// Move each generated router on each route to the best position within the
@@ -182,19 +183,19 @@ impl Search<'_, '_> {
                     continue;
                 };
                 let current = position_score(left, right);
-                let positions = self.refinement_positions(self.sites[index].rf.position)?;
                 if let Some(&refined) = refined.get(&(before, index, after)) {
                     path[k] = refined;
                     moved += 1;
                     continue;
                 }
+                let positions = self.refinement_positions(self.sites[index].rf.position)?;
                 let mut suffix = 1;
                 let mut trial_id = format!("{}.{suffix}", self.sites[index].rf.id);
                 while self.by_id.contains_key(&trial_id) {
                     suffix += 1;
                     trial_id = format!("{}.{suffix}", self.sites[index].rf.id);
                 }
-                let Some((score, slot)) =
+                let Some((score, rf)) =
                     self.best_position(index, before, after, &trial_id, &positions)?
                 else {
                     continue;
@@ -202,12 +203,8 @@ impl Search<'_, '_> {
                 if score <= current || self.hooks.cancelled() {
                     continue;
                 }
-                let (point, ground, surface) = positions[slot];
                 let mut site = self.sites[index].clone();
-                site.rf.id = trial_id;
-                site.rf.position = point;
-                site.rf.ground_elevation_m = ground;
-                site.rf.surface_elevation_m = surface;
+                site.rf = rf;
                 let new_index = self.sites.len();
                 self.by_id.insert(site.rf.id.clone(), new_index);
                 self.sites.push(site);

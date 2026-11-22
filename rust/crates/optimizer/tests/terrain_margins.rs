@@ -3,7 +3,8 @@ use repeaternet_optimizer::{
     RouteOptimizer, SearchHooks, SearchStatus,
 };
 use repeaternet_rf_core::{
-    AntennaSettings, Point, RfError, RfSettings, Site, SiteKind, TerrainLayer, TerrainSource,
+    calibration::CERTIFICATION_MAX_STEP_M, AntennaSettings, DiffractionModel, EvaluationOptions,
+    LinkEvaluator, Point, RfError, RfSettings, Site, SiteKind, TerrainLayer, TerrainSource,
     ValidationMode,
 };
 
@@ -49,7 +50,7 @@ fn detour() -> PlanningSite {
 fn candidate_settings() -> CandidateSettings {
     CandidateSettings {
         coarse_sample_step_m: 200.0,
-        final_sample_step_m: 10.0,
+        final_sample_step_m: CERTIFICATION_MAX_STEP_M,
         maximum_solution_routers: 1,
         parallel_workers: 1,
         ..CandidateSettings::default()
@@ -91,17 +92,28 @@ fn final_certification_replaces_a_coarse_direct_link_that_misses_the_ridge() {
         priority: OptimizationPriority::MinimumInfrastructure,
         ..candidate_settings()
     };
+    let coarse = LinkEvaluator::new(&NarrowRidge, &rf)
+        .evaluate(
+            &site("A", SiteKind::EndpointA, 0.0, 0.0).rf,
+            &site("B", SiteKind::EndpointB, 1_000.0, 0.0).rf,
+            EvaluationOptions {
+                sample_step_m: Some(settings.coarse_sample_step_m),
+                ..EvaluationOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(coarse.valid && coarse.los_clear);
+    assert_eq!(coarse.forward.step_allowance_db, 0.0);
+
     let coarse_only = CandidateSettings {
         final_sample_step_m: settings.coarse_sample_step_m,
         ..settings.clone()
     };
 
-    let coarse = optimize(&rf, &coarse_only, vec![detour()]);
-    assert_eq!(
-        coarse.active_solution().unwrap().primary_path_ids(),
-        ["A", "B"]
-    );
-    assert!(coarse.links()[0].los_clear);
+    let error = RouteOptimizer::new(&NarrowRidge, &rf, &coarse_only)
+        .optimize(OptimizationRequest::default(), SearchHooks::default())
+        .unwrap_err();
+    assert!(error.to_string().contains("final_sample_step_m"));
 
     let fine = optimize(&rf, &settings, vec![detour()]);
     assert_eq!(fine.alternatives.len(), 1);
@@ -117,6 +129,8 @@ fn final_certification_replaces_a_coarse_direct_link_that_misses_the_ridge() {
 #[test]
 fn obstructed_direct_link_requires_a_relay_when_usable_margin_crosses_zero() {
     let rf = RfSettings {
+        diffraction_model: DiffractionModel::Bullington,
+        model_correction_db: 0.0,
         receiver_sensitivity_dbm: -107.0,
         validation_mode: ValidationMode::Propagation,
         ..RfSettings::default()
@@ -156,6 +170,8 @@ fn obstructed_direct_link_requires_a_relay_when_usable_margin_crosses_zero() {
 #[test]
 fn reliability_orders_the_weak_clear_path_before_the_stronger_obstructed_path() {
     let rf = RfSettings {
+        diffraction_model: DiffractionModel::Bullington,
+        model_correction_db: 0.0,
         receiver_sensitivity_dbm: -108.25,
         router: AntennaSettings {
             // Keep the clear relay hops viable with less margin than the direct link.
@@ -210,6 +226,8 @@ fn reliability_orders_the_weak_clear_path_before_the_stronger_obstructed_path() 
 #[test]
 fn minimum_router_search_prefers_the_stronger_of_two_single_relay_routes() {
     let rf = RfSettings {
+        diffraction_model: DiffractionModel::Bullington,
+        model_correction_db: 0.0,
         receiver_sensitivity_dbm: -77.0,
         validation_mode: ValidationMode::StrictLos,
         ..RfSettings::default()
