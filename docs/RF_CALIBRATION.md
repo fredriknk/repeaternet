@@ -485,7 +485,7 @@ The Norway run uses CoreScope only (never-heard pairs up to 40 km). Terrain
 for the nationwide Meshtastic links would add about 5.9 GB for about 146
 coarse links. The world run uses CoreScope Benelux plus Meshtastic gateway and
 traceroute links on GLO-30. Worldwide Meshtastic neighbour reports were not
-profiled.
+profiled in the first run. See [Full dataset rerun](#full-dataset-rerun).
 
 ### Norway (Kartverket 10 m)
 
@@ -577,6 +577,43 @@ CoreScope Benelux: 139 heard links and 2,211 never-heard pairs. Meshtastic:
 - **With coarse Meshtastic positions, free space scores best** on SNR. Fuzzed
   positions (often more than 1 km) make terrain-specific predictions noise.
   These links are not suitable for engine selection.
+
+### Full dataset rerun
+
+After the first run, the remaining terrain was downloaded:
+- nationwide Norway Meshtastic;
+- Norway never-heard pairs beyond 40 km;
+- worldwide Meshtastic neighbour reports.
+
+That gave 8,310 profiles, with 6.3 GB fetched against a 9.9 GB estimate, and
+the engines ran on 9,983 directed links. Held-out Δ log score against the
+planner's Bullington (DTM, native step, k = 1):
+
+| Configuration | Norway CoreScope (147 heard, 1,167 never heard) | World CoreScope (139 heard tested, 2,211 never heard) | World Meshtastic SNR (3,368 tested) |
+| --- | ---: | ---: | ---: |
+| Deygout + DOM P.2108 | +0.048 ± 0.008 | — | — |
+| ITM 90% time, DTM | +0.049 ± 0.006 | +0.077 ± 0.003 | −0.329 ± 0.010 |
+| Deygout, DTM | +0.035 ± 0.005 | +0.014 ± 0.002 | −0.143 ± 0.011 |
+| Giovaneli, DTM | +0.029 ± 0.004 | −0.000 ± 0.002 | −0.090 ± 0.011 |
+| P.526 delta-Bullington, DTM | +0.011 ± 0.001 | +0.076 ± 0.002 | −0.067 ± 0.014 |
+| **Bullington (planner)** | 0 | 0 | 0 |
+| Bullington, 50 m step | −0.006 ± 0.001 | −0.007 ± 0.001 | −0.004 ± 0.002 |
+| Bullington, 200 m step | −0.018 ± 0.003 | −0.021 ± 0.002 | +0.002 ± 0.006 |
+| Free space | −0.852 ± 0.020 | −0.642 ± 0.014 | +0.435 ± 0.016 |
+
+- **The MeshCore conclusions hold on the larger set.** Multi-edge methods and
+  ITM lead in Norway, and delta-Bullington leads in Benelux. Coarse steps are
+  worse, and DOM as an obstacle surface carries a bias of about +21 dB. With
+  long never-heard pairs included, heard and unheard links separate easily
+  (AUC 0.94–0.96).
+- **Meshtastic links cannot rank engines.** With deliberately coarse public
+  positions, free space predicts SNR best in both regions, and the
+  terrain-specific engines add noise. In Norway only 44 Meshtastic SNR links
+  and 2 gateway links passed the position checks. Use Meshtastic data for
+  budget checks, not for engine choice, unless exact positions are known.
+- **The fitted excess scale is not meaningful here.** One scale is fitted
+  across blocks, so in the world set the Meshtastic links dominate it, and it
+  comes out near 0. It should be fitted per block in a later revision.
 
 ### Variability and fade margin
 
@@ -716,24 +753,32 @@ The first attempt had confirmed at least 0.043 GB before it stopped.
 
 1. **Use DTM for diffraction and model trees and buildings as terminal
    clutter, not as obstacles.** DOM as an obstacle surface is about 21 dB too
-   pessimistic. Use the P.2108 §3.1 height-gain correction, with clutter height
-   from DOM − DTM within 30 m of each terminal. Outside Norway, GLO-30 needs
-   the same treatment: prefer a bare-earth global DEM where available.
+   pessimistic in every subset. Offer the P.2108 §3.1 height-gain correction,
+   with clutter height from DOM − DTM within 30 m of the terminal, as a
+   per-site option. It helps relay-to-observer links but not zero-hop links
+   from companion devices. Outside Norway, GLO-30 needs the same treatment:
+   prefer a bare-earth global DEM where available.
 2. **Make P.526 delta-Bullington the default engine.** It is never worse than
-   Bullington (+0.009 in Norway, +0.08 in Benelux) and is the complete ITU
-   method. Offer three-edge Deygout with P.2108 terminal clutter as an option
-   (best in Norway, +0.088). Revisit once more weeks of capture exist.
+   Bullington in any subset (+0.011 in Norway, +0.076 in Benelux on the full
+   dataset) and is the complete ITU method. Offer three-edge Deygout as an
+   option: it is best in Norway (+0.035, or +0.048 with P.2108) but no better
+   in Benelux. Revisit once several weeks of capture exist.
 3. **Never certify on coarse steps.** Keep the 10 m final step. Coverage and
-   screening at 200 m are about 4 dB optimistic in Norway, so either lower the
-   coverage step or subtract a step-dependent allowance.
-4. **Correct the default budget by about 5 dB** (or raise the default fade
-   margin from 10 to 15 dB). Present location uncertainty separately, as a
-   ±15–20 dB band for unknown sites, instead of folding it into the margin.
-5. **Wiring into `rf-core`.**
+   screening at 200 m are about 4 dB more optimistic and score lower in both
+   regions, so lower the coverage step or subtract a step-dependent allowance.
+4. **Correct the default budget by 2–5 dB.** On all MeshCore links the planner
+   is about 5 dB optimistic, and on the cleanest subsets 1.5–2.5 dB. Present
+   location and siting uncertainty separately, as a ±15–20 dB band for unknown
+   sites, instead of folding it into the fade margin. SondeHub independently
+   shows receiver offsets with a 6–9 dB spread.
+5. **Keep k = 1.** k = 4/3 never improved a score, and the SondeHub horizon
+   check did not support a larger k.
+6. **Wiring into `rf-core`.**
    - Add `DiffractionModel { Bullington, DeltaBullington, Deygout3 }` to
      `RfSettings` behind the plan's existing `rf.diffraction_model`, and move
      the ports from `rf-calibration/src/engines/` into `rf-core`.
-   - Add `TerminalClutter { None, P2108Dom }` with the DOM-derived height.
+   - Add a per-site `TerminalClutter { None, P2108Dom }` with the DOM-derived
+     height.
    - Include both in the RF model fingerprint, so saved coverage and route
      caches invalidate.
    - Live coverage computes Bullington incrementally on a convex hull.
@@ -743,12 +788,15 @@ The first attempt had confirmed at least 0.043 GB before it stopped.
 
 ### Caveats and next steps
 
-- One day of captures. Let the captures run for several weeks and rerun the
-  pipeline unchanged. Report node-clustered bootstrap intervals once there are
-  enough nodes.
+- About one day of mesh captures. Let the captures run for several weeks and
+  rerun the pipeline unchanged. Report node-clustered bootstrap intervals once
+  there are enough nodes; the current standard errors ignore clustering.
 - Antenna heights and hardware are unknown, which the fit handles with priors
   and node offsets. Observers registering their antenna height and gain would
   sharpen absolute calibration more than any engine change.
-- CoreScope relay resolution from one-byte prefixes can still be wrong.
-  Rerun with `--exclude-flag short_relay_prefix` and on zero-hop adverts
-  alone as sensitivity checks.
+- Public Meshtastic positions are too coarse for engine selection. Use them
+  only for budget checks, or where exact positions are known.
+- Fit the excess-loss scale per block. A single scale across blocks is
+  dominated by whichever source has the most links.
+- Profiles with gaps over water are dropped (44 paths). Filling sea with 0 m
+  would keep long coastal paths.
