@@ -1,9 +1,10 @@
 use std::{f64::consts::TAU, thread};
 
 use repeaternet_rf_core::{
-    bullington_edge_loss_db, free_space_path_loss_db, knife_edge_v, received_power_dbm,
-    AntennaPattern, Point, RadioBudget, RfError, RfSettings, Site, ValidationMode,
-    EARTH_MEAN_RADIUS_M, SPEED_OF_LIGHT_M_S,
+    bullington_edge_loss_db, calibration::step_allowance_db, free_space_path_loss_db,
+    p2108_terminal_correction_db, received_power_dbm, spherical_earth_loss_db, AntennaPattern,
+    DiffractionModel, ObstacleSurface, Point, RadioBudget, RfError, RfSettings, Site,
+    TerminalClutter, ValidationMode, EARTH_MEAN_RADIUS_M, SPEED_OF_LIGHT_M_S,
 };
 use repeaternet_terrain::{LonLat, Transformer};
 use serde::{Deserialize, Serialize};
@@ -76,9 +77,24 @@ pub struct PolarMargins {
     grid: SweepGrid,
     site: Point,
     margins: Vec<f32>,
+    propagation: LivePropagation,
+}
+
+/// Propagation model and constant loss terms used by the sweep.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct LivePropagation {
+    pub diffraction_model: DiffractionModel,
+    pub diffraction_model_configured: DiffractionModel,
+    pub model_correction_db: f64,
+    pub step_allowance_db: f64,
+    pub terminal_clutter_db: f64,
 }
 
 impl PolarMargins {
+    pub fn propagation(&self) -> LivePropagation {
+        self.propagation
+    }
+
     /// k=0 repeats the k=1 margin. NaN indicates unknown terrain.
     pub fn ray(&self, index: usize) -> &[f32] {
         let stride = self.grid.samples_per_ray + 1;
@@ -172,19 +188,96 @@ impl UpperHull {
     }
 }
 
+struct SmoothEarth {
+    raw_hull: UpperHull,
+    max_slope: f64,
+    sum: f64,
+    moment: f64,
+}
+
+impl Default for SmoothEarth {
+    fn default() -> Self {
+        Self {
+            raw_hull: UpperHull::default(),
+            max_slope: f64::NEG_INFINITY,
+            sum: 0.0,
+            moment: 0.0,
+        }
+    }
+}
+
+impl SmoothEarth {
+    fn push(&mut self, index: usize, point: Point, slope: f64) {
+        // The raw hull and prefix sums use the transmit antenna as the datum.
+        self.raw_hull.push(point);
+        self.max_slope = self.max_slope.max(slope);
+        self.sum += point.y;
+        self.moment += index as f64 * point.y;
+    }
+
+    fn antenna_heights(
+        &self,
+        [ground_tx, ground_rx]: [f64; 2],
+        receiver: Point,
+        direct: f64,
+        index: usize,
+        sample: &RaySample,
+    ) -> Option<[f64; 2]> {
+        // For a uniform grid, the trapezoid coefficients of each interior
+        // elevation in v1 / step and v2 / step^2 sum to 2 and 6*i.
+        let j = index as f64;
+        let v1 = ground_tx + ground_rx + 2.0 * self.sum;
+        let v2 = ground_tx + (3.0 * j - 1.0) * ground_rx + 6.0 * self.moment;
+        let mut st = (2.0 * v1 * j - v2) / (j * j);
+        let mut sr = (v2 - v1 * j) / (j * j);
+        let heights = |st: f64, sr: f64| [-st.min(ground_tx), receiver.y - sr.min(ground_rx)];
+        let at = self.max_slope - direct;
+        if at > 0.0 {
+            // Obstruction adjustments only lower the fitted terrain. If the
+            // unadjusted heights suffice, skip both hull queries.
+            if sample.smooth_path_clear(heights(st, sr)) {
+                return None;
+            }
+            let highest = self.raw_hull.support(direct).max(0.0);
+            let ar = (self.raw_hull.tangent(receiver) + direct).max(0.0);
+            st -= highest * at / (at + ar);
+            sr -= highest * ar / (at + ar);
+        }
+        let adjusted = heights(st, sr);
+        (!sample.smooth_path_clear(adjusted)).then_some(adjusted)
+    }
+}
+
 struct Sweep<'a> {
     site: &'a Site,
     rf: &'a RfSettings,
     client: &'a RadioBudget,
     mode: LiveMode,
     step: f64,
-    fspl: Vec<f64>,
+    samples: Vec<RaySample>,
     ed: f64,
     wavelength: f64,
     ht: f64,
     sensitivity: f64,
     site_pattern: &'a AntennaPattern,
     directional_gain: bool,
+    propagation: LivePropagation,
+    clear_prefix: usize,
+}
+
+struct RaySample {
+    distance: f64,
+    curvature: f64,
+    loss_db: f64,
+    clear_height_sq: f64,
+}
+
+impl RaySample {
+    fn smooth_path_clear(&self, [ht, hr]: [f64; 2]) -> bool {
+        // With t = x/d, chord height / sqrt(t(1-t)) is at least 2*sqrt(ht*hr).
+        // The curvature term in the same units is at most d^2/(2*ED).
+        ht >= 0.0 && hr >= 0.0 && ht * hr >= self.clear_height_sq
+    }
 }
 
 /// Compute handheld margins on radial paths. StrictLos tests geometric
@@ -196,8 +289,9 @@ pub fn sweep(
     client: &RadioBudget,
     mode: LiveMode,
     grid: SweepGrid,
+    terrain_resolution_m: f64,
 ) -> Result<PolarMargins, CoverageError> {
-    let sweep = Sweep::new(site, rf, client, mode, grid)?;
+    let sweep = Sweep::new(site, rf, client, mode, grid, terrain_resolution_m)?;
     let stride = grid.samples_per_ray + 1;
     let count = grid.rays * stride;
     let mut margins = Vec::new();
@@ -218,6 +312,7 @@ pub fn sweep(
         grid,
         site: site.position,
         margins,
+        propagation: sweep.propagation,
     })
 }
 
@@ -228,6 +323,7 @@ impl<'a> Sweep<'a> {
         client: &'a RadioBudget,
         mode: LiveMode,
         grid: SweepGrid,
+        terrain_resolution_m: f64,
     ) -> Result<Self, CoverageError> {
         let ht = site.antenna_absolute_elevation_m();
         if !site.ground_elevation_m.is_finite() {
@@ -238,9 +334,54 @@ impl<'a> Sweep<'a> {
                 "Live coverage requires a finite antenna elevation and positive K-factor",
             ));
         }
-        let fspl = (1..=grid.samples_per_ray)
-            .map(|k| free_space_path_loss_db(k as f64 * grid.step_m, rf.frequency_mhz))
+        if !terrain_resolution_m.is_finite() || terrain_resolution_m <= 0.0 {
+            return Err(crate::invalid("Terrain resolution must be positive"));
+        }
+        let diffraction_model = match rf.diffraction_model {
+            DiffractionModel::Deygout3 => DiffractionModel::DeltaBullington,
+            model => model,
+        };
+        let terminal_clutter_db = match (site.terminal_clutter, site.clutter_height_m) {
+            (TerminalClutter::P2108Dom, Some(height)) => {
+                p2108_terminal_correction_db(rf.frequency_mhz, ht - site.ground_elevation_m, height)
+            }
+            _ => 0.0,
+        };
+        let propagation = LivePropagation {
+            diffraction_model,
+            diffraction_model_configured: rf.diffraction_model,
+            model_correction_db: rf.model_correction_db,
+            step_allowance_db: step_allowance_db(grid.step_m, terrain_resolution_m),
+            terminal_clutter_db,
+        };
+        let constant_loss = propagation.model_correction_db
+            + propagation.step_allowance_db
+            + propagation.terminal_clutter_db;
+        let ed = 2.0 * EARTH_MEAN_RADIUS_M * rf.k_factor;
+        let wavelength = SPEED_OF_LIGHT_M_S / (rf.frequency_mhz * 1e6);
+        let samples: Vec<_> = (1..=grid.samples_per_ray)
+            .map(|k| {
+                let distance = k as f64 * grid.step_m;
+                let curvature = distance / ed;
+                let loss_db = free_space_path_loss_db(distance, rf.frequency_mhz)? + constant_loss;
+                // P.526 clearance criterion with the normalized Fresnel radius sqrt(t(1-t)).
+                let fresnel_clearance = 0.552 * (wavelength * distance).sqrt();
+                let clear_height = (distance * curvature + 2.0 * fresnel_clearance) / 4.0;
+                Ok::<_, RfError>(RaySample {
+                    distance,
+                    curvature,
+                    loss_db,
+                    clear_height_sq: clear_height.powi(2),
+                })
+            })
             .collect::<Result<_, _>>()?;
+        let clear_prefix = if diffraction_model == DiffractionModel::DeltaBullington {
+            let minimum_height =
+                (ht - site.ground_elevation_m).max(0.0) * client.antenna.height_agl_m.max(0.0);
+            samples.partition_point(|sample| sample.clear_height_sq <= minimum_height)
+        } else {
+            samples.len()
+        };
         let site_pattern = &rf.antenna_settings(site.kind).pattern;
         Ok(Self {
             site,
@@ -248,32 +389,38 @@ impl<'a> Sweep<'a> {
             client,
             mode,
             step: grid.step_m,
-            fspl,
-            ed: 2.0 * EARTH_MEAN_RADIUS_M * rf.k_factor,
-            wavelength: SPEED_OF_LIGHT_M_S / (rf.frequency_mhz * 1e6),
+            samples,
+            ed,
+            wavelength,
             ht,
             sensitivity: rf.effective_sensitivity_dbm()?,
             site_pattern,
             directional_gain: matches!(site_pattern, AntennaPattern::Elevation(_))
                 || matches!(client.antenna.pattern, AntennaPattern::Elevation(_)),
+            propagation,
+            clear_prefix,
         })
     }
 
     fn ray(&self, terrain: &impl ElevationLookup, angle: f64, mut accept: impl FnMut(usize, f64)) {
         let (sin, cos) = angle.sin_cos();
         let mut hull = UpperHull::default();
-        let mut obstructions = Vec::with_capacity(self.fspl.len());
+        let mut obstructions = Vec::with_capacity(self.samples.len());
+        let mut smooth = SmoothEarth::default();
+        let needs_delta = self.clear_prefix < self.samples.len();
         let mut max_slope = f64::NEG_INFINITY;
-        let has_surface = terrain.has_surface();
-        let clutter_enabled = has_surface && self.rf.clutter_loss_enabled;
+        let use_surface = self.rf.obstacle_surface == ObstacleSurface::Surface;
+        let has_surface = (use_surface || self.rf.clutter_loss_enabled) && terrain.has_surface();
+        let clutter_enabled = self.rf.clutter_loss_enabled && has_surface;
+        let strict = self.rf.validation_mode == ValidationMode::StrictLos;
         let mut clutter = self
             .site
             .surface_elevation_m
             .filter(|z| z.is_finite())
             .map_or(0.0, |z| (z - self.site.ground_elevation_m).max(0.0));
-        for (index, &fspl) in self.fspl.iter().enumerate() {
+        for (index, sample) in self.samples.iter().enumerate() {
             let j = index + 1;
-            let d = j as f64 * self.step;
+            let d = sample.distance;
             let point = Point {
                 x: self.site.position.x + d * sin,
                 y: self.site.position.y + d * cos,
@@ -287,12 +434,12 @@ impl<'a> Sweep<'a> {
             if !ground.is_finite() {
                 break;
             }
+            let obstacle = if use_surface { surface } else { ground };
             let hr = ground + self.client.antenna.height_agl_m;
-            let curvature = d / self.ed;
+            let curvature = sample.curvature;
             let direct = (hr - self.ht) / d;
             // Every interior transmit slope gains the same D/ED term.
             let slope_tx = max_slope + curvature;
-            let strict = self.rf.validation_mode == ValidationMode::StrictLos;
             let height = if j > 1 && (strict || slope_tx < direct) {
                 hull.support(direct - curvature) - self.ht
             } else {
@@ -337,30 +484,113 @@ impl<'a> Sweep<'a> {
                         x: d,
                         y: hr - d * curvature,
                     }) - curvature;
-                    let denominator = slope_tx + slope_rx;
-                    let edge = if denominator > 0.0 {
-                        (hr - self.ht + slope_rx * d) / denominator
-                    } else {
-                        d / 2.0
-                    }
-                    .clamp(self.step, index as f64 * self.step);
-                    let height = (self.ht + slope_tx * edge) - (self.ht + direct * edge);
-                    bullington_edge_loss_db(
-                        knife_edge_v(height, edge, d - edge, self.rf.frequency_mhz),
-                        d,
-                    )
+                    self.transhorizon_loss(d, index, direct, slope_tx, slope_rx)
                 };
-                self.margin(d, hr, fspl + diffraction + clutter_loss)
+                let delta = if index >= self.clear_prefix && j > 1 {
+                    self.delta_correction(&smooth, sample, j, ground, hr, direct)
+                } else {
+                    0.0
+                };
+                self.margin(d, hr, sample.loss_db + diffraction + delta + clutter_loss)
             };
             accept(j, margin);
 
             hull.push(Point {
                 x: d,
-                y: surface - d * curvature,
+                y: obstacle - d * curvature,
             });
-            obstructions.push(surface);
-            max_slope = max_slope.max((surface - self.ht) / d - curvature);
+            obstructions.push(obstacle);
+            let raw_height = obstacle - self.ht;
+            let raw_slope = raw_height / d;
+            max_slope = max_slope.max(raw_slope - curvature);
+            if needs_delta {
+                smooth.push(
+                    j,
+                    Point {
+                        x: d,
+                        y: raw_height,
+                    },
+                    raw_slope,
+                );
+            }
         }
+    }
+
+    fn transhorizon_loss(&self, d: f64, last: usize, direct: f64, tx: f64, rx: f64) -> f64 {
+        let edge = if tx + rx > 0.0 {
+            (direct + rx) * d / (tx + rx)
+        } else {
+            d / 2.0
+        }
+        .clamp(self.step, self.samples[last - 1].distance);
+        let v = (tx - direct) * edge * (2.0 * d / (self.wavelength * edge * (d - edge))).sqrt();
+        bullington_edge_loss_db(v, d)
+    }
+
+    fn delta_correction(
+        &self,
+        smooth: &SmoothEarth,
+        sample: &RaySample,
+        j: usize,
+        ground: f64,
+        hr: f64,
+        direct: f64,
+    ) -> f64 {
+        let Some([ht, hr]) = smooth.antenna_heights(
+            [self.site.ground_elevation_m - self.ht, ground - self.ht],
+            Point {
+                x: sample.distance,
+                y: hr - self.ht,
+            },
+            direct,
+            j,
+            sample,
+        ) else {
+            return 0.0;
+        };
+        let spherical =
+            spherical_earth_loss_db(sample.distance, [ht, hr], self.ed / 2.0, self.wavelength);
+        if spherical <= 0.0 {
+            return 0.0;
+        }
+        (spherical - self.smooth_bullington(sample, j, ht, hr)).max(0.0)
+    }
+
+    fn smooth_bullington(&self, sample: &RaySample, j: usize, ht: f64, hr: f64) -> f64 {
+        let d = sample.distance;
+        let tangent = |height: f64| {
+            // Slope = (d-x)/ED - height/x. Its continuous maximum is at sqrt(ED*height).
+            let index = ((self.ed * height.max(0.0)).sqrt() / self.step) as usize;
+            let slope = |index: usize| {
+                let x = self.samples[index.clamp(1, j - 1) - 1].distance;
+                (d - x) / self.ed - height / x
+            };
+            slope(index).max(slope(index + 1))
+        };
+        let direct = (hr - ht) / d;
+        let tx = tangent(ht);
+        if tx >= direct {
+            return self.transhorizon_loss(d, j - 1, direct, tx, tangent(hr));
+        }
+
+        // For LOS the clearance ratio is nonnegative at each sample. Its sublevel
+        // sets are intervals: chord - bulge is convex and the Fresnel radius is
+        // concave. Adjacent comparisons therefore find the discrete minimum.
+        let clearance = |index: usize| {
+            let x = self.samples[index - 1].distance;
+            let q = x * (d - x);
+            (ht + direct * x - q / self.ed) / q.sqrt()
+        };
+        let (mut lo, mut hi) = (1, j - 1);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if clearance(mid) > clearance(mid + 1) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        bullington_edge_loss_db(-clearance(lo) * (2.0 * d / self.wavelength).sqrt(), d)
     }
 
     fn margin(&self, d: f64, hr: f64, path_loss: f64) -> f64 {
