@@ -602,11 +602,9 @@ pub fn sweep(
             output[0] = output[1];
         }
     };
-    if sweep.clear_prefix < sweep.samples.len() {
-        sweep_balanced(&mut margins, stride, run_rays);
-    } else {
-        parallel_rows(&mut margins, stride, run_rays);
-    }
+    // Ray cost varies strongly with terrain (open water or flat rays take the
+    // line-of-sight scan), so balance batches dynamically for every model.
+    sweep_balanced(&mut margins, stride, run_rays);
     Ok(PolarMargins {
         grid,
         site: site.position,
