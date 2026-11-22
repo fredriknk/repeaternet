@@ -1711,6 +1711,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "repeaternet-rf-calibration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "repeaternet-providers",
+ "repeaternet-rf-core",
+ "repeaternet-terrain",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "repeaternet-rf-core"
 version = "0.1.0"
 dependencies = [
