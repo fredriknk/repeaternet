@@ -188,9 +188,20 @@ specifications**, enter **TX power · dBm**, **Sensitivity · dBm** and **Fade
 margin · dB**. Choose **RF propagation + diffraction** or **Strict line of sight
 + Fresnel** in **Link validation**. Under **Antenna & propagation assumptions**,
 set **Height AGL · m**, **Gain · dBi** and **Feed loss · dB** for **Endpoint A**,
-**Endpoint B** and **Repeaters**. Set **Earth k-factor**, **Fresnel clearance
-fraction · 0–1** and **Miscellaneous loss · dB** for the model. AGL is height above
-ground level.
+**Endpoint B** and **Repeaters**. AGL is height above ground level. Each role
+also has a **Terminal clutter** setting. The default is **None**. Choose
+**Nearby trees and buildings (P.2108 from DOM)** to use local surface height
+around the site. On a proposed or MeshCore router, use **Terminal clutter**
+in its sidebar row or map popup to override the repeater default for that site.
+
+Under **Propagation model**, the default **Diffraction model** is
+**Delta-Bullington**. You can choose **Bullington** (the previous default) or
+**Deygout 3-edge** for route search. Live coverage uses Delta-Bullington when
+Deygout is selected. **Diffraction surface** defaults to **Ground (DTM)**.
+Using **Surface with trees and buildings (DOM)** can substantially overestimate
+diffraction loss. **Model correction · dB** adds 3 dB of loss by default and
+accepts 0–20 dB. **Earth k-factor**, **Fresnel clearance fraction · 0–1** and
+**Miscellaneous loss · dB** are in the same assumptions group.
 
 The starter profile uses 869.5 MHz, 22 dBm transmit power, −130 dBm sensitivity,
 a 10 dB fade margin and 0 dB miscellaneous loss. All three antenna defaults are
@@ -200,7 +211,7 @@ and diffraction, k = 1.0 and 60% Fresnel clearance. See
 
 ![Radio setup showing frequency, transmitter and receiver specifications, and link validation](images/route-radio.png)
 
-![Antenna and propagation assumptions expanded to the endpoint A antenna fields](images/route-radio-antenna.png)
+![Endpoint A antenna fields and terminal clutter setting](images/route-radio-antenna.png)
 
 ### Search
 
@@ -258,7 +269,7 @@ final terrain sampling.
 | **Maximum total routers** | 6 intermediate routers. |
 | **Maximum hop length · m (blank = auto)** | 50,000 m. Clearing the value removes the explicit distance cap. |
 | **Refinement radius · m** and **Refinement step · m** | After the route is found, each generated router may move up to 250 m to strengthen its hops. Positions are sampled every 50 m, or at the terrain resolution if that is coarser. Your own proposed and existing routers never move. |
-| **Final terrain sample step · m** | 10 m between samples on final route links. The earlier screening stages default to 200 m and 50 m. |
+| **Final terrain sample step · m** | The default and maximum are 10 m between samples on final route links. The earlier screening stages default to 200 m and 50 m. |
 
 ![Search step with route objective, effort and the enabled road filter controls](images/route-search.png)
 
@@ -433,12 +444,13 @@ replaces it when you let go. Editing coordinates, antenna heights, router
 policies or radio settings in the sidebar recalculates the affected sites the
 same way. Other sites keep their maps, so only the site you changed is redrawn.
 
-The live model combines free-space loss, Bullington diffraction over terrain
-and the surface model, Earth curvature with the
-configured k-factor, optional clutter loss, antenna patterns and both link
-directions. In **Strict LOS** validation mode, places without line of sight are
-shown as not covered; the Fresnel clearance requirement is not applied to the
-live map.
+The live model defaults to calibrated Delta-Bullington diffraction over ground
+terrain. It includes free-space loss, Earth curvature, model correction, any
+terminal clutter enabled for the site, and a sampling allowance for the selected
+detail level. The live status reports the fallback to Delta-Bullington when
+Deygout is selected for route search. In **Strict LOS** validation mode, places
+without line of sight are shown as uncovered. Fresnel clearance is evaluated
+for route links.
 
 ### Which sites are shown
 
@@ -697,12 +709,13 @@ profiles and grids are calculated in the terrain's projected coordinate
 reference system (CRS). Upload georeferenced GeoTIFF tiles that use the same
 supported projected CRS and metre units.
 
-- **DTM** is the ground elevation input. It normally represents bare earth.
+- **DTM** normally represents bare earth. It is the default diffraction surface.
   The model places an antenna at ground elevation plus its configured height
-  above ground, and uses ground terrain to score candidate sites.
+  and uses ground terrain to score candidate sites.
 - **DOM** is surface elevation and can include trees and buildings. Where
-  surface samples are available, they inform the obstruction profile. With no
-  surface data the model reports a terrain-only assumption.
+  available, the model can subtract DTM from DOM around a site to estimate
+  terminal clutter when enabled. DOM supplies diffraction obstacles only when
+  you choose **Surface with trees and buildings (DOM)**.
 - A missing or masked ground sample is unknown. It cannot certify a link or
   coverage cell. A raster's outline shows its footprint. It can contain
   no-data gaps.
@@ -873,9 +886,12 @@ sensitivity. Delta-Bullington over bare-earth terrain is the default. The model
 correction accounts for measured optimism in the link budget. An optional
 terminal clutter correction estimates the effect of nearby buildings or trees
 using the difference between the surface and ground elevations around a site.
-Saved coverage also applies an allowance for profiles sampled more coarsely
-than the native terrain. Both directions must pass before a route hop can be
-certified.
+The directional budgets in **Analysis** show the diffraction model, model
+correction, terminal clutter and sampling allowance for both directions.
+Saved coverage applies a sampling allowance for profiles sampled more
+coarsely than the native terrain. Both directions must pass to certify a hop.
+Deygout can be used for route search. Live coverage falls back to
+Delta-Bullington and reports the change in its status.
 
 ~~~text
 FSPL = 32.44 + 20 log10(distance_km) + 20 log10(frequency_MHz)
@@ -905,7 +921,12 @@ The default uses the mean Earth radius.
 Use the numbers and the validation result with the map colors. Compare the
 weakest direction on each hop, the weakest hop across the whole network and
 the independent-path count. Margin bands describe the modeled reserve after
-the configured fade margin.
+the configured fade margin. At an unmeasured site, signal strength often differs
+from the budget by about ±15.0 dB in the initial calibration. The configured
+fade margin is a reserve for changes over time, where the calibration found a
+typical standard deviation of about 2.5 dB. Analysis shows the prediction
+spread separately, since site uncertainty depends on factors such as local
+obstacles and antenna placement.
 
 ## Limitations
 

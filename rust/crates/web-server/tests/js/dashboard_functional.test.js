@@ -32,6 +32,7 @@ test('applying blank router coordinates preserves the saved site, while zero is 
     mapEditsLocked: () => false, mapEditControl: control => control, mapPoint: site => [site.latitude, site.longitude],
     updateManualMarker() {}, mapText: () => element(), coordinateLabel: () => '', mapPopupOptions: () => ({}),
     manualRouterControls: () => () => ({ nameLabel: element(), heightLabel: element(), policyLabel: element(), remove: element() }),
+    routerTerminalClutterControl: element,
     focusManualRouter() {}, syncMapEditControls() {}, bindLiveCoverageDrag() {}, liveCoverageSiteHeight: value => value,
     recordEdit() { edits++; }, invalidate() {}, scheduleCoverageCheck() {},
     status(message, isError) { if (isError) errors.push(message); },
