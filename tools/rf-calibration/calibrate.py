@@ -491,6 +491,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=8695)
     ap.add_argument("--configs", default="", help="comma-separated substrings to select configs")
     ap.add_argument("--reference", default="rfcore_bullington|dom|none", help="config prefix used for v bins")
+    ap.add_argument("--evidence", default="", help="comma-separated evidence types to keep (default all)")
+    ap.add_argument("--exclude-flag", action="append", default=[], help="also drop links with this flag")
+    ap.add_argument("--report-name", default="report", help="output directory name under the work dir")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -507,6 +510,17 @@ def main(argv=None) -> int:
     if (work / "path_features.jsonl").exists():
         features = {f["path_id"]: f for f in read_jsonl(work / "path_features.jsonl")}
 
+    keep_ev = {e for e in args.evidence.split(",") if e}
+    extra = set(args.exclude_flag)
+    if keep_ev or extra:
+        before = len(links)
+        links = [
+            link
+            for link in links
+            if (not keep_ev or link["evidence"] in keep_ev or link["evidence"] == "corescope_non_detection" and "corescope_last_hop" in keep_ev)
+            and not (extra & set(link.get("flags", [])))
+        ]
+        print(f"subset: kept {len(links)} of {before} link records", file=sys.stderr)
     obs_all, drops = build_observations(links, nodes_meta)
     wanted = {o["link_id"] for o in obs_all}
     grids, path_of = load_predictions(work / "predictions", wanted)
@@ -516,7 +530,12 @@ def main(argv=None) -> int:
     configs = sorted(k for k in grids if not sel or any(s in k for s in sel))
 
     regions = ["norway", "world"] if args.region == "all" else [args.region]
-    results = {"links_file": str(links_path), "drops": drops, "regions": {}}
+    results = {
+        "links_file": str(links_path),
+        "subset": {"evidence": sorted(keep_ev), "exclude_flags": sorted(extra)},
+        "drops": drops,
+        "regions": {},
+    }
     for region in regions:
         robs_all = [o for o in obs_all if o["region"] == region]
         if not robs_all:
@@ -582,7 +601,7 @@ def main(argv=None) -> int:
         reg["reference_config"] = ref_cfg
         results["regions"][region] = reg
 
-    out_dir = work / "report"
+    out_dir = work / args.report_name
     out_dir.mkdir(parents=True, exist_ok=True)
     clean = strip_arrays(results)
     tmp = out_dir / "results.json.partial"
