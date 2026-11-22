@@ -237,7 +237,7 @@ FREE_SPACE = "free_space|-|none|-|-"
 
 
 def config_key(p: dict) -> str:
-    return f"{p['engine']}|{p['surface']}|{p['clutter']}|{p['step_m']:g}|{p['k_factor']:.3g}"
+    return f"{p['engine']}|{p['surface']}|{p['clutter']}|{round(p["step_m"]):g}|{p["k_factor"]:.3g}"
 
 
 def load_predictions(pred_dir: Path, wanted: set[str]):
@@ -515,7 +515,15 @@ def main(argv=None) -> int:
             continue
         # Use links that every selected config predicts, so engines are compared
         # on the same set.
-        common = set.intersection(*[set(grids[c]) for c in configs]) if configs else set()
+        ids = {o["link_id"] for o in robs_all}
+        rconfigs = []
+        for c in configs:
+            cov = len(ids & set(grids[c])) / len(ids)
+            if cov < 0.8:
+                print(f"[{region}] dropping {c}: covers {cov:.0%} of links", file=sys.stderr)
+            else:
+                rconfigs.append(c)
+        common = set.intersection(*[set(grids[c]) for c in rconfigs]) if rconfigs else set()
         robs = [o for o in robs_all if o["link_id"] in common]
         for o in robs:
             o["path_id"] = path_of.get(o["link_id"])
@@ -527,8 +535,8 @@ def main(argv=None) -> int:
             "time_sigma_db": time_variability(robs),
             "configs": {},
         }
-        ref_cfg = next((c for c in configs if c.startswith(args.reference)), configs[0])
-        for cfg in configs:
+        ref_cfg = next((c for c in rconfigs if c.startswith(args.reference)), rconfigs[0])
+        for cfg in rconfigs:
             tot = np.stack([edge_fill(grids[cfg][o["link_id"]][0]) for o in robs])
             exc = np.stack([edge_fill(grids[cfg][o["link_id"]][1]) for o in robs])
             if np.isnan(tot).any():
@@ -553,7 +561,7 @@ def main(argv=None) -> int:
             "terminal_clutter_m": np.array([terminal_clutter(features.get(o["path_id"])) for o in robs]),
         }
         reg["bins"] = {}
-        for cfg in configs:
+        for cfg in rconfigs:
             arr = reg["configs"][cfg]["_arrays"]
             reg["bins"][cfg] = {
                 name: {
