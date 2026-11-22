@@ -29,7 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.linalg import cho_factor, cho_solve
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve
 from scipy.special import log_ndtr
 from scipy.stats import norm
 
@@ -147,14 +148,23 @@ def fit(d: LinkData, pri: Priors, max_iter: int = 200, tol: float = 1e-4) -> Fit
     ntx = tx_nodes.size if use_nodes else 0
     nrx = rx_nodes.size if use_nodes else 0
     m = nb + ntx + nrx + p
-    a = np.zeros((n, m))
-    a[np.arange(n), d.block] = 1.0
+    rows = [np.arange(n)]
+    cols = [d.block]
+    vals = [np.ones(n)]
     if use_nodes:
-        a[np.arange(n), nb + np.searchsorted(tx_nodes, d.tx)] = 1.0
-        a[np.arange(n), nb + ntx + np.searchsorted(rx_nodes, d.rx)] = 1.0
+        rows += [np.arange(n), np.arange(n)]
+        cols += [nb + np.searchsorted(tx_nodes, d.tx), nb + ntx + np.searchsorted(rx_nodes, d.rx)]
+        vals += [np.ones(n), np.ones(n)]
     if p:
-        a[:, nb + ntx + nrx :] = d.x
-    ata = a.T @ a
+        rr, cc = np.meshgrid(np.arange(n), np.arange(p), indexing="ij")
+        rows.append(rr.ravel())
+        cols.append(nb + ntx + nrx + cc.ravel())
+        vals.append(d.x.ravel())
+    a = sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(n, m))
+    ata = (a.T @ a).tocsc()
+    # Links per tx and rx node, for the diagonal posterior-variance approximation.
+    n_tx = np.asarray(ata.diagonal()[nb : nb + ntx]) if use_nodes else np.zeros(0)
+    n_rx = np.asarray(ata.diagonal()[nb + ntx : nb + ntx + nrx]) if use_nodes else np.zeros(0)
 
     sigma = 6.0
     su, sw = pri.sigma_u0, pri.sigma_w0
@@ -186,23 +196,23 @@ def fit(d: LinkData, pri: Priors, max_iter: int = 200, tol: float = 1e-4) -> Fit
             pen[nb + ntx : nb + ntx + nrx] = s2 / max(sw, MIN_SIGMA) ** 2
         if p:
             pen[nb + ntx + nrx :] = 1e-6
-        lhs = ata + np.diag(pen)
-        cf = cho_factor(lhs)
-        theta = cho_solve(cf, a.T @ z + pen * prior_mean)
+        lhs = (ata + sp.diags(pen)).tocsc()
+        theta = spsolve(lhs, a.T @ z + pen * prior_mean)
         mu = a @ theta - d.pl
         resid = ystar - mu
         sigma = float(np.sqrt(max((resid @ resid + vstar.sum()) / n, MIN_SIGMA**2)))
         if use_nodes and not pri.fix_node_sd:
-            # Posterior variances of the node effects (diagonal of the inverse).
-            inv_diag = np.diag(cho_solve(cf, np.eye(m))) * sigma * sigma
+            # Posterior variances of the node effects, diagonal approximation
+            # sigma^2 / (links + sigma^2 / sigma_node^2).
             ut = theta[nb : nb + ntx]
             wt = theta[nb + ntx : nb + ntx + nrx]
+            s2 = sigma * sigma
             if ntx:
-                su = float(np.sqrt(max((ut @ ut + inv_diag[nb : nb + ntx].sum()) / ntx, MIN_SIGMA**2)))
+                var_u = s2 / (n_tx + s2 / max(su, MIN_SIGMA) ** 2)
+                su = float(np.sqrt(max((ut @ ut + var_u.sum()) / ntx, MIN_SIGMA**2)))
             if nrx:
-                sw = float(
-                    np.sqrt(max((wt @ wt + inv_diag[nb + ntx : nb + ntx + nrx].sum()) / nrx, MIN_SIGMA**2))
-                )
+                var_w = s2 / (n_rx + s2 / max(sw, MIN_SIGMA) ** 2)
+                sw = float(np.sqrt(max((wt @ wt + var_w.sum()) / nrx, MIN_SIGMA**2)))
         ll = float(loglik_terms(d, mu, sigma).sum())
         if abs(ll - prev) < tol * max(1.0, abs(ll)):
             converged = True
