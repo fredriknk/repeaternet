@@ -2,8 +2,9 @@
 
 Status: in progress (started 2026-11-22). This page describes the method, the
 file contracts between stages and, once available, the results. It records
-measurements of RepeaterNet's path-loss predictions against real receptions. It
-does not describe a feature of the planner.
+measurements of RepeaterNet's path-loss predictions against real receptions.
+[Wired into rf-core](#wired-into-rf-core) describes how the planner now uses
+the results.
 
 ## Question
 
@@ -785,6 +786,53 @@ The first attempt had confirmed at least 0.043 GB before it stopped.
      Delta-Bullington needs a running least-squares smooth-earth fit per ray,
      which can also be done incrementally. Deygout is not incremental and
      should start in route certification only.
+
+### Wired into rf-core
+
+Recommendations 1–6 are implemented in the planner (2026-11-22). Every
+calibrated number lives in one file,
+[`rust/crates/rf-core/src/calibration.rs`](../rust/crates/rf-core/src/calibration.rs).
+After a rerun, change the values there. The server sends them to the dashboard
+as the read-only `calibration` object in `/api/state`, so neither the JSON
+defaults nor the dashboard repeat them.
+
+| Setting | Default | Where it applies |
+| --- | --- | --- |
+| `rf.diffraction_model` | `delta_bullington` (also `bullington`, `deygout3`) | Route search, link checks and saved coverage. Live coverage runs delta-Bullington incrementally and falls back to it when Deygout is selected. |
+| `rf.obstacle_surface` | `ground` (DTM). `surface` restores DOM as obstacles | Everywhere. DOM is otherwise used only for terminal clutter. |
+| `rf.model_correction_db` | 3 dB, added to path loss | Every budget. |
+| `terminal_clutter` per role, with per-router overrides | `none` (`p2108_dom` optional) | P.2108 §3.1 at that end, using the median DOM − DTM within 30 m. The planner samples a disc around the site rather than the path. |
+| Final route step | at most 10 m | Route certification. Screening at 200 m and 50 m is unchanged and has no allowance. |
+| Coarse-step allowance | 0 / 1.6 / 4.2 dB at 10 / 50 / 200 m, interpolated on log step, relative to native resolution | Saved coverage, targets, point checks and live coverage (about 1 dB at the 30 m live detail). |
+| k-factor | 1.0 | Unchanged. |
+
+Analysis shows the prediction spread (σ ≈ 15 dB for a new site) next to the
+key figures, separately from the fade margin, which covers time fading
+(σ ≈ 2.5 dB). The calibration harness calls the rf-core engines, and its
+prediction files are byte-identical to those from the earlier copies. Plans
+saved before this change store `"bullington"` without `obstacle_surface` and
+now get the calibrated default. Saved coverage and route caches from the old
+model are stale (`coverage-rust-v2`, `route-rust-v2`).
+
+Live coverage time per site (HTTP `elapsed_ms`, median of 8 runs after
+warm-up, Oslo fjord endpoints, Kartverket 10 m DTM + DOM, 16 threads):
+
+| Site · step · radius | Before (Bullington over DOM) | After, default (delta-Bullington over DTM) | After, Bullington over DTM |
+| --- | ---: | ---: | ---: |
+| A · 30 m · 20 km (default detail) | 19.5 ms | 25.8 ms | 17.9 ms |
+| A · 120 m · 20 km (drag preview) | 3.4 ms | 3.7 ms | 3.1 ms |
+| A · 10 m · 10 km | 40.5 ms | 56.2 ms | 40.0 ms |
+| B · 30 m · 20 km | 24.2 ms | 28.0 ms | 21.4 ms |
+| B · 120 m · 20 km | 3.5 ms | 3.6 ms | 3.2 ms |
+| B · 10 m · 10 km | 56 ms | 93.7 ms | 82.2 ms |
+
+The live delta term uses running prefix sums and hull queries for the
+smooth-earth fit, a closed-form smooth-profile Bullington, and tabulated
+P.526 spherical-earth functions. The measured error is at most 0.0013 dB
+against the exact rf-core function, well inside the 0.5 dB display step.
+Route certification always uses the exact rf-core evaluator. Most of the
+remaining cost at B's 10 m step comes from DTM itself: without trees, more
+rays stay in line of sight and take the O(n) Bullington line-of-sight scan.
 
 ### Caveats and next steps
 
