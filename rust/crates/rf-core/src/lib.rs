@@ -14,7 +14,8 @@ pub mod site;
 pub use antennas::{elevation_angle_deg, AntennaPattern, ElevationPattern};
 pub use curvature::{earth_bulge_m, EARTH_MEAN_RADIUS_M};
 pub use diffraction::{
-    bullington_loss_db, knife_edge_loss_db, knife_edge_v, DiffractionObstacle, DiffractionResult,
+    bullington_edge_loss_db, bullington_loss_db, knife_edge_loss_db, knife_edge_v,
+    DiffractionObstacle, DiffractionResult,
 };
 pub use fresnel::{first_fresnel_radius_m, SPEED_OF_LIGHT_M_S};
 pub use link::{free_space_path_loss_db, received_power_dbm, DirectionResult, LinkResult};
