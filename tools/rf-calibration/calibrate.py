@@ -384,6 +384,8 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
     # heights and no node offsets (what a planner faces at a new site).
     pl_prior = cm.interp_pl(grids_total, h_prior[d.tx], h_prior[d.rx])
     mu_cv = np.full(d.y.size, np.nan)
+    sd_cv = np.full(d.y.size, np.nan)  # predictive sd for unseen nodes
+    sd_cv_scaled = np.full(d.y.size, np.nan)
     mu_cv_scaled = np.full(d.y.size, np.nan)
     c_folds, scale_folds = [], []
     fold_tx = np.array([folds[node_ids[i]] for i in d.tx])
@@ -401,6 +403,7 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
             f_tr, _ = cm.fit_with_heights(dtr, grids_total[train], h_prior, pri, rounds=2)
             c_folds.append(f_tr.c.tolist())
             mu_cv[test] = f_tr.c[d.block[test]] - pl_prior[test]
+            sd_cv[test] = np.sqrt(f_tr.sigma**2 + f_tr.sigma_u**2 + f_tr.sigma_w**2)
             # Correction: scale the excess loss (PL = FSPL + a * excess), fitted on train.
             dtr_x = dtr.subset(np.ones(dtr.y.size, bool))
             dtr_x.pl = pl_prior[train]
@@ -408,6 +411,7 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
             f_sc = cm.fit(dtr_x, pri)
             scale_folds.append(1.0 - float(f_sc.beta[0]))
             mu_cv_scaled[test] = f_sc.c[d.block[test]] - pl_prior[test] + f_sc.beta[0] * exc_prior[test]
+            sd_cv_scaled[test] = np.sqrt(f_sc.sigma**2 + f_sc.sigma_u**2 + f_sc.sigma_w**2)
 
     observed = d.cens == 0
     out = {
@@ -431,6 +435,7 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
         "cv_fold_c": c_folds,
         "cv_excess_scale": scale_folds,
     }
+    log_scores = {}
     for b, bi in block_ix.items():
         sel = observed & (d.block == bi)
         if b != "meshtastic_snr":
@@ -438,12 +443,27 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
         tested = sel & np.isfinite(mu_cv)
         out["cv"][b] = cm.summarize(d.y[tested] - mu_cv[tested])
         out["cv_scaled"][b] = cm.summarize(d.y[tested] - mu_cv_scaled[tested])
+        # Held-out log score per link, including censored (never heard) links,
+        # under the predictive distribution for unseen nodes.
+        sel_all = (d.block == bi) & np.isfinite(mu_cv)
+        if sel_all.any():
+            sub = d.subset(sel_all)
+            per_link = np.full(d.y.size, np.nan)
+            per_link[sel_all] = cm.loglik_terms(sub, mu_cv[sel_all], sd_cv[sel_all])
+            log_scores[b] = per_link
+            out["cv"][b]["log_score"] = float(np.nanmean(per_link))
+            out["cv_scaled"][b]["log_score"] = float(
+                np.mean(cm.loglik_terms(sub, mu_cv_scaled[sel_all], sd_cv_scaled[sel_all]))
+            )
+            out["cv"][b]["n_scored"] = int(sel_all.sum())
         # Detection discrimination on held-out links: predicted margin over floor.
         nd = (d.cens == -1) & (d.block == bi) & np.isfinite(mu_cv)
         if nd.any() and tested.any():
             out["cv"][b]["auc_heard_vs_unheard"] = cm.auc(mu_cv[tested], mu_cv[nd] + (0.0))
             out["cv"][b]["n_unheard_tested"] = int(nd.sum())
     out["_arrays"] = {
+        "log_scores": log_scores,
+        "link_ids": [o["link_id"] for o in obs],
         "res_in": res_in,
         "err_cv": np.where(observed, d.y - mu_cv, np.nan),
         "err_cfg": np.where(observed, d.y - mu_cfg, np.nan),
@@ -494,6 +514,7 @@ def main(argv=None) -> int:
     ap.add_argument("--evidence", default="", help="comma-separated evidence types to keep (default all)")
     ap.add_argument("--exclude-flag", action="append", default=[], help="also drop links with this flag")
     ap.add_argument("--report-name", default="report", help="output directory name under the work dir")
+    ap.add_argument("--baseline", default="rfcore_bullington|dtm|none|10|1", help="config the paired log-score differences are taken against")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -576,6 +597,22 @@ def main(argv=None) -> int:
                 f"cv={fmt_block(r['cv'])} cfg={fmt_block(r['as_configured'])}",
                 file=sys.stderr,
             )
+        # Paired held-out log-score difference against the planner's current
+        # engine, per block. SE ignores clustering by node, so read it as a floor.
+        base = next((c for c in rconfigs if c.startswith(args.baseline)), None)
+        if base:
+            ba = reg["configs"][base]["_arrays"]
+            for cfg in rconfigs:
+                arr = reg["configs"][cfg]["_arrays"]
+                for b, ls in arr["log_scores"].items():
+                    if b not in ba["log_scores"]:
+                        continue
+                    diff = ls - ba["log_scores"][b]
+                    diff = diff[np.isfinite(diff)]
+                    if diff.size > 1:
+                        reg["configs"][cfg]["cv"][b]["delta_log_score"] = float(diff.mean())
+                        reg["configs"][cfg]["cv"][b]["delta_log_score_se"] = float(diff.std(ddof=1) / np.sqrt(diff.size))
+            reg["baseline_config"] = base
         # Bins for the reference config, in-sample and CV.
         ref = reg["configs"][ref_cfg]["_arrays"]
         vgrid = np.stack([edge_fill(grids[ref_cfg][o["link_id"]][2]) for o in robs])
@@ -666,9 +703,9 @@ def render_markdown(res: dict) -> str:
         lines.append("")
         lines.append(
             "| Config | Obs | Unheard | In-sample σ | σ tx / rx | As configured bias / RMSE | "
-            "CV bias / RMSE / sd | CV P10 | AUC heard | CV excess scale |"
+            "CV bias / RMSE / sd | CV P10 | AUC heard | CV log score | Δ log score vs baseline (±SE) | Scaled log score | CV excess scale |"
         )
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         rows = []
         for cfg, r in reg["configs"].items():
             for b in r["cv"]:
@@ -679,12 +716,22 @@ def render_markdown(res: dict) -> str:
                 scale = r["cv_excess_scale"]
                 rows.append(
                     (
-                        cv["sd"] if cv.get("sd") is not None else 99,
+                        -cv["log_score"] if cv.get("log_score") is not None else 99,
                         f"| `{cfg}` {b} | {r['n_observed']} | {r['n_non_detection']} | {r['in_sample']['sigma']:.2f} | "
                         f"{r['in_sample']['sigma_tx']:.1f} / {r['in_sample']['sigma_rx']:.1f} | "
                         + (f"{ac['bias']:+.1f} / {ac['rmse']:.1f}" if ac.get("n") else "—")
                         + f" | {cv['bias']:+.1f} / {cv['rmse']:.1f} / {cv['sd']:.1f} (n={cv['n']}) | {cv['p10']:+.1f} | "
                         + (f"{cv['auc_heard_vs_unheard']:.2f}" if cv.get("auc_heard_vs_unheard") is not None else "—")
+                        + " | "
+                        + (f"{cv['log_score']:.3f}" if cv.get("log_score") is not None else "—")
+                        + " | "
+                        + (
+                            f"{cv['delta_log_score']:+.3f} ± {cv['delta_log_score_se']:.3f}"
+                            if cv.get("delta_log_score") is not None
+                            else "—"
+                        )
+                        + " | "
+                        + (f"{r['cv_scaled'][b]['log_score']:.3f}" if r["cv_scaled"][b].get("log_score") is not None else "—")
                         + " | "
                         + (f"{np.mean(scale):.2f}" if scale else "—")
                         + " |",

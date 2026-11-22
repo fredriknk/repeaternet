@@ -128,12 +128,13 @@ def _truncated_moments(y, mu, s, bound, cens):
 def loglik_terms(d: LinkData, mu: np.ndarray, sigma: float) -> np.ndarray:
     """Per-link log likelihood under N(mu, sigma^2) with censoring."""
     out = np.empty_like(mu)
+    sigma = np.broadcast_to(np.asarray(sigma, float), mu.shape)
     obs = d.cens == 0
-    out[obs] = norm.logpdf(d.y[obs], mu[obs], sigma)
+    out[obs] = norm.logpdf(d.y[obs], mu[obs], sigma[obs])
     lo = d.cens == -1
-    out[lo] = log_ndtr((d.bound[lo] - mu[lo]) / sigma)
+    out[lo] = log_ndtr((d.bound[lo] - mu[lo]) / sigma[lo])
     hi = d.cens == 1
-    out[hi] = log_ndtr((mu[hi] - d.bound[hi]) / sigma)
+    out[hi] = log_ndtr((mu[hi] - d.bound[hi]) / sigma[hi])
     return out
 
 
