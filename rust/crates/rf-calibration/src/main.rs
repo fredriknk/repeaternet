@@ -36,7 +36,11 @@ enum Command {
         max_download_gb: f64,
     },
     /// Evaluate Rust engines into `<work>/predictions/`.
-    Predict,
+    Predict {
+        /// Directed link JSONL (default <work>/dataset/links.jsonl).
+        #[arg(long)]
+        links: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -61,10 +65,9 @@ fn main() -> Result<()> {
             &work,
             max_download_gb,
         )?,
-        Command::Predict => predict::run(
-            &work.join("dataset"),
-            &work.join("profiles.jsonl"),
-            &work.join("predictions"),
+        Command::Predict { links } => predict::run(
+            &links.unwrap_or_else(|| work.join("dataset/links.jsonl")),
+            &work,
         )?,
     }
     Ok(())

@@ -180,16 +180,71 @@ median SNR is at least 5 dB above the floor, where censoring is negligible.
 
 | Engine id | Implementation |
 | --- | --- |
-| `rfcore_bullington` | `repeaternet-rf-core` `LinkEvaluator`, called from the harness at the native step and at the planner's 200 m screening step |
-| `p526_delta_bullington` | Full ITU-R P.526-16 §4.5.2, ported to Rust and cross-checked against Py1812 `dl_delta_bull` |
-| `deygout3`, `giovaneli`, `epstein_peterson` | Rust multi-edge methods (P.526 J(v), at most three edges) |
+| `rfcore_bullington` | RF core's `LinkEvaluator` at nominal native (10 or 30 m), 50 m and 200 m steps, with both k = 1 and k = 4/3 |
+| `p526_delta_bullington` | `Lbull + max(Lsph − Lbs, 0)` from P.526-16 §4.5.2, with the endpoint-clipped smooth terrain fit, smooth-profile Bullington loss `Lbs` and spherical loss `Lsph` from §§3.2 and 3.1.1. Uses vertical polarization, β = 1, εr = 22 and σ = 0.003 S/m over land. [ITU-R P.526-16](https://www.itu.int/rec/R-REC-P.526-16-202511-I) |
+| `deygout3` | Selects the maximum-v point on the full chord, then the maximum-v point among the remaining subpaths. Sums P.526 `J(v)` for up to three selected edges, stopping at v ≤ −0.78. |
+| `epstein_peterson` | Uses those same edge positions and sums `J(v)` with each edge measured against the chord through its immediate neighbours. |
+| `giovaneli` | Uses those same candidates. Selects the largest residual-height edge against each subpath chord, projects the two supporting rays to the subpath endpoints, and sums the resulting `J(v)` terms recursively. Subpaths with all residual heights ≤ 0 use their neighbouring chords. |
 | `itm_p2p` | NTIA ITM v1.3 C++ point to point (`ITM_P2P_CR_Ex`) through ctypes |
 | `p1812` | ITU-R P.1812 (Py1812 core) |
 
-Clutter options: `none`, `rfcore_clutter` (the planner's optional surface
-clutter), `dom_p2108` (P.2108 §3.1 terminal correction with clutter height
-from DOM − DTM around each terminal), `p2108` (statistical, by area type) and
-`p833` (vegetation attenuation over the in-canopy path near each terminal).
+The Rust ports use the native grid at k = 1. The multi-edge definitions
+are the capped variants from the model review. Adjacent samples of a single
+crest can be selected as separate edges. The 30 km smooth-earth reference
+gives `Lbs = 19.780 dB` and `Lsph = 52.454 dB`, within 0.003 dB of the
+Py1812 check. [NTIA TR-26-580, §§3.3 and Appendices B–D](https://its.ntia.gov/publications/download/TR-26-580.pdf) ·
+[Py1812 reference implementation](https://github.com/eeveetza/Py1812/tree/6c9061dd022e93c84169059a016643926ce89964)
+
+Every Rust engine uses RF core's curvature convention, adding
+`x·(D−x)/(2·k·6,371,000)` metres to each interior obstruction. Both
+antenna elevations use their terminal DTM plus antenna height. Coarser
+variants interpolate the stored elevations onto RF core's
+endpoint-preserving grid. Prediction `step_m` is the nominal request.
+The link's `radio.freq_mhz` supplies frequency, defaulting to 869.5 MHz.
+FSPL uses RF core's `32.44 + 20·log10(d_km) + 20·log10(f_MHz)`, with
+`d_km` derived from the 3-D antenna separation.
+
+Each engine writes a separate `PredictionRecord` JSONL file, sorted by
+link ID, surface, clutter, TX height, RX height, k factor and step. The
+`line_of_sight` flag indicates geometric clearance on the sampled surface.
+For Bullington and delta-Bullington, `v_max` is the equivalent Bullington
+edge v when reported and the largest direct-chord v otherwise. For the
+multi-edge engines, it is the largest direct-chord v. Diagnostics give
+edge positions relative to TX and, for delta-Bullington,
+`lbull_db`, `lbs_db`, `lsph_db` and `smooth_agl_m`.
+
+Clutter is additive to `fspl_db + excess_db`. Every surface gets a
+`none` row. Other Rust clutter variants use the DTM excess:
+
+- `rfcore_clutter` enables the planner's optional coefficient on the
+  maximum sampled positive DOM minus DTM excess. The current default
+  coefficient is 0 dB/m, so its predictions have zero additive loss.
+- `dom_p2108` sums the height-gain corrections for both ends at 30 MHz
+  to 3 GHz, with representative height `R` from the terminal medians
+  in `path_features.jsonl`. A terminal is classified as forest if two
+  consecutive samples within 30 m both exceed 3 m of DOM minus DTM and
+  differ in excess height by at least 1 m. Other terminals are classified
+  as urban. Both categories use equation (2a) with a 27 m width.
+  For antenna height `h < R`, the correction is `J(v) − 6.03`,
+  clamped to zero, where
+  `v = 0.342·sqrt(f_GHz·(R−h)·atan_deg((R−h)/27))`.
+  The correction is zero at or above `R`.
+  [ITU-R P.2108-1, §3.1 and Table 3](https://www.itu.int/rec/R-REC-P.2108-1-202109-I)
+- `p833` uses the same forest heuristic. The woodland segment starts
+  at a terminal when the ray is below DOM and DOM exceeds DTM by more
+  than 3 m. Its end is the first ray crossing of curvature-adjusted DOM
+  or the end of the contiguous excess above 3 m, with linear
+  interpolation at each crossing. For 3-D in-canopy length `d`,
+  `Aev = Am·(1 − exp(−d·γ/Am))`. The fixed 869.5 MHz coefficients
+  are γ = 0.163840 dB/m and Am = 25.452880 dB, interpolated in log
+  frequency between the 466.475 MHz and 949 MHz mixed-forest
+  measurements in Table 1. Add losses for disjoint terminal segments
+  and evaluate overlapping segments once over their combined length.
+  [ITU-R P.833-10, §2.1 and Table 1](https://www.itu.int/rec/R-REC-P.833-10-202109-I)
+
+The `dom_p2108` and `p833` rows require DOM. Their diagnostics record
+the cover classification, representative height and in-canopy distance
+for each terminal in TX, RX order.
 
 Antenna heights are unknown. Predictions use a grid of 2, 5, 10 and 20 m above
 ground at each end. The fit estimates a per-node height from that grid, with a
