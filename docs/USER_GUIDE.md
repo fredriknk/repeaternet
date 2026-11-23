@@ -318,7 +318,6 @@ coordinates use latitude, longitude to six decimals.
   the engine estimates local loss from nearby trees and buildings. For proposed
   routers, you can also change search policy, enter new coordinates or remove
   the router.
-  Editing a search-found site adds it to the plan as a proposed router.
   Right-click a link to choose which of its two sites to edit. **Esc** closes
   the popup and returns focus to the map object.
 - **Shift+click** or **Ctrl/Cmd+click** toggles a site in the selection.
@@ -335,10 +334,20 @@ coordinates use latitude, longitude to six decimals.
 - **Remove routers** removes the selected proposed and existing routers from the
   project. Endpoints and sites shown only in a search result stay on the map.
   One **Undo** reverses the entire bulk edit or removal.
+- On a square search-found marker such as R3, use the same context-menu
+  shortcuts and choose **Pin R3 as P1** (the menu shows the next proposed router
+  number). Adjust its settings and select **Pin router** to add it to your plan.
+  To remove one search-found router, choose **Remove** in its popup or in
+  **Route → Routers → Search-found routers**.
 - Drag either endpoint or a proposed router to move it. Dragging a site on
   the primary route previews its adjacent hops. Dragging a search-found site
-  pins it as a new **Required** proposed router. The previous route becomes
-  stale. Use **Undo** to revert the move or run a new search to validate it.
+  pins it as a new **Required** proposed router. Its old route links disappear
+  from the map during the drag and stay hidden after you drop it.
+- To remove every search-found router on the map, select **Remove found routers**
+  in the map toolbar and confirm the count and router labels. Pinning or removing
+  a router marks the previous route stale. Use **Undo** to restore the router or
+  run a new search to validate the changed plan. Removal applies to the current
+  search result. A later search can find the same site again.
 - Thin dotted links show usable connections (0 dB or higher) to proposed
   routers, including optional routers outside the certified route. These links
   update as you drag a marker and stay on the map after release.

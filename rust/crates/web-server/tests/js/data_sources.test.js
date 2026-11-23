@@ -191,7 +191,7 @@ test('terrain source and fallback round-trip through plan and load and record an
     buildSettings() {}, syncCoverageInputs() {}, mark() {}, renderMeshcoreRouters() {},
     renderManualRouters() {}, ensureManualRouterNames() {}, renderCoverageTargets() {}, selectedKnownRouters: () => [],
     baseRf: {}, baseCandidates: {}, defaultCoverageSettings: { client: {} },
-    selectedKnownRouterId: null, clone: structuredClone,
+    selectedKnownRouterId: null, dismissedSearchRouters: null, clone: structuredClone,
   });
   vm.runInContext(
     section('const defaultTerrainOptions =', 'let dataSources =') +
