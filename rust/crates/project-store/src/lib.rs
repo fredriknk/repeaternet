@@ -21,6 +21,9 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
+/// Internal catalog key used when access is controlled by one server token.
+pub const SHARED_WORKSPACE_KEY: &str = "shared";
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
@@ -150,7 +153,7 @@ impl ProjectStore {
                     project.updated_at = now();
                     transaction.execute(
                         "UPDATE projects SET run_state=?, updated_at=? WHERE workspace_key=? AND id=?",
-                        params![project.run_state, project.updated_at, key, project.id],
+                        params![project.run_state, project.updated_at, project.workspace_key, project.id],
                     )?;
                 }
                 project
@@ -158,8 +161,8 @@ impl ProjectStore {
             None => {
                 let project = transaction
                     .query_row(
-                        "SELECT * FROM projects WHERE workspace_key=? AND archived=0
-                         ORDER BY updated_at DESC LIMIT 1",
+                        "SELECT * FROM projects WHERE (workspace_key=?1 OR ?1='shared') AND archived=0
+                         ORDER BY updated_at DESC, id LIMIT 1",
                         [key],
                         decode_project,
                     )
@@ -170,7 +173,7 @@ impl ProjectStore {
                         let project = insert_project(
                             &transaction,
                             key,
-                            "Untitled plan",
+                            &default_project_name(&transaction, key)?,
                             &Value::Object(Default::default()),
                         )?;
                         return self.publish_new_project(transaction, project, None);
@@ -195,7 +198,8 @@ impl ProjectStore {
     fn list(&self, key: &str, archived: bool) -> Result<Vec<Project>> {
         let connection = self.workspace_connection(key)?;
         let mut statement = connection.prepare(
-            "SELECT * FROM projects WHERE workspace_key=? AND archived=? ORDER BY updated_at DESC",
+            "SELECT * FROM projects WHERE (workspace_key=?1 OR ?1='shared') AND archived=?2
+             ORDER BY updated_at DESC, id",
         )?;
         let rows = statement.query_map(params![key, archived], decode_project)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -242,7 +246,12 @@ impl ProjectStore {
             transaction.execute(
                 "UPDATE projects SET previous_plan_json=plan_json, plan_json=?, updated_at=?
                  WHERE workspace_key=? AND id=?",
-                params![serde_json::to_string(plan)?, now(), key, project_id],
+                params![
+                    serde_json::to_string(plan)?,
+                    now(),
+                    project.workspace_key,
+                    project_id
+                ],
             )?;
         }
         self.publish_plan(transaction, &project, plan)?;
@@ -264,7 +273,7 @@ impl ProjectStore {
         transaction.execute(
             "UPDATE projects SET plan_json=previous_plan_json, previous_plan_json=plan_json,
              result_summary_json=NULL, updated_at=? WHERE workspace_key=? AND id=?",
-            params![now(), key, project_id],
+            params![now(), project.workspace_key, project_id],
         )?;
         transaction.execute("DELETE FROM route_results WHERE project_id=?", [project_id])?;
         let recovered = required_project(&transaction, key, project_id)?;
@@ -274,12 +283,19 @@ impl ProjectStore {
 
     pub fn rename(&self, key: &str, project_id: &str, name: &str) -> Result<bool> {
         let name = normalize_project_name(name)?;
-        let connection = self.workspace_connection(key)?;
-        let changed = connection.execute(
-            "UPDATE projects SET name=?, updated_at=? WHERE workspace_key=? AND id=? AND archived=0",
-            params![name, now(), key, project_id],
-        );
-        Ok(changed.map_err(name_conflict)? == 1)
+        validate_workspace(key)?;
+        let mut connection = self.connect()?;
+        let transaction = self.transaction(&mut connection)?;
+        ensure_shared_name_available(&transaction, key, name, project_id)?;
+        let changed = transaction
+            .execute(
+                "UPDATE projects SET name=?1, updated_at=?2
+             WHERE (workspace_key=?3 OR ?3='shared') AND id=?4 AND archived=0",
+                params![name, now(), key, project_id],
+            )
+            .map_err(name_conflict)?;
+        transaction.commit()?;
+        Ok(changed == 1)
     }
 
     pub fn duplicate(&self, key: &str, project_id: &str, name: &str) -> Result<Option<Project>> {
@@ -310,7 +326,8 @@ impl ProjectStore {
             return Err(Error::ArchiveActive);
         }
         let changed = transaction.execute(
-            "UPDATE projects SET archived=1, updated_at=? WHERE workspace_key=? AND id=?",
+            "UPDATE projects SET archived=1, updated_at=?1
+             WHERE (workspace_key=?2 OR ?2='shared') AND id=?3",
             params![now(), key, project_id],
         )?;
         transaction.commit()?;
@@ -322,10 +339,11 @@ impl ProjectStore {
         validate_workspace(key)?;
         let mut connection = self.connect()?;
         let transaction = self.transaction(&mut connection)?;
+        ensure_shared_name_available(&transaction, key, name, project_id)?;
         let changed = transaction
             .execute(
-                "UPDATE projects SET name=?, archived=0, updated_at=?
-             WHERE workspace_key=? AND id=? AND archived=1",
+                "UPDATE projects SET name=?1, archived=0, updated_at=?2
+             WHERE (workspace_key=?3 OR ?3='shared') AND id=?4 AND archived=1",
                 params![name, now(), key, project_id],
             )
             .map_err(name_conflict)?;
@@ -356,14 +374,14 @@ impl ProjectStore {
         let directory = self.directory(&project, false)?;
         transaction.execute(
             "DELETE FROM projects WHERE workspace_key=? AND id=?",
-            params![key, project_id],
+            params![project.workspace_key, project_id],
         )?;
         match fs::symlink_metadata(&directory) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => transaction.commit()?,
             Err(error) => return Err(error.into()),
             Ok(metadata) => {
                 files::require_directory(&metadata)?;
-                self.reject_shared_directory(&transaction, key, &directory)?;
+                self.reject_shared_directory(&transaction, &project.workspace_key, &directory)?;
                 files::check_delete_tree(&directory)?;
                 self.publish(
                     transaction,
@@ -382,7 +400,8 @@ impl ProjectStore {
 
     pub fn set_run_state(&self, key: &str, project_id: &str, state: &str) -> Result<()> {
         self.workspace_connection(key)?.execute(
-            "UPDATE projects SET run_state=?, updated_at=? WHERE workspace_key=? AND id=?",
+            "UPDATE projects SET run_state=?1, updated_at=?2
+             WHERE (workspace_key=?3 OR ?3='shared') AND id=?4",
             params![state, now(), key, project_id],
         )?;
         Ok(())
@@ -398,12 +417,13 @@ impl ProjectStore {
         let mut connection = self.workspace_connection(key)?;
         let transaction = write_transaction(&mut connection)?;
         transaction.execute(
-            "UPDATE projects SET result_summary_json=?, updated_at=? WHERE workspace_key=? AND id=?",
+            "UPDATE projects SET result_summary_json=?1, updated_at=?2
+             WHERE (workspace_key=?3 OR ?3='shared') AND id=?4",
             params![encoded, now(), key, project_id],
         )?;
         transaction.execute(
             "DELETE FROM route_results WHERE project_id IN
-             (SELECT id FROM projects WHERE workspace_key=? AND id=?)",
+             (SELECT id FROM projects WHERE (workspace_key=?1 OR ?1='shared') AND id=?2)",
             params![key, project_id],
         )?;
         transaction.commit()?;
@@ -424,7 +444,7 @@ impl ProjectStore {
         let transaction = write_transaction(&mut connection)?;
         if transaction.execute(
             "UPDATE projects SET result_summary_json=?, run_state=?, updated_at=?
-             WHERE workspace_key=? AND id=?",
+             WHERE (workspace_key=?4 OR ?4='shared') AND id=?5",
             params![summary, state, now(), key, project_id],
         )? != 1
         {
@@ -444,7 +464,7 @@ impl ProjectStore {
             .workspace_connection(key)?
             .query_row(
                 "SELECT snapshot_json FROM route_results JOIN projects ON projects.id=project_id
-                 WHERE workspace_key=? AND projects.id=?",
+                 WHERE (workspace_key=?1 OR ?1='shared') AND projects.id=?2",
                 params![key, project_id],
                 |row| row.get(0),
             )
@@ -454,7 +474,7 @@ impl ProjectStore {
     /// Resolve and create a catalog-owned directory, using the current row.
     pub fn project_path(&self, key: &str, project: &Project) -> Result<PathBuf> {
         validate_workspace(key)?;
-        if key != project.workspace_key {
+        if key != SHARED_WORKSPACE_KEY && key != project.workspace_key {
             return Err(Error::ProjectNotFound);
         }
         let mut connection = self.connect()?;
@@ -478,8 +498,18 @@ impl ProjectStore {
     }
 
     pub fn storage_usage(&self, key: &str) -> Result<u64> {
-        let _connection = self.workspace_connection(key)?;
-        files::storage_usage(&self.workspace_directory(key, false)?)
+        let connection = self.workspace_connection(key)?;
+        if key != SHARED_WORKSPACE_KEY {
+            return files::storage_usage(&self.workspace_directory(key, false)?);
+        }
+        let mut query = connection.prepare("SELECT DISTINCT workspace_key FROM projects")?;
+        let mut total: u64 = 0;
+        for owner in query.query_map([], |row| row.get::<_, String>(0))? {
+            total = total.saturating_add(files::storage_usage(
+                &self.workspace_directory(&owner?, false)?,
+            )?);
+        }
+        Ok(total)
     }
 
     fn publish_new_project(
@@ -573,6 +603,7 @@ impl ProjectStore {
     }
 
     fn workspace_directory(&self, key: &str, create: bool) -> Result<PathBuf> {
+        validate_workspace(key)?;
         files::checked_directory(&self.data_root, [key], create)
     }
 
@@ -600,7 +631,7 @@ impl ProjectStore {
 }
 
 fn validate_workspace(key: &str) -> Result<()> {
-    if valid_workspace_key(key) {
+    if key == SHARED_WORKSPACE_KEY || valid_workspace_key(key) {
         Ok(())
     } else {
         Err(Error::InvalidWorkspace)
@@ -641,7 +672,7 @@ fn set_active(connection: &Connection, key: &str, project_id: &str) -> rusqlite:
 fn get_project(connection: &Connection, key: &str, project_id: &str) -> Result<Option<Project>> {
     Ok(connection
         .query_row(
-            "SELECT * FROM projects WHERE workspace_key=? AND id=?",
+            "SELECT * FROM projects WHERE (workspace_key=?1 OR ?1='shared') AND id=?2",
             params![key, project_id],
             decode_project,
         )
@@ -652,7 +683,46 @@ fn required_project(connection: &Connection, key: &str, project_id: &str) -> Res
     get_project(connection, key, project_id)?.ok_or(Error::ProjectNotFound)
 }
 
+fn ensure_shared_name_available(
+    connection: &Connection,
+    key: &str,
+    name: &str,
+    except_id: &str,
+) -> Result<()> {
+    if key == SHARED_WORKSPACE_KEY
+        && connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM projects WHERE name=?1 AND id<>?2)
+             AND NOT EXISTS (SELECT 1 FROM projects WHERE id=?2 AND name=?1)",
+            params![name, except_id],
+            |row| row.get(0),
+        )?
+    {
+        return Err(Error::NameInUse);
+    }
+    Ok(())
+}
+
+fn default_project_name(connection: &Connection, key: &str) -> Result<String> {
+    for index in 1.. {
+        let name = if index == 1 {
+            "Untitled plan".to_owned()
+        } else {
+            format!("Untitled plan {index}")
+        };
+        let taken: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM projects WHERE (workspace_key=?1 OR ?1='shared') AND name=?2)",
+            params![key, name],
+            |row| row.get(0),
+        )?;
+        if !taken {
+            return Ok(name);
+        }
+    }
+    unreachable!()
+}
+
 fn insert_project(connection: &Connection, key: &str, name: &str, plan: &Value) -> Result<Project> {
+    ensure_shared_name_available(connection, key, name, "")?;
     let project_id = token()?;
     let directory = format!("projects/{}", token()?);
     let timestamp = now();

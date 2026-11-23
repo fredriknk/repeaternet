@@ -102,7 +102,7 @@ test('a job-locked autosave retries once the job is idle', async () => {
   const timer = new Map(), states = [], posts = [];
   let jobState = 'preparing', nextTimer = 0;
   const context = vm.createContext({
-    saveRevision: 1, savedRevision: 0, saveQueue: Promise.resolve(), autosaveTimer: null,
+    saveRevision: 1, savedRevision: 0, saveQueue: Promise.resolve(), autosaveTimer: null, saveState: 'saved',
     projectInfo: { active_id: 'project-a' }, $: () => ({}),
     setTimeout(fn) { timer.set(++nextTimer, fn); return nextTimer; },
     clearTimeout(id) { timer.delete(id); },

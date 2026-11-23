@@ -32,7 +32,8 @@ test('coverage terrain approval cannot start a download for an outdated map exte
       requests.push([url, JSON.parse(body).map_bounds]);
       return {
         missing_area_km2: 5, tile_count: 1, effective_resolution_m: 25,
-        estimated_raw_mib: 2, cache_hits: 0, cache_total: 1,
+        estimated_uncached_raw_mib: 2, cache_hits: 0, cache_total: 1,
+        summary: '1 terrain tile at 25 m', estimated_disk_mib: 4, available_disk_mib: 100,
       };
     },
     async askActionDialog() {
@@ -40,7 +41,8 @@ test('coverage terrain approval cannot start a download for an outdated map exte
       return true;
     },
   });
-  vm.runInContext(terrainActions, context);
+  const estimateCopy = app.slice(app.indexOf('function terrainFromCache('), app.indexOf('function renderTerrainEstimateDetail('));
+  vm.runInContext(terrainActions + estimateCopy, context);
   await context.requestCoverageTerrain();
   assert.deepEqual(requests, [['/api/coverage/terrain/estimate', [60, 10, 61, 11]]]);
   assert.match(elements.get('coverage-terrain-status').textContent, /coverage area changed/);

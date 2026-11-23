@@ -369,7 +369,7 @@ async fn run(
     let started = Instant::now();
     let result = if let Some(worker) = worker {
         let app = app.clone();
-        let key = workspace.0.clone();
+        let key = workspace.key.clone();
         let storage = storage.clone();
         let id = id.clone();
         let control = control.clone();

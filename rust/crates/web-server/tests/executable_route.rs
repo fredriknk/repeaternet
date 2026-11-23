@@ -74,13 +74,25 @@ fn send(
     media_type: &str,
     body: &[u8],
 ) -> Response {
+    send_with_headers(address, method, path, cookie, media_type, body, "")
+}
+
+fn send_with_headers(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    cookie: &str,
+    media_type: &str,
+    body: &[u8],
+    headers: &str,
+) -> Response {
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {cookie}\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {cookie}\r\n{headers}Content-Type: {media_type}\r\nContent-Length: {}\r\n\r\n",
         body.len()
     ).unwrap();
     stream.write_all(body).unwrap();
@@ -97,6 +109,15 @@ fn send(
         headers,
         body: bytes.split_off(split + 4),
     }
+}
+
+fn plan_headers(state: &Value) -> String {
+    let project = &state["projects"];
+    format!(
+        "X-RepeaterNet-Project: {}\r\nX-RepeaterNet-Plan-Revision: {}\r\n",
+        project["active_id"].as_str().unwrap(),
+        project["plan_revision"].as_str().unwrap()
+    )
 }
 
 #[test]
@@ -149,13 +170,14 @@ fn binary_serves_an_uploaded_terrain_route_and_restores_its_snapshot() {
         "coverage": {"include_endpoints": true, "area_buffer_m": 20.0, "cell_size_m": 50.0, "maximum_cells": 24},
     })
     .to_string();
-    let start = send(
+    let start = send_with_headers(
         address,
         "POST",
         "/api/optimize",
         &cookie,
         "application/json",
         plan.as_bytes(),
+        &plan_headers(&get("/api/state").json()),
     )
     .json();
     let wait_until = Instant::now() + Duration::from_secs(10);
@@ -293,13 +315,14 @@ fn binary_serves_an_uploaded_terrain_route_and_restores_its_snapshot() {
     assert_eq!(restored, expected);
     assert_eq!(get(&format!("{job_path}/export.json")).status, 200);
     assert_eq!(get(&job_path).json()["stale"], false);
-    let rerun = send(
+    let rerun = send_with_headers(
         address,
         "POST",
         "/api/optimize",
         &cookie,
         "application/json",
         plan.as_bytes(),
+        &plan_headers(&state),
     )
     .json();
     let wait_until = Instant::now() + Duration::from_secs(10);

@@ -172,7 +172,7 @@ impl ProjectStore {
         let current = get_project(transaction, &intent.key, &intent.id)?;
         if current
             .as_ref()
-            .is_some_and(|row| row.directory != intent.directory)
+            .is_some_and(|row| row.workspace_key != intent.key || row.directory != intent.directory)
         {
             return Err(Error::UnsafeStoragePath);
         }

@@ -448,22 +448,27 @@ impl TerrainDownloader {
         let mut grouped = BTreeMap::<_, EstimateSource>::new();
         let mut cache_hits = 0;
         let mut cache_total = 0;
-        let mut raw = 0.0;
+        let mut installed_raw = 0.0;
         let mut uncached_raw = 0.0;
         let mut uncovered = 0.0;
         let mut warnings = BTreeSet::new();
+        let context = FetchContext {
+            cancelled: Arc::new(|| false),
+            deadline: None,
+            bytes: Arc::default(),
+        };
         for (product, grid) in [(Product::Dtm, &plan.dtm), (Product::Dom, &plan.dom)] {
             let Some(grid) = grid else {
                 continue;
             };
-            raw += grid.estimated_raw_mib_per_product();
+            installed_raw += grid.estimated_raw_mib_per_product();
             for &tile in &grid.tiles {
                 let footprint = tile_footprint(&transform, tile.bounds)?;
                 let ranked = self.registry.rank(product, &footprint, &plan.choice);
                 let prepared = prepare_sources(&ranked, product);
                 let cache = self.composed_path(crs, product, tile, &prepared);
                 cache_total += 1;
-                if cache.is_file() {
+                if cache.is_file() && validate_composed(&cache, crs, tile, &context).is_ok() {
                     cache_hits += 1;
                     warnings.extend(read_report(&cache).warnings);
                 } else {
@@ -508,7 +513,10 @@ impl TerrainDownloader {
             summary: common.map_or_else(
                 || "No additional terrain tiles needed".into(),
                 |grid| {
-                    grid.summary(usize::from(plan.dtm.is_some()) + usize::from(plan.dom.is_some()))
+                    format!(
+                        "{cache_total} terrain tiles at {} m",
+                        grid.effective_resolution_m
+                    )
                 },
             ),
             tile_count: common.map_or(0, |grid| grid.tiles.len()),
@@ -518,9 +526,9 @@ impl TerrainDownloader {
             effective_resolution_m: common.map_or(plan.requested_resolution_m, |grid| {
                 grid.effective_resolution_m
             }),
-            estimated_raw_mib: raw,
+            estimated_raw_mib: installed_raw,
             estimated_uncached_raw_mib: uncached_raw,
-            estimated_disk_mib: raw * 2.0,
+            estimated_disk_mib: installed_raw + uncached_raw,
             available_disk_mib: fs2::available_space(directory)? as f64 / MIB,
             cache_hits,
             cache_total,

@@ -150,8 +150,8 @@
             <label class="check-line"><input id="terrain-dom" type="checkbox" aria-describedby="terrain-dom-note"> Also download surface terrain</label>
             <p id="terrain-dom-note" class="hint" role="status" hidden></p>
             </details>
-            <button id="estimate-terrain" class="wide-button">Estimate terrain download</button>
-            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint" role="status"></p><div id="terrain-estimate-detail"></div><button id="prepare-terrain" class="wide-button" hidden>Download planned terrain</button></div>
+            <button id="estimate-terrain" class="wide-button">Estimate terrain</button>
+            <div id="terrain-estimate" hidden><p id="terrain-estimate-copy" class="hint" role="status"></p><div id="terrain-estimate-detail"></div><button id="prepare-terrain" class="wide-button" hidden>Prepare terrain</button></div>
           </div>
           <details><summary>Upload your own terrain files</summary>
           <label class="upload">＋ Add ground terrain<small>DTM · GeoTIFF · up to 512 MiB per tile</small><input id="dtm" class="visually-hidden" type="file" multiple accept=".tif,.tiff"></label>
@@ -273,12 +273,12 @@
             <p class="hint">Finer detail and larger radii take longer to calculate.</p>
             <div id="live-terrain-gap" class="live-terrain-gap" hidden>
               <p id="live-terrain-copy" class="hint"></p>
-              <button id="live-terrain-download" type="button" class="wide-button">Download terrain for coverage area</button>
+              <button id="live-terrain-download" type="button" class="wide-button">Prepare terrain for coverage area</button>
             </div>
             <div class="live-terrain-job">
             <progress id="coverage-terrain-progress" aria-label="Coverage terrain tiles downloaded" hidden></progress>
-            <button id="coverage-terrain-cancel" class="wide-button" hidden>Cancel coverage terrain download</button>
-            <button id="coverage-terrain-reconnect" class="wide-button" hidden>Reconnect to terrain download</button>
+            <button id="coverage-terrain-cancel" class="wide-button" hidden>Cancel terrain preparation</button>
+            <button id="coverage-terrain-reconnect" class="wide-button" hidden>Reconnect to terrain preparation</button>
             <p id="coverage-terrain-status" class="hint" role="status" hidden></p>
             </div>
           </div>

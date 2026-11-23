@@ -7,6 +7,7 @@ let alternativeSelecting=false;
 function setRoutePreflightBusy(value){routePreflightBusy=value;syncCoverageLocks();$('optimize').disabled=busy||value;$('clear-cache').disabled=busy||value;}
 let meshcoreRouters = [], routerPolicies = new Map(), selectedKnownRouterId = null;
 let manualRouters = [], selectedManualRouterId = null, undoStack = [], redoStack = [], lastHistoryPlan = null, resultStale = false, resultStaleReason = '';
+let loadedSharedProject = null;
 let projectInfo = null, baseRf = null, baseCandidates = null, autosaveTimer = null;
 let calibration;
 const defaultTerrainOptions = {requested_resolution_m:10,auto_resolution:true,include_dom:true,source:'auto',fallback:true};
@@ -126,7 +127,40 @@ function setMapHint(message='',transient=false){
   if(transient&&interactionMode==='browse')mapHintTimer=setTimeout(()=>setMapHint(),4000);
 }
 function status(message, error=false) {$('status').textContent=message;$('status').className=error?'error':'';const action=$('plan-action-status');if(action){action.textContent=message;action.title=message;action.className=error?'action-status error':'action-status';}}
-async function api(url, options={}) {const response=await fetch(url,options); if(!response.ok){const body=await response.json().catch(()=>({detail:response.statusText}));const detail=body.detail??body.error??response.statusText;const error=Error(typeof detail==='string'?detail:JSON.stringify(detail));error.status=response.status;error.issues=body.issues;throw error;}return response.json();}
+function planWriteRequest(url, method){
+  return (method==='PUT'&&url==='/api/coverage/targets')||
+    (method==='POST'&&['/api/projects/autosave','/api/projects/recover-previous','/api/terrain/prepare','/api/optimize'].includes(url));
+}
+function showProjectConflict(message){
+  setProjectSaveState(message,'conflict');
+}
+async function api(url, options={}){
+  const editingProject=loadedSharedProject;
+  const writesPlan=planWriteRequest(url,options.method);
+  if(editingProject&&(writesPlan||(!url.startsWith('/api/projects')&&url!=='/api/state'))){
+    const headers=new Headers(options.headers);
+    headers.set('x-repeaternet-project',editingProject.id);
+    if(writesPlan)headers.set('x-repeaternet-plan-revision',editingProject.revision);
+    options={...options,headers};
+  }
+  const response=await fetch(url,options);
+  if(!response.ok){
+    const body=await response.json().catch(()=>({detail:response.statusText}));
+    const detail=body.detail??body.error??response.statusText;
+    const error=Error(typeof detail==='string'?detail:JSON.stringify(detail));
+    error.status=response.status;error.issues=body.issues;
+    if(editingProject&&editingProject===loadedSharedProject&&error.status===409&&error.message.includes('Reload the project')){
+      error.projectConflict=true;
+      showProjectConflict(error.message);
+    }
+    throw error;
+  }
+  const data=await response.json();
+  if(writesPlan&&editingProject&&editingProject===loadedSharedProject&&data.plan_revision){
+    editingProject.revision=data.plan_revision;
+  }
+  return data;
+}
 function parseCoordinates(latitude,longitude){
   if(!latitude.trim()||!longitude.trim())return null;
   const lat=Number(latitude),lon=Number(longitude);
@@ -2039,6 +2073,8 @@ function updateCoverageTerrainAction(locked=$('coverage-start').disabled){
     coverageTerrainUnknownKey===current.key
     || (coverageTerrainCheck?.key===current.key&&coverageTerrainCheck.estimate?.tile_count>0)
   );
+  const estimate=coverageTerrainCheck?.key===current?.key?coverageTerrainCheck?.estimate:null;
+  button.textContent=terrainFromCache(estimate)?cachedTerrainAction(estimate):'Download terrain for coverage area';
   button.disabled=locked;
   if(!current||locked||$('workspace-coverage').hidden||coverageTerrainCheck?.key===current.key)return;
   coverageTerrainCheck=current;
@@ -2071,8 +2107,9 @@ async function requestCoverageTerrain(){
       setCoverageTerrainStatus('Installed terrain tiles already span this area. Any remaining gaps can be caused by missing elevation values or paths outside the area.');
       return;
     }
-    const copy=`${estimate.missing_area_km2.toLocaleString(undefined,{maximumFractionDigits:1})} km² missing · ${estimate.tile_count} tile(s) at ${estimate.effective_resolution_m} m · about ${estimate.estimated_raw_mib.toFixed(1)} MiB uncompressed · ${estimate.cache_hits}/${estimate.cache_total} product tiles cached. ${estimate.include_dom?'Ground and surface terrain included.':'Ground terrain included.'}`;
-    const confirmed=await askActionDialog({title:'Download terrain for coverage area?',copy,confirm:'Download terrain',terrainEstimate:estimate});
+    const copy = coverageTerrainEstimateCopy(estimate);
+    const action = terrainFromCache(estimate) ? cachedTerrainAction(estimate) : 'Download terrain';
+    const confirmed=await askActionDialog({title:action+' for coverage area?',copy,confirm:action,terrainEstimate:estimate});
     if(!confirmed){setCoverageTerrainStatus('');return;}
     if(currentCoverageTerrainRequest()?.key!==current.key)throw Error('The coverage area changed. Review a new terrain estimate.');
     const job=await api('/api/coverage/terrain/prepare',request);
@@ -2127,7 +2164,7 @@ async function cancelCoverageTerrain(){
   if(!jobId)return;
   try{
     await api(`/api/coverage/terrain/${encodeURIComponent(jobId)}/cancel`,{method:'POST'});
-    if(jobId===coverageTerrainJobId)setCoverageTerrainStatus('Cancelling coverage terrain download…');
+    if(jobId===coverageTerrainJobId)setCoverageTerrainStatus('Cancelling coverage terrain preparation…');
   }catch(error){if(jobId===coverageTerrainJobId)setCoverageTerrainStatus(error.message,true);}
 }
 function invalidateCoverageEstimate(message='Coverage inputs changed. Calculate again to use the new settings.'){
@@ -2257,15 +2294,23 @@ async function startCoverage(approved=coverageEstimate){
 }
 function cancelCoverage(){if(!coverageJob)return;api(`/api/coverage/jobs/${encodeURIComponent(coverageJob.job_id)}/cancel`,{method:'POST'}).then(()=>setCoverageStatus('Cancelling coverage; completed cells will remain available.')).catch(e=>setCoverageStatus(e.message,true));}
 let saveRevision=0,savedRevision=0,saveQueue=Promise.resolve(),saveState='saved';
-function setProjectSaveState(message,state){saveState=state;$('project-storage').textContent=message;$('project-storage').dataset.saveState=state;$('retry-save').hidden=state!=='failed';}
+function setProjectSaveState(message,state){
+  saveState=state;
+  const conflict=state==='conflict', button=$('retry-save');
+  $('project-storage').textContent=message;
+  $('project-storage').dataset.saveState=conflict?'failed':state;
+  button.hidden=state!=='failed'&&!conflict;
+  button.textContent=conflict?'Reload project':'Retry save';
+}
 function showProjectSaved(){setProjectSaveState(`Saved · ${formatBytes(projectInfo.storage_usage_bytes||0)} in this workspace`,'saved');}
-function renderProjects(data){if(!data)return;projectInfo=data;const selector=$('project-select'),items=data.items||[];selector.replaceChildren();for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;selector.append(option);}selector.value=data.active_id||'';if(saveState!=='failed'&&saveRevision===savedRevision)setProjectSaveState(`Saved · ${formatBytes(data.storage_usage_bytes||0)} in this workspace`,'saved');$('recover-project').hidden=!data.has_previous_revision;renderArchivedProjects(data.archived_items||[]);updatePlanReadiness();}
+function renderProjects(data){if(!data)return;projectInfo=data;const selector=$('project-select'),items=data.items||[];selector.replaceChildren();for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;selector.append(option);}selector.value=data.active_id||'';if(saveState!=='failed'&&saveState!=='conflict'&&saveRevision===savedRevision)setProjectSaveState(`Saved · ${formatBytes(data.storage_usage_bytes||0)} in this workspace`,'saved');$('recover-project').hidden=!data.has_previous_revision;renderArchivedProjects(data.archived_items||[]);updatePlanReadiness();}
 function renderArchivedProjects(items){const list=$('archived-project-list');if(!list)return;list.replaceChildren();$('archived-project-count').textContent=String(items.length);if(!items.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='No archived projects.';list.append(empty);return;}for(const item of items){const row=document.createElement('div'),name=document.createElement('span'),restore=document.createElement('button');row.className='archived-project-item';name.textContent=`${item.name} · archived ${new Date(item.updated_at*1000).toLocaleDateString()}`;restore.type='button';restore.textContent='Restore';restore.onclick=()=>void restoreProject(item);row.append(name,restore);list.append(row);}}
 function formatBytes(value){if(value<1024)return `${value} B`;const units=['KiB','MiB','GiB'];let size=value/1024,index=0;while(size>=1024&&index<units.length-1){size/=1024;index++;}return `${size.toFixed(1)} ${units[index]}`;}
 function scheduleAutosave(){
   const revision=++saveRevision;
-  setProjectSaveState('Saving changes…','saving');
   clearTimeout(autosaveTimer);
+  if(saveState==='conflict')return;
+  setProjectSaveState('Saving changes…','saving');
   autosaveTimer=setTimeout(()=>void autosaveNow(revision).catch(()=>{}),500);
 }
 function retryAutosaveAfterJob(projectId,revision){
@@ -2291,7 +2336,7 @@ async function autosaveNow(revision=saveRevision){
   clearTimeout(autosaveTimer);
   if(!projectInfo)return;
   const projectId=projectInfo.active_id,current=()=>projectInfo?.active_id===projectId&&revision===saveRevision;
-  setProjectSaveState('Saving changes…','saving');
+  if(saveState!=='conflict')setProjectSaveState('Saving changes…','saving');
   let saved;
   try{
     const snapshot=clone(plan());
@@ -2305,7 +2350,7 @@ async function autosaveNow(revision=saveRevision){
           setProjectSaveState('Changes will save when the job finishes','saving');
           retryAutosaveAfterJob(projectId,revision);
         }else showProjectSaved();
-      }else setProjectSaveState(`Save failed · ${error.message}`,'failed');
+      }else if(!error.projectConflict)setProjectSaveState(`Save failed · ${error.message}`,'failed');
     }
     throw error;
   }
@@ -2318,8 +2363,22 @@ async function flushAutosave(){
   await saveQueue;
   if(savedRevision<saveRevision)await autosaveNow();
 }
-$('retry-save').onclick=()=>void autosaveNow().catch(()=>{});
-async function refresh(){const data=await api('/api/state');terrainLoaded=data.terrain.dtm.length>0;coverageTerrainTileCounts={dtm:data.coverage_terrain?.dtm.length||0,dom:data.coverage_terrain?.dom.length||0};coverageTerrainLoaded=!!(coverageTerrainTileCounts.dtm||coverageTerrainTileCounts.dom);for(const kind of ['dtm','dom']){const count=$(kind+'-count');count.dataset.tileCount=data.terrain[kind].length;count.textContent=data.terrain[kind].length+' '+kind.toUpperCase()+' tiles';}$('surface-note').textContent=data.terrain.dom.length?'Surface terrain loaded — includes obstruction geometry.':'Surface obstruction data unavailable — terrain only.';if(!terrainLoaded){coverageLayer.clearLayers();$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';}$('coverage-note').className='hint';const cache=data.rf_cache||{};$('cache-stats').textContent=`RF cache · ${cache.entries||0} saved · ${cache.hits||0} reused · ${cache.misses||0} computed · ${cache.evictions||0} evicted`;renderProjects(data.projects);return data;}
+$('retry-save').onclick=async()=>{
+  if(saveState!=='conflict'){
+    await autosaveNow().catch(()=>{});
+    return;
+  }
+  if(savedRevision<saveRevision&&!await askActionDialog({title:'Reload project?',copy:'Reloading discards your unsaved edits on this page.',confirm:'Reload project'}))return;
+  location.reload();
+};
+async function refresh(){const data=await api('/api/state');if(data.projects.shared){
+  if(!loadedSharedProject)loadedSharedProject={id:data.projects.active_id,revision:data.projects.plan_revision};
+  if(loadedSharedProject.id!==data.projects.active_id){
+    const message='The active project changed in another browser. Reload the project.';
+    showProjectConflict(message);
+    const error=Error(message);error.projectConflict=true;throw error;
+  }
+}terrainLoaded=data.terrain.dtm.length>0;coverageTerrainTileCounts={dtm:data.coverage_terrain?.dtm.length||0,dom:data.coverage_terrain?.dom.length||0};coverageTerrainLoaded=!!(coverageTerrainTileCounts.dtm||coverageTerrainTileCounts.dom);for(const kind of ['dtm','dom']){const count=$(kind+'-count');count.dataset.tileCount=data.terrain[kind].length;count.textContent=data.terrain[kind].length+' '+kind.toUpperCase()+' tiles';}$('surface-note').textContent=data.terrain.dom.length?'Surface terrain loaded — includes obstruction geometry.':'Surface obstruction data unavailable — terrain only.';if(!terrainLoaded){coverageLayer.clearLayers();$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';}$('coverage-note').className='hint';const cache=data.rf_cache||{};$('cache-stats').textContent=`RF cache · ${cache.entries||0} saved · ${cache.hits||0} reused · ${cache.misses||0} computed · ${cache.evictions||0} evicted`;renderProjects(data.projects);return data;}
 function setBusy(value){busy=value;$('optimize').disabled=value||routePreflightBusy;$('cancel').hidden=!value;$('cancel').textContent=activeJobKind==='terrain'?'Cancel terrain preparation':'Cancel optimization';$('stop-keep').hidden=!value||activeJobKind!=='route';$('stop-keep').disabled=!value||lastSnapshotVersion===0;$('clear-cache').disabled=value||routePreflightBusy;document.querySelectorAll('aside input:not([data-display-only]), aside select:not([data-display-only]), [data-place], [data-clear], #open, #import-plan, #load-meshcore, #include-all, #include-none, #estimate-terrain, #prepare-terrain, #add-router, #add-router-coordinate, #add-target-coordinate, #project-select, #new-project, #rename-project, #recover-project, #duplicate-project, #archive-project, #delete-project').forEach(el=>el.disabled=value);Object.values(markers).forEach(marker=>value?marker.dragging.disable():marker.dragging.enable());for(const layer of routeLayer.getLayers())if(layer.dragging){if(value||resultStale||!layer._plannerDraggable)layer.dragging.disable();else layer.dragging.enable();}renderMeshcoreRouters();renderManualRouters();$('alternative-select').disabled=value||resultStale;setHistoryButtons();syncCoverageLocks();}
 function formatElapsed(){const seconds=Math.max(0,Math.floor((Date.now()-(jobStartedAt||Date.now()))/1000));return seconds<60?`${seconds} s`:`${Math.floor(seconds/60)} min ${String(seconds%60).padStart(2,'0')} s`;}
 function updateJobCard({kind='route',state='running',phase='',message='',progress=null,retry=false}){
@@ -2351,8 +2410,21 @@ document.querySelectorAll('[data-clear]').forEach(button=>button.onclick=async()
   try{await api('/api/terrain/'+kind,{method:'DELETE'});invalidate();await refresh();await updateTerrainCoverage();}catch(error){status(error.message,true);}
 });
 for(const id of ['terrain-resolution','terrain-auto','terrain-dom','terrain-source','terrain-fallback'])$(id).onchange=editTerrainControls;
+function terrainFromCache(estimate){
+  return estimate?.cache_total>0&&estimate.cache_hits===estimate.cache_total;
+}
+function cachedTerrainAction(estimate){
+  return 'Use '+estimate.cache_hits+' cached terrain '+(estimate.cache_hits===1?'tile':'tiles');
+}
+function coverageTerrainEstimateCopy(estimate){
+  return estimate.missing_area_km2.toLocaleString(undefined,{maximumFractionDigits:1})+' km² missing · '+estimate.summary+'. '+terrainEstimateCost(estimate);
+}
 function terrainEstimateCost(estimate){
-  return `${estimate.cache_hits}/${estimate.cache_total} tiles already cached · about ${estimate.estimated_disk_mib.toFixed(0)} MiB for the workspace and cache · ${estimate.available_disk_mib.toFixed(0)} MiB free on the server.`;
+  const missing=estimate.cache_total-estimate.cache_hits;
+  const download=missing>0
+    ? missing+' to fetch · about '+estimate.estimated_uncached_raw_mib.toLocaleString(undefined,{maximumFractionDigits:1})+' MiB uncompressed'
+    : 'No download needed';
+  return `${estimate.cache_hits}/${estimate.cache_total} tiles already cached · ${download} · about ${estimate.estimated_disk_mib.toFixed(0)} MiB for the workspace and cache · ${estimate.available_disk_mib.toFixed(0)} MiB free on the server.`;
 }
 function renderTerrainEstimateDetail(container,estimate){
   container.replaceChildren();
@@ -2396,7 +2468,8 @@ async function estimateTerrain(){
     renderTerrainEstimateDetail($('terrain-estimate-detail'),estimate);
     setTerrainDomNote();
     $('terrain-estimate').hidden=false;$('prepare-terrain').hidden=false;
-    status('Terrain download estimate ready. Review it before starting.');
+    $('prepare-terrain').textContent=terrainFromCache(estimate)?cachedTerrainAction(estimate):'Download terrain';
+    status('Terrain estimate ready. Review it before starting.');
   }catch(error){status(error.message,true);}
   finally{button.disabled=mapEditsLocked();}
 }
@@ -2419,7 +2492,8 @@ $('prepare-terrain').onclick=async()=>{
   const review=terrainEstimateReview;
   if(!review||mapEditsLocked()||!validTerrainResolution())return;
   const {estimate,operation}=review;
-  if(!await askActionDialog({title:'Download planned terrain?',copy:`${estimate.summary}. ${terrainEstimateCost(estimate)}`,confirm:'Download terrain'}))return;
+  const action=terrainFromCache(estimate)?cachedTerrainAction(estimate):'Download terrain';
+  if(!await askActionDialog({title:action+'?',copy:`${estimate.summary}. ${terrainEstimateCost(estimate)}`,confirm:action}))return;
   if(review!==terrainEstimateReview)return;
   try{await startTerrainPreparation(operation);}
   catch(error){if(error.status===409)clearTerrainEstimateReview();if(!busy)updateJobCard({kind:'terrain',state:'failed',phase:'Terrain preparation did not start',message:error.message});status(error.message,true);}
@@ -2435,6 +2509,7 @@ async function pollTerrainJob(){
     if(running){status(`${job.stage} · ${progress.known?`${progress.done}/${progress.total} tiles`:'tile progress not reported'}`);setTimeout(pollTerrainJob,800);return;}
     preparingTerrain=false;setBusy(false);activeJobKind=null;
     if(job.state==='terrain_ready'){
+      if(loadedSharedProject&&job.plan_revision)loadedSharedProject.revision=job.plan_revision;
       const continuation=pendingRouteContinuation;pendingRouteContinuation=null;
       updateJobCard({kind:'terrain',state:'complete',phase:'Terrain ready',message:'Ground terrain is ready.'});
       invalidate();const coverage=await updateTerrainCoverage(continuation?.snapshot);$('terrain-estimate').hidden=true;$('prepare-terrain').hidden=true;
@@ -2525,6 +2600,7 @@ async function restoreProjectResult(data){
   return true;
 }
 async function installProject(response){
+  if(loadedSharedProject)loadedSharedProject={id:response.id,revision:response.plan_revision};
   coverageTerrainCheck=null;coverageTerrainUnknownKey=null;setCoverageTerrainStatus('');
   for(const control of document.querySelectorAll('[data-project-transition-invalid]'))clearProjectTransitionError(control);
   setInteractionMode('browse');result=null;resultStale=false;resultStaleReason='';lastSnapshotVersion=0;activeJobId=null;activeJobKind=null;jobStartedAt=null;$('route-job-card').hidden=true;$('retry-job').hidden=true;coveragePollRequest++;coverageLoadRequest++;coverageLoadingRun=false;coverageJob=null;coverageDisplayInfo=null;coveragePreviewActive=false;coveragePreviewCells=[];coverageCells=[];coverageCursor=0;coverageStale=false;terrainReadiness=null;$('coverage-load-progress').hidden=true;$('coverage-result-progress').hidden=true;$('coverage-result-progress-copy').hidden=true;
@@ -2576,7 +2652,7 @@ async function transitionProject(operation,{allowInvalidCurrentPlan=false}={}){
   try{while(savedRevision<saveRevision)await autosaveNow(saveRevision);await operation();return true;}
   finally{switchingProject=false;syncCoverageLocks();setHistoryButtons();}
 }
-async function activateProject(id){if(!id||id===projectInfo?.active_id)return;try{const switched=await transitionProject(async()=>{const response=await api(`/api/projects/${encodeURIComponent(id)}/activate`,{method:'POST'});await installProject(response);});if(!switched)$('project-select').value=projectInfo?.active_id||'';}catch(error){status(error.message,true);await refresh();}}
+async function activateProject(id){if(!id||id===projectInfo?.active_id)return;try{const switched=await transitionProject(async()=>{const response=await api(`/api/projects/${encodeURIComponent(id)}/activate`,{method:'POST'});await installProject(response);});if(!switched)$('project-select').value=projectInfo?.active_id||'';}catch(error){status(error.message,true);await refresh().catch(()=>{});}}
 $('project-select').onchange=event=>activateProject(event.target.value);
 function askActionDialog({title,copy,label='',value='',confirm='Continue',danger=false,terrainEstimate}){
   const dialog=$('action-dialog'),form=$('action-dialog-form'),fieldLabel=$('action-dialog-field-label'),field=$('action-dialog-value'),confirmButton=$('action-dialog-confirm'),cancelButton=$('action-dialog-cancel');
@@ -2675,11 +2751,12 @@ $('optimize').onclick=async()=>{
     const estimate=await api('/api/terrain/estimate',sourceJsonRequest('POST',operation.snapshot));
     if(!routeOperationIsCurrent(operation))throw Error('Route settings changed while estimating terrain. Start again to use the latest settings.');
     const resolution=`Requested resolution ${operation.snapshot.terrain.requested_resolution_m} m${operation.snapshot.terrain.auto_resolution?' · automatic coarsening enabled':''}.`;
-    const confirmed=await askActionDialog({title:'Download terrain and find this route?',copy:`${estimate.summary}. ${resolution} ${terrainEstimateCost(estimate)}`,terrainEstimate:estimate,confirm:'Download and find route'});
-    if(!confirmed){status('Route search cancelled. No terrain was downloaded.');return;}
-    if(revision!==dataSourcesRevision)throw Error('Data sources changed. Estimate again before downloading.');
+    const action=terrainFromCache(estimate)?cachedTerrainAction(estimate):'Download terrain';
+    const confirmed=await askActionDialog({title:action+' and find this route?',copy:`${estimate.summary}. ${resolution} ${terrainEstimateCost(estimate)}`,terrainEstimate:estimate,confirm:action+' and find route'});
+    if(!confirmed){status('Route search cancelled.');return;}
+    if(revision!==dataSourcesRevision)throw Error('Data sources changed. Estimate again before preparing terrain.');
     if(!routeOperationIsCurrent(operation))throw Error('Route settings changed before terrain preparation. Start again to approve the current settings.');
-    pendingRouteContinuation=operation;status('Starting the approved terrain download…');await startTerrainPreparation(operation);
+    pendingRouteContinuation=operation;status('Starting terrain preparation…');await startTerrainPreparation(operation);
   }catch(error){pendingRouteContinuation=null;status(error.message,true);}
   finally{if(routePreflightBusy&&!pendingRouteContinuation&&!busy)setRoutePreflightBusy(false);}
 };

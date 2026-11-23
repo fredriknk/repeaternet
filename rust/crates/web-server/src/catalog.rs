@@ -23,6 +23,7 @@ type SessionLock = Arc<AsyncMutex<Option<Session>>>;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub store: ProjectStore,
+    pub shared_projects: bool,
     pub data_directory: PathBuf,
     pub terrain_limits: repeaternet_providers::sources::TileLimits,
     pub providers: Arc<Mutex<Arc<repeaternet_providers::sources::ProviderRegistry>>>,
@@ -52,6 +53,7 @@ impl AppState {
         });
         Self {
             store,
+            shared_projects: false,
             data_directory: data_directory.into(),
             terrain_limits: Default::default(),
             providers: Arc::new(Mutex::new(Arc::new(providers))),
@@ -255,7 +257,8 @@ pub(crate) fn project_item(project: Project) -> Value {
 }
 
 pub(crate) fn opened_project(project: Project) -> Value {
-    json!({"id": project.id, "name": project.name, "plan": project.plan})
+    json!({"id": project.id, "name": project.name, "plan": project.plan,
+        "plan_revision": plan_fingerprint(&project.plan, false)})
 }
 
 pub(crate) fn historical_result(

@@ -3,12 +3,12 @@ use std::time::UNIX_EPOCH;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Multipart, Path, Request, State},
-    http::{StatusCode, header, request::Parts},
+    http::{Method, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
 };
 use repeaternet_project_store::{
-    Error as StoreError, Project, ProjectStore, normalize_project_name,
+    Error as StoreError, Project, ProjectStore, SHARED_WORKSPACE_KEY, normalize_project_name,
 };
 use serde_json::{Map, Value, json};
 
@@ -224,26 +224,83 @@ impl From<StoreError> for ApiError {
     }
 }
 
+const PROJECT_HEADER: &str = "x-repeaternet-project";
+const PLAN_REVISION_HEADER: &str = "x-repeaternet-plan-revision";
+const PROJECT_CHANGED: &str = "The active project changed in another browser. Reload the project.";
+const PLAN_CHANGED: &str =
+    "The plan changed in another browser. Reload the project before editing.";
+
 #[derive(Clone)]
-pub(crate) struct Workspace(pub(crate) String);
+pub(crate) struct Workspace {
+    pub(crate) key: String,
+    project: Option<String>,
+    plan_revision: Option<String>,
+}
 
 impl FromRequestParts<AppState> for Workspace {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, _: &AppState) -> Result<Self, Self::Rejection> {
-        security::workspace(&parts.headers)
-            .map(Self)
-            .ok_or_else(workspace_required)
+    async fn from_request_parts(
+        parts: &mut Parts,
+        app: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        if !app.shared_projects {
+            return security::workspace(&parts.headers)
+                .map(|key| Self::worker(&key))
+                .ok_or_else(workspace_required);
+        }
+        let read = |name| {
+            parts
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let project = read(PROJECT_HEADER);
+        let plan_revision = read(PLAN_REVISION_HEADER);
+        let writes_plan = matches!(
+            (&parts.method, parts.uri.path()),
+            (
+                &Method::POST,
+                "/api/projects/autosave"
+                    | "/api/projects/recover-previous"
+                    | "/api/optimize"
+                    | "/api/terrain/prepare"
+            ) | (&Method::PUT, "/api/coverage/targets")
+        );
+        if writes_plan && (project.is_none() || plan_revision.is_none()) {
+            return Err(problem(
+                StatusCode::PRECONDITION_REQUIRED,
+                "Open the project to get its current plan revision",
+            ));
+        }
+        Ok(Self {
+            key: SHARED_WORKSPACE_KEY.to_owned(),
+            project,
+            plan_revision,
+        })
     }
 }
 
 impl Workspace {
+    pub fn worker(key: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            project: None,
+            plan_revision: None,
+        }
+    }
+
     pub async fn run<T: Send + 'static>(
         self,
         app: AppState,
         action: impl FnOnce(&AppState, &str, &mut Session) -> ApiResult<T> + Send + 'static,
     ) -> ApiResult<T> {
-        let key = self.0;
+        let Self {
+            key,
+            project,
+            plan_revision,
+        } = self;
         let mut session = app.session(&key).lock_owned().await;
         tokio::task::spawn_blocking(move || {
             if session.is_none() {
@@ -252,7 +309,17 @@ impl Workspace {
                 restore_project_route(&app, &key, &active, &mut opened)?;
                 *session = Some(opened);
             }
-            action(&app, &key, session.as_mut().expect("initialized workspace"))
+            let session = session.as_mut().expect("initialized workspace");
+            if project.as_ref().is_some_and(|id| id != &session.project_id) {
+                return Err(ApiError::conflict(PROJECT_CHANGED));
+            }
+            if let Some(expected) = plan_revision {
+                let current = active_project(&app.store, &key, session)?;
+                if expected != catalog::plan_fingerprint(&current.plan, false) {
+                    return Err(ApiError::conflict(PLAN_CHANGED));
+                }
+            }
+            action(&app, &key, session)
         })
         .await
         .map_err(ApiError::internal)?
@@ -438,10 +505,13 @@ async fn state(State(app): State<AppState>, workspace: Workspace) -> ApiResult<J
         if let Some(settings) = project.plan.get("coverage") {
             payload["coverage_settings"] = settings.clone();
         }
+        let plan_revision = catalog::plan_fingerprint(&project.plan, false);
         payload["plan"] = if project.plan.as_object().is_some_and(Map::is_empty) { Value::Null } else { project.plan };
         payload["projects"] = json!({
             "active_id": project.id,
             "active_name": project.name,
+            "shared": app.shared_projects,
+            "plan_revision": plan_revision,
             "has_previous_revision": project.previous_plan.is_some(),
             "items": store.list_active(key)?.into_iter().map(catalog::project_item).collect::<Vec<_>>(),
             "archived_items": store.list_archived(key)?.into_iter().map(catalog::project_item).collect::<Vec<_>>(),
@@ -495,6 +565,7 @@ async fn autosave(
                 "ok": true, "project_id": saved.id,
                 "updated_at": UNIX_EPOCH.elapsed().unwrap_or_default().as_secs_f64(),
                 "has_previous_revision": saved.previous_plan.is_some(),
+                "plan_revision": catalog::plan_fingerprint(&saved.plan, false),
                 "route_result_available": session.route_result.is_some(),
             })))
         })
@@ -701,7 +772,8 @@ async fn save_targets(
         let mut project = active_project(&app.store, key, session)?;
         project.plan["coverage_targets"] = targets.clone();
         save_plan(&app.store, key, &project.id, &project.plan)?;
-        Ok(Json(json!({"ok": true, "count": targets["features"].as_array().map_or(0, Vec::len), "targets": targets})))
+        Ok(Json(json!({"ok": true, "count": targets["features"].as_array().map_or(0, Vec::len), "targets": targets,
+            "plan_revision": catalog::plan_fingerprint(&project.plan, false)})))
     }).await
 }
 
