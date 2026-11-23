@@ -4,6 +4,7 @@ mod cache;
 mod candidates;
 mod endpoint_access;
 mod graph;
+mod mesh;
 mod optimizer;
 mod parallel;
 mod paths;
@@ -15,6 +16,7 @@ pub use candidates::{
     candidate_grid_spacing, dense_corridor_half_width_m, generate_candidates, SiteFilter,
 };
 pub use graph::RoutingGraph;
+pub use mesh::connect_mesh;
 pub use optimizer::{
     Cancellation, LinkEvaluation, OptimizationRequest, OptimizationResult, Progress,
     RouteOptimizer, SearchHooks, SearchStatus, Stage,

@@ -69,6 +69,88 @@ fn link(source: &str, target: &str, margin: f64) -> LinkResult {
     }
 }
 
+#[test]
+fn mesh_prefers_one_shared_router_to_stronger_separate_pairwise_routes() {
+    let mut sites = vec![
+        site("Alice", 0.0, 0.0),
+        site("Bob", 10.0, 0.0),
+        site("Frank", 5.0, 8.0),
+    ];
+    for client in &mut sites {
+        client.rf.kind = SiteKind::Client;
+    }
+    sites.extend(["AliceBob", "BobFrank", "AliceFrank", "Shared"].map(|id| site(id, 5.0, 3.0)));
+    let mut links = vec![
+        link("Alice", "AliceBob", 20.0),
+        link("Bob", "AliceBob", 20.0),
+        link("Bob", "BobFrank", 20.0),
+        link("Frank", "BobFrank", 20.0),
+        link("Alice", "AliceFrank", 20.0),
+        link("Frank", "AliceFrank", 20.0),
+    ];
+    for client in ["Alice", "Bob", "Frank"] {
+        links.push(link(client, "Shared", 9.0));
+    }
+    let settings = CandidateSettings {
+        maximum_hops: 2,
+        ..CandidateSettings::default()
+    };
+    let solutions = connect_mesh(
+        &RoutingGraph::new(&sites, &links).unwrap(),
+        &settings,
+        &|| false,
+    );
+    assert_eq!(solutions[0].router_ids, ["Shared"]);
+    assert_eq!(solutions[0].new_router_count(), 1);
+    assert_eq!(solutions[0].client_paths.len(), 3);
+    assert_eq!(solutions[0].links.len(), 3);
+    assert!(solutions[0]
+        .client_paths
+        .values()
+        .all(|paths| paths[0][1] == "Shared"));
+    let pairwise = connect_mesh(
+        &RoutingGraph::new(&sites, &links[..6]).unwrap(),
+        &settings,
+        &|| false,
+    );
+    assert_eq!(pairwise[0].new_router_count(), 3);
+    assert_eq!(pairwise[0].minimum_margin_db(), 20.0);
+}
+
+#[test]
+fn mesh_clients_cannot_relay_and_required_routers_must_be_connected() {
+    let mut sites = vec![
+        site("Alice", 0.0, 0.0),
+        site("Bob", 10.0, 0.0),
+        site("Frank", 5.0, 8.0),
+    ];
+    for client in &mut sites {
+        client.rf.kind = SiteKind::Client;
+    }
+    let mut links = vec![link("Alice", "Bob", 10.0), link("Bob", "Frank", 10.0)];
+    let settings = CandidateSettings::default();
+    let solve = |sites: &[PlanningSite], links: &[LinkResult]| {
+        connect_mesh(
+            &RoutingGraph::new(sites, links).unwrap(),
+            &settings,
+            &|| false,
+        )
+    };
+    assert!(solve(&sites, &links).is_empty());
+    links.push(link("Alice", "Frank", 9.0));
+    assert_eq!(solve(&sites, &links)[0].router_count(), 0);
+    let mut required = site("Required", 3.0, 4.0);
+    required.origin = SiteOrigin::Known;
+    required.policy = RouterPolicy::Required;
+    sites.push(required);
+    assert!(solve(&sites, &links).is_empty());
+    links.push(link("Bob", "Required", 5.0));
+    let solution = &solve(&sites, &links)[0];
+    assert_eq!(solution.router_ids, ["Required"]);
+    assert_eq!(solution.new_router_count(), 0);
+    assert_eq!(solution.client_paths.len(), 3);
+}
+
 struct Terrain {
     resolution: f64,
     ridges: &'static [f64],

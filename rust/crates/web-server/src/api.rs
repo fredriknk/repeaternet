@@ -600,6 +600,7 @@ async fn autosave(
                 .remove("plan")
                 .filter(Value::is_object)
                 .ok_or_else(|| ApiError::invalid("Plan must be a JSON object"))?;
+            crate::route_inputs::validate_plan_mode(&mut plan)?;
             if let Some(collection) = plan.get_mut("coverage_targets") {
                 *collection = targets::normalize(collection).map_err(ApiError::invalid)?;
             }
@@ -849,7 +850,21 @@ async fn export(
             if !app.store.sync_plan_mirror(key, &project.id)? {
                 return Err(ApiError::missing("Active project is no longer available"));
             }
-            let plan = serde_json::to_vec_pretty(&project.plan).map_err(ApiError::internal)?;
+            let mut plan = project.plan;
+            if plan["mode"] == "mesh"
+                && let Ok(route) = route_http::current(app, key, session)
+                && route["found"] == true
+            {
+                    plan["mesh_topology"] = json!({
+                        "sites": route["route"],
+                        "links": route["links"].as_array().into_iter().flatten().map(|link| json!({
+                            "source_id": link["source_id"], "target_id": link["target_id"],
+                            "distance_m": link["distance_m"], "worst_margin_db": link["worst_margin_db"],
+                        })).collect::<Vec<_>>(),
+                        "client_pairs": route["client_pairs"],
+                    });
+            }
+            let plan = serde_json::to_vec_pretty(&plan).map_err(ApiError::internal)?;
             Ok((
                 [
                     (header::CONTENT_TYPE, "application/json"),

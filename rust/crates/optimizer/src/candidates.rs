@@ -1,5 +1,6 @@
 use crate::{CandidateSettings, OptimizationError, PlanningSite};
 use repeaternet_rf_core::{Point, RfError, Site, TerrainLayer, TerrainSource};
+use repeaternet_terrain::corridor::MeshArea;
 use std::collections::BTreeMap;
 
 /// Batch eligibility predicate for generated candidates (for example, road proximity).
@@ -136,11 +137,12 @@ pub(crate) fn generate(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(Vec<PlanningSite>, [usize; 2]), OptimizationError> {
     generate_grid(
-        terrain, bounds, anchors, settings, exclusions, filter, cancelled, false,
+        terrain, bounds, anchors, settings, exclusions, filter, cancelled, false, None,
     )
     .map(|(sites, counts, _)| (sites, counts))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_with_access_pool(
     terrain: &dyn TerrainSource,
     bounds: [f64; 4],
@@ -149,9 +151,10 @@ pub(crate) fn generate_with_access_pool(
     exclusions: &[Vec<Point>],
     filter: Option<&SiteFilter<'_>>,
     cancelled: &dyn Fn() -> bool,
+    mesh: Option<&MeshArea>,
 ) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
     generate_grid(
-        terrain, bounds, anchors, settings, exclusions, filter, cancelled, true,
+        terrain, bounds, anchors, settings, exclusions, filter, cancelled, true, mesh,
     )
 }
 
@@ -167,11 +170,18 @@ fn generate_grid(
     filter: Option<&SiteFilter<'_>>,
     cancelled: &dyn Fn() -> bool,
     collect_access_pool: bool,
+    mesh: Option<&MeshArea>,
 ) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
     if settings.candidates_per_cell == 0 || cancelled() {
         return Ok((Vec::new(), [0; 2], Vec::new()));
     }
     let area = SearchArea::new(anchors[0], anchors[1], settings);
+    let dense = |point: Point| {
+        mesh.map_or_else(
+            || area.dense(point),
+            |area_hull| area_hull.distance_to(point) <= area.dense_width,
+        )
+    };
     let spacing = candidate_grid_spacing(terrain, settings);
     if bounds
         .iter()
@@ -217,8 +227,11 @@ fn generate_grid(
                 };
                 // The sparse ring only looks for dominant summits, so half the
                 // grid resolution on each axis is enough there.
-                (area.includes(point) && (area.dense(point) || (column % 2 == 0 && row % 2 == 0)))
-                    .then_some(point)
+                let distance = mesh.map(|hull| hull.distance_to(point));
+                let in_area = distance.map_or_else(|| area.includes(point), |d| d <= area.width);
+                let in_dense =
+                    distance.map_or_else(|| area.dense(point), |d| d <= area.dense_width);
+                (in_area && (in_dense || (column % 2 == 0 && row % 2 == 0))).then_some(point)
             })
             .collect();
         if points.is_empty() {
@@ -320,7 +333,7 @@ fn generate_grid(
         site.quality = (site.ground - min) / span
             - site.slope.min(1.0) * 0.35
             - (obstruction / 20.0).min(1.0) * 0.25;
-        let key = if area.dense(site.point) {
+        let key = if dense(site.point) {
             (false, cell_key(site.point, settings.cell_size_m))
         } else {
             (
@@ -348,7 +361,7 @@ fn generate_grid(
             return Ok((Vec::new(), filter_counts, Vec::new()));
         }
         cell.sort_unstable_by(rank);
-        let per_cell = if area.dense(samples[cell[0]].point) {
+        let per_cell = if dense(samples[cell[0]].point) {
             settings.candidates_per_cell
         } else {
             1

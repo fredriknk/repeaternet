@@ -257,7 +257,7 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
             names.join(", ")
         )));
     }
-    if points[0] == points[1] {
+    if !inputs.mesh && points[0] == points[1] {
         return Err(ApiError::invalid("Place endpoints at different locations"));
     }
     let settings = &inputs.candidates;
@@ -351,7 +351,7 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
             })
         })
         .collect::<ApiResult<Vec<_>>>()?;
-    let fixed_routers = sites.split_off(2);
+    let fixed_routers = sites.split_off(inputs.client_count);
     let request = OptimizationRequest {
         clients: sites,
         fixed_routers,
@@ -649,7 +649,7 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         {
             return;
         }
-        let mut output = route_output::build(snapshot, &transform, &inputs.rf_payload);
+        let mut output = route_output::build(snapshot, &transform, &inputs);
         if add_overlay(&mut output).is_err() {
             return;
         }
@@ -686,17 +686,18 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
     } else {
         optimizer
     };
-    let result = optimizer
-        .optimize(
-            request,
-            SearchHooks {
-                cancellation: Some(&cancellation),
-                progress: Some(&mut progress),
-                solution_progress: Some(&mut publish),
-            },
-        )
-        .map_err(|error| ApiError::invalid(error.to_string()))?;
-    let mut output = route_output::build(result, &transform, &inputs.rf_payload);
+    let hooks = SearchHooks {
+        cancellation: Some(&cancellation),
+        progress: Some(&mut progress),
+        solution_progress: Some(&mut publish),
+    };
+    let result = if inputs.mesh {
+        optimizer.optimize_mesh(request, hooks)
+    } else {
+        optimizer.optimize(request, hooks)
+    }
+    .map_err(|error| ApiError::invalid(error.to_string()))?;
+    let mut output = route_output::build(result, &transform, &inputs);
     if !cancelled() {
         add_overlay(&mut output)?;
     }

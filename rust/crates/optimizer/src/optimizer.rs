@@ -380,6 +380,23 @@ impl<'a> RouteOptimizer<'a> {
         request: OptimizationRequest,
         hooks: SearchHooks<'_>,
     ) -> Result<OptimizationResult, OptimizationError> {
+        self.optimize_mode(request, hooks, false)
+    }
+
+    pub fn optimize_mesh(
+        &self,
+        request: OptimizationRequest,
+        hooks: SearchHooks<'_>,
+    ) -> Result<OptimizationResult, OptimizationError> {
+        self.optimize_mode(request, hooks, true)
+    }
+
+    fn optimize_mode(
+        &self,
+        request: OptimizationRequest,
+        hooks: SearchHooks<'_>,
+        mesh: bool,
+    ) -> Result<OptimizationResult, OptimizationError> {
         let builtin = LinkEvaluator::new(self.terrain, self.rf);
         let mut search = Search {
             settings: self.settings,
@@ -406,6 +423,7 @@ impl<'a> RouteOptimizer<'a> {
             certified_by_count: BTreeMap::new(),
             diagnostics: Vec::new(),
             seeds: Vec::new(),
+            mesh,
         };
         if search.hooks.cancelled() {
             return Ok(search.interrupted());
@@ -418,7 +436,7 @@ impl<'a> RouteOptimizer<'a> {
         let automatic_candidates = request.candidates.is_none()
             && self.settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly;
         let (sites, filter_counts, access_budget) =
-            self.prepare_sites(request, &search.rf, &|| search.hooks.cancelled())?;
+            self.prepare_sites(request, &search.rf, &|| search.hooks.cancelled(), mesh)?;
         search.sites = sites;
         search.access_budget = access_budget;
         search.generated_candidates = automatic_candidates;
@@ -494,6 +512,7 @@ impl<'a> RouteOptimizer<'a> {
         request: OptimizationRequest,
         evaluation: &RfEvaluation<'_>,
         cancelled: &dyn Fn() -> bool,
+        mesh: bool,
     ) -> Result<PreparedSites, OptimizationError> {
         let OptimizationRequest {
             clients,
@@ -597,7 +616,11 @@ impl<'a> RouteOptimizer<'a> {
             if settings.exhaustive_screening && settings.candidates_per_cell > 0 {
                 access_budget = access::ACCESS_PER_TERMINAL * terminals.len();
             }
-            let network = terminals.len() > 2;
+            let network = mesh || terminals.len() > 2;
+            let mesh_area = mesh.then(|| {
+                let points: Vec<_> = terminals.iter().map(|site| site.rf.position).collect();
+                repeaternet_terrain::corridor::MeshArea::new(&points)
+            });
             let (mut low, mut high) = (terminals[0].rf.position, terminals[1].rf.position);
             if network {
                 for site in &terminals {
@@ -630,6 +653,7 @@ impl<'a> RouteOptimizer<'a> {
                     &exclusions,
                     self.site_filter,
                     cancelled,
+                    mesh_area.as_ref(),
                 )?;
                 let mut clutter_heights = BTreeMap::new();
                 let mut configure_clutter = |site: &mut Site| {
@@ -701,7 +725,7 @@ impl<'a> RouteOptimizer<'a> {
                         candidates_per_cell: 289,
                         ..settings.clone()
                     };
-                    let (samples, checked) = crate::candidates::generate(
+                    let (mut samples, checked) = crate::candidates::generate(
                         self.terrain,
                         local_bounds,
                         [low, high],
@@ -710,6 +734,11 @@ impl<'a> RouteOptimizer<'a> {
                         self.site_filter,
                         cancelled,
                     )?;
+                    if let Some(area) = &mesh_area {
+                        samples.retain(|site| {
+                            area.distance_to(site.rf.position) <= settings.corridor_width_m
+                        });
+                    }
                     counts[0] += checked[0];
                     counts[1] += checked[1];
                     Ok(samples)
@@ -909,6 +938,7 @@ impl RfEvaluation<'_> {
 }
 
 struct Search<'a, 'b> {
+    mesh: bool,
     settings: &'a CandidateSettings,
     terrain: &'a (dyn TerrainSource + Sync),
     site_filter: Option<&'a SiteFilter<'a>>,
@@ -945,6 +975,9 @@ impl Search<'_, '_> {
             .enumerate()
             .filter_map(|(i, site)| (site.is_client() || site.is_required()).then_some(i))
             .collect();
+        if self.mesh {
+            return self.run_mesh(&initial);
+        }
         let access = self.add_terminal_access_sites(&initial)?;
         if self.hooks.cancelled() {
             return Ok(self.interrupted());
@@ -1065,6 +1098,36 @@ impl Search<'_, '_> {
         result
     }
 
+    fn run_mesh(
+        mut self,
+        terminals: &BTreeSet<usize>,
+    ) -> Result<OptimizationResult, OptimizationError> {
+        self.screen(terminals)?;
+        loop {
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            self.hooks.notify(Stage::SearchingTopologies, 0, 1);
+            let graph = RoutingGraph::from_links(&self.sites, self.links.values())?;
+            let mut alternatives =
+                crate::connect_mesh(&graph, self.settings, &|| self.hooks.cancelled());
+            self.hooks.notify(Stage::SearchingTopologies, 1, 1);
+            let pending = self.pending_pairs(&alternatives);
+            if !pending.is_empty() {
+                self.validate_pairs(pending)?;
+                self.publish_certified(&alternatives)?;
+                continue;
+            }
+            self.refine_mesh(&mut alternatives)?;
+            self.restore_profiles(&mut alternatives)?;
+            return Ok(if self.hooks.cancelled() {
+                self.interrupted()
+            } else {
+                self.finish(alternatives)
+            });
+        }
+    }
+
     fn solve(
         &self,
         settings: &CandidateSettings,
@@ -1076,7 +1139,9 @@ impl Search<'_, '_> {
     fn screen(&mut self, terminals: &BTreeSet<usize>) -> Result<(), OptimizationError> {
         if self.settings.exhaustive_screening {
             self.exhaustive_screen(terminals, false)?;
-            self.seed_planned_routes();
+            if !self.mesh {
+                self.seed_planned_routes();
+            }
             return Ok(());
         }
         let mut pairs = screened_pairs(
@@ -1508,8 +1573,14 @@ impl Search<'_, '_> {
                 continue;
             }
             let graph = RoutingGraph::from_links(&solution.sites, self.links.values())?;
-            if let Some(mut topology) = crate::topology::certify_installation(&graph, self.settings)
-            {
+            let topology = if self.mesh {
+                crate::mesh::mesh_installation(&graph, self.settings.maximum_hops, &|| {
+                    self.hooks.cancelled()
+                })
+            } else {
+                crate::topology::certify_installation(&graph, self.settings)
+            };
+            if let Some(mut topology) = topology {
                 topology
                     .diagnostics
                     .push("Retained a route verified during final-resolution link checks.".into());
@@ -1596,7 +1667,15 @@ impl Search<'_, '_> {
         alternatives: Vec<NetworkSolution>,
         search_complete: bool,
     ) -> OptimizationResult {
-        let active_index = select_active_solution_index(&alternatives, self.settings.priority);
+        let active_index = if self.mesh {
+            alternatives
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| crate::mesh::compare(a, b))
+                .map(|(index, _)| index)
+        } else {
+            select_active_solution_index(&alternatives, self.settings.priority)
+        };
         let mut diagnostics = if let Some(index) = active_index {
             alternatives[index].diagnostics.clone()
         } else {

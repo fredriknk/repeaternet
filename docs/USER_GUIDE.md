@@ -99,11 +99,49 @@ or **Review terrain gaps** when it needs your attention. For a first search,
 
 ### Endpoints
 
+**Planning mode** defaults to **Endpoints (A→B)**.
 Enter WGS84 latitude and longitude, separated by a comma, in **Start point** (A)
 and **Destination** (B). You can also use **A** or **B** in the step, **Set A**
 or **Set B** on the map, or drag either pin. Check where both pins landed.
 
 ![Endpoints step with latitude and longitude for the Oslo and Harestua endpoints](images/route-endpoints.png)
+
+### Mesh and named clients
+
+Choose **Mesh** in **Planning mode** to connect two or more named clients.
+The step changes to **Clients**. Use **Add on map** and click a location, or
+choose **Add by coordinates**. Enter a name and antenna height for each client.
+Each client appears as a named diamond. Drag it to move it, or right-click
+(long-press on touch, Shift+F10 with the marker focused) to edit it. You can
+also edit or remove it from the list. **Undo** reverses each edit. Switching to
+**Endpoints (A→B)** keeps your client list and restores your A/B locations.
+
+![The Clients step with Frank, Bob and Alice, their antenna heights and their edit controls](images/mesh-clients.png)
+
+Choose **Show coverage** or **Hide coverage** from a client's map menu to
+toggle its live handheld coverage. In **2 Coverage**, the **Named clients**
+source group contains their coverage controls.
+
+Choose **Find mesh** after placing your clients. Downloads cover the area
+around the clients and required routers, plus the search buffer. Every client
+pair must have a working path. Clients can use a direct link or relay through
+routers. Clients never relay for each other.
+
+The planner ranks installations by the fewest additional router sites it must
+find, then by the strongest weakest link and the smallest largest hop count
+between clients. It can use existing MeshCore routers and proposed routers
+you placed, subject to the infrastructure and site policies. The new-router
+limit counts sites added by the search. Maximum hops applies to each pair.
+
+In **Analysis**, check whether all clients are connected, the number of new
+routers needed, the weakest link and the largest pair hop count. The
+**Client pairs** table shows each path and its weakest margin. Select an
+alternative or open a link profile as you would for an endpoint route. CSV
+includes the named sites on every mesh link, GeoJSON includes sites, links and
+pair paths, and plan JSON includes the client list and any current certified
+mesh topology. Importing a plan restores its inputs for a fresh search.
+
+![The mesh client-pair table showing direct and relayed paths with hop counts and margins](images/mesh-client-pairs.png)
 
 ### Terrain
 
@@ -986,8 +1024,8 @@ obstacles and antenna placement.
 
 ## Limitations
 
-- The dashboard plans between two endpoints. The search is bounded and can
-  use heuristics, so route quality depends on the area, candidate spacing,
+- Endpoint and mesh searches are bounded and can use heuristics, so connection
+  quality depends on the area, candidate spacing,
   equipment assumptions and search limits. It cannot establish global
   optimality across the landscape.
 - Sampled profiles can miss obstacles between samples. Surface data may omit

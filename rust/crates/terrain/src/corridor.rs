@@ -2,10 +2,36 @@
 
 use geo::{
     orient::{Direction, Orient},
-    BoundingRect, Coord, LineString, MultiPolygon, Polygon, Rect,
+    BoundingRect, Buffer, ConvexHull, Coord, Distance, Euclidean, LineString, MultiPoint,
+    MultiPolygon, Polygon, Rect,
 };
 
 use crate::{Bounds, LonLat, Point, TerrainError};
+
+/// The projected hull shared by mesh candidate generation and terrain planning.
+pub struct MeshArea(Polygon<f64>);
+
+impl MeshArea {
+    pub fn new(points: &[Point]) -> Self {
+        let points = MultiPoint::from_iter(points.iter().map(|point| (point.x, point.y)));
+        Self(points.convex_hull())
+    }
+
+    pub fn distance_to(&self, point: Point) -> f64 {
+        Euclidean.distance(&geo::Point::new(point.x, point.y), &self.0)
+    }
+
+    pub fn buffered(&self, width: f64) -> MultiPolygon<f64> {
+        // Geo's hull of collinear sites has zero area. Buffer the line
+        // itself so two-client meshes and collinear layouts get round ends.
+        let ring = self.0.exterior();
+        if ring.0.len() <= 3 {
+            ring.buffer(width)
+        } else {
+            self.0.buffer(width)
+        }
+    }
+}
 
 /// Inclusive membership in a straight corridor extending one half-width
 /// along the line past each endpoint.
@@ -276,4 +302,24 @@ fn validate_buffer<'a>(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod mesh_tests {
+    use super::*;
+    use geo::Contains;
+
+    #[test]
+    fn mesh_buffer_includes_hull_and_round_ends() {
+        let point = |x, y| Point { x, y };
+        let endpoints = [point(0.0, 0.0), point(4.0, 0.0)];
+        let line = MeshArea::new(&endpoints);
+        assert_eq!(line.distance_to(point(2.0, 0.0)), 0.0);
+        assert!(line.buffered(1.0).contains(&geo::Point::new(-0.8, 0.0)));
+        assert!(!line.buffered(1.0).contains(&geo::Point::new(-0.9, 0.9)));
+        let triangle = MeshArea::new(&[endpoints[0], endpoints[1], point(2.0, 4.0)]);
+        assert_eq!(triangle.distance_to(point(2.0, 3.0)), 0.0);
+        assert!(triangle.buffered(1.0).contains(&geo::Point::new(2.0, 4.8)));
+        assert!(triangle.distance_to(point(0.0, 3.0)) > 1.0);
+    }
 }

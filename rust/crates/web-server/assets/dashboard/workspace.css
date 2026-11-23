@@ -736,3 +736,30 @@ aside summary { font-size: 13px; }
     bottom: 72px;
   }
 }
+.mesh-client-list {
+  padding: 0;
+  margin: 8px 0;
+  list-style: none;
+}
+.mesh-client-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.mesh-client-list strong,
+.mesh-client-list small { display: block; overflow-wrap: anywhere; }
+.mesh-client-list small { color: var(--muted); font-size: 12px; }
+.mesh-client-list button,
+#mesh-client-fields button { min-height: 36px; }
+#mesh-client-editor { margin-top: 10px; }
+#mesh-pairs { margin-block: 12px; }
+#mesh-pairs h3 { margin: 0 0 6px; }
+#mesh-pairs th, #mesh-pairs td { font-size: 12px; }
+#mesh-pairs td:first-child { white-space: normal; min-width: 9rem; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .mesh-client-list button,
+  #mesh-client-fields button { min-height: 44px; }
+}
