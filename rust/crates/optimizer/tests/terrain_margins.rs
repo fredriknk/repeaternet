@@ -51,7 +51,7 @@ fn candidate_settings() -> CandidateSettings {
     CandidateSettings {
         coarse_sample_step_m: 200.0,
         final_sample_step_m: CERTIFICATION_MAX_STEP_M,
-        maximum_solution_routers: 1,
+        maximum_new_routers: 1,
         parallel_workers: 1,
         ..CandidateSettings::default()
     }

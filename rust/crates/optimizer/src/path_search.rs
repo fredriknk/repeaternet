@@ -203,6 +203,10 @@ impl Search<'_, '_> {
     ) -> LinkGraph {
         LinkGraph::new(
             self.sites.iter().map(|site| site.rf.position).collect(),
+            self.sites
+                .iter()
+                .map(crate::PlanningSite::needs_new_router)
+                .collect(),
             links
                 .into_iter()
                 .filter(|(_, link)| link.valid)
@@ -224,6 +228,10 @@ impl Search<'_, '_> {
             .map(|(&key, link)| (key, Screened::from(link)));
         LinkGraph::new(
             self.sites.iter().map(|site| site.rf.position).collect(),
+            self.sites
+                .iter()
+                .map(crate::PlanningSite::needs_new_router)
+                .collect(),
             coarse.chain(links),
         )
     }
@@ -236,7 +244,8 @@ impl Search<'_, '_> {
             first,
             last,
             &required,
-            self.settings.maximum_solution_routers,
+            self.settings.maximum_hops,
+            self.settings.maximum_new_routers,
             &|| self.hooks.cancelled(),
         )
         .into_iter()

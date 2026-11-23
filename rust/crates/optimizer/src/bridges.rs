@@ -1,6 +1,7 @@
 use super::{OptimizationError, Pair, RoutingGraph, Search, Stage};
 use crate::{pair, PlanningSite};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 const SOURCES_PER_ROUND: usize = 12;
 const MAX_ROUNDS: usize = 16;
@@ -20,13 +21,9 @@ impl Search<'_, '_> {
             let pairs = {
                 let graph = self.certified_graph()?;
                 let terminals = self.bridge_terminals(&graph, terminals);
-                let budget = self.settings.maximum_solution_routers;
-                let required = terminals
-                    .iter()
-                    .filter(|&&i| graph.sites[i].is_required())
-                    .count();
+                let budget = self.settings.maximum_new_routers;
                 let paths = TerminalPaths::new(&graph, &terminals);
-                if let Some(seed) = paths.seed(&graph, budget) {
+                if let Some(seed) = paths.seed(&graph, budget, self.settings.maximum_hops) {
                     self.seeds.push(seed);
                     return Ok(true);
                 }
@@ -40,16 +37,11 @@ impl Search<'_, '_> {
                     indices: &indices,
                     checked: &self.final_checked,
                     distance_limit: self.settings.maximum_link_distance_m,
+                    maximum_hops: self.settings.maximum_hops,
                     cancelled: &|| self.hooks.cancelled(),
                 };
                 paths.farthest_first().into_iter().find_map(|right| {
-                    context.next_pairs(
-                        &paths.anchor,
-                        right,
-                        budget - required,
-                        &mut expanded,
-                        remaining,
-                    )
+                    context.next_pairs(&paths.anchor, right, budget, &mut expanded, remaining)
                 })
             };
             let Some(pairs) = pairs else {
@@ -75,7 +67,11 @@ impl Search<'_, '_> {
             let graph = self.certified_graph()?;
             let terminals = self.bridge_terminals(&graph, terminals);
             let paths = TerminalPaths::new(&graph, &terminals);
-            if let Some(seed) = paths.seed(&graph, self.settings.maximum_solution_routers) {
+            if let Some(seed) = paths.seed(
+                &graph,
+                self.settings.maximum_new_routers,
+                self.settings.maximum_hops,
+            ) {
                 self.seeds.push(seed);
             }
             return Ok(true);
@@ -119,7 +115,7 @@ impl Search<'_, '_> {
             .filter(|&&node| graph.neighbors[node].is_empty())
             .map(|&node| graph.sites[node].rf.id.as_str())
             .collect();
-        let budget = self.settings.maximum_solution_routers;
+        let budget = self.settings.maximum_new_routers;
         let message = if !isolated.is_empty() {
             format!(
                 "Isolated endpoints or required routers have no usable links in the search graph: {}.",
@@ -130,18 +126,15 @@ impl Search<'_, '_> {
             if paths.disconnected() {
                 "The search graph has disconnected components containing endpoints or required routers.".into()
             } else {
-                let required = terminals
-                    .iter()
-                    .filter(|&&i| graph.sites[i].is_required())
-                    .count();
-                let lower_bound = required + paths.maximum_optional_routers();
+                let lower_bound = paths.maximum_new_routers();
                 if lower_bound > budget {
                     format!(
-                        "The terminals are connected in the search graph but over budget: at least {lower_bound} routers are needed with a limit of {budget}."
+                        "The terminals are connected in the search graph but over budget: at least {lower_bound} new routers are needed with a limit of {budget}."
                     )
                 } else {
                     format!(
-                        "The search graph connects the endpoints and required routers, but no certified mesh was found within the {budget}-router limit."
+                        "The search graph connects the endpoints and required routers, but no certified mesh was found within the limits of {budget} new routers and {} hops.",
+                        self.settings.maximum_hops
                     )
                 }
             }
@@ -165,22 +158,32 @@ impl TerminalPaths {
         }
     }
 
-    fn seed(&self, graph: &RoutingGraph<'_>, budget: usize) -> Option<Vec<String>> {
+    fn seed(
+        &self,
+        graph: &RoutingGraph<'_>,
+        budget: usize,
+        maximum_hops: usize,
+    ) -> Option<Vec<String>> {
         let mut routers = BTreeSet::new();
+        let mut new = BTreeSet::new();
         for &target in &self.targets {
-            if self.anchor.routers[target] == usize::MAX {
+            if self.anchor.routers[target] == usize::MAX || self.anchor.hops[target] > maximum_hops
+            {
                 return None;
             }
             let mut node = Some(target);
             while let Some(current) = node {
                 let site = graph.sites[current];
+                if site.needs_new_router() {
+                    new.insert(current);
+                }
                 if !site.is_client() {
                     routers.insert(site.rf.id.clone());
                 }
                 node = self.anchor.previous[current];
             }
         }
-        (routers.len() <= budget).then(|| routers.into_iter().collect())
+        (new.len() <= budget).then(|| routers.into_iter().collect())
     }
 
     fn farthest_first(&self) -> Vec<usize> {
@@ -190,10 +193,10 @@ impl TerminalPaths {
     }
 
     fn disconnected(&self) -> bool {
-        self.maximum_optional_routers() == usize::MAX
+        self.maximum_new_routers() == usize::MAX
     }
 
-    fn maximum_optional_routers(&self) -> usize {
+    fn maximum_new_routers(&self) -> usize {
         self.targets
             .iter()
             .map(|&node| self.anchor.routers[node])
@@ -205,41 +208,43 @@ impl TerminalPaths {
 struct Reach {
     root: usize,
     routers: Vec<usize>,
+    hops: Vec<usize>,
     previous: Vec<Option<usize>>,
 }
 
 impl Reach {
     fn new(graph: &RoutingGraph<'_>, root: usize) -> Self {
-        // Required routers already consume part of the budget, and clients cost zero.
+        // Only generated optional sites consume the new-router budget.
         let mut routers = vec![usize::MAX; graph.sites.len()];
+        let mut hops = vec![usize::MAX; graph.sites.len()];
         let mut previous = vec![None; graph.sites.len()];
-        let mut queue = VecDeque::from([root]);
+        let mut queue = BinaryHeap::from([Reverse((0, 0, root))]);
         routers[root] = 0;
-        while let Some(left) = queue.pop_front() {
+        hops[root] = 0;
+        while let Some(Reverse((new, length, left))) = queue.pop() {
+            if (new, length) != (routers[left], hops[left]) {
+                continue;
+            }
             for &(right, _) in &graph.neighbors[left] {
-                let cost = optional_router_cost(graph.sites[right]);
-                let trial = routers[left] + cost;
-                if trial < routers[right] {
-                    routers[right] = trial;
+                let trial = (new + new_router_cost(graph.sites[right]), length + 1);
+                if trial < (routers[right], hops[right]) {
+                    (routers[right], hops[right]) = trial;
                     previous[right] = Some(left);
-                    if cost == 0 {
-                        queue.push_front(right);
-                    } else {
-                        queue.push_back(right);
-                    }
+                    queue.push(Reverse((trial.0, trial.1, right)));
                 }
             }
         }
         Self {
             root,
             routers,
+            hops,
             previous,
         }
     }
 }
 
-fn optional_router_cost(site: &PlanningSite) -> usize {
-    usize::from(!site.is_client() && !site.is_required())
+fn new_router_cost(site: &PlanningSite) -> usize {
+    usize::from(site.needs_new_router())
 }
 
 struct BridgeContext<'a, 'g> {
@@ -247,6 +252,7 @@ struct BridgeContext<'a, 'g> {
     indices: &'a [usize],
     checked: &'a BTreeSet<Pair>,
     distance_limit: Option<f64>,
+    maximum_hops: usize,
     cancelled: &'a dyn Fn() -> bool,
 }
 
@@ -301,9 +307,11 @@ impl BridgeContext<'_, '_> {
                     return Some(pairs);
                 }
                 let key = pair(self.indices[source], self.indices[target]);
-                let through_source = depth + optional_router_cost(sites[target]);
-                if through_source < from.routers[target]
+                let through_source = depth + new_router_cost(sites[target]);
+                let hops = from.hops[source] + 1;
+                if (through_source, hops) < (from.routers[target], from.hops[target])
                     && through_source <= budget
+                    && hops <= self.maximum_hops
                     && self
                         .distance_limit
                         .is_none_or(|limit| distance(source, target) <= limit)
@@ -325,6 +333,7 @@ impl BridgeContext<'_, '_> {
     ) -> (usize, Vec<usize>) {
         let available = from.routers.iter().enumerate().filter(|&(node, &depth)| {
             depth <= budget
+                && from.hops[node] < self.maximum_hops
                 && expanded
                     .get(&(from.root, node))
                     .is_none_or(|&previous| depth < previous)

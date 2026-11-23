@@ -97,6 +97,11 @@ impl PlanningSite {
         )
     }
 
+    /// A generated site that consumes the route's new-router budget.
+    pub fn needs_new_router(&self) -> bool {
+        !self.is_client() && !self.is_required() && self.origin == SiteOrigin::Optimized
+    }
+
     pub fn is_required(&self) -> bool {
         !self.is_client() && self.policy == RouterPolicy::Required
     }
@@ -155,7 +160,10 @@ pub struct CandidateSettings {
     /// neighbours and a backbone. Two-terminal minimum-router searches then use
     /// the exact widest-path planner.
     pub exhaustive_screening: bool,
-    pub maximum_solution_routers: usize,
+    /// Maximum generated router sites in an installation.
+    pub maximum_new_routers: usize,
+    /// Maximum links in each client-to-client path.
+    pub maximum_hops: usize,
     pub reliability_paths: usize,
     pub parallel_workers: usize,
     pub coarse_sample_step_m: f64,
@@ -185,7 +193,8 @@ impl Default for CandidateSettings {
             candidates_per_cell: 3,
             maximum_neighbors_per_site: 16,
             exhaustive_screening: true,
-            maximum_solution_routers: 6,
+            maximum_new_routers: 6,
+            maximum_hops: 7,
             reliability_paths: 2,
             parallel_workers: 0,
             coarse_sample_step_m: 200.0,

@@ -49,7 +49,7 @@ pub(crate) fn recover_with_refinement(
     configure_clutter: &mut dyn FnMut(&mut Site) -> Result<(), OptimizationError>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<usize, OptimizationError> {
-    if settings.candidates_per_cell == 0 || settings.maximum_solution_routers == 0 || cancelled() {
+    if settings.candidates_per_cell == 0 || settings.maximum_new_routers == 0 || cancelled() {
         return Ok(0);
     }
     let clients = fixed.iter().filter(|site| site.is_client());

@@ -1,8 +1,8 @@
 //! Exact two-terminal route planning on a screened RF graph.
 //!
-//! For every router count the planner finds the path with the widest bottleneck
-//! (lowest link margin) using a hop-layered dynamic programme. That is exact for
-//! the bottleneck. Among the paths that reach the bottleneck it then minimizes an
+//! For each hop and new-router budget the planner finds the widest bottleneck
+//! (lowest link margin) using layered dynamic programming. Within a margin
+//! band it prefers fewer new routers, then minimizes an
 //! additive weakness cost, so the other hops are as strong as possible too.
 //! Required routers are via points: the route visits all of them, in the order
 //! that gives the best route.
@@ -17,6 +17,7 @@ pub(crate) struct PlannedPath {
     /// Site indices from the first terminal to the second.
     pub nodes: Vec<usize>,
     pub clear: bool,
+    new_routers: usize,
     pub bottleneck_db: f64,
     pub cost: f64,
 }
@@ -26,11 +27,21 @@ impl PlannedPath {
         self.nodes.len() - 2
     }
 
-    /// True when `self` is a strictly better route than `other`.
-    fn better_than(&self, other: &Self) -> bool {
-        (self.clear, self.bottleneck_db, -self.cost)
-            > (other.clear, other.bottleneck_db, -other.cost)
+    fn quality(&self) -> (bool, f64, std::cmp::Reverse<usize>, f64, f64) {
+        (
+            self.clear,
+            margin_band(self.bottleneck_db),
+            std::cmp::Reverse(self.new_routers),
+            self.bottleneck_db,
+            -self.cost,
+        )
     }
+}
+
+/// Use fixed 1 dB bands to compare margins transitively. Inside a band,
+/// reusing available sites is worth more than a fractional dB improvement.
+pub(crate) fn margin_band(margin_db: f64) -> f64 {
+    margin_db.floor()
 }
 
 /// Additive weakness of one hop once the bottleneck is fixed. Strong links cost
@@ -84,17 +95,20 @@ impl Hop {
 pub(crate) struct LinkGraph {
     pub neighbors: Vec<Vec<Hop>>,
     pub positions: Vec<Point>,
+    pub new_router: Vec<bool>,
 }
 
 impl LinkGraph {
     /// Build from valid links. Each pair must appear at most once.
     pub(crate) fn new(
         positions: Vec<Point>,
+        new_router: Vec<bool>,
         links: impl IntoIterator<Item = ((usize, usize), Screened)>,
     ) -> Self {
         let mut graph = Self {
             neighbors: vec![Vec::new(); positions.len()],
             positions,
+            new_router,
         };
         for ((left, right), link) in links {
             graph.neighbors[left].push(Self::hop(right, link));
@@ -151,118 +165,135 @@ impl Planner<'_> {
         !clear_only || hop.clear()
     }
 
-    /// `widest[h][v]`: best bottleneck from `source` to `v` with at most `h` hops,
-    /// passing only through unblocked nodes.
-    fn widest_by_hops(
+    /// Widest margin with at most h hops and n new routers, for each (h, n, node).
+    fn widest(
         &self,
         source: usize,
-        hops: usize,
+        budget: Budget,
         clear_only: bool,
         blocked: &[bool],
     ) -> Vec<Vec<f64>> {
+        self.layers(
+            source,
+            budget,
+            blocked,
+            |_, hop, margin| Self::edge_ok(hop, clear_only).then(|| margin.min(hop.margin_db)),
+            f64::INFINITY,
+        )
+        .0
+    }
+
+    /// Each layer retains the route from the preceding hop or router budget,
+    /// and extends routes from the preceding hop layer.
+    fn layers(
+        &self,
+        source: usize,
+        budget: Budget,
+        blocked: &[bool],
+        extend: impl Fn(usize, &Hop, f64) -> Option<f64>,
+        initial: f64,
+    ) -> (Vec<Vec<f64>>, Vec<Vec<Move>>) {
         let count = self.graph.positions.len();
-        let mut layers = vec![vec![f64::NEG_INFINITY; count]];
-        layers[0][source] = f64::INFINITY;
-        for _ in 0..hops {
-            let previous = layers.last().expect("base layer");
-            let mut next = previous.clone();
-            for (left, &margin) in previous.iter().enumerate() {
-                if margin == f64::NEG_INFINITY
-                    || (left != source && (!self.through[left] || blocked[left]))
-                {
-                    continue;
-                }
-                for hop in &self.graph.neighbors[left] {
-                    if Self::edge_ok(hop, clear_only) && !blocked[hop.to] {
-                        let trial = margin.min(hop.margin_db);
-                        if trial > next[hop.to] {
-                            next[hop.to] = trial;
+        let stride = budget.new + 1;
+        let mut scores = Vec::<Vec<f64>>::new();
+        let mut moves = Vec::<Vec<Move>>::new();
+        for hops in 0..=budget.hops {
+            for new in 0..=budget.new {
+                let index = hops * stride + new;
+                let mut next = vec![f64::NEG_INFINITY; count];
+                let mut previous = vec![Move::Start; count];
+                if hops == 0 {
+                    next[source] = initial;
+                } else {
+                    next.clone_from(&scores[index - stride]);
+                    previous.fill(Move::Budget(index - stride));
+                    for cost in 0..=usize::from(new > 0) {
+                        let from = index - stride - cost;
+                        for (left, &score) in scores[from].iter().enumerate() {
+                            if score == f64::NEG_INFINITY || (left != source && !self.through[left])
+                            {
+                                continue;
+                            }
+                            for hop in &self.graph.neighbors[left] {
+                                let right = hop.to;
+                                if right == source
+                                    || blocked[right]
+                                    || usize::from(self.graph.new_router[right]) != cost
+                                {
+                                    continue;
+                                }
+                                if let Some(trial) = extend(left, hop, score) {
+                                    if trial > next[right] {
+                                        next[right] = trial;
+                                        previous[right] = Move::Hop(from, left);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+                if new > 0 {
+                    for (node, &score) in scores[index - 1].iter().enumerate() {
+                        if score > next[node] {
+                            next[node] = score;
+                            previous[node] = Move::Budget(index - 1);
+                        }
+                    }
+                }
+                scores.push(next);
+                moves.push(previous);
             }
-            layers.push(next);
         }
-        layers
+        (scores, moves)
     }
 
-    /// Cheapest simple path with at most `hops` hops using links at or above
-    /// `threshold`, avoiding `blocked` nodes.
     fn cheapest(
         &self,
         source: usize,
         target: usize,
-        hops: usize,
+        budget: Budget,
         threshold: f64,
         clear_only: bool,
         blocked: &[bool],
     ) -> Option<(Vec<usize>, f64)> {
-        let count = self.graph.positions.len();
-        let mut cost = vec![f64::INFINITY; count];
-        cost[source] = 0.0;
-        // moves[k][v]: predecessor when layer k improved v by a hop.
-        let mut moves = Vec::with_capacity(hops);
-        for _ in 0..hops {
-            let mut next = cost.clone();
-            let mut layer = vec![usize::MAX; count];
-            for (left, &base) in cost.iter().enumerate() {
-                if base == f64::INFINITY
-                    || left == target
-                    || (left != source && (!self.through[left] || blocked[left]))
-                {
-                    continue;
-                }
-                for hop in &self.graph.neighbors[left] {
-                    let right = hop.to;
-                    if right == source
-                        || (right != target && (!self.through[right] || blocked[right]))
-                        || hop.margin_db < threshold
-                        || !Self::edge_ok(hop, clear_only)
-                    {
-                        continue;
-                    }
-                    let trial = base + hop_cost(hop);
-                    if trial < next[right] {
-                        next[right] = trial;
-                        layer[right] = left;
-                    }
-                }
-            }
-            moves.push(layer);
-            cost = next;
-        }
-        if cost[target] == f64::INFINITY {
+        let (scores, moves) = self.layers(
+            source,
+            budget,
+            blocked,
+            |left, hop, score| {
+                (left != target && hop.margin_db >= threshold && Self::edge_ok(hop, clear_only))
+                    .then(|| score - hop_cost(hop))
+            },
+            0.0,
+        );
+        let mut layer = scores.len() - 1;
+        let score = scores[layer][target];
+        if !score.is_finite() {
             return None;
         }
-        let mut path = vec![target];
+        let mut nodes = vec![target];
         let mut node = target;
-        for layer in moves.iter().rev() {
-            if layer[node] != usize::MAX {
-                node = layer[node];
-                path.push(node);
+        loop {
+            match moves[layer][node] {
+                Move::Start => break,
+                Move::Budget(from) => layer = from,
+                Move::Hop(from, previous) => {
+                    node = previous;
+                    layer = from;
+                    nodes.push(node);
+                }
             }
         }
-        path.reverse();
-        if path[0] != source {
-            return None;
-        }
-        let mut seen = vec![false; count];
-        for &node in &path {
-            if std::mem::replace(&mut seen[node], true) {
-                return None;
-            }
-        }
-        Some((path, cost[target]))
+        nodes.reverse();
+        Some((nodes, -score))
     }
 
-    /// Join segment paths through `sequence` without reusing a site. The planned
-    /// allocation is tried first. If segments compete for the same relay, later
-    /// segments are replanned around the sites already used, so the route can
-    /// accept a weaker bottleneck instead of failing.
+    /// If segments compete for a relay, replan later segments around the
+    /// sites already used, within the total budget.
     fn realize(
         &self,
         sequence: &[usize],
-        allocation: &[usize],
+        allocation: &[Budget],
         threshold: f64,
         clear_only: bool,
     ) -> Option<(Vec<usize>, f64)> {
@@ -291,32 +322,43 @@ impl Planner<'_> {
                 blocked,
             )
         });
-        if planned.is_some() {
+        if planned.is_some() || allocation.len() == 1 {
             return planned;
         }
-        let total: usize = allocation.iter().sum();
-        let mut used = 0;
+        let total_hops: usize = allocation.iter().map(|b| b.hops).sum();
+        let total_new: usize = allocation.iter().map(|b| b.new).sum();
+        let mut used_hops = 0;
+        let mut used_new = 0;
         join(&mut |s, blocked| {
             let later = sequence.len() - 2 - s;
-            let budget = total
-                .checked_sub(used + later)
-                .filter(|&budget| budget > 0)?;
+            let budget = Budget {
+                hops: total_hops.checked_sub(used_hops + later)?,
+                new: total_new - used_new,
+            };
             let target = sequence[s + 1];
-            let layers = self.widest_by_hops(sequence[s], budget, clear_only, blocked);
-            let value = layers[budget][target];
+            let widest = self.widest(sequence[s], budget, clear_only, blocked);
+            let value = widest.last()?[target];
             if value == f64::NEG_INFINITY {
                 return None;
             }
-            let hops = (1..=budget).find(|&hops| layers[hops][target] >= value)?;
+            let stride = budget.new + 1;
+            let hops = (1..=budget.hops)
+                .find(|&hops| widest[hops * stride + budget.new][target] >= value)?;
+            let new = (0..=budget.new).find(|&new| widest[hops * stride + new][target] >= value)?;
             let segment = self.cheapest(
                 sequence[s],
                 target,
-                hops,
+                Budget { hops, new },
                 value.min(threshold),
                 clear_only,
                 blocked,
             )?;
-            used += segment.0.len() - 1;
+            used_hops += segment.0.len() - 1;
+            used_new += segment
+                .0
+                .iter()
+                .filter(|&&node| self.graph.new_router[node])
+                .count();
             Some(segment)
         })
     }
@@ -338,27 +380,51 @@ fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
     result
 }
 
-/// Best route for each router count from 0 through `max_routers`, keeping only
-/// counts that improve on every smaller count. Routes visit every waypoint.
+#[derive(Clone, Copy, Default)]
+struct Budget {
+    hops: usize,
+    new: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Move {
+    Start,
+    Budget(usize),
+    Hop(usize, usize),
+}
+
+/// Best route per hop count, keeping improvements in quality or new-site use.
+/// Routes visit every waypoint.
 pub(crate) fn plan_routes(
     graph: &LinkGraph,
     source: usize,
     target: usize,
     waypoints: &[usize],
-    max_routers: usize,
+    max_hops: usize,
+    max_new: usize,
     cancelled: &dyn Fn() -> bool,
 ) -> Vec<PlannedPath> {
     let count = graph.positions.len();
+    let limit = Budget {
+        hops: max_hops.min(count.saturating_sub(1)),
+        new: max_new
+            .min(max_hops.saturating_sub(1))
+            .min(graph.new_router.iter().filter(|&&new| new).count()),
+    };
+    if waypoints.len() >= limit.hops {
+        return Vec::new();
+    }
+    let stride = limit.new + 1;
+    let index = |hops, new| hops * stride + new;
+    let size = index(limit.hops, limit.new) + 1;
     let mut through = vec![true; count];
     for &node in [source, target].iter().chain(waypoints) {
         through[node] = false;
     }
     let planner = Planner { graph, through };
-    let max_hops = max_routers + 1;
     let orders: Vec<Vec<usize>> = if waypoints.len() <= MAX_PERMUTED_WAYPOINTS {
         permutations(waypoints)
     } else {
-        // Order many via points along the endpoint axis.
         let (a, b) = (graph.positions[source], graph.positions[target]);
         let along = |node: usize| {
             let p = graph.positions[node];
@@ -368,101 +434,124 @@ pub(crate) fn plan_routes(
         sorted.sort_by(|&l, &r| along(l).total_cmp(&along(r)));
         vec![sorted]
     };
-    let mut best: Vec<Option<PlannedPath>> = vec![None; max_routers + 1];
+    let mut best: Vec<Option<PlannedPath>> = vec![None; limit.hops];
     for clear_only in [true, false] {
         if cancelled() {
             return Vec::new();
         }
-        let sources: Vec<usize> = std::iter::once(source)
+        let widest: std::collections::BTreeMap<_, _> = std::iter::once(source)
             .chain(waypoints.iter().copied())
-            .collect();
-        let widest: Vec<(usize, Vec<Vec<f64>>)> = sources
-            .iter()
-            .map(|&node| {
+            .map(|node| {
                 (
                     node,
-                    planner.widest_by_hops(node, max_hops, clear_only, &vec![false; count]),
+                    planner.widest(node, limit, clear_only, &vec![false; count]),
                 )
             })
             .collect();
-        let bottleneck = |from: usize, to: usize, hops: usize| {
-            widest
-                .iter()
-                .find(|(node, _)| *node == from)
-                .map_or(f64::NEG_INFINITY, |(_, layers)| layers[hops][to])
-        };
         for order in &orders {
             if cancelled() {
                 return Vec::new();
             }
-            let sequence: Vec<usize> = std::iter::once(source)
+            let sequence: Vec<_> = std::iter::once(source)
                 .chain(order.iter().copied())
                 .chain(std::iter::once(target))
                 .collect();
             let segments = sequence.len() - 1;
-            if segments > max_hops {
-                continue;
-            }
-            // allocation[s][t]: best bottleneck for the first s segments using t hops.
-            let mut table = vec![vec![(f64::NEG_INFINITY, 0usize); max_hops + 1]; segments + 1];
-            table[0][0] = (f64::INFINITY, 0);
+            let mut table = vec![vec![(f64::NEG_INFINITY, Budget::default()); size]; segments + 1];
+            table[0].fill((f64::INFINITY, Budget::default()));
             for s in 1..=segments {
-                for total in s..=max_hops {
-                    for hops in 1..=total - (s - 1) {
-                        let (prefix, _) = table[s - 1][total - hops];
-                        if prefix == f64::NEG_INFINITY {
-                            continue;
+                let layers = &widest[&sequence[s - 1]];
+                for hops in s..=limit.hops {
+                    for new in 0..=limit.new.min(hops - s) {
+                        let mut best = (f64::NEG_INFINITY, Budget::default());
+                        for leg_hops in 1..=hops - (s - 1) {
+                            for leg_new in 0..=new.min(leg_hops - 1) {
+                                let value = table[s - 1][index(hops - leg_hops, new - leg_new)]
+                                    .0
+                                    .min(layers[index(leg_hops, leg_new)][sequence[s]]);
+                                if value > best.0 {
+                                    best = (
+                                        value,
+                                        Budget {
+                                            hops: leg_hops,
+                                            new: leg_new,
+                                        },
+                                    );
+                                }
+                            }
                         }
-                        let value = prefix.min(bottleneck(sequence[s - 1], sequence[s], hops));
-                        if value > table[s][total].0 {
-                            table[s][total] = (value, hops);
-                        }
+                        table[s][index(hops, new)] = best;
                     }
                 }
             }
-            for total in segments..=max_hops {
-                let threshold = table[segments][total].0;
-                if threshold == f64::NEG_INFINITY {
-                    continue;
+            for total in segments..=limit.hops {
+                let mut budgets = 0..=limit.new.min(total - segments);
+                if segments == 1 {
+                    let best_new = budgets
+                        .clone()
+                        .max_by_key(|&new| {
+                            (
+                                crate::graph::OrderedFloat(margin_band(
+                                    table[1][index(total, new)].0,
+                                )),
+                                std::cmp::Reverse(new),
+                            )
+                        })
+                        .expect("at least the zero-router budget");
+                    budgets = best_new..=best_new;
                 }
-                let mut allocation = vec![0; segments];
-                let mut remaining = total;
-                for s in (1..=segments).rev() {
-                    allocation[s - 1] = table[s][remaining].1;
-                    remaining -= allocation[s - 1];
-                }
-                let Some((nodes, cost)) =
-                    planner.realize(&sequence, &allocation, threshold, clear_only)
-                else {
-                    continue;
-                };
-                let planned = PlannedPath {
-                    clear: clear_only,
-                    bottleneck_db: nodes
-                        .windows(2)
-                        .map(|hop| graph.margin(hop[0], hop[1]))
-                        .fold(f64::INFINITY, f64::min),
-                    nodes,
-                    cost,
-                };
-                let routers = planned.router_count();
-                if routers <= max_routers
-                    && best[routers]
+                for new in budgets {
+                    let threshold = table[segments][index(total, new)].0;
+                    if threshold == f64::NEG_INFINITY {
+                        continue;
+                    }
+                    let mut allocation = vec![Budget::default(); segments];
+                    let (mut hops_left, mut new_left) = (total, new);
+                    for s in (1..=segments).rev() {
+                        let leg = table[s][index(hops_left, new_left)].1;
+                        allocation[s - 1] = leg;
+                        hops_left -= leg.hops;
+                        new_left -= leg.new;
+                    }
+                    let Some((nodes, cost)) =
+                        planner.realize(&sequence, &allocation, threshold, clear_only)
+                    else {
+                        continue;
+                    };
+                    let planned = PlannedPath {
+                        clear: clear_only,
+                        bottleneck_db: nodes
+                            .windows(2)
+                            .map(|hop| graph.margin(hop[0], hop[1]))
+                            .fold(f64::INFINITY, f64::min),
+                        new_routers: nodes.iter().filter(|&&node| graph.new_router[node]).count(),
+                        nodes,
+                        cost,
+                    };
+                    let slot = &mut best[planned.router_count()];
+                    if slot
                         .as_ref()
-                        .is_none_or(|current| planned.better_than(current))
-                {
-                    best[routers] = Some(planned);
+                        .is_none_or(|current| planned.quality() > current.quality())
+                    {
+                        *slot = Some(planned);
+                    }
                 }
             }
         }
     }
-    // Only offer more routers when they buy a clearer or stronger route.
     let mut frontier: Vec<PlannedPath> = Vec::new();
     for planned in best.into_iter().flatten() {
-        if frontier
-            .iter()
-            .all(|kept| (planned.clear, planned.bottleneck_db) > (kept.clear, kept.bottleneck_db))
-        {
+        if frontier.iter().all(|kept| {
+            (
+                planned.clear,
+                margin_band(planned.bottleneck_db),
+                std::cmp::Reverse(planned.new_routers),
+            ) > (
+                kept.clear,
+                margin_band(kept.bottleneck_db),
+                std::cmp::Reverse(kept.new_routers),
+            )
+        }) {
             frontier.push(planned);
         }
     }
@@ -489,6 +578,9 @@ mod tests {
                     y: 0.0,
                 })
                 .collect(),
+            (0..count)
+                .map(|node| node != 0 && node != count - 1)
+                .collect(),
             links
                 .iter()
                 .map(|&(a, b, margin)| ((a.min(b), a.max(b)), link(margin))),
@@ -497,10 +589,69 @@ mod tests {
 
     fn plan(graph: &LinkGraph, waypoints: &[usize], max_routers: usize) -> Vec<(Vec<usize>, f64)> {
         let target = graph.positions.len() - 1;
-        plan_routes(graph, 0, target, waypoints, max_routers, &|| false)
-            .into_iter()
-            .map(|planned| (planned.nodes, planned.bottleneck_db))
-            .collect()
+        let graph = LinkGraph {
+            neighbors: graph.neighbors.clone(),
+            positions: graph.positions.clone(),
+            new_router: graph
+                .new_router
+                .iter()
+                .enumerate()
+                .map(|(i, &new)| new && !waypoints.contains(&i))
+                .collect(),
+        };
+        plan_routes(
+            &graph,
+            0,
+            target,
+            waypoints,
+            max_routers + 1,
+            max_routers,
+            &|| false,
+        )
+        .into_iter()
+        .map(|planned| (planned.nodes, planned.bottleneck_db))
+        .collect()
+    }
+
+    #[test]
+    fn reuses_an_optional_router_with_comparable_margin() {
+        let mut graph = graph(
+            5,
+            &[
+                (0, 1, 10.2),
+                (1, 4, 10.2), // existing
+                (0, 2, 10.8),
+                (2, 4, 10.8), // one new site
+                (2, 3, 10.9),
+                (3, 4, 10.9), // two new sites
+            ],
+        );
+        graph.new_router[1] = false;
+        let plans = plan_routes(&graph, 0, 4, &[], 3, 2, &|| false);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].nodes, [0, 1, 4]);
+        assert_eq!(plans[0].new_routers, 0);
+    }
+
+    #[test]
+    fn counts_new_sites_and_total_hops_independently() {
+        let mut graph = graph(
+            6,
+            &[
+                (0, 1, 12.0),
+                (1, 2, 12.0),
+                (2, 3, 12.0),
+                (3, 4, 12.0),
+                (4, 5, 12.0),
+            ],
+        );
+        // Optional existing, required and proposed sites are already available.
+        graph.new_router[1..=3].fill(false);
+        let plans = plan_routes(&graph, 0, 5, &[2], 5, 1, &|| false);
+        assert_eq!(plans[0].nodes, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(plans[0].new_routers, 1);
+        assert!(plan_routes(&graph, 0, 5, &[2], 4, 1, &|| false).is_empty());
+        assert!(plan_routes(&graph, 0, 5, &[2], 5, 0, &|| false).is_empty());
     }
 
     #[test]
