@@ -179,6 +179,8 @@ struct MapData {
 
 #[derive(Serialize)]
 struct Stats {
+    trace_hops: i64,
+    neighbor_report_rows: i64,
     receptions: i64,
     packets: i64,
     pairs: usize,
@@ -233,6 +235,8 @@ struct MapCache {
 
 #[derive(Clone, Copy, Default)]
 struct Totals {
+    trace_hops: i64,
+    neighbor_report_rows: i64,
     receptions: i64,
     packets: i64,
     pairs: usize,
@@ -305,6 +309,8 @@ fn load(state: &StateData, filters: Filters) -> Result<MapData> {
         map: Arc::clone(&cache.map),
         stats: Stats {
             receptions: totals.receptions,
+            trace_hops: totals.trace_hops,
+            neighbor_report_rows: totals.neighbor_report_rows,
             packets: totals.packets,
             pairs: totals.pairs,
             located_pairs: totals.located_pairs,
@@ -409,6 +415,13 @@ fn layers(
     };
     totals.receptions = receptions;
     totals.packets = packets;
+    (totals.trace_hops, totals.neighbor_report_rows) = db.query_row(
+        "SELECT
+           (SELECT coalesce(sum(json_array_length(snr_values)), 0) FROM trace_hops WHERE endpoint = ?1),
+           (SELECT count(*) FROM observer_neighbor_reports WHERE endpoint = ?1)",
+        [endpoint],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     if let Some(previous) = previous_totals {
         totals.pairs = previous.pairs;
         totals.located_pairs = previous.located_pairs;

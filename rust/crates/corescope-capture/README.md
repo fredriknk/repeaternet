@@ -154,11 +154,19 @@ capped polls stay under about 1,100 requests per day.
 
 The database uses `PRAGMA user_version = 2` and WAL mode so the dashboard
 can read while capture writes. Existing version 1 files are upgraded in place.
+The signal tables are created in place when an existing capture is opened.
+Capture totals include the number of TRACE hops with SNR and the number of
+stored observer neighbour rows. Each topology refresh fetches at most 60
+observer details for new reports advertised by the server.
 
 | Table | Contents |
 | --- | --- |
 | `capture_instance` | Full base URL for this file. Files from earlier versions adopt the endpoint already recorded in their capture data. |
 | `observations` | One row per CoreScope reception, keyed by endpoint, packet ID and observation ID. For a representative-only response, the observer identity is the fallback key. Expanded observations can include several real receptions of the same transmission at one observer. Path columns contain JSON arrays with null placeholders for unresolved positions. |
+| `trace_hops` | One row per TRACE transmission with SNR. The two arrays pair each completed hop's hash with the dB measured at that hop, beginning with reception from the originator. |
+| `observer_neighbor_reports` | One row per neighbour in a report, with its signal, age and status when available. |
+| `observer_neighbor_checkpoints` | Latest processed report time per observer, including reports with zero visible neighbours. |
+| `reception_signal` | Radio settings and signal score annotated by CoreScope, keyed to the reception. |
 | `nodes_snapshot`, `observers_snapshot` | Timestamped JSON records keyed by capture run and public key or observer ID, with location columns for joins. |
 | `neighbors_snapshot` | Timestamped JSON responses keyed by capture run and source public key. An empty source key denotes the global graph. |
 | `capture_runs` | CoreScope endpoint and version, mode, start and end, status, request and row counts, page-cap flag and errors. |

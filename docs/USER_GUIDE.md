@@ -165,7 +165,8 @@ explains what the feed and saved entries mean.
 To record observed MeshCore links over time, run the separate CoreScope
 capture utility. It saves receptions in SQLite and shows them on a local live
 map. Each CoreScope instance has its own capture file and a dashboard labelled
-with its host. See the [CoreScope capture guide](../rust/crates/corescope-capture/README.md).
+with its host. **Capture totals** includes TRACE hops with SNR and observer
+neighbour-report rows. See the [CoreScope capture guide](../rust/crates/corescope-capture/README.md).
 
 To collect Meshtastic RF measurements or view measured links together, use
 the separate `meshtastic-capture` utility. Its **Measured links** viewer

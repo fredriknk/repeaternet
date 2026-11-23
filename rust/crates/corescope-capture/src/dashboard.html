@@ -144,6 +144,8 @@
       const n = value => number.format(value);
       definitionList(document.getElementById('totals'), [
         ['Receptions', n(stats.receptions)], ['Distinct packets', n(stats.packets)],
+        ['TRACE hops with SNR', n(stats.trace_hops)],
+        ['Neighbour-report rows', n(stats.neighbor_report_rows)],
         ['Directed pairs', n(stats.pairs)], ['Pairs with both ends located', n(stats.located_pairs)],
         ['Pairs inside neighbor bounds', n(stats.bbox_pairs)],
         ['Observers · located / total', n(stats.located_observers) + ' / ' + n(stats.observers)],
