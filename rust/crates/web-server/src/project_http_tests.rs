@@ -86,7 +86,7 @@ async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan()
     let app = router(store.clone(), root.path(), "lan-token", true, None);
     let cookie_a = format!("planner_access=lan-token; planner_workspace={A}");
     let cookie_b = format!("planner_access=lan-token; planner_workspace={B}");
-    let request = |method, path, cookie: &str| {
+    let request = |method, path: &str, cookie: &str| {
         Request::builder()
             .method(method)
             .uri(path)
@@ -111,26 +111,41 @@ async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan()
                 .unwrap(),
         )
     };
+    let activate = |cookie, id| {
+        let path = format!("/api/projects/{id}/activate");
+        call(
+            request(Method::POST, path.as_str(), cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    assert_eq!(activate(&cookie_a, &legacy_a.id).await.0, StatusCode::OK);
     let (status, first) = get(&cookie_a).await;
     assert_eq!(status, StatusCode::OK);
-    for cookie in [&*cookie_b, "planner_access=lan-token"] {
-        let (status, next) = get(cookie).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(first["projects"], next["projects"]);
-    }
-    let items = first["projects"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
-    assert!(items.iter().any(|item| item["id"] == legacy_a.id));
-    assert!(items.iter().any(|item| item["id"] == legacy_b.id));
+    assert_eq!(
+        get("planner_access=lan-token").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(activate(&cookie_b, &legacy_b.id).await.0, StatusCode::OK);
+    let (status, second) = get(&cookie_b).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(second["projects"]["active_id"], legacy_b.id);
+    assert_eq!(first["projects"]["items"], second["projects"]["items"]);
+    assert_eq!(
+        first["projects"]["archived_items"],
+        second["projects"]["archived_items"]
+    );
+    assert_eq!(first["projects"]["items"].as_array().unwrap().len(), 2);
     assert_eq!(first["projects"]["archived_items"][0]["id"], archive.id);
+    let (_, still_first) = get(&cookie_a).await;
+    assert_eq!(still_first["projects"]["active_id"], legacy_a.id);
+    assert_eq!(still_first["job"], first["job"]);
+    assert_eq!(
+        still_first["projects"]["plan_revision"],
+        first["projects"]["plan_revision"]
+    );
 
-    let path = format!("/api/projects/{}/activate", legacy_a.id);
-    let (status, opened) = call(
-        request(Method::POST, path.as_str(), &cookie_b)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
+    let (status, opened) = activate(&cookie_b, &legacy_a.id).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(opened["plan"]["note"], "A");
     assert_eq!(get(&cookie_b).await.1["terrain"]["dtm"][0], "ground.tif");
@@ -144,21 +159,34 @@ async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan()
                 .unwrap(),
         )
     };
-    let (status, saved) = save(&cookie_a, revision, "first edit").await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, conflict) = save(&cookie_b, revision, "stale edit").await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let ((status_a, body_a), (status_b, body_b)) = tokio::join!(
+        save(&cookie_a, revision, "edit from A"),
+        save(&cookie_b, revision, "edit from B"),
+    );
+    let (saved, conflict, winner, stale_client) = if status_a == StatusCode::OK {
+        assert_eq!(status_b, StatusCode::CONFLICT);
+        (body_a, body_b, "edit from A", &cookie_b)
+    } else {
+        assert_eq!(status_b, StatusCode::OK);
+        assert_eq!(status_a, StatusCode::CONFLICT);
+        (body_b, body_a, "edit from B", &cookie_a)
+    };
     assert!(
         conflict["detail"]
             .as_str()
             .unwrap()
             .contains("Reload the project")
     );
-    assert_eq!(get(&cookie_b).await.1["plan"]["note"], "first edit");
+    let (_, reloaded) = get(stale_client).await;
+    assert_eq!(reloaded["plan"]["note"], winner);
+    assert_eq!(
+        reloaded["projects"]["plan_revision"],
+        saved["plan_revision"]
+    );
     assert_eq!(
         save(
-            &cookie_b,
-            saved["plan_revision"].as_str().unwrap(),
+            stale_client,
+            reloaded["projects"]["plan_revision"].as_str().unwrap(),
             "after reload"
         )
         .await
@@ -174,17 +202,18 @@ async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan()
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, conflict) = save(&cookie_a, revision, "wrong project").await;
+    let (_, first) = get(&cookie_a).await;
+    let (_, second) = get(&cookie_b).await;
+    assert_eq!(first["projects"]["active_id"], legacy_a.id);
+    assert_eq!(second["projects"]["active_id"], created["id"]);
+    assert_eq!(first["projects"]["items"], second["projects"]["items"]);
+    let (status, conflict) = save(&cookie_b, revision, "wrong project").await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(
         conflict["detail"]
             .as_str()
             .unwrap()
             .contains("active project changed")
-    );
-    assert_eq!(
-        get(&cookie_a).await.1["projects"]["active_id"],
-        created["id"]
     );
 }
 
@@ -733,7 +762,7 @@ async fn runtime_guards_share_the_workspace_lock_and_autosave_cancels_inspection
     let app = api::router(app_state.clone());
     let initial = state(&app, A).await;
     let active = initial["projects"]["active_id"].as_str().unwrap();
-    let session = app_state.session(A);
+    let session = app_state.session(A, "");
     session.lock().await.as_mut().unwrap().route_job["state"] = json!("running");
     expect(
         &app,

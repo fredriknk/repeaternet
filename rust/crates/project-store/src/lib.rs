@@ -187,6 +187,51 @@ impl ProjectStore {
         Ok(project)
     }
 
+    /// Resolve an authenticated browser's selection in the shared catalog.
+    /// Browser rows are separate from legacy workspace and default selection rows.
+    pub fn shared_selection(&self, browser: &str) -> Result<Project> {
+        if !valid_workspace_key(browser) {
+            return Err(Error::InvalidWorkspace);
+        }
+        let connection = self.connect()?;
+        let selection_key = format!("browser:{browser}");
+        let selected = |key| -> Result<Option<Project>> {
+            let Some(id) = active_id(&connection, key)? else {
+                return Ok(None);
+            };
+            Ok(get_project(&connection, SHARED_WORKSPACE_KEY, &id)?.filter(|row| !row.archived))
+        };
+        if let Some(project) = selected(&selection_key)? {
+            return Ok(project);
+        }
+        let project = match selected(browser)?.or(selected(SHARED_WORKSPACE_KEY)?) {
+            Some(project) => project,
+            None => match self.list_active(SHARED_WORKSPACE_KEY)?.into_iter().next() {
+                Some(project) => project,
+                None => self.active(SHARED_WORKSPACE_KEY)?,
+            },
+        };
+        self.select_shared(browser, &project.id)?
+            .ok_or(Error::ProjectNotFound)
+    }
+
+    pub fn select_shared(&self, browser: &str, project_id: &str) -> Result<Option<Project>> {
+        if !valid_workspace_key(browser) {
+            return Err(Error::InvalidWorkspace);
+        }
+        let mut connection = self.connect()?;
+        let transaction = self.transaction(&mut connection)?;
+        let Some(project) = get_project(&transaction, SHARED_WORKSPACE_KEY, project_id)?
+            .filter(|project| !project.archived)
+        else {
+            return Ok(None);
+        };
+        self.directory(&project, false)?;
+        set_active(&transaction, &format!("browser:{browser}"), project_id)?;
+        transaction.commit()?;
+        Ok(Some(project))
+    }
+
     pub fn list_active(&self, key: &str) -> Result<Vec<Project>> {
         self.list(key, false)
     }
@@ -320,7 +365,8 @@ impl ProjectStore {
         validate_workspace(key)?;
         let mut connection = self.connect()?;
         let transaction = self.transaction(&mut connection)?;
-        if active_id(&transaction, key)?.as_deref() == Some(project_id)
+        if key != SHARED_WORKSPACE_KEY
+            && active_id(&transaction, key)?.as_deref() == Some(project_id)
             && get_project(&transaction, key, project_id)?.is_some()
         {
             return Err(Error::ArchiveActive);
@@ -351,7 +397,9 @@ impl ProjectStore {
             return Ok(None);
         }
         let project = required_project(&transaction, key, project_id)?;
-        set_active(&transaction, key, project_id)?;
+        if key != SHARED_WORKSPACE_KEY {
+            set_active(&transaction, key, project_id)?;
+        }
         self.publish_plan(transaction, &project, &project.plan)?;
         Ok(Some(project))
     }
@@ -365,7 +413,9 @@ impl ProjectStore {
         let Some(project) = get_project(&transaction, key, project_id)? else {
             return Ok(None);
         };
-        if active_id(&transaction, key)?.as_deref() == Some(project_id) {
+        if key != SHARED_WORKSPACE_KEY
+            && active_id(&transaction, key)?.as_deref() == Some(project_id)
+        {
             return Err(Error::DeleteActive);
         }
         if project.directory == "." {
@@ -524,7 +574,9 @@ impl ProjectStore {
         if files::metadata(&destination)?.is_some() {
             return Err(Error::UnsafeStoragePath);
         }
-        set_active(&transaction, &project.workspace_key, &project.id)?;
+        if project.workspace_key != SHARED_WORKSPACE_KEY {
+            set_active(&transaction, &project.workspace_key, &project.id)?;
+        }
         self.publish(
             transaction,
             &project,

@@ -53,9 +53,11 @@ relative to the repository root.
 Run one server process per data directory. The workspace registry, job
 scheduler and scalar RF caches live in that process. The registry serializes
 state access by workspace cookie on servers without a token. On a
-token-protected server, clients share one session, and the catalog resolves
-legacy projects in their original directories. Handlers capture project and job identity
-under the workspace lock, run blocking raster, network and search work on
+token-protected server, the catalog resolves legacy projects in their original
+directories. The workspace cookie maps each browser profile to its own saved
+selection. Each project has a runtime lock shared by all clients using it.
+Handlers capture project and job identity under the relevant lock, run blocking
+raster, network and search work on
 workers, then recheck identity before publishing. Planner jobs share a
 bounded scheduler. Route and coverage evaluation can use additional scoped
 worker threads. Terrain uploads use separate admission limits.

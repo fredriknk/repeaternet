@@ -209,7 +209,7 @@ impl Download {
             "terrain-generations"
         });
         {
-            let entry = app.session(key);
+            let entry = app.session(key, &self.context.project_id);
             let mut guard = entry.blocking_lock();
             let session = guard
                 .as_mut()
@@ -258,7 +258,7 @@ impl Download {
                     &self.choice,
                     cancelled.clone(),
                     |tile| {
-                        let lock = app.session(key);
+                        let lock = app.session(key, &self.context.project_id);
                         let mut guard = lock.blocking_lock();
                         if let Some(session) = guard.as_mut().filter(|s| self.matches(s, id)) {
                             let status = self.status(session);
@@ -821,7 +821,7 @@ async fn enqueue(
             session.job_payload()
         };
         let job = TerrainJob { id, control, download };
-        tokio::spawn(run(app.clone(), Workspace::worker(key), Arc::new(job), outstanding, worker));
+        tokio::spawn(run(app.clone(), Workspace::worker(key, &session.project_id), Arc::new(job), outstanding, worker));
         Ok(Json(response))
     }).await
 }

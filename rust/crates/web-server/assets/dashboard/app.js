@@ -2374,7 +2374,7 @@ $('retry-save').onclick=async()=>{
 async function refresh(){const data=await api('/api/state');if(data.projects.shared){
   if(!loadedSharedProject)loadedSharedProject={id:data.projects.active_id,revision:data.projects.plan_revision};
   if(loadedSharedProject.id!==data.projects.active_id){
-    const message='The active project changed in another browser. Reload the project.';
+    const message='The active project changed. Reload the project.';
     showProjectConflict(message);
     const error=Error(message);error.projectConflict=true;throw error;
   }

@@ -52,9 +52,12 @@ and choose **Create**. A new project starts with example coordinates near Oslo.
 Plan edits save automatically. The top bar shows saving or saved status, with
 workspace storage usage when available. If saving fails, correct any invalid
 fields or restore the connection, then choose **Retry save**. On a token-protected
-server, the active project is shared. If someone switches projects or saves a
-newer plan while you are editing, the planner blocks your stale save. Choose
-**Reload project** to discard your unsaved edits and open the latest saved plan.
+server, signed-in browsers share the project list, archived projects and saved
+files. Each browser profile remembers its own active project, and different
+projects can run calculations at the same time. Tabs in the same browser
+profile share that selection. If someone saves a newer plan for the project
+you are editing, the planner blocks your stale save. Choose **Reload project**
+to discard your unsaved edits and open the latest saved plan.
 
 ![Project selector, New button, project menu and saved status in the top bar](images/project-top-bar.png)
 

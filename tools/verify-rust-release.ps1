@@ -97,13 +97,15 @@ function Invoke-ReleaseRequest {
         [Parameter(Mandatory)] [string] $Path,
         [int] $Status = 200,
         [Net.Http.HttpContent] $Content,
-        [string] $Origin
+        [string] $Origin,
+        [hashtable] $Headers = @{}
     )
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), [uri]::new($base, $Path))
     $response = $null
     try {
         $request.Content = $Content
         if ($Origin) { $request.Headers.Add('Origin', $Origin) }
+        foreach ($name in $Headers.Keys) { $request.Headers.Add($name, [string] $Headers[$name]) }
         $response = $Client.SendAsync($request).GetAwaiter().GetResult()
         $type = [string] $response.Content.Headers.ContentType
         $body = ''
@@ -299,7 +301,11 @@ try {
         b = @(59.994960821365005, 15.005198421612754)
         candidates = @{ infrastructure_policy = 'existing_only'; refine_radius_m = 0; parallel_workers = 2 }
     }
-    $saved = (Invoke-ReleaseRequest -Method POST -Path '/api/projects/autosave' -Origin $origin `
+    $planHeaders = @{
+        'X-RepeaterNet-Project' = $created.id
+        'X-RepeaterNet-Plan-Revision' = $created.plan_revision
+    }
+    $saved = (Invoke-ReleaseRequest -Method POST -Path '/api/projects/autosave' -Origin $origin -Headers $planHeaders `
         -Content (New-TextBody (@{ project_id = $created.id; plan = $plan } | ConvertTo-Json -Depth 5 -Compress))).Body | ConvertFrom-Json
     Assert-Release ($saved.project_id -eq $created.id) 'Autosave returned a different project ID.'
     Add-Check 'passed' $projectName
@@ -318,7 +324,8 @@ try {
     } finally {
         $multipart.Dispose()
     }
-    $job = (Invoke-ReleaseRequest -Method POST -Path '/api/optimize' -Origin $origin `
+    $planHeaders['X-RepeaterNet-Plan-Revision'] = $saved.plan_revision
+    $job = (Invoke-ReleaseRequest -Method POST -Path '/api/optimize' -Origin $origin -Headers $planHeaders `
         -Content (New-TextBody ($plan | ConvertTo-Json -Depth 5 -Compress))).Body | ConvertFrom-Json
     Assert-Release ([bool] $job.job_id) 'Route submission returned no job ID.'
     $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -365,8 +372,15 @@ try {
     $secondDashboard = Invoke-ReleaseRequest -Client $secondSession -Path '/'
     Assert-Cookie $secondDashboard 'planner_workspace'
     $otherState = (Invoke-ReleaseRequest -Client $secondSession -Path '/api/state').Body | ConvertFrom-Json
-    Assert-Release ($otherState.projects.active_id -and $otherState.projects.active_id -ne $created.id) 'A fresh workspace saw the first workspace project.'
-    Add-Check 'passed' 'Forced stop and same-origin restart retained the plan, DTM and route summary. A fresh session got a separate workspace.'
+    Assert-Release ($created.id -in @($otherState.projects.items.id)) 'The second session did not see the original project in the shared catalog.'
+    $otherProject = (Invoke-ReleaseRequest -Client $secondSession -Method POST -Path '/api/projects' -Origin $origin `
+        -Content (New-TextBody (@{ name = 'Second browser project' } | ConvertTo-Json -Compress))).Body | ConvertFrom-Json
+    $otherState = (Invoke-ReleaseRequest -Client $secondSession -Path '/api/state').Body | ConvertFrom-Json
+    $state = (Invoke-ReleaseRequest -Path '/api/state').Body | ConvertFrom-Json
+    Assert-Release ($otherProject.id -and $otherProject.id -ne $created.id -and
+        $otherState.projects.active_id -eq $otherProject.id -and $state.projects.active_id -eq $created.id) 'Creating a project did not preserve independent browser selections.'
+    Assert-Release ($otherProject.id -in @($state.projects.items.id)) 'The first session did not see the project created by the second session.'
+    Add-Check 'passed' 'Forced stop and same-origin restart retained the plan, DTM and route summary. The signed-in sessions shared the catalog and kept independent active projects.'
     $report.status = 'passed'
 } catch {
     Add-Check 'failed' $_.Exception.Message

@@ -1115,7 +1115,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         Body::from(plan().to_string()),
     )
     .await;
-    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, cookies, _) = request(
         &app,
         Some(access),
@@ -1313,7 +1313,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
     let reopened_job = state(&app, &authenticated).await["job"].clone();
     let mut expected = selected.clone();
     expected["input_revision"] = reopened_job["input_revision"].clone();
-    assert_ne!(expected["input_revision"], selected["input_revision"]);
+    assert_eq!(reopened_job["input_revision"], selected["input_revision"]);
     assert_eq!(
         api(
             &app,

@@ -264,8 +264,9 @@ comparison. [Export formats and limits](crates/exports/README.md)
 Asset and discovery paths are matched in the router fallback. Both cookies use
 `HttpOnly` and `SameSite=Strict`. Without an access token, the workspace cookie
 lasts one year and identifies the project workspace. With an access token,
-signed-in clients share the active project and catalog, including projects in
-legacy workspace directories. Plan writes (autosave, recovery, route terrain
+signed-in clients share the catalog, including projects in legacy workspace
+directories. The workspace cookie identifies each browser profile's active
+project. Plan writes (autosave, recovery, route terrain
 preparation, optimization and saving targets) require `X-RepeaterNet-Project`
 and `X-RepeaterNet-Plan-Revision`. Get both values as `projects.active_id` and
 `projects.plan_revision` from `/api/state`. A stale project or revision returns
