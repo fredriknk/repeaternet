@@ -27,12 +27,11 @@ test('applying blank router coordinates preserves the saved site, while zero is 
     manualRouters: [router], manualLayer: { clearLayers() {} }, selectedManualRouterId: null,
     manualMapMarkers: new Map(), ensureManualRouterNames() {}, routedRouterIds: () => new Set(),
     manualRouterName: item => item.name || item.id, shortMapLabel: label => label, routerPolicyLabels: { optional: 'Optional' },
-    L: { divIcon() {}, marker: () => ({ bindTooltip() { return this; }, bindPopup() { return this; }, on() {}, addTo() {} }) },
+    L: { divIcon() {}, marker: () => ({ bindTooltip() { return this; }, getElement: () => ({ classList: { toggle() {} } }), on() {}, addTo() {} }) },
     busy: false, coverageBusy: false, switchingProject: false,
     mapEditsLocked: () => false, mapEditControl: control => control, mapPoint: site => [site.latitude, site.longitude],
     updateManualMarker() {}, mapText: () => element(), coordinateLabel: () => '', mapPopupOptions: () => ({}),
-    manualRouterControls: () => () => ({ nameLabel: element(), heightLabel: element(), policyLabel: element(), remove: element() }),
-    routerTerminalClutterControl: element,
+    bindMapSite() {}, bindRouteSiteInspector() {}, mapPopupButton: () => element(),
     focusManualRouter() {}, syncMapEditControls() {}, bindLiveCoverageDrag() {}, liveCoverageSiteHeight: value => value,
     recordEdit() { edits++; }, invalidate() {}, scheduleCoverageCheck() {},
     status(message, isError) { if (isError) errors.push(message); },
@@ -260,7 +259,7 @@ test('invalidating a certified route replaces its verdict until a current result
     coverageHeightOverrides: {}, inspectionRequest: 0, inspectionController: null,
     predictedCoverageLayer: layer, coverageDiffLayer: layer, inspectionLayer: layer, routeLayer: layer,
     routeLinkInspector: null, closeRouteLinkInspector() {},
-    clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
+    closeMapSelection() {}, clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
     updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {}, syncRoutedRouterMarkers() {},
   });
   vm.runInContext(section('function invalidate(', 'function updatePlanReadiness(') +

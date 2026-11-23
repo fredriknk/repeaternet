@@ -994,7 +994,10 @@ impl<'a> Sweep<'a> {
         } else {
             0.0
         };
-        let site_gain = self.site_pattern.gain_at(angle);
+        let site_gain = self
+            .rf
+            .site_gain_override(self.site)
+            .unwrap_or_else(|| self.site_pattern.gain_at(angle));
         let client_gain = client_antenna.pattern.gain_at(-angle);
         let downlink = || {
             received_power_dbm(

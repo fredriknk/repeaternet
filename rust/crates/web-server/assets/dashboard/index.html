@@ -126,11 +126,13 @@
             <button data-place="a" aria-label="Place start point on map" title="Click, then click the map to place A" class="pin">A</button>
             <label>Start point<input id="a" value="59.9139, 10.7522" aria-label="Endpoint A latitude, longitude" aria-describedby="a-error"></label>
           </div>
+          <button id="edit-endpoint-a" type="button" data-map-edit>Edit endpoint A</button>
           <p id="a-error" class="field-error" hidden></p>
           <div class="endpoint">
             <button data-place="b" aria-label="Place destination on map" title="Click, then click the map to place B" class="pin blue">B</button>
             <label>Destination<input id="b" value="59.95, 10.85" aria-label="Endpoint B latitude, longitude" aria-describedby="b-error"></label>
           </div>
+          <button id="edit-endpoint-b" type="button" data-map-edit>Edit endpoint B</button>
           <p id="b-error" class="field-error" hidden></p>
             </section>
           </div>
@@ -564,19 +566,25 @@
             <div class="route-link-inspector-header">
               <h2 id="route-link-inspector-title" tabindex="-1"></h2>
               <div class="route-link-inspector-actions">
-                <button type="button" id="route-link-inspector-site" hidden>Site details</button>
                 <button type="button" id="route-link-inspector-close">Close</button>
               </div>
             </div>
             <p id="route-link-inspector-status" role="status" hidden></p>
             <div id="route-link-inspector-links"></div>
           </section>
+          <section id="map-object-details" class="route-link-inspector" aria-labelledby="map-object-title" hidden>
+            <div class="route-link-inspector-header">
+              <h2 id="map-object-title" tabindex="-1"></h2>
+              <button type="button" id="map-object-close">Close</button>
+            </div>
+            <div id="map-object-body"></div>
+          </section>
           <details class="route-map-legend">
             <summary>Map legend</summary>
             <div class="map-legend-grid">
               <div>
                 <span><i class="legend-endpoints"></i> Endpoints A / B</span>
-                <span><i class="legend-site legend-manual"><b>P1</b></i> Your proposed router</span>
+                <span><i class="legend-site legend-manual"><b>P1</b></i> Your proposed router (also in route)</span>
                 <span><i class="legend-site legend-proposed"><b>R1</b></i> New site found by search</span>
                 <span><i class="legend-site legend-existing"><b>Hill</b></i> MeshCore router in route</span>
                 <span><i class="legend-required"></i> MeshCore router · required</span>
@@ -589,8 +597,11 @@
                 <span><i class="legend-good"></i> Good 5–&lt;10 dB</span>
                 <span><i class="legend-marginal"></i> Marginal 0–&lt;5 dB</span>
                 <span><i class="legend-invalid"></i> Invalid link</span>
+                <span><i class="legend-proposed-link"></i> Proposed mesh link · thin dotted</span>
                 <span><i class="legend-stale"></i> Stale link</span>
                 <span><i class="legend-site legend-stale-site"><b>R1</b></i> Site in a stale route</span>
+                <span><i class="legend-probe"></i> Temporary handheld probe</span>
+                <span><i class="legend-probe-link"></i> Handheld probe link</span>
                 <span><i class="legend-candidate"></i> Searched candidate site</span>
               </div>
             </div>
@@ -608,6 +619,7 @@
           <div id="route-verdict" class="route-verdict" hidden></div>
           <div id="metrics"></div>
           <p id="prediction-spread" class="hint" hidden></p>
+          <section id="map-analysis-selection" hidden></section>
           <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>
           <p id="candidate-search-diagnostic" class="hint" hidden></p>
           <p id="rf-validation-note" class="hint" hidden></p>

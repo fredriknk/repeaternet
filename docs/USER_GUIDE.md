@@ -200,8 +200,8 @@ set **Height AGL · m**, **Gain · dBi** and **Feed loss · dB** for **Endpoint 
 **Endpoint B** and **Repeaters**. AGL is height above ground level. Each role
 also has a **Terminal clutter** setting. The default is **None**. Choose
 **Nearby trees and buildings (P.2108 from DOM)** to use local surface height
-around the site. On a proposed or MeshCore router, use **Terminal clutter**
-in its sidebar row or map popup to override the repeater default for that site.
+around the site. On a proposed or MeshCore router, open **Edit site** from the
+sidebar or right-click the map marker to override the repeater default.
 
 Under **Propagation model**, the default **Diffraction model** is
 **Delta-Bullington**. You can choose **Bullington** (the previous default) or
@@ -302,27 +302,32 @@ coordinates use latitude, longitude to six decimals.
 
 ![Map toolbar with placement, fit, edit history and candidate controls](images/map-toolbar.png)
 
-![Right-click menu with endpoint, proposed router and coordinate actions](images/map-context-menu.png)
+![Right-click menu with placement, handheld probe and coordinate actions](images/map-context-menu.png)
 
-- Drag either endpoint or a proposed router to move it. Open a proposed
-  router's popup to change its name, antenna height or policy, or use
-  **Remove**.
-- Open a MeshCore router marker to read its ID and activity and choose **Excluded**,
-  **Optional** or **Required**.
-- Select an endpoint or router on the primary route to see its adjacent hops.
-  Each hop shows distance, usable margin, line of sight, minimum Fresnel
-  clearance and an elevation profile. Press **Enter** or **Space** on a focused
-  marker to open the inspector, and **Esc** to close it.
-- Drag an endpoint or proposed route site to preview the adjacent hops and
-  their colours on the map as you move it. Dropping a proposed route site pins
-  it as a new **Required** proposed router. The previous route is marked stale,
-  its site markers turn grey and dashed, and the inspector keeps the preview
-  for the dropped location. Use **Undo** to revert the move, or run a new search
-  to validate the edited route.
-- From the inspector, open **Site details** for a router's height, type, policy
-  and distance to a mapped road when available. Select a link there to open its
-  profile in **Analysis**. **Edit proposed router** or **Edit MeshCore router**,
-  when shown, opens the router's settings.
+- Click a site or link, or press **Enter** or **Space** on its focused map
+  marker or line. The popup and the map details panel show the same readings.
+  Select **Show in analysis** in either place to open that site or link.
+- Right-click or long-press a site, or focus it and press **Shift+F10**, to
+  edit its name, antenna height, gain and terminal clutter. With P.2108 enabled,
+  the engine estimates local loss from nearby trees and buildings. For proposed
+  routers, you can also change search policy, enter new coordinates or remove
+  the router.
+  Editing a search-found site adds it to the plan as a proposed router.
+  Right-click a link to choose which of its two sites to edit. **Esc** closes
+  the popup and returns focus to the map object.
+- Drag either endpoint or a proposed router to move it. Dragging a site on
+  the primary route previews its adjacent hops. Dragging a search-found site
+  pins it as a new **Required** proposed router. The previous route becomes
+  stale. Use **Undo** to revert the move or run a new search to validate it.
+- Thin dotted links show usable connections (0 dB or higher) to proposed
+  routers, including optional routers outside the certified route. These links
+  update as you drag a marker and stay on the map after release. Click one to
+  see its margin and open its terrain profile in **Analysis**.
+- With live or saved coverage visible, right-click a location and choose
+  **Analyse links from here**. The temporary handheld probe shows the predicted
+  margin and distance to each usable site. Select **Show profile** for an
+  elevation profile. **Close** or **Esc** clears the probe. **Add proposed
+  router** or **Add coverage target** saves the location to the project.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
@@ -340,22 +345,23 @@ Each site has one marker, and its shape says what kind of site it is:
 | Marker | Meaning |
 | --- | --- |
 | Green **A** and blue **B** circles | Endpoints |
-| Dark hexagon with a name (**P1**) | A proposed router you placed |
+| Brown hexagon with a name (**P1**) | A proposed router you placed |
 | Brown square (**R1**, **R2**…) | A new site the search found |
 | Round purple dot | A MeshCore router. Light purple means **Optional**, dark purple means **Required**, a small grey dot means **Excluded** |
 | Purple pill with a name | A MeshCore router used by the route |
 | Small dark pin badge | The router is **Required** in every route |
 | Grey dashed marker | A site in a stale route |
 
-When a route is current, the route marker replaces the router's own marker,
-so a proposed router in the route keeps its name and pin badge instead of
-appearing twice. When the route goes stale, the routers' own markers return.
+Proposed routers keep the same brown tag in a certified route. An underline
+marks proposed and MeshCore routers used by the route.
 
-![Existing router popup with Excluded, Optional and Required buttons](images/map-router-policy.png)
+![MeshCore router edit form with radio settings and search policy](images/map-router-policy.png)
 
-![Certified proposed route-site popup with its height and link margins](images/map-route-site.png)
+![Route-site details popup with coordinates, radio assumptions and an Analysis button](images/map-route-site.png)
 
-![Map legend showing endpoint and router markers, margin bands and stale links](images/map-legend.png)
+![Map legend showing site markers, route links, proposed mesh links and probe links](images/map-legend.png)
+
+![Temporary handheld probe with predicted links and margins](images/map-coverage-probe.png)
 
 ![Layers control expanded with five basemaps and five coverage overlays](images/map-layer-control.png)
 

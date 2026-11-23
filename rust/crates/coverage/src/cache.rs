@@ -37,6 +37,7 @@ struct State {
 
 pub(crate) struct CacheContext<'a> {
     pub cache: &'a CoverageMetricsCache,
+    rf: &'a RfSettings,
     revision: [u8; 32],
 }
 
@@ -45,7 +46,7 @@ impl<'a> CacheContext<'a> {
         cache: &'a CoverageMetricsCache,
         terrain_revision: &[u8; 32],
         terrain: &(impl TerrainSource + ?Sized),
-        rf: &RfSettings,
+        rf: &'a RfSettings,
     ) -> Self {
         let mut digest = Sha256::new();
         digest.update(terrain_revision);
@@ -56,6 +57,7 @@ impl<'a> CacheContext<'a> {
         digest.update(format!("{rf:?}"));
         Self {
             cache,
+            rf,
             revision: digest.finalize().into(),
         }
     }
@@ -63,8 +65,8 @@ impl<'a> CacheContext<'a> {
     pub fn key(&self, source: &Site, target: &Site, step: f64, radio: RadioKey) -> Key {
         Key {
             revision: self.revision,
-            source: source.into(),
-            target: target.into(),
+            source: SiteKey::new(source, self.rf),
+            target: SiteKey::new(target, self.rf),
             step: step.to_bits(),
             radio,
         }
@@ -86,12 +88,12 @@ struct SiteKey {
     flags: [u8; 3],
     terminal_clutter: TerminalClutter,
     clutter_height: Option<u64>,
+    gain_override: Option<u64>,
 }
 
-impl From<&Site> for SiteKey {
-    fn from(site: &Site) -> Self {
-        // Labels only affect the output. Reattach the current source ID at the
-        // call site so overlapping grids can reuse links with different indices.
+impl SiteKey {
+    fn new(site: &Site, rf: &RfSettings) -> Self {
+        // Use the effective overrides so identical sites can still share metrics.
         Self {
             geometry: [
                 site.position.x,
@@ -108,6 +110,7 @@ impl From<&Site> for SiteKey {
             ],
             terminal_clutter: site.terminal_clutter,
             clutter_height: site.clutter_height_m.map(f64::to_bits),
+            gain_override: rf.site_gain_override(site).map(f64::to_bits),
         }
     }
 }

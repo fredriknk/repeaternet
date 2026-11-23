@@ -6,7 +6,8 @@ use repeaternet_optimizer::{
 };
 use repeaternet_rf_core::{
     AntennaPattern, AntennaSettings, DiffractionModel, LoRaSettings, ObstacleSurface, RfSettings,
-    SiteKind, TerminalClutter, ValidationMode, calibration::CERTIFICATION_MAX_STEP_M,
+    SiteKind, SiteRadioOverrides, TerminalClutter, ValidationMode,
+    calibration::CERTIFICATION_MAX_STEP_M,
 };
 use repeaternet_terrain::LonLat;
 use serde_json::{Value, json};
@@ -201,11 +202,46 @@ pub(crate) fn rf(value: &Value) -> ApiResult<RfSettings> {
         },
         clutter_loss_enabled: value["clutter_loss_enabled"].as_bool().unwrap(),
         clutter_loss_db_per_m: n("clutter_loss_db_per_m"),
+        site_overrides: site_radio_overrides(value.get("site_overrides"))?,
     };
     settings
         .effective_sensitivity_dbm()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
     Ok(settings)
+}
+
+fn site_radio_overrides(value: Option<&Value>) -> ApiResult<BTreeMap<String, SiteRadioOverrides>> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let fields = value
+        .as_object()
+        .ok_or_else(|| ApiError::invalid("Site radio overrides must be an object"))?;
+    fields
+        .iter()
+        .map(|(id, profile)| {
+            let invalid = || ApiError::invalid("Invalid site radio override");
+            let field = |name, min, max| {
+                profile
+                    .get(name)
+                    .map(|value| {
+                        number(value)
+                            .filter(|n| (min..=max).contains(n))
+                            .ok_or_else(invalid)
+                    })
+                    .transpose()
+            };
+            if id.is_empty() || id.chars().count() > 64 || !profile.is_object() {
+                return Err(invalid());
+            }
+            Ok((
+                id.clone(),
+                SiteRadioOverrides {
+                    gain_dbi: field("gain_dbi", -100.0, 100.0)?,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
@@ -344,7 +380,10 @@ fn locations(
             })?;
         locations.push(Location {
             id: id.into(),
-            name: format!("Endpoint {id}"),
+            name: plan["endpoint_names"][key]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .map_or_else(|| format!("Endpoint {id}"), str::to_owned),
             coordinate: coordinate(&fields[0], &fields[1], key)?,
             kind,
             origin: SiteOrigin::Optimized,
@@ -460,7 +499,18 @@ fn locations(
 pub(crate) fn merged(defaults: &Value, plan: &Value, key: &str) -> ApiResult<Value> {
     let mut result = defaults[key].clone();
     if let Some(value) = plan.get(key) {
-        merge(&mut result, &without_legacy_setting(key, value))?;
+        if key == "rf" && value.get("site_overrides").is_some() {
+            let mut value = without_legacy_setting(key, value).into_owned();
+            let overrides = value
+                .as_object_mut()
+                .unwrap()
+                .remove("site_overrides")
+                .unwrap();
+            merge(&mut result, &value)?;
+            result["site_overrides"] = overrides;
+        } else {
+            merge(&mut result, &without_legacy_setting(key, value))?;
+        }
     }
     Ok(result)
 }

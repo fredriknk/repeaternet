@@ -29,7 +29,9 @@ pub use link::{free_space_path_loss_db, received_power_dbm, DirectionResult, Lin
 pub use multi_edge::{deygout3_loss_db, Edge, MultiEdge};
 pub use profile::{sample_profile, ObstacleSurface, TerrainLayer, TerrainProfile, TerrainSource};
 pub use propagation::{EvaluationOptions, LinkEvaluator};
-pub use settings::{AntennaSettings, LoRaSettings, RadioBudget, RfSettings, ValidationMode};
+pub use settings::{
+    AntennaSettings, LoRaSettings, RadioBudget, RfSettings, SiteRadioOverrides, ValidationMode,
+};
 pub use site::{HeightReference, Point, Site, SiteKind};
 pub use terminal_clutter::{
     p2108_terminal_correction_db, terminal_clutter_height_m, TerminalClutter,

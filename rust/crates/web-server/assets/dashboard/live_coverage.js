@@ -315,7 +315,7 @@ function liveCoverageSites() {
     }
   }
   if (sources.proposed) {
-    manualRouters.forEach((router, index) => add({slot: `manual:${router.id}`, id: router.id, label: router.name || `M${index + 1}`,
+    manualRouters.filter(router=>router.policy!=='excluded').forEach((router, index) => add({slot: `manual:${router.id}`, id: router.id, label: router.name || `M${index + 1}`,
       group: 'Proposed router', kind: 'router', latitude: Number(router.latitude), longitude: Number(router.longitude),
       antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight), terminal_clutter: router.terminal_clutter}));
   }
@@ -334,7 +334,7 @@ function liveCoverageSites() {
       if (router.policy === 'excluded') continue;
       add({slot: `known:${router.id}`, id: router.id, label: router.name || router.id, group: 'Existing router', kind: 'router',
         latitude: Number(router.latitude), longitude: Number(router.longitude),
-        antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight), terminal_clutter: router.terminal_clutter});
+        antenna_height_m: router.height_override ? liveCoverageSiteHeight(router.antenna_height_m, routerHeight) : routerHeight, terminal_clutter: router.terminal_clutter});
     }
   }
   return sites;
@@ -356,7 +356,8 @@ function liveCoverageKey(site, resolution = liveCoverage.settings.detail_m) {
   const body = liveCoverageRequest(site, resolution);
   body.site.latitude = site.latitude.toFixed(6);
   body.site.longitude = site.longitude.toFixed(6);
-  delete body.site.id;
+  // Radio overrides are keyed by site ID.
+  if(!rf?.site_overrides?.[site.id])delete body.site.id;
   return JSON.stringify([body, liveCoverageTerrainKey(), JSON.stringify(rf)]);
 }
 
@@ -389,6 +390,7 @@ function syncLiveCoverage() {
   // The server reads radio settings from the saved plan. Do not cache a
   // response under new settings while autosave is still committing them.
   if (savedRevision < saveRevision) return;
+  syncProposedMeshLinks();
   restoreDisplacedLiveCoverage();
   const projectId = projectInfo?.active_id ?? null;
   const sites = liveCoverage.settings.enabled ? liveCoverageSites() : [];
@@ -490,17 +492,165 @@ async function loadLiveCoverageSlot(slot) {
   }
 }
 
+
+const proposedMeshLinks={pairs:new Map(),active:0,projectId:null,layer:null,flush:null,dispatch:0};
+
+function proposedMeshSites(drag){
+  const sites=new Map();
+  const add=(site,id,kind,height,isProposed=false)=>{
+    if(![site.latitude,site.longitude,height].every(Number.isFinite)||sites.has(id))return;
+    const moving=drag?.site.id===id;
+    sites.set(id,{site:{id,kind,latitude:moving?drag.latlng.lat:site.latitude,
+      longitude:moving?drag.latlng.lng:site.longitude,antenna_height_m:height,
+      terminal_clutter:site.terminal_clutter},isProposed});
+  };
+  for(const key of ['a','b']){
+    const point=validEndpointCoords(key);
+    if(point)add({latitude:point[0],longitude:point[1]},key.toUpperCase(),'endpoint_'+key,rf['endpoint_'+key].height_agl_m);
+  }
+  const routerHeight=rf.router.height_agl_m;
+  for(const router of manualRouters){
+    if(router.policy!=='excluded')add(router,router.id,'router',liveCoverageSiteHeight(router.antenna_height_m,routerHeight),true);
+  }
+  for(const router of selectedKnownRouters()){
+    if(router.policy!=='excluded')add(router,router.id,'router',router.height_override?router.antenna_height_m:routerHeight);
+  }
+  for(const site of result?.route||[]){
+    if(['candidate','router'].includes(site.kind)&&!['manual','known'].includes(site.origin))add(site,site.id,site.kind,site.antenna_height_m);
+  }
+  return sites;
+}
+function mapLinkPairId(a,b){
+  return a<b?a+'|'+b:b+'|'+a;
+}
+function syncProposedMeshLinks(){
+  if(!proposedMeshLinks.layer)return;
+  const projectId=projectInfo?.active_id;
+  if(proposedMeshLinks.projectId!==projectId||!terrainLoaded){
+    for(const pair of proposedMeshLinks.pairs.values())pair.controller?.abort();
+    proposedMeshLinks.pairs.clear();
+    proposedMeshLinks.layer.clearLayers();
+    proposedMeshLinks.projectId=projectId;
+  }
+  if(!projectId||!terrainLoaded||switchingProject||!rf)return;
+  const drag=liveCoverage.drag, sites=proposedMeshSites(drag), wanted=new Set();
+  const routePairs=new Set(resultStale?[]:(result?.links||[]).map(link=>mapLinkPairId(link.source_id,link.target_id)));
+  const radioKey=JSON.stringify([rf,liveCoverageTerrainKey()]);
+  for(const {site:source,isProposed} of sites.values()){
+    if(!isProposed)continue;
+    for(const {site:target} of sites.values()){
+      if(source.id===target.id||Math.hypot(source.latitude-target.latitude,source.longitude-target.longitude)<.000001)continue;
+      const id=mapLinkPairId(source.id,target.id);
+      if(routePairs.has(id)||wanted.has(id))continue;
+      wanted.add(id);
+      const key=JSON.stringify([radioKey,source,target]);
+      let pair=proposedMeshLinks.pairs.get(id);
+      if(!pair){
+        pair={id,projectId};
+        proposedMeshLinks.pairs.set(id,pair);
+      }
+      if(pair.wanted?.key!==key){
+        pair.wanted={key,source,target};
+        pair.line?.setLatLngs([mapPoint(source),mapPoint(target)]);
+      }
+    }
+  }
+  for(const [id,pair] of proposedMeshLinks.pairs){
+    if(wanted.has(id))continue;
+    pair.controller?.abort();
+    pair.line?.removeFrom(proposedMeshLinks.layer);
+    proposedMeshLinks.pairs.delete(id);
+  }
+  pumpProposedMeshLinks();
+}
+function pumpProposedMeshLinks(){
+  if(mapEditsLocked()||proposedMeshLinks.active>=2)return;
+  const pending=[...proposedMeshLinks.pairs.values()].filter(pair=>!pair.controller&&pair.checked!==pair.wanted.key);
+  pending.sort((a,b)=>(a.dispatched??0)-(b.dispatched??0));
+  for(const pair of pending){
+    pair.dispatched=++proposedMeshLinks.dispatch;
+    proposedMeshLinks.active++;
+    void refreshProposedMeshLink(pair).finally(()=>{
+      proposedMeshLinks.active--;
+      pumpProposedMeshLinks();
+    });
+    if(proposedMeshLinks.active>=2)break;
+  }
+}
+async function refreshProposedMeshLink(pair){
+  const {key,source,target}=pair.wanted, controller=new AbortController();
+  pair.controller=controller;
+  try{
+    if(!proposedMeshLinks.flush){
+      proposedMeshLinks.flush=flushAutosave().finally(()=>{proposedMeshLinks.flush=null;});
+    }
+    await proposedMeshLinks.flush;
+    if(controller.signal.aborted||pair.wanted.key!==key)return;
+    let link;
+    try{
+      link=await requestMapLink(source,target,{projectId:pair.projectId,signal:controller.signal});
+    }catch(error){
+      if(error.name==='AbortError')return;
+    }
+    if(!controller.signal.aborted&&(pair.wanted.key===key||liveCoverage.drag)){
+      renderProposedMeshLink(pair,link);
+    }
+    pair.checked=key;
+  }catch{
+    // Saving failed. The next saved-plan change can retry this pair.
+    pair.checked=key;
+  }finally{
+    pair.controller=null;
+  }
+}
+function renderProposedMeshLink(pair,link){
+  if(!link||!(link.worst_margin_db>=0)){
+    pair.line?.removeFrom(proposedMeshLinks.layer);
+    pair.line=null;
+    return;
+  }
+  pair.link=link;
+  const style={...routeLinkMapStyle({...link,valid:true},false),weight:2,dashArray:'2 5',className:'map-proposed-mesh-link'};
+  const points=[mapPoint(pair.wanted.source),mapPoint(pair.wanted.target)];
+  if(pair.line){
+    pair.line.setLatLngs(points).setStyle(style).setTooltipContent(proposedMeshTooltip(link));
+  }else{
+    pair.line=L.polyline(points,style).bindTooltip(proposedMeshTooltip(link));
+    bindMapLink(pair.line,()=>pair.link,()=>void showProposedLinkInAnalysis(pair));
+    pair.line.addTo(proposedMeshLinks.layer);
+  }
+}
+function proposedMeshTooltip(link){
+  return mapText('span',mapLinkLabel(link)+' · '+formatMetric(link.worst_margin_db)+' dB · Proposed mesh link');
+}
+async function showProposedLinkInAnalysis(pair){
+  const section=openMapAnalysisSelection(mapLinkLabel(pair.link));
+  const body=mapText('div','Loading terrain profile…');
+  body.setAttribute('role','status');
+  section.append(body);
+  try{
+    const {source,target}=pair.wanted;
+    const link=await requestMapLink(source,target,{projectId:pair.projectId,profile:true});
+    if(body.isConnected)renderRouteInspectorLink({body},link);
+  }catch(error){
+    if(body.isConnected)body.textContent=error.message;
+  }
+}
+
+
 /* Follow a dragged marker with quick coarse previews, one request at a time. */
 function bindLiveCoverageDrag(marker, describe) {
   marker.on('dragstart', () => {
     const site = describe();
-    if (!site || !liveCoverage.slots.has(site.slot)) return;
-    liveCoverage.drag = {marker, describe, slot: site.slot, latlng: marker.getLatLng().wrap()};
+    if (!site || mapEditsLocked()) return;
+    liveCoverage.drag = {marker, describe, site, slot: site.slot, latlng: marker.getLatLng().wrap()};
+    syncProposedMeshLinks();
     requestLiveCoveragePreview();
   });
   marker.on('drag', () => {
     if (liveCoverage.drag?.marker !== marker) return;
     liveCoverage.drag.latlng = marker.getLatLng().wrap();
+    syncProposedMeshLinks();
     requestLiveCoveragePreview();
   });
   marker.on('dragend', () => {
@@ -512,7 +662,7 @@ function bindLiveCoverageDrag(marker, describe) {
 
 async function requestLiveCoveragePreview() {
   const drag = liveCoverage.drag;
-  if (!drag || liveCoverage.previewBusy) return;
+  if (!drag || !liveCoverage.slots.has(drag.slot) || liveCoverage.previewBusy) return;
   const site = drag.describe(), latlng = drag.latlng;
   if (!site) return;
   liveCoverage.previewBusy = true;
@@ -822,6 +972,7 @@ function restoreDisplacedLiveCoverage() {
 
 /* Called once from app.js after the map, plan and controls exist. */
 function initLiveCoverage() {
+  proposedMeshLinks.layer=L.layerGroup().addTo(map);
   $('route-export-html').addEventListener('click', downloadLiveCoverageReport);
   const LiveCoverageLayer = L.GridLayer.extend({
     createTile(coords) {

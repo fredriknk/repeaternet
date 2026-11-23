@@ -1,4 +1,5 @@
 use axum::{Json, extract::State};
+use repeaternet_coverage::ClientRadioProfile;
 use repeaternet_rf_core::{
     EvaluationOptions, HeightReference, LinkEvaluator, Site, SiteKind,
     calibration::CERTIFICATION_MAX_STEP_M,
@@ -30,6 +31,22 @@ pub async fn evaluate(
     ];
     let mut source = site(source, "source")?;
     let mut target = site(target, "target")?;
+    let client = body
+        .get("client")
+        .map(|value| {
+            let profile: ClientRadioProfile = serde_json::from_value(value.clone())
+                .map_err(|error| ApiError::invalid(error.to_string()))?;
+            profile.validate().map_err(terrain_invalid)?;
+            if target.kind != SiteKind::Client {
+                return Err(ApiError::invalid(
+                    "A handheld profile requires a client target",
+                ));
+            }
+            target.antenna_height_m = profile.height_agl_m;
+            Ok(profile.as_radio_budget())
+        })
+        .transpose()?;
+    let include_supplemental = client.is_some();
     let include_profile = match body.get("include_profile") {
         Some(value) => value
             .as_bool()
@@ -42,7 +59,7 @@ pub async fn evaluate(
             if project_id.is_some_and(|id| id.as_str() != Some(&session.project_id)) {
                 return Err(ApiError::conflict("The active project changed"));
             }
-            let context = TerrainContext::capture(app, key, session, false)?;
+            let context = TerrainContext::capture(app, key, session, include_supplemental)?;
             let plan = active_project(&app.store, key, session)?.plan;
             let rf = route_inputs::rf(&route_inputs::merged(&app.defaults, &plan, "rf")?)?;
             let overrides = route_inputs::router_clutter_overrides(&plan)?;
@@ -102,6 +119,7 @@ pub async fn evaluate(
                 EvaluationOptions {
                     sample_step_m: Some(CERTIFICATION_MAX_STEP_M),
                     include_profile,
+                    target_radio: client.as_ref(),
                     ..EvaluationOptions::default()
                 },
             )

@@ -165,6 +165,34 @@ fn site(id: &str, x: f64, y: f64, kind: SiteKind, antenna_height_m: f64) -> Site
 }
 
 #[test]
+fn site_gain_applies_in_both_directions() {
+    let terrain = flat(10.0);
+    let a = site("A", 0.0, 0.0, SiteKind::EndpointA, 4.0);
+    let b = site("B", 100.0, 0.0, SiteKind::EndpointB, 4.0);
+    let mut rf = RfSettings::default();
+    let baseline = LinkEvaluator::new(&terrain, &rf)
+        .evaluate(&a, &b, EvaluationOptions::default())
+        .unwrap();
+    let old_gain = rf.endpoint_a.pattern.peak_gain_dbi();
+    rf.site_overrides.insert(
+        a.id.clone(),
+        crate::SiteRadioOverrides {
+            gain_dbi: Some(old_gain + 4.0),
+        },
+    );
+    let link = LinkEvaluator::new(&terrain, &rf)
+        .evaluate(&a, &b, EvaluationOptions::default())
+        .unwrap();
+    near(link.forward.tx_gain_dbi, old_gain + 4.0, 1e-12);
+    near(link.reverse.rx_gain_dbi, old_gain + 4.0, 1e-12);
+    near(
+        link.worst_margin_db(),
+        baseline.worst_margin_db() + 4.0,
+        1e-12,
+    );
+}
+
+#[test]
 fn scalar_link_matches_full_profile_with_and_without_surface() {
     let a = site("A", 0.0, 0.0, SiteKind::EndpointA, 30.0);
     let b = site("B", 1200.0, 0.0, SiteKind::EndpointB, 40.0);
