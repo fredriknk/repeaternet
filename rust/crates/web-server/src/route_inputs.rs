@@ -241,6 +241,9 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
     if n("minimum_router_height_m") > n("maximum_router_height_m") {
         return Err(ApiError::invalid("Minimum height exceeds maximum height"));
     }
+    if i("maximum_hops") == 0 {
+        return Err(ApiError::invalid("Maximum hops must be at least 1"));
+    }
     let parallel_workers = i("parallel_workers");
     if parallel_workers > 64 {
         return Err(ApiError::invalid(
@@ -260,7 +263,8 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         candidates_per_cell: i("candidates_per_cell"),
         maximum_neighbors_per_site: i("maximum_neighbors_per_site"),
         exhaustive_screening: true,
-        maximum_solution_routers: i("maximum_solution_routers"),
+        maximum_new_routers: i("maximum_new_routers"),
+        maximum_hops: i("maximum_hops"),
         reliability_paths: i("reliability_paths"),
         parallel_workers,
         coarse_sample_step_m: n("coarse_sample_step_m"),
@@ -456,24 +460,29 @@ fn locations(
 pub(crate) fn merged(defaults: &Value, plan: &Value, key: &str) -> ApiResult<Value> {
     let mut result = defaults[key].clone();
     if let Some(value) = plan.get(key) {
-        merge(&mut result, &without_legacy_model(key, value))?;
+        merge(&mut result, &without_legacy_setting(key, value))?;
     }
     Ok(result)
 }
 
-/// Plans saved before the calibrated engine stored the then-only
-/// `"bullington"` model. They have no `obstacle_surface`, so their model
-/// falls back to the calibrated default instead of pinning Bullington.
-fn without_legacy_model<'a>(key: &str, value: &'a Value) -> std::borrow::Cow<'a, Value> {
-    if key != "rf"
-        || value.get("obstacle_surface").is_some()
-        || value.get("diffraction_model") != Some(&json!("bullington"))
-    {
-        return std::borrow::Cow::Borrowed(value);
-    }
+/// Fall back to current defaults for settings retired from saved plans.
+fn without_legacy_setting<'a>(key: &str, value: &'a Value) -> std::borrow::Cow<'a, Value> {
+    let field = match key {
+        "candidates" if value.get("maximum_solution_routers").is_some() => {
+            "maximum_solution_routers"
+        }
+        // Before RF calibration Bullington was the only model. Those plans have
+        // no obstacle_surface and should inherit the calibrated default.
+        "rf" if value.get("obstacle_surface").is_none()
+            && value.get("diffraction_model") == Some(&json!("bullington")) =>
+        {
+            "diffraction_model"
+        }
+        _ => return std::borrow::Cow::Borrowed(value),
+    };
     let mut value = value.clone();
     if let Some(fields) = value.as_object_mut() {
-        fields.remove("diffraction_model");
+        fields.remove(field);
     }
     std::borrow::Cow::Owned(value)
 }
@@ -518,11 +527,14 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         .iter()
         .filter(|site| site.policy == RouterPolicy::Required)
         .count()
-        > candidates.maximum_solution_routers
+        >= candidates.maximum_hops
     {
         return Err(ApiError::invalid(
-            "Required routers exceed the Max total routers setting",
+            "Increase Maximum hops to fit all required routers between the endpoints",
         ));
+    }
+    if let Some(fields) = plan.get_mut("candidates").and_then(Value::as_object_mut) {
+        fields.remove("maximum_solution_routers");
     }
     let known = fixed
         .iter()
@@ -535,7 +547,7 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         "candidates_per_cell": candidates.candidates_per_cell,
         "requested_candidates_per_cell": requested.candidates_per_cell,
         "neighbor_limit": candidates.maximum_neighbors_per_site,
-        "generates_candidates": candidates.infrastructure_policy != InfrastructurePolicy::ExistingOnly,
+        "generates_candidates": candidates.infrastructure_policy != InfrastructurePolicy::ExistingOnly && candidates.maximum_new_routers > 0,
         "known_router_count": known,
         "excluded_router_count": excluded_known,
         "manual_router_count": fixed.len() - known,
@@ -548,4 +560,28 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         rf_payload,
         candidates,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_router_limit_loads_with_new_defaults() {
+        let defaults = crate::catalog::dashboard_defaults();
+        let plan = json!({
+            "a": [59.9139, 10.7522],
+            "b": [59.95, 10.85],
+            "candidates": {"maximum_solution_routers": 0, "refine_radius_m": 100}
+        });
+        let inputs = parse(plan, &defaults).unwrap();
+        assert_eq!(inputs.candidates.maximum_new_routers, 6);
+        assert_eq!(inputs.candidates.maximum_hops, 7);
+        assert_eq!(inputs.candidates.refine_radius_m, 100.0);
+        assert!(
+            inputs.plan["candidates"]
+                .get("maximum_solution_routers")
+                .is_none()
+        );
+    }
 }

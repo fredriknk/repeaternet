@@ -34,7 +34,7 @@ fn plan() -> Value {
         "format": "repeaternet-web", "version": 1,
         "a": coord(500050.0, 6650850.0), "b": coord(500290.0, 6650850.0),
         "rf": {"lora": {"enabled": true, "manual_sensitivity_override": false}},
-        "candidates": {"candidates_per_cell": 1, "refine_radius_m": 0, "maximum_solution_routers": 2},
+        "candidates": {"candidates_per_cell": 1, "refine_radius_m": 0, "maximum_new_routers": 2, "maximum_hops": 3},
         "manual_routers": [{"id": "M-alternative", "name": "Manual site", "latitude": manual[0], "longitude": manual[1]}],
         "search_effort": "quick", "unknown_future_field": {"keep": true},
     })

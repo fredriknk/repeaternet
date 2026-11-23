@@ -221,8 +221,8 @@ objective** for how feasible alternatives are ranked.
 
 | Objective | What it prioritizes |
 | --- | --- |
-| **Fewest total routers** | The smallest total router count. This is the default. |
-| **Fewest new installations** | Use of existing infrastructure to reduce the number of new sites. |
+| **Fewest hops** | Starts with the route that needs the fewest hops, then prefers the route with fewer new routers when margins are comparable. This is the default. |
+| **Fewest new installations** | Keeps the number of routers that still have to be installed (sites placed by the search and your proposed P routers) as low as possible, even if the route needs more hops. |
 | **Minimum infrastructure cost** | A planning proxy based on installations and mast heights. |
 | **Maximum reliability** | Independent paths, then RF quality among equally redundant options. It can favor extra routers. |
 
@@ -259,6 +259,15 @@ twice. Smaller searches can miss stronger alternatives. **Help: search effort**
 summarizes the trade-off. **Only suggest sites near roads** adds the optional
 [road filter](#road-filter).
 
+| Search limit | Default and scope |
+| --- | --- |
+| **Maximum new routers** | 6 sites placed by the search. Existing MeshCore routers, proposed P routers and required routers use none of this budget. Set it to 0 to use only sites already in the plan. |
+| **Maximum hops** | 7 links per endpoint-to-endpoint path, including backup paths. A direct route uses 1 hop and each intermediate router adds 1 hop. |
+
+When routes have the same clearance class and their weakest links fall in the
+same 1 dB margin band, **Fewest hops** can prefer the route that needs
+fewer new sites.
+
 Open **Advanced search limits** to adjust the search area, candidate grid or
 final terrain sampling.
 
@@ -266,7 +275,6 @@ final terrain sampling.
 | --- | --- |
 | **Corridor half-width · m (each side and around endpoints)** | 15,000 m. The 30 km wide, square-ended band extends 15 km past A and B. It is the outer limit for generated candidates and guides route terrain downloads and the nearby MeshCore lookup. Candidates are dense only within half the route length of the line (at least 5 km). |
 | **Candidate grid spacing · m** | 1,000 m between candidate grid points. Smaller spacing explores more possible locations. |
-| **Maximum total routers** | 6 intermediate routers. |
 | **Maximum hop length · m (blank = auto)** | 50,000 m. Clearing the value removes the explicit distance cap. |
 | **Refinement radius · m** and **Refinement step · m** | After the route is found, each generated router may move up to 250 m to strengthen its hops. Positions are sampled every 50 m, or at the terrain resolution if that is coarser. Your own proposed and existing routers never move. |
 | **Final terrain sample step · m** | The default and maximum are 10 m between samples on final route links. The earlier screening stages default to 200 m and 50 m. |

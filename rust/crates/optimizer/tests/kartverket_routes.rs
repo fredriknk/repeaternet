@@ -33,7 +33,7 @@ fn strict_route_across_95_km_fits_the_router_budget() {
             priority: OptimizationPriority::MaximumReliability,
             grid_spacing_m: spacing,
             maximum_neighbors_per_site: neighbors,
-            maximum_solution_routers: limit,
+            maximum_new_routers: limit,
             ..CandidateSettings::default()
         };
         let result = RouteOptimizer::new(&terrain, &rf, &settings)
@@ -57,8 +57,8 @@ fn strict_route_across_95_km_fits_the_router_budget() {
         let solution = result
             .active_solution()
             .expect("expected a certified route");
-        assert!(solution.router_count() <= settings.maximum_solution_routers);
-        assert!(solution.primary_path_ids().len() <= settings.maximum_solution_routers + 2);
+        assert!(solution.new_router_count() <= settings.maximum_new_routers);
+        assert!(solution.primary_path_ids().len() - 1 <= settings.maximum_hops);
         assert!(solution.links.iter().all(|link| {
             link.valid && link.los_clear && link.fresnel_clear && link.profile.is_some()
         }));

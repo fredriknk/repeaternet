@@ -422,7 +422,10 @@ impl<'a> RouteOptimizer<'a> {
         search.sites = sites;
         search.access_budget = access_budget;
         search.generated_candidates = automatic_candidates;
-        if automatic_candidates && self.settings.candidates_per_cell > 0 {
+        if automatic_candidates
+            && self.settings.candidates_per_cell > 0
+            && self.settings.maximum_new_routers > 0
+        {
             let spacing = candidate_grid_spacing(self.terrain, self.settings);
             search.diagnostics.push(format!(
                 "Effective candidate grid spacing: {spacing:.1} m (requested {:.1} m).",
@@ -583,7 +586,9 @@ impl<'a> RouteOptimizer<'a> {
                 }
                 sites.push(site);
             }
-        } else if policy != InfrastructurePolicy::ExistingOnly {
+        } else if policy != InfrastructurePolicy::ExistingOnly
+            && self.settings.maximum_new_routers > 0
+        {
             let mut settings = self.settings.clone();
             let terminals: Vec<_> = sites
                 .iter()
@@ -736,13 +741,6 @@ impl<'a> RouteOptimizer<'a> {
         }
         if cancelled() {
             return Ok((sites, filter_counts, access_budget));
-        }
-        let required = sites.iter().filter(|site| site.is_required()).count();
-        if required > self.settings.maximum_solution_routers {
-            return Err(OptimizationError::InvalidInput(format!(
-                "{required} routers are required, but the solution limit is {}",
-                self.settings.maximum_solution_routers
-            )));
         }
         for site in &mut sites {
             if !site.is_client() && !site.height_override {
@@ -982,8 +980,8 @@ impl Search<'_, '_> {
         self.screen(&terminals)?;
         let mut checked_bridges = false;
         let mut exploration = self.settings.clone();
-        exploration.maximum_solution_routers = exploration
-            .maximum_solution_routers
+        exploration.maximum_new_routers = exploration
+            .maximum_new_routers
             .saturating_add(ROUTER_HEADROOM);
         loop {
             if self.hooks.cancelled() {
@@ -1135,7 +1133,7 @@ impl Search<'_, '_> {
         // Coarse/medium classifications cannot safely prove RF failure.
         self.certify_pairs(&retry, |_, _, _| {})?;
 
-        if terminals.len() == 2 && self.settings.maximum_solution_routers >= 2 {
+        if terminals.len() == 2 && self.settings.maximum_hops >= 3 {
             let a = *terminals.first().expect("two terminals");
             let b = *terminals.last().expect("two terminals");
             self.check_endpoint_frontier(a, b)?;
@@ -1218,16 +1216,24 @@ impl Search<'_, '_> {
             return Ok(());
         }
         let (a, b) = (0, self.sites.len() - 1);
+        let maximum = self.settings.maximum_hops;
+        if maximum == 0 {
+            return Ok(());
+        }
         self.certify((a, b), true)?;
-        let maximum = self.settings.maximum_solution_routers;
         let direct = self.links.contains_key(&(a, b));
-        if !direct && maximum > 0 {
+        if !direct && maximum >= 2 {
             let mut from_a = Vec::new();
             let mut to_b = Vec::new();
             let count = b - 1;
             self.hooks
                 .notify(Stage::CheckingEndpointVisibleCandidates, 0, count);
-            let pairs: Vec<_> = (1..b).flat_map(|i| [(a, i), (i, b)]).collect();
+            let pairs: Vec<_> = (1..b)
+                .filter(|&i| {
+                    self.settings.maximum_new_routers > 0 || !self.sites[i].needs_new_router()
+                })
+                .flat_map(|i| [(a, i), (i, b)])
+                .collect();
             self.certify_pairs(&pairs, |(left, right), valid, hooks| {
                 if left == a {
                     if valid {
@@ -1245,7 +1251,7 @@ impl Search<'_, '_> {
             if self.hooks.cancelled() {
                 return Ok(());
             }
-            if maximum >= 2 && !from_a.iter().any(|node| to_b.binary_search(node).is_ok()) {
+            if maximum >= 3 && !from_a.iter().any(|node| to_b.binary_search(node).is_ok()) {
                 let total = from_a.len().saturating_mul(to_b.len());
                 self.hooks
                     .notify(Stage::CheckingTwoRepeaterSummitLinks, 0, total);
@@ -1256,7 +1262,11 @@ impl Search<'_, '_> {
                         if self.hooks.cancelled() {
                             return Ok(());
                         }
-                        self.certify(pair(left, right), false)?;
+                        let new_routers = usize::from(self.sites[left].needs_new_router())
+                            + usize::from(self.sites[right].needs_new_router());
+                        if new_routers <= self.settings.maximum_new_routers {
+                            self.certify(pair(left, right), false)?;
+                        }
                         done += 1;
                         if done % 10 == 0 || done == total {
                             self.hooks
@@ -1283,7 +1293,14 @@ impl Search<'_, '_> {
                 self.settings.priority,
             )
         };
-        let Some(path) = path.filter(|path| path.len() <= maximum.min(2) + 2) else {
+        let Some(path) = path.filter(|path| {
+            path.len() - 1 <= maximum.min(3)
+                && path
+                    .iter()
+                    .filter(|id| self.sites[self.by_id[*id]].needs_new_router())
+                    .count()
+                    <= self.settings.maximum_new_routers
+        }) else {
             return Ok(());
         };
         let routers = path[1..path.len() - 1].to_vec();
@@ -1304,9 +1321,12 @@ impl Search<'_, '_> {
         self.seeds.push(routers);
         let selected: Vec<_> = nodes.iter().map(|&i| self.sites[i].clone()).collect();
         let graph = RoutingGraph::from_links(&selected, self.links.values())?;
-        let mut settings = self.settings.clone();
-        settings.maximum_solution_routers = nodes.len() - 2;
-        let alternatives = solve_graph(&graph, &settings, &|| self.hooks.cancelled(), &self.seeds)?;
+        let alternatives = solve_graph(
+            &graph,
+            self.settings,
+            &|| self.hooks.cancelled(),
+            &self.seeds,
+        )?;
         self.publish_certified(&alternatives)
     }
 
@@ -1476,7 +1496,7 @@ impl Search<'_, '_> {
         let mut certified = Vec::new();
         for solution in previous
             .iter()
-            .filter(|s| s.router_count() <= self.settings.maximum_solution_routers)
+            .filter(|s| s.new_router_count() <= self.settings.maximum_new_routers)
         {
             if self.hooks.cancelled() {
                 return Ok(());

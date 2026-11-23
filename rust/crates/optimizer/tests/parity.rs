@@ -322,7 +322,7 @@ fn exact_counts_keep_induced_links_and_required_multiclient_router() {
         })
         .collect();
     let settings = CandidateSettings {
-        maximum_solution_routers: 2,
+        maximum_new_routers: 1,
         ..CandidateSettings::default()
     };
     let alternatives = solve_topologies(&sites, &links, &settings, &|| false, &[]).unwrap();
@@ -371,7 +371,7 @@ fn redundancy_reroutes_earlier_flow_and_reliability_prefers_stronger_resilient_m
         link("W", "Y", 5.0),
     ];
     let reliability = CandidateSettings {
-        maximum_solution_routers: 4,
+        maximum_new_routers: 4,
         reliability_paths: 2,
         priority: OptimizationPriority::MaximumReliability,
         ..CandidateSettings::default()
@@ -403,7 +403,7 @@ fn redundancy_reroutes_earlier_flow_and_reliability_prefers_stronger_resilient_m
 #[test]
 fn paired_seeds_strengthen_the_backup_and_preserve_incumbent_path_quality() {
     let settings = CandidateSettings {
-        maximum_solution_routers: 4,
+        maximum_new_routers: 4,
         reliability_paths: 2,
         priority: OptimizationPriority::MaximumReliability,
         ..CandidateSettings::default()
@@ -479,7 +479,7 @@ fn reliability_ranks_backups_for_every_client_pair() {
         site("R", 10.0, 10.0),
     ];
     let settings = CandidateSettings {
-        maximum_solution_routers: 1,
+        maximum_new_routers: 1,
         reliability_paths: 3,
         priority: OptimizationPriority::MaximumReliability,
         ..CandidateSettings::default()
@@ -506,6 +506,53 @@ fn reliability_ranks_backups_for_every_client_pair() {
 }
 
 #[test]
+fn topology_prefers_reuse_and_enforces_both_search_limits() {
+    let mut known = site("K", 2.0, 0.0);
+    known.origin = SiteOrigin::Known;
+    let mut proposed = site("P", 4.0, 0.0);
+    proposed.origin = SiteOrigin::Manual;
+    let mut required = site("R", 6.0, 0.0);
+    required.policy = RouterPolicy::Required;
+    let sites = [
+        site("A", 0.0, 0.0),
+        site("B", 10.0, 0.0),
+        known,
+        proposed,
+        required,
+        site("N1", 2.0, 1.0),
+        site("N2", 8.0, 0.0),
+    ];
+    let links = [
+        link("A", "K", 10.2),
+        link("K", "P", 10.2),
+        link("P", "R", 10.5),
+        link("A", "N1", 10.9),
+        link("N1", "P", 10.9),
+        link("R", "N2", 10.5),
+        link("N2", "B", 10.5),
+    ];
+    let mut settings = CandidateSettings {
+        maximum_new_routers: 2,
+        maximum_hops: 5,
+        ..CandidateSettings::default()
+    };
+    let solve = |settings: &CandidateSettings| {
+        solve_topologies(&sites, &links, settings, &|| false, &[]).unwrap()
+    };
+    let solutions = solve(&settings);
+    let active = &solutions[select_active_solution_index(&solutions, settings.priority).unwrap()];
+    assert_eq!(active.primary_path_ids(), ["A", "K", "P", "R", "N2", "B"]);
+    assert_eq!(active.new_router_count(), 1);
+    settings.maximum_new_routers = 1;
+    assert!(!solve(&settings).is_empty());
+    settings.maximum_hops = 4;
+    assert!(solve(&settings).is_empty());
+    settings.maximum_hops = 5;
+    settings.maximum_new_routers = 0;
+    assert!(solve(&settings).is_empty());
+}
+
+#[test]
 fn topology_selection_can_prefer_two_short_existing_masts() {
     let mut tall = site("tall", 5.0, 0.0);
     tall.rf.antenna_height_m = 200.0;
@@ -522,7 +569,7 @@ fn topology_selection_can_prefer_two_short_existing_masts() {
         link("right", "B", 5.0),
     ];
     let mut settings = CandidateSettings {
-        maximum_solution_routers: 2,
+        maximum_new_routers: 2,
         ..CandidateSettings::default()
     };
     for priority in [
@@ -572,7 +619,7 @@ fn beam_seeds_protect_long_chains_among_dense_candidates() {
         sites.push(site(&id, i as f64, 3.0));
     }
     let settings = CandidateSettings {
-        maximum_solution_routers: 4,
+        maximum_new_routers: 4,
         ..CandidateSettings::default()
     };
     let alternatives = solve_topologies(&sites, &links, &settings, &|| false, &[]).unwrap();
@@ -604,7 +651,7 @@ fn native_rf_on_flat_ground_and_one_or_two_ridges() {
         let settings = CandidateSettings {
             final_sample_step_m: 10.0,
             coarse_sample_step_m: 20.0,
-            maximum_solution_routers: 3,
+            maximum_new_routers: 3,
             ..CandidateSettings::default()
         };
         let mut a = site("A", 0.0, 10.0);
@@ -739,10 +786,16 @@ fn fixed_router_policies_and_height_override() {
         .all(|s| s.origin != SiteOrigin::Known));
     assert_eq!(result.router_count(), 0);
     settings.infrastructure_policy = InfrastructurePolicy::ExistingOnly;
-    settings.maximum_solution_routers = 0;
-    assert!(RouteOptimizer::new(&terrain, &rf, &settings)
+    settings.maximum_new_routers = 0;
+    let result = RouteOptimizer::new(&terrain, &rf, &settings)
         .optimize(make_request(), SearchHooks::default())
-        .is_err());
+        .unwrap();
+    let active = result.active_solution().unwrap();
+    assert_eq!(active.new_router_count(), 0);
+    assert!(active
+        .primary_path_ids()
+        .iter()
+        .any(|id| id == "K-required"));
 }
 
 #[test]
@@ -753,7 +806,7 @@ fn native_optimizer_certifies_all_three_clients_with_locked_manual_router() {
     };
     let rf = strict_settings();
     let settings = CandidateSettings {
-        maximum_solution_routers: 2,
+        maximum_new_routers: 2,
         ..CandidateSettings::default()
     };
     let mut c = site("C3", 5_000.0, 8_000.0);
@@ -801,7 +854,7 @@ fn search_effort_clamps_only_density_and_neighbor_caps() {
     let settings = CandidateSettings {
         candidates_per_cell: 6,
         maximum_neighbors_per_site: 20,
-        maximum_solution_routers: 4,
+        maximum_new_routers: 4,
         ..CandidateSettings::default()
     };
     for (effort, expected) in [
@@ -817,7 +870,7 @@ fn search_effort_clamps_only_density_and_neighbor_caps() {
             ),
             expected
         );
-        assert_eq!(resolved.maximum_solution_routers, 4);
+        assert_eq!(resolved.maximum_new_routers, 4);
         assert!(resolved.exhaustive_screening);
     }
     let lower = CandidateSettings {
@@ -1019,13 +1072,10 @@ impl LinkEvaluation for FakeRf {
     }
 }
 
-fn mock_settings(
-    priority: OptimizationPriority,
-    maximum_solution_routers: usize,
-) -> CandidateSettings {
+fn mock_settings(priority: OptimizationPriority, maximum_new_routers: usize) -> CandidateSettings {
     CandidateSettings {
         priority,
-        maximum_solution_routers,
+        maximum_new_routers,
         maximum_neighbors_per_site: 1,
         final_sample_step_m: 1.0,
         // These scenarios exercise the neighbour-screening fallback.
@@ -1125,7 +1175,7 @@ fn no_route_diagnostics_distinguish_terminal_access_connectivity_and_budget() {
     for ((a, b), diagnostic) in [
         (("A", "left"), "no usable links in the search graph: B"),
         (("B", "right"), "disconnected components"),
-        (("left", "right"), "over budget: at least 2 routers"),
+        (("left", "right"), "over budget: at least 2 new routers"),
     ] {
         fake.add(a, b, Some(10.0), Some(10.0));
         let result = RouteOptimizer::new(&terrain, &rf, &settings)
@@ -1730,7 +1780,7 @@ fn real_rf_serial_parallel_and_bounded_cache_return_identical_meshes() {
         let settings = CandidateSettings {
             parallel_workers: workers,
             maximum_neighbors_per_site: 6,
-            maximum_solution_routers: 1,
+            maximum_new_routers: 1,
             final_sample_step_m: 5.0,
             priority: OptimizationPriority::MaximumReliability,
             ..Default::default()
@@ -2061,9 +2111,9 @@ fn parallel_screen_can_stop_with_the_prior_certified_snapshot() {
     assert!(result.links()[0].profile.is_some());
 }
 
-fn exhaustive_settings(maximum_solution_routers: usize) -> CandidateSettings {
+fn exhaustive_settings(maximum_new_routers: usize) -> CandidateSettings {
     CandidateSettings {
-        maximum_solution_routers,
+        maximum_new_routers,
         final_sample_step_m: 1.0,
         ..CandidateSettings::default()
     }
