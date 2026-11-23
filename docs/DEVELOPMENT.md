@@ -185,8 +185,22 @@ shared cache.
 Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
 `workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
 the deferred classic scripts load in order
-`main_view_navigation.js`, `coverage_raster.js`, `live_coverage.js`, `app.js`
+`main_view_navigation.js`, `coverage_raster.js`, `live_coverage.js`,
+`site_selection.js`, `app.js`
 and `coverage_inspection.js`.
+
+`siteSelection.ids` returns a snapshot of the selected site IDs in the current
+project. Call `toggle(id)`, `replace(ids)` or `clear()` on `siteSelection` to
+change membership. `siteSelection.subscribe(listener)` receives snapshots and
+returns an unsubscribe function. Use `findMapSite(id)` to resolve an ID when
+handling an action.
+
+Use `siteSelection.registerAction({id, label, isAvailable, run})` to add an action
+to the map and Route sidebar selection panels. The optional
+`isAvailable(sites)` predicate receives the resolved sites. The UI passes a new
+ID snapshot to `run(ids)` and respects the edit lock. The registration returns
+a function that removes the action. Plan edits from these actions still use the
+shared history, invalidation and coverage refresh chain.
 Put new styles in the layer that owns the feature.
 
 Register a new asset and its content type in

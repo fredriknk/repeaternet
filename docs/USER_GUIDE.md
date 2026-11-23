@@ -321,6 +321,20 @@ coordinates use latitude, longitude to six decimals.
   Editing a search-found site adds it to the plan as a proposed router.
   Right-click a link to choose which of its two sites to edit. **Esc** closes
   the popup and returns focus to the map object.
+- **Shift+click** or **Ctrl/Cmd+click** toggles a site in the selection.
+  **Shift+drag** replaces the selection with the sites inside the box and keeps
+  the map at the same zoom. You can also turn on **Select sites** and tap
+  markers, or focus a marker and press **Shift+Enter**. Selected sites have a
+  dashed outline. Use **Clear** or **Esc** to clear the selection.
+- Select two or more sites to edit their **Antenna height · m** and
+  **Antenna gain · dBi** on the map or at the top of **1 Route**. Fields marked
+  **Mixed** keep their individual values until you enter a value. **Apply
+  changes** saves the fields you edited. The policy applies to existing
+  routers. Changing the height or gain of a site found by search adds it as a
+  proposed router.
+- **Remove routers** removes the selected proposed and existing routers from the
+  project. Endpoints and sites shown only in a search result stay on the map.
+  One **Undo** reverses the entire bulk edit or removal.
 - Drag either endpoint or a proposed router to move it. Dragging a site on
   the primary route previews its adjacent hops. Dragging a search-found site
   pins it as a new **Required** proposed router. The previous route becomes
@@ -889,8 +903,9 @@ Open Database License (ODbL). [© OpenStreetMap contributors](https://www.openst
 | --- | --- |
 | Tab / Shift+Tab | Move forward or backward between controls. |
 | Enter / Space | Activate a focused button, disclosure, route alternative or link row as appropriate. |
+| Shift+Enter | Toggle a focused map site in the selection. |
 | Left / Right arrow, Home / End | Switch between the desktop **Map** and **Analysis** tabs when the tab strip has focus. |
-| Esc | Close a dialog, project menu or map popup, or exit a map placement, drawing or inspection mode. |
+| Esc | Clear selected map sites, close a dialog, project menu or map popup, or exit a map placement, drawing or inspection mode. |
 | Ctrl+Z / Cmd+Z | Undo a plan edit. |
 | Ctrl+Shift+Z / Cmd+Shift+Z, or Ctrl+Y | Redo a plan edit. |
 

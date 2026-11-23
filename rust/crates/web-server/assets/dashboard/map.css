@@ -15,6 +15,50 @@
 .map-wrap #map { z-index: auto; }
 .map-wrap .leaflet-map-pane { z-index: 1; }
 
+#site-selection-box {
+  position: absolute;
+  z-index: 410;
+  border: 2px dashed #24453d;
+  background: #d4ede84d;
+  pointer-events: none;
+}
+
+.map-pane { position: relative; isolation: isolate; }
+#map-site-selection {
+  position: absolute;
+  z-index: 444;
+  right: 12px;
+  bottom: 28px;
+  width: min(324px, calc(100% - 24px));
+  max-height: calc(100% - 126px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  box-shadow: 0 2px 10px #23363e38;
+}
+
+#select-map-sites { min-height: 36px; font-size: 13px; }
+.is-multi-selected {
+  outline: 2px dashed #173631;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px #fff;
+}
+.leaflet-interactive.is-multi-selected[role="button"]:focus-visible { outline-style: dashed; }
+
+@media (max-width: 650px) {
+  .map-pane:has(#map-site-selection:not([hidden])) {
+    display: grid;
+    grid-template-rows: minmax(320px, 1fr) auto;
+    overflow: auto;
+  }
+  #map-site-selection {
+    position: static;
+    width: auto;
+    max-height: max(176px, calc(100dvh - 454px));
+    margin: 6px 8px;
+  }
+  #select-map-sites { min-height: 44px; }
+}
+
 .route-link-inspector {
   position: absolute;
   z-index: 445;
