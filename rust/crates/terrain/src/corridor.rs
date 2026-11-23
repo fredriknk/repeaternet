@@ -25,7 +25,19 @@ impl MeshArea {
         // Geo's hull of collinear sites has zero area. Buffer the line
         // itself so two-client meshes and collinear layouts get round ends.
         let ring = self.0.exterior();
-        if ring.0.len() <= 3 {
+        if let Some(first) = ring
+            .0
+            .first()
+            .filter(|first| ring.0.iter().all(|point| point == *first))
+        {
+            MultiPolygon::new(vec![round_buffer(
+                Point {
+                    x: first.x,
+                    y: first.y,
+                },
+                width,
+            )])
+        } else if ring.0.len() <= 3 {
             ring.buffer(width)
         } else {
             self.0.buffer(width)

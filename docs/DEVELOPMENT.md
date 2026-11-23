@@ -90,7 +90,7 @@ The JSON plan stored by project-store accepts `mode: "endpoints"` (also the
 default when omitted) or `mode: "mesh"`. `clients` contains entries with a
 stable `CL-` ID, a name, WGS84 latitude and longitude, and `antenna_height_m`.
 A saved draft can contain fewer than two clients. Search and terrain planning
-require two distinct client locations. The A/B fields are kept when switching
+require two distinct client locations or a painted coverage area. The A/B fields are kept when switching
 modes. Each mesh client uses the A radio profile with its own antenna height.
 
 Mesh requests use the standard optimization, terrain readiness, estimate and
@@ -114,6 +114,43 @@ Mesh result payloads add names, connected client and new-router counts, and
 `client_pairs` with site IDs, hops and weakest margin for each pair. Alternative
 selection updates these alongside the active sites and links. Plan JSON exports
 carry a current certified topology when available. Import uses the plan inputs.
+
+### Painted mesh coverage
+
+`mesh_paint` stores integer `cells` as `[x, y]` pairs on a 250 m
+EPSG:3857 grid with its origin at (0, 0). These are projected map units.
+`target_percent` accepts whole percentages from 1 to 100 and
+`minimum_margin_db` accepts 0 to 60 dB. The server validates unique cells,
+a maximum of 1,024 cells, and an extent of up to 120 cells on either axis.
+Only a nonempty paint area in Mesh mode affects a search. The painted
+cell centres extend the buffered hull used for terrain and candidate
+planning. The route fingerprint then includes the paint and the radio
+parameters from `coverage.client`.
+
+The route job evaluates up to 512 sites against the cell centres using
+the live coverage tile cache and the two-way polar sweep at 200 m radial
+steps, with a maximum radius of 20 km per site. It stores coverage as a
+bitset per site. A node-weighted Steiner search seeds connected meshes
+from the clients, required routers and high-coverage or existing router
+roots. Greedy growth adds the best uncovered-cell gain per newly
+installed router, including the cost and gain of relay paths. Up to 24
+additions are tried per seed. Removal passes prune sites while
+preserving the covered share target or improving the shortfall. Every
+candidate installation has at most 64 sites and keeps clients from
+acting as relays. Client pairs still observe the configured hop limit.
+The job can certify up to 12 rounds of alternatives. It reuses the
+coverage masks when certification changes the graph and polls the
+existing cancellation hooks throughout. Coverage remains a coarse
+prediction and the site search is heuristic.
+
+The existing `POST /api/projects/autosave`, terrain estimate and preparation,
+`POST /api/terrain/coverage`, and `POST /api/optimize` flows accept the
+paint inputs. `GET /api/result` and alternative selection return a
+`paint_coverage` object with the cell count, covered count and fraction,
+target, handheld margin, and `target_met`. The active result includes
+`uncovered_cells` in the same grid as the plan. A connected result can
+have `target_met: false`. The client-pair and router figures are also
+available for painted results.
 
 ### Placement optimization
 
@@ -238,7 +275,7 @@ Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
 `workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
 the deferred classic scripts load in order
 `main_view_navigation.js`, `coverage_raster.js`, `live_coverage.js`,
-`site_selection.js`, `mesh_mode.js`, `placement.js`, `app.js` and `coverage_inspection.js`.
+`site_selection.js`, `mesh_paint.js`, `mesh_mode.js`, `placement.js`, `app.js` and `coverage_inspection.js`.
 
 `siteSelection.ids` returns a snapshot of the selected site IDs in the current
 project. Call `toggle(id)`, `replace(ids)` or `clear()` on `siteSelection` to

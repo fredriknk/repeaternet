@@ -155,11 +155,11 @@ function fitMapSites(routeOnly=false,{positions,topPadding=0,rightPadding=36,bot
   const dismissed=dismissedSearchRouterIds();
   const routePoints=(result?.route||[]).filter(site=>!dismissed.has(site.id)).map(mapPoint);
   const planPoints=[
-    ...(routeMode==='mesh'?meshClients.map(mapPoint):Object.values(markers).map(marker=>marker.getLatLng())),
+    ...(routeMode==='mesh'?[...meshClients.map(mapPoint),...paintBounds()]:Object.values(markers).map(marker=>marker.getLatLng())),
     ...manualRouters.map(mapPoint),
     ...selectedKnownRouters().filter(router=>router.policy!=='excluded').map(mapPoint)
   ];
-  const points=positions??(routeOnly&&routePoints.length?routePoints:[...planPoints,...routePoints]);
+  const points=positions??(routeOnly&&routePoints.length?[...routePoints,...paintBounds()]:[...planPoints,...routePoints]);
   const bounds=L.latLngBounds(points.filter(point=>!Array.isArray(point)||point.every(Number.isFinite)));
   pendingMapFit={bounds,topPadding,rightPadding,bottomPadding,maxZoom};
   if(!map.getSize().x&&!map.getSize().y&&map.getZoom()===undefined&&bounds.isValid()){
@@ -277,7 +277,7 @@ function randomId(){
 }
 function setHistoryButtons(){$('undo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!undoStack.length;$('redo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!redoStack.length;}
 function recordEdit(){try{const next=clone(plan());if(lastHistoryPlan&&JSON.stringify(next)!==JSON.stringify(lastHistoryPlan)){undoStack.push(lastHistoryPlan);if(undoStack.length>50)undoStack.shift();redoStack=[];}lastHistoryPlan=next;setHistoryButtons();if(projectInfo) scheduleAutosave();}catch(e){status(e.message,true);}}
-function invalidate(reason='planning inputs'){
+function invalidate(reason='planning inputs',{keepMapMode=false}={}){
   clearPlacementPreview();
   queueMicrotask(refreshSiteSelection);
   if(!routeLinkInspector?.committing)closeRouteLinkInspector();
@@ -285,15 +285,15 @@ function invalidate(reason='planning inputs'){
   $('map-analysis-selection').hidden=true;
   clearTerrainEstimateReview();
   invalidateCoverageEstimate(`${reason} changed. Review a new coverage estimate before previewing or calculating.`);
-  setInteractionMode('browse');
+  if(!keepMapMode)setInteractionMode('browse');
   cancelActiveInspection();
   inspectionRequest++;
   inspectionController?.abort();
   coverageCells=[];coverageCursor=0;coverageStale=true;predictedCoverageLayer.clearLayers();coverageDiffLayer.clearLayers();coverageComparison=null;coverageHeightOverrides={};inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;
   updatePlanReadiness();
   if($('coverage-job-status'))setCoverageStatus('Route inputs changed. Recalculate coverage after validating the new route.');
-  if(result){resultStale=true;resultStaleReason=reason;renderRouteVerdict();$('result-title').textContent='Previous certified route · stale';$('status').textContent=`${reason} changed. This route is for the previous settings; run a new search to validate the current plan.`;$('status').className='stale';$('exports').hidden=true;for(const layer of routeLayer.getLayers()){if(layer.setStyle)layer.setStyle({color:'var(--map-stale)',dashArray:'5 6'});if(layer.dragging)layer.dragging.disable();if(layer._routeSiteIcon)moveRouteSiteToStalePane(layer);}syncRoutedRouterMarkers();$('alternative-select').disabled=true;syncAnalysisBadge();updateCoverageActions();return;}
-  routeLayer.clearLayers();candidateLayer.clearLayers();showRepeaterRoads();$('metrics').replaceChildren();$('hops').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('alternatives').hidden=true;$('candidate-search-diagnostic').hidden=true;$('route-verdict').hidden=true;$('route-show-map').disabled=true;$('result-title').textContent='Ready for a new route';
+  if(result){resultStale=true;resultStaleReason=reason;renderRouteVerdict();renderMeshPaint();$('result-title').textContent='Previous certified route · stale';$('status').textContent=`${reason} changed. This route is for the previous settings; run a new search to validate the current plan.`;$('status').className='stale';$('exports').hidden=true;for(const layer of routeLayer.getLayers()){if(layer.setStyle)layer.setStyle({color:'var(--map-stale)',dashArray:'5 6'});if(layer.dragging)layer.dragging.disable();if(layer._routeSiteIcon)moveRouteSiteToStalePane(layer);}syncRoutedRouterMarkers();$('alternative-select').disabled=true;syncAnalysisBadge();updateCoverageActions();return;}
+  renderMeshPaint();routeLayer.clearLayers();candidateLayer.clearLayers();showRepeaterRoads();$('metrics').replaceChildren();$('hops').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('alternatives').hidden=true;$('candidate-search-diagnostic').hidden=true;$('route-verdict').hidden=true;$('route-show-map').disabled=true;$('result-title').textContent='Ready for a new route';
 }
 function updatePlanReadiness(report=terrainReadiness){
   updatePlanStepSummaries(report);
@@ -303,10 +303,11 @@ function updatePlanReadiness(report=terrainReadiness){
   const action=$('review-readiness');
   const endpointSummary=$('section-summary-endpoints');if(endpointSummary){const a=$('a').value.trim(),b=$('b').value.trim();endpointSummary.textContent=routeMode==='mesh'?meshClients.length+(meshClients.length===1?' client':' clients'):a&&b?`${a} → ${b}`:'Set start and destination';}
   const terrainSummary=$('section-summary-terrain');if(terrainSummary)terrainSummary.textContent=`${$('dtm-count').textContent}${terrainLoaded?' · ready':' · required'}`;
-  if(routeMode==='mesh'&&!routeLocationsReady()){card.dataset.readiness='invalid';copy.textContent='Add at least two clients to find a mesh.';action.textContent='Open clients';action.dataset.target='endpoint-setup';}
+  if(routeMode==='mesh'&&!routeLocationsReady()){card.dataset.readiness='invalid';copy.textContent='Add two clients or paint a coverage area to find a mesh.';action.textContent='Open clients';action.dataset.target='endpoint-setup';}
   else if(invalid){card.dataset.readiness='invalid';copy.textContent=`Endpoint ${invalid.toUpperCase()} needs a valid latitude, longitude pair before planning.`;action.textContent='Review endpoints';action.dataset.target='endpoint-setup';}
   else if(!terrainLoaded){card.dataset.readiness='needs-terrain';copy.textContent=routeMode==='mesh'?'Add ground elevation data for the mesh search area.':'Check the two pins on the map, then add ground elevation data for this route.';action.textContent='Open terrain setup';action.dataset.target='terrain-setup';}
   else if(report?.uncovered_sites?.length){card.dataset.readiness='blocked';copy.textContent=`Ground terrain is missing at ${report.uncovered_sites.map(site=>site.name).join(', ')}. Extend or upload terrain before searching.`;action.textContent='Review terrain gaps';action.dataset.target='terrain-setup';}
+  else if(report?.paint_cells&&report.paint_gaps===report.paint_cells){card.dataset.readiness='blocked';copy.textContent='Ground terrain is missing across the painted area.';action.textContent='Open terrain setup';action.dataset.target='terrain-setup';}
   else if(report?.covered){card.dataset.readiness='ready';copy.textContent=`Ready to search · ground terrain covers the selected sites${report.surface_available?'; surface obstruction data is also loaded.':'; terrain-only RF estimates.'}`;action.hidden=true;return;}
   else{card.dataset.readiness='checking';copy.textContent='Ground terrain is loaded. Check coverage at the selected sites before searching.';action.textContent='Open terrain setup';action.dataset.target='terrain-setup';}
   action.hidden=false;
@@ -1062,14 +1063,16 @@ for(const name of ['a','b']){
 fitMapSites();
 for(const name of ['a','b'])$(name).addEventListener('input',()=>updatePlanReadiness());
 function setInteractionMode(next){
-  if(!['browse','place-a','place-b','place-client','place-router','place-target','draw-coverage-area','inspect-coverage'].includes(next))return;
+  if(!['browse','place-a','place-b','place-client','place-router','place-target','draw-coverage-area','inspect-coverage','paint-mesh','erase-mesh'].includes(next))return;
   if(next!=='browse'){clearSiteSelection();setMainView('view-map');closeMapSelection();map.closePopup();}
   if(interactionMode==='draw-coverage-area'&&next!=='draw-coverage-area'){coverageDrawingPoints=[];map.doubleClickZoom.enable();if($('coverage-area'))$('coverage-area').value=coverageSettings.area_mode;}
   if(interactionMode==='inspect-coverage'&&next!=='inspect-coverage'){
     inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;
   }
+  const previous=interactionMode;
   interactionMode=next;
-  const labels={'browse':'','place-a':'Click the map to place endpoint A','place-b':'Click the map to place endpoint B','place-client':'Click the map to place a client','place-router':'Click the map to place a proposed router','place-target':'Click the map to place a coverage target','draw-coverage-area':'Drawing coverage area · click polygon vertices','inspect-coverage':'Click a location to inspect predicted handheld access'};
+  syncPaintInteraction(previous,next);
+  const labels={'paint-mesh':'Drag to paint, or press Enter to paint at the map centre','erase-mesh':'Drag to erase, or press Enter to erase at the map centre','browse':'','place-a':'Click the map to place endpoint A','place-b':'Click the map to place endpoint B','place-client':'Click the map to place a client','place-router':'Click the map to place a proposed router','place-target':'Click the map to place a coverage target','draw-coverage-area':'Drawing coverage area · click polygon vertices','inspect-coverage':'Click a location to inspect predicted handheld access'};
   setMapHint(labels[next]);
   for(const button of document.querySelectorAll('.map-tools [data-place], #add-client-map')){
     button.setAttribute('aria-pressed',String(next===`place-${button.dataset.place}`));
@@ -1181,7 +1184,7 @@ window.addEventListener('keydown',event=>{
     if(routeLinkInspector){closeRouteLinkInspector(true);event.preventDefault();}
     if(mapContextPopup?.isOpen()){const inside=mapContextPopup.getElement()?.contains(document.activeElement);map.closePopup(mapContextPopup);if(inside)map.getContainer().focus({preventScroll:true});}
     if(interactionMode!=='browse'){
-      setInteractionMode('browse');
+      cancelMapInteraction();
       event.preventDefault();
     }
     return;
@@ -1198,6 +1201,7 @@ window.addEventListener('keydown',event=>{
 installPlacement();
 installSiteSelection();
 initMeshControls();
+initMeshPaintControls();
 document.querySelectorAll('[data-place]').forEach(button=>button.onclick=()=>{
   if(!mapEditsLocked())setInteractionMode(`place-${button.dataset.place}`);
 });
@@ -1223,6 +1227,7 @@ map.getContainer().addEventListener('keydown',event=>{
   openMapContextMenu(map.getCenter());
 });
 function openMapContextMenu(latlng){
+  if(paintModeActive())return;
   closeMapSelection();
   const point=latlng.wrap(),menu=document.createElement('div');
   for(const [mode,label] of [
@@ -1258,7 +1263,7 @@ map.on('click',e=>{
 function addManualRouterAt(latitude,longitude,height=rf.router.height_agl_m){if(String(latitude).trim()===''||String(longitude).trim()===''){status('Enter both a latitude and longitude before adding a router.',true);return null;}const lat=Number(latitude),lon=Number(longitude),antennaHeight=Number(height);if(!Number.isFinite(lat)||Math.abs(lat)>90||!Number.isFinite(lon)||Math.abs(lon)>180){status('Enter a valid latitude (−90 to 90) and longitude (−180 to 180).',true);return null;}if(!Number.isFinite(antennaHeight)||antennaHeight<.1||antennaHeight>1000){status('Antenna height must be between 0.1 and 1,000 m.',true);return null;}const router={id:'M-'+randomId(),latitude:Number(lat.toFixed(6)),longitude:Number(lon.toFixed(6)),antenna_height_m:antennaHeight,policy:'optional',name:nextManualRouterName()};manualRouters.push(router);renderManualRouters();recordEdit();invalidate('proposed router added');scheduleCoverageCheck();return router;}
 $("add-router").onclick=()=>setInteractionMode('place-router');
 $("add-router-coordinate").onclick=()=>{const router=addManualRouterAt($('router-latitude').value,$('router-longitude').value,$('router-height').value||rf.router.height_agl_m);if(router){$('router-latitude').value='';$('router-longitude').value='';status(`${manualRouterName(router)} added at entered coordinates.`);}};
-$('cancel-map-mode').onclick=()=>{setInteractionMode('browse');$('coverage-area').value=coverageSettings.area_mode;};
+$('cancel-map-mode').onclick=cancelMapInteraction;
 $('fit').onclick=()=>fitMapSites();
 const definitions=[['frequency_mhz','Frequency · MHz'],['tx_power_dbm','TX power · dBm'],['receiver_sensitivity_dbm','Sensitivity · dBm'],['fade_margin_db','Fade margin · dB']];
 const fieldHelp = {
@@ -1605,11 +1610,11 @@ function clearTerrainEstimateReview(){
   $('prepare-terrain').hidden=true;
   setTerrainDomNote();
 }
-function terrainSourceRequest({a,b,mode,clients,candidates,known_routers,manual_routers,terrain}){
-  return mode==='mesh'?{mode,clients,candidates,known_routers,manual_routers,terrain}:{a,b,known_routers,manual_routers,terrain};
+function terrainSourceRequest({a,b,mode,clients,mesh_paint,candidates,known_routers,manual_routers,terrain}){
+  return mode==='mesh'?{mode,clients,mesh_paint,candidates,known_routers,manual_routers,terrain}:{a,b,known_routers,manual_routers,terrain};
 }
 function scheduleTerrainSourcePreview(){
-  const snapshot={mode:routeMode,clients:meshClients,candidates,a:validEndpointCoords('a'),b:validEndpointCoords('b'),known_routers:selectedKnownRouters(),manual_routers:manualRouters,terrain:terrainOptions};
+  const snapshot={mode:routeMode,clients:meshClients,mesh_paint:meshPaint,candidates,a:validEndpointCoords('a'),b:validEndpointCoords('b'),known_routers:selectedKnownRouters(),manual_routers:manualRouters,terrain:terrainOptions};
   const ready=dataSources&&!$('workspace-plan').hidden&&!$('terrain-setup').hidden&&routeLocationsReady();
   const key=ready?JSON.stringify(snapshot):null;
   if(key===terrainPreviewKey)return;
@@ -2123,7 +2128,7 @@ $('add-data-source').onclick=event=>openSourceEditor(null,event.currentTarget);
 $('cancel-data-source').onclick=closeSourceEditor;
 $('data-source-editor').onsubmit=submitSourceEditor;
 $('data-source-json-panel').querySelector('summary').onclick=toggleSourceJson;
-async function updateTerrainCoverage(requestPlan=plan()){coverageLayer.clearLayers();if(!terrainLoaded){$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';$('coverage-note').className='hint';return null;}try{const coverage=await api('/api/terrain/coverage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)});for(const polygon of coverage.dtm_outlines)L.polygon(polygon,{color:'#29805d',weight:1,fill:false}).addTo(coverageLayer);for(const polygon of coverage.dom_outlines)L.polygon(polygon,{color:'#4382b5',weight:1,dashArray:'5 4',fill:false}).addTo(coverageLayer);for(const gap of coverage.line_gaps){if(gap.length>1)L.polyline(gap,{color:'#c8463a',weight:4,dashArray:'4 6'}).addTo(coverageLayer);else if(gap.length)L.circleMarker(gap[0],{radius:5,color:'#c8463a',fillColor:'#e99a90',fillOpacity:.8}).addTo(coverageLayer);}for(const site of coverage.uncovered_sites)L.circleMarker([site.latitude,site.longitude],{radius:8,color:'#b52222',fillColor:'#ed7770',fillOpacity:.9}).bindTooltip(`${site.name}: ${site.reason==='no_data'?'terrain nodata':'outside terrain coverage'}`).addTo(coverageLayer);const missing=coverage.uncovered_sites.map(site=>site.name);$('coverage-note').textContent=missing.length?`Ground coverage missing at ${missing.join(', ')}. Add terrain tiles before searching.`:`Ground terrain covers selected sites${coverage.line_gaps.length?`; ${coverage.line_gaps.length} nodata gap(s) sampled along the direct corridor`:''}. ${coverage.surface_available?'Surface data loaded.':'Surface obstruction data unavailable — terrain only.'}`;$('coverage-note').className=missing.length?'hint error':'hint';if(!missing.length&&coverage.area_gaps)$('coverage-note').textContent+=' '+coverage.area_gaps+' of '+coverage.area_samples+' mesh area samples lack ground terrain.';return coverage;}catch(e){$('coverage-note').textContent=e.message;$('coverage-note').className='hint error';return null;}}
+async function updateTerrainCoverage(requestPlan=plan()){coverageLayer.clearLayers();if(!terrainLoaded){$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';$('coverage-note').className='hint';return null;}try{const coverage=await api('/api/terrain/coverage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)});for(const polygon of coverage.dtm_outlines)L.polygon(polygon,{color:'#29805d',weight:1,fill:false}).addTo(coverageLayer);for(const polygon of coverage.dom_outlines)L.polygon(polygon,{color:'#4382b5',weight:1,dashArray:'5 4',fill:false}).addTo(coverageLayer);for(const gap of coverage.line_gaps){if(gap.length>1)L.polyline(gap,{color:'#c8463a',weight:4,dashArray:'4 6'}).addTo(coverageLayer);else if(gap.length)L.circleMarker(gap[0],{radius:5,color:'#c8463a',fillColor:'#e99a90',fillOpacity:.8}).addTo(coverageLayer);}for(const site of coverage.uncovered_sites)L.circleMarker([site.latitude,site.longitude],{radius:8,color:'#b52222',fillColor:'#ed7770',fillOpacity:.9}).bindTooltip(`${site.name}: ${site.reason==='no_data'?'terrain nodata':'outside terrain coverage'}`).addTo(coverageLayer);const missing=coverage.uncovered_sites.map(site=>site.name);$('coverage-note').textContent=missing.length?`Ground coverage missing at ${missing.join(', ')}. Add terrain tiles before searching.`:`Ground terrain covers selected sites${coverage.line_gaps.length?`; ${coverage.line_gaps.length} nodata gap(s) sampled along the direct corridor`:''}. ${coverage.surface_available?'Surface data loaded.':'Surface obstruction data unavailable — terrain only.'}`;$('coverage-note').className=missing.length?'hint error':'hint';if(coverage.paint_gaps)$('coverage-note').textContent+=' '+coverage.paint_gaps+' of '+coverage.paint_cells+' painted cells lack ground terrain.';if(!missing.length&&coverage.area_gaps)$('coverage-note').textContent+=' '+coverage.area_gaps+' of '+coverage.area_samples+' mesh area samples lack ground terrain.';return coverage;}catch(e){$('coverage-note').textContent=e.message;$('coverage-note').className='hint error';return null;}}
 function syncCoverageInputs(){if(!$('coverage-mode'))return;$('coverage-mode').value=coverageSettings.mode;$('coverage-area').value=coverageSettings.area_mode;$('coverage-cell-size').value=coverageSettings.cell_size_m;$('coverage-buffer').value=coverageSettings.area_buffer_m;$('coverage-profile-step').value=coverageSettings.profile_step_m;$('coverage-profile-limit').value=coverageSettings.maximum_profile_samples||4096;$('coverage-endpoints').checked=coverageSettings.include_endpoints;const c=coverageSettings.client;$('client-height').value=c.height_agl_m;$('client-tx').value=c.tx_power_dbm;$('client-gain').value=c.gain_dbi;$('client-feed').value=c.feed_loss_db;$('client-sensitivity').value=c.sensitivity_dbm;$('client-loss').value=c.miscellaneous_loss_db;syncCoverageAreaControls();renderCoverageArea();}
 function validateMeshBuffer(){
   const input=$('coverage-buffer');
@@ -2704,7 +2709,9 @@ function invalidateCoverageEstimate(message='Coverage inputs changed. Calculate 
   updateCoverageActions();
   if(message&&$('coverage-job-status'))setCoverageStatus(message);
 }
-function coverageSettingsChanged(event){if(!validateMeshBuffer())return;readCoverageInputs();const modeOnly=event?.target?.id==='coverage-mode';if(!modeOnly&&interactionMode==='inspect-coverage')setInteractionMode('browse');inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;if(!modeOnly)coverageStale=true;coverageDiffLayer.clearLayers();coverageComparison=null;syncCoverageAreaControls();renderCoverageArea();if(modeOnly){redrawCoverageCells();}else{invalidateCoverageEstimate();coverageCells=[];coveragePreviewCells=[];coverageCursor=0;coverageDisplayInfo=null;coveragePreviewActive=false;predictedCoverageLayer.clearLayers();}recordEdit();renderCoverageContext();if(!modeOnly)setCoverageStatus('Settings changed. Calculate again when ready.');else setCoverageStatus('Coverage display mode updated; no RF work was started.');}
+function coverageSettingsChanged(event){if(!validateMeshBuffer())return;const handheldEdit=event?.target?.id.startsWith('client-');
+  if(handheldEdit&&!event.target.reportValidity())return;
+  readCoverageInputs();const modeOnly=event?.target?.id==='coverage-mode';if(!modeOnly&&interactionMode==='inspect-coverage')setInteractionMode('browse');inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;if(!modeOnly)coverageStale=true;coverageDiffLayer.clearLayers();coverageComparison=null;syncCoverageAreaControls();renderCoverageArea();if(modeOnly){redrawCoverageCells();}else{invalidateCoverageEstimate();coverageCells=[];coveragePreviewCells=[];coverageCursor=0;coverageDisplayInfo=null;coveragePreviewActive=false;predictedCoverageLayer.clearLayers();}recordEdit();if(handheldEdit&&activeMeshPaint()){invalidate('handheld radio settings');scheduleCoverageCheck();}renderCoverageContext();if(!modeOnly)setCoverageStatus('Settings changed. Calculate again when ready.');else setCoverageStatus('Coverage display mode updated; no RF work was started.');}
 function coverageEstimateSummary(approved){
   const {payload,estimate}=approved,settings=payload.settings,sources=estimate.source_count||estimate.source_ids?.length||0;
   const sourceLimit=Math.min(settings.maximum_sources,64),evaluationLimit=Math.min(settings.maximum_evaluations,250000),cellLimit=Math.min(settings.maximum_cells,16384,Math.floor(evaluationLimit/Math.max(1,sources))),sampleLimit=Math.min(settings.maximum_profile_samples,16384);
@@ -2773,6 +2780,7 @@ function syncAlternativeControls(){
 }
 function syncCoverageLocks(){
   const locked=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject;
+  if(locked&&paintModeActive())setInteractionMode('browse');
   for(const el of document.querySelectorAll('aside input:not([data-display-only]), aside select:not([data-display-only]), [data-place], [data-clear], [data-height-preset], #open, #import-plan, #load-meshcore, #include-all, #include-none, #estimate-terrain, #prepare-terrain, #add-router, #add-router-coordinate, #add-target-coordinate, #project-select, #new-project, #rename-project, #recover-project, #duplicate-project, #archive-project, #delete-project, #retry-save, #optimize, #coverage-preview, #coverage-start, #coverage-inspect, #coverage-draw-area, #coverage-finish-area, #coverage-clear-area, #coverage-height-run, #coverage-height-apply, #coverage-compare-run, #failure-run, #failure-reset, #coverage-add-target, #coverage-load-run'))el.disabled=locked;
   $('coverage-cancel').disabled=busy;$('coverage-assess-targets').disabled=!coverageTargets.length||locked;$('coverage-mode').disabled=switchingProject;$('coverage-opacity').disabled=switchingProject;syncAlternativeControls();
   document.querySelectorAll('[data-workspace-target]').forEach(button=>button.disabled=switchingProject);Object.values(markers).forEach(marker=>locked?marker.dragging?.disable():marker.dragging?.enable());
@@ -2920,7 +2928,7 @@ function updateJobCard({kind='route',state='running',phase='',message='',progres
   $('job-progress-copy').textContent=progress?.known?`${progress.done.toLocaleString()} of ${progress.total.toLocaleString()} ${progress.unit||'steps'}`:active?'Progress details are not reported for this phase.':'';
   if(progress?.known){bar.max=progress.total;bar.value=Math.min(progress.done,progress.total);bar.hidden=!active;}else{bar.removeAttribute('value');bar.hidden=!active;}
   if(!active&&!retry&&!['failed','disconnected'].includes(state)&&$('workspace').dataset.mainView==='view-analysis')card.hidden=true;
-  $('cancel').hidden=!active;$('cancel').textContent=kind==='terrain'?'Cancel terrain preparation':'Cancel optimization';$('stop-keep').hidden=!active||kind!=='route';$('retry-job').hidden=!retry;$('view-results').hidden=active||kind!=='route'||!result?.links?.length;
+  $('cancel').hidden=!active;$('cancel').textContent=kind==='terrain'?'Cancel terrain preparation':'Cancel optimization';$('stop-keep').hidden=!active||kind!=='route';$('retry-job').hidden=!retry;$('view-results').hidden=active||kind!=='route'||!result;
 }
 $('view-results').onclick=()=>{setMainView('view-analysis');if(!['queued','running','preparing'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;};
 $('dismiss-job').onclick=()=>{$('route-job-card').hidden=true;};
@@ -3068,7 +3076,7 @@ function preserveMeshCoreEdits(router,prior){
   return {...router,...(prior.name_override?{name,name_override:true}:{}),
     ...(height_override?{height_override,antenna_height_m}:{}),terminal_clutter:prior.terminal_clutter,stale:false};
 }
-async function loadMeshcore(){const button=$('load-meshcore');button.disabled=true;status('Loading nearby MeshCore routers from CoreScope…');try{const previous=new Map(routerPolicies),oldById=new Map(meshcoreRouters.map(router=>[router.id,router])),data=await api('/api/meshcore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(routeMode==='mesh'?{mode:routeMode,clients:meshClients}:{a:coords('a'),b:coords('b')}),corridor_width_m:candidates.corridor_width_m})}),fresh=data.routers.map(router=>preserveMeshCoreEdits(router,oldById.get(router.id))),available=new Set(fresh.map(router=>router.id)),stale=meshcoreRouters.filter(router=>!available.has(router.id)).map(router=>({...router,stale:true,corridor_distance_m:null}));meshcoreRouters=[...fresh,...stale];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,previous.get(router.id)||oldById.get(router.id)?.policy||router.policy||'excluded']));recordEdit();invalidate('existing router set');renderMeshcoreRouters();scheduleCoverageCheck();status(`${data.count} nearby routers refreshed; ${stale.length} saved router(s) are now marked stale.`);}catch(e){status(e.message,true);}finally{button.disabled=busy;}}
+async function loadMeshcore(){const button=$('load-meshcore');button.disabled=true;status('Loading nearby MeshCore routers from CoreScope…');try{const previous=new Map(routerPolicies),oldById=new Map(meshcoreRouters.map(router=>[router.id,router])),data=await api('/api/meshcore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(routeMode==='mesh'?{mode:routeMode,clients:meshClients,mesh_paint:meshPaint}:{a:coords('a'),b:coords('b')}),corridor_width_m:candidates.corridor_width_m})}),fresh=data.routers.map(router=>preserveMeshCoreEdits(router,oldById.get(router.id))),available=new Set(fresh.map(router=>router.id)),stale=meshcoreRouters.filter(router=>!available.has(router.id)).map(router=>({...router,stale:true,corridor_distance_m:null}));meshcoreRouters=[...fresh,...stale];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,previous.get(router.id)||oldById.get(router.id)?.policy||router.policy||'excluded']));recordEdit();invalidate('existing router set');renderMeshcoreRouters();scheduleCoverageCheck();status(`${data.count} nearby routers refreshed; ${stale.length} saved router(s) are now marked stale.`);}catch(e){status(e.message,true);}finally{button.disabled=busy;}}
 $('load-meshcore').onclick=loadMeshcore;
 for(const id of ['include-all','include-none'])$(id).onclick=()=>{const policy=id==='include-all'?'optional':'excluded';for(const router of visibleKnownRouters())routerPolicies.set(router.id,policy);recordEdit();invalidate('existing router policies');renderMeshcoreRouters();scheduleCoverageCheck();};
 $('meshcore-filter').onchange=renderMeshcoreRouters;$('meshcore-policy-filter').onchange=renderMeshcoreRouters;$('meshcore-search').oninput=renderMeshcoreRouters;
@@ -3087,7 +3095,7 @@ $('coverage-baseline-run').onchange=()=>updateComparisonReferenceOptions(compari
 $('coverage-load-run').onclick=()=>void loadSavedCoverageRun();$('coverage-reconnect').onclick=()=>{if(coverageJob?.job_id)void pollCoverage(coverageJob.job_id);};$('coverage-legend-search').oninput=renderCoverageLegend;
 map.on('moveend',invalidateChangedCoverageExtent);
 document.querySelectorAll('[data-height-preset]').forEach(button=>button.onclick=()=>applyCoverageHeightPreset(Number(button.dataset.heightPreset)));
-function plan(){return {format:'repeaternet-web',version:1,mode:routeMode,clients:clone(meshClients),a:planEndpoint('a'),b:planEndpoint('b'),rf,candidates,terrain:terrainOptions,coverage:coverageSettings,coverage_targets:{type:'FeatureCollection',features:clone(coverageTargets)},search_effort:searchEffort,known_routers:selectedKnownRouters(),manual_routers:clone(manualRouters),endpoint_names:clone(endpointNames),...(dismissedSearchRouters?{dismissed_search_routers:dismissedSearchRouters}:{}),...(planExclusions===undefined?{}:{exclusions_wgs84:clone(planExclusions)})};}
+function plan(){return {format:'repeaternet-web',version:1,mode:routeMode,clients:clone(meshClients),mesh_paint:clone(meshPaint),a:planEndpoint('a'),b:planEndpoint('b'),rf,candidates,terrain:terrainOptions,coverage:coverageSettings,coverage_targets:{type:'FeatureCollection',features:clone(coverageTargets)},search_effort:searchEffort,known_routers:selectedKnownRouters(),manual_routers:clone(manualRouters),endpoint_names:clone(endpointNames),...(dismissedSearchRouters?{dismissed_search_routers:dismissedSearchRouters}:{}),...(planExclusions===undefined?{}:{exclusions_wgs84:clone(planExclusions)})};}
 function loadRfSettings(saved){
   const settings={...baseRf,...saved};
   if(!Object.hasOwn(saved,'obstacle_surface')&&saved.diffraction_model==='bullington'){
@@ -3097,7 +3105,7 @@ function loadRfSettings(saved){
   return settings;
 }
 $('save').onclick=()=>{try{const snapshot=plan();if(routeMode==='mesh'&&result?.mode==='mesh'&&result.found&&!resultStale)snapshot.mesh_topology=meshTopology(result);const blob=new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='route.webplan.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){status(e.message,true);}};
-function load(data){if((data.mode!=='mesh'&&(!Array.isArray(data.a)||!Array.isArray(data.b)))||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');loadPlanningMode(data);rf=loadRfSettings(data.rf);endpointNames=clone(data.endpoint_names||{});
+function load(data){if((data.mode!=='mesh'&&(!Array.isArray(data.a)||!Array.isArray(data.b)))||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');const paint=readMeshPaint(data.mesh_paint);loadPlanningMode(data);meshPaint=paint;rf=loadRfSettings(data.rf);endpointNames=clone(data.endpoint_names||{});
   planExclusions=data.exclusions_wgs84;
   const dismissed=data.dismissed_search_routers;
   dismissedSearchRouters=typeof dismissed?.job_id==='string'&&Array.isArray(dismissed.ids)?clone(dismissed):null;
@@ -3293,10 +3301,18 @@ $('optimize').onclick=async()=>{
   for(const id of ['model-correction-db','final-sample-step-m','maximum-new-routers','maximum-hops']){
     if(!validateRfSetting($(id)))return;
   }
+  if(activeMeshPaint()){
+    for(const id of ['mesh-paint-target-percent','mesh-paint-minimum-margin']){
+      if(validateMeshPaintSettings($(id)))continue;
+      setPlanSection('endpoint-setup');
+      $(id).focus();
+      return;
+    }
+  }
   searchEffort=$('search-effort').value;
   if(routeMode==='mesh'&&!routeLocationsReady()){
     setPlanSection('endpoint-setup');
-    status('Add at least two clients to find a mesh.',true);
+    status('Add two clients or paint a coverage area to find a mesh.',true);
     $('add-client-map').focus();
     return;
   }
@@ -3375,14 +3391,15 @@ function renderAlternativeChoices(){
   if(!alternatives.length){panel.hidden=true;return;}
   selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;
   const mesh=result.mode==='mesh';
-  const objective=mesh?'fewest new routers':{minimum_routers:'fewest hops',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'independent paths and RF quality before router count'}[candidates.priority]||'configured objective';
-  const table=document.createElement('table'),head=document.createElement('thead'),body=document.createElement('tbody');table.className='alternative-table';table.setAttribute('aria-label',mesh?'Mesh alternatives':'Route alternatives');head.innerHTML=mesh?'<tr><th>Alternative</th><th>Existing</th><th>Proposed</th><th>Weakest link</th><th>Largest hop count</th></tr>':'<tr><th>Alternative</th><th>Existing · new</th><th>Primary length</th><th>Weakest link</th><th>Primary weakest</th><th>LOS-blocked hops</th><th>Independent paths</th></tr>';table.append(head,body);cards.append(table);
+  const objective=mesh?(result.paint_coverage?'painted coverage target and fewest new routers':'fewest new routers'):{minimum_routers:'fewest hops',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'independent paths and RF quality before router count'}[candidates.priority]||'configured objective';
+  const table=document.createElement('table'),head=document.createElement('thead'),body=document.createElement('tbody');table.className='alternative-table';table.setAttribute('aria-label',mesh?'Mesh alternatives':'Route alternatives');head.innerHTML=mesh?`<tr><th>Alternative</th><th>Existing</th><th>Proposed</th><th>Weakest link</th><th>Largest hop count</th>${result.paint_coverage?'<th>Painted area covered</th>':''}</tr>`:'<tr><th>Alternative</th><th>Existing · new</th><th>Primary length</th><th>Weakest link</th><th>Primary weakest</th><th>LOS-blocked hops</th><th>Independent paths</th></tr>';table.append(head,body);cards.append(table);
   for(const [index,item] of alternatives.entries()){
     const weakest=Number.isFinite(item.minimum_margin_db)?`${item.minimum_margin_db.toFixed(1)} dB weakest`:'no margin';
     const name=item.name||`Alternative ${index+1}`;
     const option=document.createElement('option');option.value=item.id;option.textContent=mesh?`${name} · ${weakest} · ${item.largest_hop_count} hops max`:`${name} · ${weakest} · ${(item.primary_distance_m/1000).toFixed(1)} km · ${item.achieved_path_count}/${item.requested_path_count} paths`;selector.append(option);
     const row=document.createElement('tr');row.dataset.alternativeId=item.id;row.tabIndex=0;
     const cells=mesh?[name,String(item.existing_router_count),String(item.proposed_router_count-item.new_router_count),marginPill(item.minimum_margin_db),String(item.largest_hop_count)]:[name,`${item.existing_router_count} · ${item.proposed_router_count}`,`${(item.primary_distance_m/1000).toFixed(2)} km`,marginPill(item.minimum_margin_db),Number.isFinite(item.primary_minimum_margin_db)?marginPill(item.primary_minimum_margin_db):'—',Number.isFinite(item.primary_los_blocked_hops)?String(item.primary_los_blocked_hops):'—',`${item.achieved_path_count}/${item.requested_path_count}${item.resilient?' ✓':''}`];
+    if(item.paint_coverage)cells.push((item.paint_coverage.covered_fraction*100).toFixed(1)+'%');
     for(const value of cells){const cell=document.createElement('td');if(value instanceof Node)cell.append(value);else cell.textContent=value;row.append(cell);}
     if(!item.resilient)row.lastChild.classList.add('shortfall');if(!item.search_complete)row.firstChild.append(' (search incomplete)');
     const choose=()=>{if($('alternative-select').disabled||item.id===$('alternative-select').value)return;$('alternative-select').value=item.id;void chooseAlternative();};row.onclick=choose;row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();choose();}};body.append(row);
@@ -3641,6 +3658,7 @@ function resetRouteResultView(){
   routeLayer.clearLayers();candidateLayer.clearLayers();routeLinkLayers=[];
   $('metrics').replaceChildren();$('route-verdict').hidden=true;$('alternatives').hidden=true;$('hops').hidden=true;$('hops-disclosure').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('candidate-search-diagnostic').hidden=true;$('rf-validation-note').hidden=true;$('analysis-link-picker').hidden=true;
   renderMeshPairs([]);
+  renderMeshPaint();
   $('route-show-map').disabled=true;$('result-title').textContent='A clear view of your connection.';$('status').textContent='Find a route to see alternatives, hops, link budgets and terrain profiles here.';$('status').className='';
   syncAnalysisBadge();showRepeaterRoads();syncRoutedRouterMarkers();
 }
@@ -3672,7 +3690,7 @@ function renderRouteVerdict({links,band,margin,requested,achieved,resilient}={})
     return;
   }
   if(mesh){
-    verdict.dataset.state=!result.found?'fail':band?.cls==='marginal'?'warn':'ok';
+    verdict.dataset.state=!result.found?'fail':result.paint_coverage?.target_met===false||band?.cls==='marginal'?'warn':'ok';
     verdict.textContent=meshVerdict(result,margin);
     return;
   }
@@ -3693,7 +3711,7 @@ function render(){
   closeMapSelection(true);
   $('map-analysis-selection').hidden=true;
   routeLayer.clearLayers();routeLinkLayers=[];$('metrics').replaceChildren();$('hops').querySelector('tbody').replaceChildren();$('profile').hidden=true;$('analysis-link-picker').hidden=true;$('hops-disclosure').hidden=true;$('rf-validation-note').hidden=true;
-  syncAnalysisBadge();showRepeaterRoads();$('route-show-map').disabled=!result?.links?.length;
+  syncAnalysisBadge();showRepeaterRoads();renderMeshPaint();$('route-show-map').disabled=!result?.route?.length;
   const candidateDiagnostic=$('candidate-search-diagnostic');
   candidateDiagnostic.textContent=result.found?(result.diagnostics||[]).filter(line=>line.startsWith('Road access filter kept ')||line.startsWith('Candidate sites:')||line.startsWith('Effective candidate grid spacing:')).join(' '):'';
   candidateDiagnostic.hidden=!candidateDiagnostic.textContent;

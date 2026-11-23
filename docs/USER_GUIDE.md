@@ -143,6 +143,41 @@ mesh topology. Importing a plan restores its inputs for a fresh search.
 
 ![The mesh client-pair table showing direct and relayed paths with hop counts and margins](images/mesh-client-pairs.png)
 
+### Paint a coverage area
+
+In **1 Route**, select **Mesh**. Choose **Paint coverage area** in the
+**Clients** step or on the map toolbar. Pick a brush size, then drag over
+the places where a handheld needs service. Use **Erase** to trim the
+area. With keyboard focus on the map, pan with the arrow keys and press
+Enter to use the brush at the map centre. Press Esc or choose **Cancel**
+to leave paint mode. Each stroke is one undoable edit. **Clear painted
+area** in the Clients step is also undoable.
+
+![Paint mode on the Oslo terrain map with the brush, eraser and painted coverage area](images/mesh-paint-map.png)
+
+Set **Target share** and **Handheld margin** in the Clients step. For
+example, 90% at 5 dB asks for two-way handheld coverage with at least
+5 dB of usable margin in 90% of the painted cells. **Edit handheld
+radio settings** opens the shared **2 Coverage → Handheld** settings.
+The project saves the painted area and target. You can switch to A/B and
+return to the same paint.
+
+Choose **Find mesh** to search with or without named clients. The planner
+tries to meet the target with as few new routers as it finds across the
+sampled sites. Every included router must belong to the connected mesh,
+and named clients must connect within the configured pairwise hop limit.
+Review the predicted share in **Analysis**. If coverage falls short,
+the best connected result found shows the shortfall. Open **Map legend**
+to identify the outlined painted area and dashed uncovered patches.
+
+![Mesh analysis with named clients and a painted coverage shortfall](images/mesh-paint-analysis.png)
+
+The paint tool uses fixed cells of roughly 125 m per side around Oslo.
+Keep a sketch to 1,024 cells and within 120 cells across in either
+direction. The planner checks cell centres with a coarse prediction and
+counts cells beyond its 20 km per-site range or with missing terrain as
+uncovered. Use live coverage for a closer look at the chosen sites.
+
 ### Terrain
 
 **Terrain source** defaults to **Automatic · best available**. The status below

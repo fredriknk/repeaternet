@@ -43,6 +43,11 @@ pub async fn meshcore(
         route_inputs::mesh_clients(&plan, &Default::default(), true)?
             .into_iter()
             .map(|site| site.coordinate)
+            .chain(
+                crate::mesh_paint::MeshPaint::active(&plan)?
+                    .iter()
+                    .flat_map(|paint| paint.locations()),
+            )
             .collect()
     } else {
         vec![endpoint(plan.get("a"), "a")?, endpoint(plan.get("b"), "b")?]
@@ -104,6 +109,11 @@ fn download_locations(
         route_inputs::mesh_clients(body, &Default::default(), true)?
             .into_iter()
             .map(|item| item.coordinate)
+            .chain(
+                crate::mesh_paint::MeshPaint::active(body)?
+                    .iter()
+                    .flat_map(|paint| paint.locations()),
+            )
             .collect()
     } else {
         let a = endpoint(body.get("a"), "a")?;

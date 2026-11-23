@@ -12,7 +12,10 @@ use repeaternet_rf_core::{
 use repeaternet_terrain::{LonLat, Point, Transformer};
 use serde_json::{Value, json};
 
-use crate::api::{ApiError, ApiResult};
+use crate::{
+    api::{ApiError, ApiResult},
+    mesh_paint::MeshPaint,
+};
 
 pub struct Location {
     pub id: String,
@@ -29,6 +32,7 @@ pub struct Location {
 pub struct RouteInputs {
     pub plan: Value,
     pub mesh: bool,
+    pub paint: Option<MeshPaint>,
     pub client_count: usize,
     pub locations: Vec<Location>,
     pub rf: RfSettings,
@@ -408,6 +412,10 @@ pub(crate) fn validate_plan_mode(plan: &mut Value) -> ApiResult<()> {
     if mesh_mode(plan)? || plan.get("clients").is_some() {
         mesh_clients(plan, &AntennaSettings::default(), false)?;
     }
+    MeshPaint::read(plan)?;
+    if MeshPaint::active(plan)?.is_some() {
+        MeshPaint::handheld(plan)?;
+    }
     if let Some(fields) = plan.as_object_mut() {
         fields.remove("mesh_topology");
     }
@@ -419,10 +427,14 @@ pub(crate) fn mesh_clients(
     antenna: &AntennaSettings,
     for_search: bool,
 ) -> ApiResult<Vec<Location>> {
-    let list = plan["clients"]
-        .as_array()
-        .ok_or_else(|| ApiError::invalid("Clients must be a list"))?;
-    if for_search && list.len() < 2 {
+    let list = match plan.get("clients") {
+        Some(items) => items
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| ApiError::invalid("Clients must be a list"))?,
+        None => &[],
+    };
+    if for_search && list.len() < 2 && MeshPaint::active(plan)?.is_none() {
         return Err(ApiError::invalid("Add at least two clients to find a mesh"));
     }
     let mut ids = HashSet::new();
@@ -753,6 +765,7 @@ fn parse_with_scope(mut plan: Value, defaults: &Value, placement: bool) -> ApiRe
         "infrastructure_policy": candidate_values["infrastructure_policy"],
     });
     Ok(RouteInputs {
+        paint: MeshPaint::active(&plan)?,
         plan,
         mesh,
         client_count,

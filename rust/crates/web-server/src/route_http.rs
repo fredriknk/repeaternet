@@ -250,6 +250,23 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
     if !inputs.mesh && points[0] == points[1] {
         return Err(ApiError::invalid("Place endpoints at different locations"));
     }
+    let painted = inputs
+        .paint
+        .as_ref()
+        .map(|paint| paint.projected(&transform))
+        .transpose()?
+        .unwrap_or_default();
+    if !painted.is_empty()
+        && terrain
+            .sample(&painted, TerrainLayer::GroundDtm)
+            .map_err(terrain_http::terrain_invalid)?
+            .iter()
+            .all(|height| !height.is_finite())
+    {
+        return Err(ApiError::invalid(
+            "Ground terrain is missing across the painted area",
+        ));
+    }
     let settings = &inputs.candidates;
     let bounds = terrain.bounds();
     let span_x = bounds.max_x - bounds.min_x;
@@ -276,17 +293,28 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
         ));
     }
     if settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly {
-        let mut extrema = [points[0].x, points[0].y, points[0].x, points[0].y];
-        for (location, point) in inputs.locations.iter().zip(&points) {
-            if location.origin == SiteOrigin::Optimized || location.policy == RouterPolicy::Required
-            {
-                extrema = [
-                    extrema[0].min(point.x),
-                    extrema[1].min(point.y),
-                    extrema[2].max(point.x),
-                    extrema[3].max(point.y),
-                ];
-            }
+        let mut extrema = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let anchors = inputs
+            .locations
+            .iter()
+            .zip(&points)
+            .filter(|(site, _)| {
+                site.origin == SiteOrigin::Optimized || site.policy == RouterPolicy::Required
+            })
+            .map(|(_, point)| point)
+            .chain(&painted);
+        for point in anchors {
+            extrema = [
+                extrema[0].min(point.x),
+                extrema[1].min(point.y),
+                extrema[2].max(point.x),
+                extrema[3].max(point.y),
+            ];
         }
         let padding = settings.corridor_width_m * std::f64::consts::SQRT_2;
         let spacing = candidate_grid_spacing(&terrain, settings);
@@ -712,7 +740,22 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         progress: Some(&mut progress),
         solution_progress: Some(&mut publish),
     };
-    let result = if inputs.mesh {
+    let result = if let Some(paint) = &inputs.paint {
+        let raster = app.live_terrain.open(&job.context)?;
+        let cells = paint.projected(&transform)?;
+        let radio = crate::mesh_paint::MeshPaint::handheld(&inputs.plan)?.as_radio_budget();
+        let measure =
+            |site: &PlanningSite| paint.measure(&raster, site, &inputs.rf, &radio, &cells);
+        optimizer.optimize_painted_mesh(
+            request,
+            repeaternet_optimizer::PaintObjective {
+                cells: &cells,
+                target_percent: paint.target_percent(),
+                evaluate: &measure,
+            },
+            hooks,
+        )
+    } else if inputs.mesh {
         optimizer.optimize_mesh(request, hooks)
     } else {
         optimizer.optimize(request, hooks)
