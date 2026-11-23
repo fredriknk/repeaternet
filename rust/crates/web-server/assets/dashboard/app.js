@@ -20,7 +20,7 @@ let coverageBusy = false, coverageJob = null, coverageDisplayInfo = null, covera
 let coverageRunReused=false,coverageEstimate=null,coverageEstimateRequest=0,coverageRevision=0,coveragePreflightBusy=false,coverageLoadingRun=false,coverageLoadRequest=0,coveragePollRequest=0,coverageRunMetadata=[];
 let coverageTerrainCheck=null,coverageTerrainUnknownKey=null,coverageTerrainJobId=null;
 let coverageDrawingPoints=[];
-const map = L.map('map');
+const map = L.map('map',{zoomSnap:0,wheelPxPerZoomLevel:120});
 let pendingMapFit = null, mapHintTimer = null, mapContextPopup = null;
 let labelledRoute = null, routeSiteLabels = new Map();
 const mapPane = $('view-map'), mapWrap = map.getContainer().parentElement;
@@ -816,15 +816,52 @@ function sourceHtmlText(value){
   text.textContent=value??'';
   return text.innerHTML;
 }
-function makeSourceMapLayer(definition){
+function sourceMapTileOptions(definition){
+  const options={
+    attribution:sourceHtmlText(definition.attribution),
+    minZoom:definition.min_zoom??0,
+    opacity:definition.opacity??1,
+    keepBuffer:4,
+    updateWhenZooming:false,
+  };
+  if(definition.max_zoom!=null)options.maxZoom=definition.max_zoom;
+  if(definition.subdomains!=null)options.subdomains=definition.subdomains;
+  return options;
+}
+function makeSourceMapLayer(definition,options=sourceMapTileOptions(definition)){
   const {url,kind,wms}=definition;
-  const options={attribution:sourceHtmlText(definition.attribution)};
-  for(const [field,option] of [['min_zoom','minZoom'],['max_zoom','maxZoom'],['subdomains','subdomains'],['opacity','opacity']]){
-    if(definition[field]!=null)options[option]=definition[field];
-  }
-  if(kind==='xyz')return L.tileLayer(url,options);
-  if(kind==='wms')return L.tileLayer.wms(url,{...wms,...options});
-  throw Error('Unsupported map layer kind.');
+  let layer;
+  if(kind==='xyz')layer=L.tileLayer(url,options);
+  else if(kind==='wms')layer=L.tileLayer.wms(url,{...wms,...options});
+  else throw Error('Unsupported map layer kind.');
+  if(!definition.overlay)retainRecentBasemapTiles(layer);
+  return layer;
+}
+function retainRecentBasemapTiles(layer){
+  const recent=new Map();
+  const createTile=layer.createTile,removeTile=layer._removeTile;
+  layer.createTile=function(coords,done){
+    const url=this.getTileUrl(coords),tile=recent.get(url);
+    if(!tile)return createTile.call(this,coords,done);
+    recent.delete(url);
+    L.Util.requestAnimFrame(()=>{
+      if(tile.isConnected)done(null,tile);
+    });
+    return tile;
+  };
+  layer._removeTile=function(key){
+    const tile=this._tiles[key]?.el;
+    if(!tile?.classList.contains('leaflet-tile-loaded')||!tile.naturalWidth){
+      removeTile.call(this,key);
+      return;
+    }
+    recent.set(tile.getAttribute('src'),tile);
+    if(recent.size>128)recent.delete(recent.keys().next().value);
+    // TileLayer clears the image source before removing it. Detach loaded images
+    // through GridLayer so a quick return to their zoom can reuse the same pixels.
+    L.GridLayer.prototype._removeTile.call(this,key);
+  };
+  layer.on('remove',()=>recent.clear());
 }
 function sourceCoverageBoxes(definition){
   const coverage=definition.coverage;
@@ -876,8 +913,14 @@ function clearMapSourcePreview(){
   mapSourcePreview=null;
 }
 function rebuildSourceLayers(definitions,{preserveBase=true}={}){
-  const next=definitions.filter(definition=>definition.enabled!==false)
-    .map(definition=>({definition,layer:makeSourceMapLayer(definition)}));
+  const previous=new Map(mapSourceLayers.map(item=>[item.definition.id,item]));
+  const next=definitions.filter(definition=>definition.enabled!==false).map(definition=>{
+    const options=sourceMapTileOptions(definition);
+    const key=JSON.stringify([definition.kind,definition.url,definition.wms,!!definition.overlay,options]);
+    const prior=previous.get(definition.id);
+    const layer=prior?.key===key?prior.layer:makeSourceMapLayer(definition,options);
+    return {definition,key,layer};
+  });
   const active=mapSourceLayers.filter(item=>map.hasLayer(item.layer));
   const current=preserveBase?active.find(item=>!item.definition.overlay)?.definition.id:null;
   let remembered;
@@ -887,17 +930,18 @@ function rebuildSourceLayers(definitions,{preserveBase=true}={}){
     map.off('click',mapLayerControl.collapse,mapLayerControl);
     mapLayerControl.remove();
   }
-  for(const {layer} of active)map.removeLayer(layer);
   mapSourceLayers=next;
   const bases=mapSourceLayers.filter(item=>!item.definition.overlay);
   const base=bases.find(item=>item.definition.id===current)
     ||bases.find(item=>item.definition.id===remembered)
     ||bases.find(item=>item.definition.default&&sourceIntersectsView(item.definition))
     ||bases.find(item=>sourceIntersectsView(item.definition));
-  if(base)base.layer.addTo(map);
-  for(const {definition,layer} of mapSourceLayers){
-    if(definition.overlay&&active.some(item=>item.definition.overlay&&item.definition.id===definition.id))layer.addTo(map);
-  }
+  const overlays=mapSourceLayers.filter(({definition})=>
+    definition.overlay&&active.some(item=>item.definition.overlay&&item.definition.id===definition.id)
+  );
+  const visibleLayers=new Set((base?[base,...overlays]:overlays).map(item=>item.layer));
+  for(const {layer} of active)if(!visibleLayers.has(layer))map.removeLayer(layer);
+  for(const layer of visibleLayers)if(!map.hasLayer(layer))layer.addTo(map);
   mapLayerControl=L.control.layers({},plannerMapOverlays);
   const entries=[...mapSourceLayers.entries()];
   entries.sort(([,a],[,b])=>Number(!!a.definition.overlay)-Number(!!b.definition.overlay));

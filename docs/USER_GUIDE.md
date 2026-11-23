@@ -310,7 +310,8 @@ coordinates use latitude, longitude to six decimals.
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
   when available.
-- Use **+** and **−** to zoom. In the layer control, choose **OpenStreetMap** or
+- Scroll or pinch to zoom gradually. Use **+** and **−** on the map or keyboard
+  to zoom one level at a time. In the layer control, choose **OpenStreetMap** or
   **Kartverket topo**, and other enabled maps. Regional layers display
   **(outside view)** when the map is outside their coverage. Your selected
   basemap stays in place as you pan. Toggle **Live coverage**, **Terrain coverage**, **Predicted mesh coverage** (a saved run),
@@ -357,7 +358,8 @@ short of the goal and the result records that the search stopped early.
 **Cancel terrain preparation** stops a route terrain job and preserves previously
 installed terrain. **Reconnect to job** resumes status checks if the connection
 drops. When offered, **View results** opens **Analysis**. Use **Dismiss** (×) to
-close the finished notice.
+close the finished notice. The status above **Find repeater route** shows the
+full message when a search finishes.
 
 ![Active route search job with elapsed time and stop or cancel controls](images/route-search-job.png)
 

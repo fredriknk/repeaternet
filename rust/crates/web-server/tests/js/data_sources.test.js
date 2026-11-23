@@ -50,17 +50,18 @@ test('terrain estimation sends the route plan over HTTP without crypto.randomUUI
 });
 
 test('registry definitions populate the layer control and a failed GET leaves the fallback', async () => {
-  const visible = new Set(), controls = [], plannerLayer = {};
+  const visible = new Set(), controls = [], removed = [], plannerLayer = {};
   const tileLayer = (url, options) => ({
     kind: 'xyz', url, options,
     addTo() { visible.add(this); return this; },
+    on() {},
   });
   tileLayer.wms = (url, options) => ({ ...tileLayer(url, options), kind: 'wms' });
   const map = {
     getZoom: () => 12,
     getBounds: () => ({ getSouth: () => -24, getNorth: () => -22, getWest: () => -44, getEast: () => -42 }),
     hasLayer: layer => visible.has(layer),
-    removeLayer: layer => visible.delete(layer),
+    removeLayer(layer) { removed.push(layer); visible.delete(layer); },
     off() {},
   };
   let registry, remembered;
@@ -91,7 +92,7 @@ test('registry definitions populate the layer control and a failed GET leaves th
   });
   vm.runInContext(
     section('const fallbackBasemaps =', "map.createPane('coveragePane')") +
-    section('function makeSourceMapLayer(', "map.on('layeradd layerremove'") +
+    section('function sourceMapTileOptions(', "map.on('layeradd layerremove'") +
     section('function applySourceRegistry(', 'const sourceKindLabels=') +
     'rebuildSourceLayers(fallbackBasemaps);', context,
   );
@@ -127,9 +128,19 @@ test('registry definitions populate the layer control and a failed GET leaves th
 
   overlay.addTo();
   remembered = 'world';
+  const removalsBeforeRefresh = removed.length;
   context.applySourceRegistry(registry);
-  assert.ok(visible.has(controls[2].base[2].layer), 'refresh keeps the selected base');
-  assert.ok(visible.has(controls[2].addedOverlays[0].layer), 'refresh keeps active overlays');
+  assert.equal(controls[2].base[2].layer, control.base[2].layer);
+  assert.ok(visible.has(control.base[2].layer), 'refresh keeps the selected base');
+  assert.equal(controls[2].addedOverlays[0].layer, overlay);
+  assert.ok(visible.has(overlay), 'refresh keeps active overlays');
+  assert.equal(removed.length, removalsBeforeRefresh, 'refresh leaves unchanged layers attached');
+
+  registry.basemaps[2] = { ...registry.basemaps[2], url: 'https://tiles.example.org' };
+  context.applySourceRegistry(registry);
+  assert.equal(controls[3].base[2].layer.url, 'https://tiles.example.org');
+  assert.ok(visible.has(controls[3].base[2].layer));
+  assert.ok(!visible.has(control.base[2].layer), 'refresh removes the replaced base');
 });
 
 test('legacy RF settings inherit calibrated defaults while explicit model choices are preserved', () => {

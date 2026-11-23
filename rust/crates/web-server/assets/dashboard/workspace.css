@@ -227,7 +227,7 @@ input:not([type="checkbox"]), select { font-size: 14px; }
   bottom: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 60px;
@@ -237,6 +237,7 @@ input:not([type="checkbox"]), select { font-size: 14px; }
 }
 .run-panel .primary { width: auto; min-height: 44px; font-size: 14px; padding: 9px 13px; }
 .action-status { min-width: 0; overflow: hidden; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.run-panel .action-status { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
 .workspace-action-bar {
   position: sticky;
   bottom: 0;
@@ -684,5 +685,8 @@ aside summary { font-size: 13px; }
   .analysis-pane .results, .results { max-height: none; }
   .shared-job-card:is([data-state="complete"], [data-state="stopped"], [data-state="cancelled"], [data-state="terrain_ready"], [data-state="interrupted"]) {
     position: fixed; top: auto; bottom: 12px; left: 12px; right: 12px; max-width: none;
+  }
+  main[data-mobile-destination="setup"]:has(#route-job-card[data-state="complete"]:not([hidden])) .run-panel {
+    bottom: 72px;
   }
 }
