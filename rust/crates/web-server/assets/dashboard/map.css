@@ -425,3 +425,6 @@
 }
 /* The link inspector owns the right side of the map while it is open. */
 .map-wrap:has(:is(#route-link-inspector, #map-object-details):not([hidden])) .live-coverage-legend { display: none; }
+
+.map-legend-grid i.legend-proposed-link::before { height: 0; border-top: 2px dotted var(--map-strong); background: none; }
+#map-analysis-selection canvas { display: block; height: 78px; max-width: 100%; }

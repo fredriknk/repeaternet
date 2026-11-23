@@ -379,9 +379,13 @@ function bindMapSite(marker,describe){
     (point)=>showMapSiteDetails(describe(),point,opener),
     (point)=>openMapSiteEditor(describe(),point,opener));
 }
-function bindMapLink(line,link,index){
-  const label=()=>routeSiteLabel(link.source_id)+' → '+routeSiteLabel(link.target_id);
+function mapLinkLabel(link){
+  return link.source_id&&link.target_id?[link.source_id,link.target_id].map(id=>findMapSite(id)?.label||routeSiteLabel(id)).join(' → '):'Link';
+}
+function bindMapLink(line,readLink,showAnalysis){
+  const label=()=>mapLinkLabel(readLink());
   bindMapObject(line,label,(point,opener)=>{
+    const link=readLink();
     showMapDetails(label(),point,opener,content=>{
       appendMapFacts(content,[
         ['Distance · km',formatMetric(link.distance_m/1000,2)],
@@ -392,12 +396,13 @@ function bindMapLink(line,link,index){
       content.append(mapText('p',linkIssues(link)),mapPopupButton('Show in analysis',()=>{
         closeMapSelection();
         $('map-analysis-selection').hidden=true;
-        openRouteLink(index);
+        showAnalysis();
       }));
     });
   },(point,opener)=>{
     const content=document.createElement('div');
     content.append(mapText('strong','Edit link sites'));
+    const link=readLink();
     for(const id of [link.source_id,link.target_id]){
       const site=findMapSite(id);
       if(site)content.append(mapEditControl(mapPopupButton('Edit '+site.label,()=>openMapSiteEditor(site,L.latLng(mapPoint(site)),opener))));
@@ -440,14 +445,22 @@ function showSiteInAnalysis(site){
     const index=result.links.findIndex(link=>link.source_id===site.id||link.target_id===site.id);
     if(index>=0)profile(index);
   }
+  const section=openMapAnalysisSelection(site.label);
+  appendMapSiteFacts(section,site);
+}
+function openMapAnalysisSelection(label){
   setMainView('view-analysis');
-  const section=$('map-analysis-selection'),title=mapText('h3',site.label);
+  const section=$('map-analysis-selection'),title=mapText('h3',label);
   title.tabIndex=-1;
   section.replaceChildren(title);
-  appendMapSiteFacts(section,site);
   section.hidden=false;
   title.scrollIntoView({block:'nearest'});
   title.focus({preventScroll:true});
+  return section;
+}
+function requestMapLink(source,target,{projectId=projectInfo?.active_id,profile=false,signal,client}={}){
+  return api('/api/link/evaluate',{method:'POST',headers:{'Content-Type':'application/json'},signal,
+    body:JSON.stringify({source,target,include_profile:profile,project_id:projectId,client})});
 }
 function showMapDetails(title,point,opener,fill){
   const content=document.createElement('div');
@@ -3199,8 +3212,7 @@ async function evaluateRouteLinkPreview(){
       }));
       let link,error;
       try{
-        link=await api('/api/link/evaluate',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({source,target,include_profile:true,project_id:inspector.projectId})});
+        link=await requestMapLink(source,target,{profile:true,projectId:inspector.projectId});
       }catch(e){error=e.message;}
       if(routeLinkInspector!==inspector||result!==inspector.route||mapEditsLocked())break;
       renderRouteInspectorLink(item,link,error);
@@ -3239,7 +3251,7 @@ function renderRouteInspectorLink(item,link,error){
   }
   body.append(metrics);
   if(!link.profile)return;
-  const clearance=link.required_fresnel_clearance??result.rf_settings?.required_fresnel_clearance??rf.required_fresnel_clearance;
+  const clearance=link.required_fresnel_clearance??result?.rf_settings?.required_fresnel_clearance??rf.required_fresnel_clearance;
   const canvas=document.createElement('canvas'),legend=document.createElement('div');
   canvas.setAttribute('role','img');
   canvas.setAttribute('aria-label','Elevation profile along the link');
@@ -3354,7 +3366,7 @@ function render(){
       const line=L.polyline([mapPoint(a),mapPoint(b)],{...routeLinkMapStyle(link),weight:4}).addTo(routeLayer);
       routeLinkLayers[index]=line;
       line.bindTooltip(routeMapLinkTooltip(link));
-      bindMapLink(line,link,index);
+      bindMapLink(line,()=>link,()=>openRouteLink(index));
     }
     const row=document.createElement('tr'),reason=linkIssues(link),resultCell=document.createElement('span');resultCell.className=link.valid?'link-result pass':'link-result fail';resultCell.textContent=link.valid?'Pass':'Fail';resultCell.title=reason;const linkName=document.createElement('span');linkName.textContent=`${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)}`;linkName.title=`${link.source_id} → ${link.target_id}`;for(const value of [linkName,(link.distance_m/1000).toFixed(2)+' km',marginPill(link.worst_margin_db),link.minimum_fresnel_clearance_ratio===null?'—':(link.minimum_fresnel_clearance_ratio*100).toFixed(0)+'%',link.los_clear?'Clear':'Obstructed',resultCell]){const cell=document.createElement('td');if(value instanceof Node)cell.append(value);else cell.textContent=value;row.append(cell);}row.tabIndex=0;row.setAttribute('aria-selected',String(index===selected));row.onclick=()=>profile(index);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();profile(index);}};$('hops').querySelector('tbody').append(row);
   });

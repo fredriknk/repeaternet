@@ -318,6 +318,10 @@ coordinates use latitude, longitude to six decimals.
   the primary route previews its adjacent hops. Dragging a search-found site
   pins it as a new **Required** proposed router. The previous route becomes
   stale. Use **Undo** to revert the move or run a new search to validate it.
+- Thin dotted links show usable connections (0 dB or higher) to proposed
+  routers, including optional routers outside the certified route. These links
+  update as you drag a marker and stay on the map after release. Click one to
+  see its margin and open its terrain profile in **Analysis**.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
