@@ -615,13 +615,26 @@ function renderProposedMeshLink(pair,link){
   if(pair.line){
     pair.line.setLatLngs(points).setStyle(style).setTooltipContent(proposedMeshTooltip(link));
   }else{
-    pair.line=L.polyline(points,style).bindTooltip(proposedMeshTooltip(link));
-    bindMapLink(pair.line,()=>pair.link,()=>void showProposedLinkInAnalysis(pair));
+    pair.line=new MapLinkLine(points,style).bindTooltip(proposedMeshTooltip(link));
+    bindMapLink(pair.line,()=>pair.link,()=>void showProposedLinkInAnalysis(pair),signal=>requestProposedLinkProfile(pair,signal));
     pair.line.addTo(proposedMeshLinks.layer);
   }
 }
 function proposedMeshTooltip(link){
   return mapText('span',mapLinkLabel(link)+' · '+formatMetric(link.worst_margin_db)+' dB · Proposed mesh link');
+}
+function proposedLinksAtSite(id){
+  return [...proposedMeshLinks.pairs.values()]
+    .filter(({line,link})=>line&&(link.source_id===id||link.target_id===id))
+    .map(pair=>({
+      link:pair.link,
+      showAnalysis:()=>void showProposedLinkInAnalysis(pair),
+      loadProfile:signal=>requestProposedLinkProfile(pair,signal)
+    }));
+}
+function requestProposedLinkProfile(pair,signal){
+  const {source,target}=pair.wanted;
+  return requestMapLink(source,target,{projectId:pair.projectId,profile:true,signal});
 }
 async function showProposedLinkInAnalysis(pair){
   const section=openMapAnalysisSelection(mapLinkLabel(pair.link));
@@ -629,8 +642,7 @@ async function showProposedLinkInAnalysis(pair){
   body.setAttribute('role','status');
   section.append(body);
   try{
-    const {source,target}=pair.wanted;
-    const link=await requestMapLink(source,target,{projectId:pair.projectId,profile:true});
+    const link=await requestProposedLinkProfile(pair);
     if(body.isConnected)renderRouteInspectorLink({body},link);
   }catch(error){
     if(body.isConnected)body.textContent=error.message;

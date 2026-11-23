@@ -308,8 +308,11 @@ coordinates use latitude, longitude to six decimals.
 ![Right-click menu with placement, handheld probe and coordinate actions](images/map-context-menu.png)
 
 - Click a site or link, or press **Enter** or **Space** on its focused map
-  marker or line. The popup and the map details panel show the same readings.
-  Select **Show in analysis** in either place to open that site or link.
+  marker or line. You can click a few pixels beside a link or in a gap in a
+  dotted line. The popup and map details panel show the link readings and
+  terrain profile, including the curvature-adjusted terrain and required
+  Fresnel boundary. If a site has several links, choose one from the link
+  list. **Show in analysis** opens the selected link or site in Analysis.
 - Right-click or long-press a site, or focus it and press **Shift+F10**, to
   edit its name, antenna height, gain and terminal clutter. With P.2108 enabled,
   the engine estimates local loss from nearby trees and buildings. For proposed
@@ -324,8 +327,7 @@ coordinates use latitude, longitude to six decimals.
   stale. Use **Undo** to revert the move or run a new search to validate it.
 - Thin dotted links show usable connections (0 dB or higher) to proposed
   routers, including optional routers outside the certified route. These links
-  update as you drag a marker and stay on the map after release. Click one to
-  see its margin and open its terrain profile in **Analysis**.
+  update as you drag a marker and stay on the map after release.
 - With live or saved coverage visible, right-click a location and choose
   **Analyse links from here**. The temporary handheld probe shows the predicted
   margin and distance to each usable site. Select **Show profile** for an
@@ -335,7 +337,8 @@ coordinates use latitude, longitude to six decimals.
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
   when available.
-- Scroll or pinch to zoom gradually. Use **+** and **−** on the map or keyboard
+- Scroll with a mouse wheel or trackpad to zoom around the pointer. You can
+  also pinch on a touchscreen or use **+** and **−** on the map or keyboard
   to zoom one level at a time. In the layer control, choose **OpenStreetMap** or
   **Kartverket topo**, and other enabled maps. Regional layers display
   **(outside view)** when the map is outside their coverage. Your selected
@@ -360,7 +363,7 @@ marks proposed and MeshCore routers used by the route.
 
 ![MeshCore router edit form with radio settings and search policy](images/map-router-policy.png)
 
-![Route-site details popup with coordinates, radio assumptions and an Analysis button](images/map-route-site.png)
+![Proposed router details popup with a link picker, margin, terrain profile and Analysis button](images/map-route-site.png)
 
 ![Map legend showing site markers, route links, proposed mesh links and probe links](images/map-legend.png)
 

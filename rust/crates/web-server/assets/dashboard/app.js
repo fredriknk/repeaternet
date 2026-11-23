@@ -21,7 +21,8 @@ let coverageBusy = false, coverageJob = null, coverageDisplayInfo = null, covera
 let coverageRunReused=false,coverageEstimate=null,coverageEstimateRequest=0,coverageRevision=0,coveragePreflightBusy=false,coverageLoadingRun=false,coverageLoadRequest=0,coveragePollRequest=0,coverageRunMetadata=[];
 let coverageTerrainCheck=null,coverageTerrainUnknownKey=null,coverageTerrainJobId=null;
 let coverageDrawingPoints=[];
-const map = L.map('map',{zoomSnap:0,wheelPxPerZoomLevel:120});
+const map = L.map('map',{zoomSnap:0,scrollWheelZoom:false});
+bindMapWheelZoom(map);
 let pendingMapFit = null, mapHintTimer = null, mapContextPopup = null;
 let mapSelection = null, mapObjectPopup = null, endpointNames = {};
 let labelledRoute = null, routeSiteLabels = new Map();
@@ -36,6 +37,7 @@ const basemapStorageKey = 'repeaternet.base-layer';
 let mapSourceLayers = [], mapLayerControl, mapSourcePreview, mapSourcePreviewTimer;
 map.createPane('coveragePane');map.getPane('coveragePane').style.zIndex=350;
 map.createPane('repeaterRoadsPane').style.zIndex=375;
+map.createPane('linkHitPane').style.zIndex=390;
 map.createPane('staleRouteSitePane').style.zIndex=395;
 const repeaterRoadLayer=L.layerGroup([], {attribution:fallbackBasemaps[0].attribution});
 const routeLayer = L.layerGroup().addTo(map), candidateLayer = L.layerGroup().addTo(map), knownLayer = L.layerGroup().addTo(map), coverageLayer = L.layerGroup().addTo(map), predictedCoverageLayer=L.layerGroup(), coverageAreaLayer=L.layerGroup().addTo(map), coverageDiffLayer=L.layerGroup(), inspectionLayer=L.layerGroup().addTo(map), manualLayer = L.layerGroup().addTo(map), targetLayer=L.layerGroup().addTo(map);
@@ -89,6 +91,61 @@ function mapPopupButton(label,handler){
 function mapPopupOptions(options={}){
   const toolbar=document.querySelector('.map-tools');
   return {className:'map-popup',autoPanPaddingTopLeft:[12,toolbar.offsetHeight+20],autoPanPaddingBottomRight:[12,28],...options};
+}
+function bindMapWheelZoom(map){
+  let frame,target,anchor,offset,lastInput,lastFrame;
+  let moving=false;
+  const reducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
+  function finish(){
+    cancelAnimationFrame(frame);
+    frame=target=undefined;
+    if(!moving)return;
+    moving=false;
+    map.off('movestart viewprereset',finish);
+    map.fire('zoom').fire('move')._moveEnd(true);
+  }
+  function step(now){
+    if(map._animatingZoom){
+      frame=requestAnimationFrame(step);
+      return;
+    }
+    if(!moving){
+      map._stop();
+      map._moveStart(true,false);
+      moving=true;
+      map.on('movestart viewprereset',finish);
+      lastFrame=now-16;
+    }
+    const zoom=map.getZoom(),remaining=target-zoom;
+    const next=reducedMotion.matches||Math.abs(remaining)<.001
+      ?target:zoom+remaining*(1-Math.exp(-(now-lastFrame)/45));
+    lastFrame=now;
+    if(next!==zoom){
+      const center=map.unproject(map.project(anchor,next).subtract(offset),next);
+      // Use Leaflet's pinch path to transform the current grids. Suppress per-frame
+      // move events so GridLayer only loads tiles when the wheel gesture ends.
+      map._move(center,next,{pinch:true},true);
+    }
+    if(next===target&&now-lastInput>120)finish();
+    else frame=requestAnimationFrame(step);
+  }
+  map.on('unload',()=>cancelAnimationFrame(frame));
+  L.DomEvent.on(map.getContainer(),'wheel',event=>{
+    const zoom=map.getZoom(),delta=L.DomEvent.getWheelDelta(event)/120;
+    if(!Number.isFinite(zoom)||!delta)return;
+    L.DomEvent.stop(event);
+    const next=Math.max(map.getMinZoom(),Math.min(map.getMaxZoom(),(target??zoom)+delta));
+    if(next===(target??zoom))return;
+    const point=map.mouseEventToContainerPoint(event);
+    const nextOffset=point.subtract(map.getSize().divideBy(2));
+    if(target===undefined||!nextOffset.equals(offset)){
+      anchor=map.containerPointToLatLng(point);
+      offset=nextOffset;
+    }
+    target=next;
+    lastInput=performance.now();
+    if(frame===undefined)frame=requestAnimationFrame(step);
+  });
 }
 function fitMapSites(routeOnly=false){
   const routePoints=(result?.route||[]).map(mapPoint);
@@ -347,6 +404,8 @@ function bindMapObject(layer,label,details,edit){
       activate(action,keyboardPoint());
     });
     bindMapLongPress(element,()=>activate(edit,keyboardPoint()));
+    const hit=layer.linkHit?.getElement();
+    if(hit)bindMapLongPress(hit,()=>activate(edit,keyboardPoint()));
   };
   layer.on('add',bindElement);
   if(layer.getElement())bindElement();
@@ -387,23 +446,26 @@ function bindMapSite(marker,describe){
 function mapLinkLabel(link){
   return link.source_id&&link.target_id?[link.source_id,link.target_id].map(id=>findMapSite(id)?.label||routeSiteLabel(id)).join(' → '):'Link';
 }
-function bindMapLink(line,readLink,showAnalysis){
+const MapLinkLine=L.Polyline.extend({
+  onAdd(map){
+    // Keep the continuous hit stroke below every site marker, including stale sites.
+    this.linkHit=L.polyline(this.getLatLngs(),{pane:'linkHitPane',weight:18,opacity:0})
+      .addEventParent(this).addTo(map);
+    L.Polyline.prototype.onAdd.call(this,map);
+  },
+  onRemove(map){
+    this.linkHit.removeFrom(map).removeEventParent(this);
+    L.Polyline.prototype.onRemove.call(this,map);
+  },
+  setLatLngs(points){
+    this.linkHit?.setLatLngs(points);
+    return L.Polyline.prototype.setLatLngs.call(this,points);
+  }
+});
+function bindMapLink(line,readLink,showAnalysis,loadProfile){
   const label=()=>mapLinkLabel(readLink());
   bindMapObject(line,label,(point,opener)=>{
-    const link=readLink();
-    showMapDetails(label(),point,opener,content=>{
-      appendMapFacts(content,[
-        ['Distance · km',formatMetric(link.distance_m/1000,2)],
-        ['Usable margin',marginPill(link.worst_margin_db)],
-        ['Forward / reverse margin · dB',formatMetric(link.forward.usable_margin_db)+' / '+formatMetric(link.reverse.usable_margin_db)],
-        ['Forward / reverse RX · dBm',formatMetric(link.forward.received_power_dbm)+' / '+formatMetric(link.reverse.received_power_dbm)]
-      ]);
-      content.append(mapText('p',linkIssues(link)),mapPopupButton('Show in analysis',()=>{
-        closeMapSelection();
-        $('map-analysis-selection').hidden=true;
-        showAnalysis();
-      }));
-    });
+    showMapLinkSelection(label(),point,opener,[{link:readLink(),showAnalysis,loadProfile}]);
   },(point,opener)=>{
     const content=document.createElement('div');
     content.append(mapText('strong','Edit link sites'));
@@ -439,17 +501,88 @@ function appendMapSiteFacts(content,site){
 }
 const terminalClutterOptions = [['none','None'],['p2108_dom','Nearby trees and buildings (P.2108 from DOM)']];
 function showMapSiteDetails(site,point,opener){
+  const links=(result?.links||[]).flatMap((link,index)=>
+    link.source_id===site.id||link.target_id===site.id
+      ?[{link,showAnalysis:()=>openRouteLink(index)}]:[]);
+  links.push(...proposedLinksAtSite(site.id));
+  if(links.length){
+    showMapLinkSelection(site.label,point,opener,links,site);
+    return;
+  }
   showMapDetails(site.label,point,opener,content=>{
     appendMapSiteFacts(content,site);
     content.append(mapPopupButton('Show in analysis',()=>showSiteInAnalysis(site)));
   });
 }
+function showMapLinkSelection(title,point,opener,links,site){
+  const controller=new AbortController(),profiles=new Map(),views=[];
+  let selectedLink=0;
+  function renderLink(body){
+    const {link,loadProfile}=links[selectedLink];
+    body.replaceChildren();
+    if(site&&links.length===1)body.append(mapText('h3',mapLinkLabel(link)));
+    appendMapFacts(body,[
+      ['Distance · km',formatMetric(link.distance_m/1000,2)],
+      ['Usable margin',marginPill(link.worst_margin_db)]
+    ]);
+    const chart=document.createElement('div');
+    chart.className='map-link-profile';
+    body.append(chart);
+    if(!link.profile&&loadProfile){
+      const status=mapText('p','Loading terrain profile…');
+      status.role='status';
+      chart.setAttribute('aria-busy','true');
+      chart.append(status);
+      if(!profiles.has(link))profiles.set(link,loadProfile(controller.signal));
+      void profiles.get(link).then(value=>{
+        if(!chart.isConnected||controller.signal.aborted)return;
+        chart.removeAttribute('aria-busy');
+        chart.replaceChildren();
+        appendMapLinkProfile(chart,value);
+      }).catch(error=>{
+        if(chart.isConnected&&!controller.signal.aborted){
+          chart.removeAttribute('aria-busy');
+          status.textContent=error.message;
+        }
+      });
+    }else appendMapLinkProfile(chart,link);
+    appendMapFacts(body,[
+      ['Forward / reverse margin · dB',formatMetric(link.forward.usable_margin_db)+' / '+formatMetric(link.reverse.usable_margin_db)],
+      ['Forward / reverse RX · dBm',formatMetric(link.forward.received_power_dbm)+' / '+formatMetric(link.reverse.received_power_dbm)]
+    ]);
+    body.append(mapText('p',linkIssues(link)));
+  }
+  showMapDetails(title,point,opener,content=>{
+    const body=document.createElement('div'),controls=document.createElement('div');
+    body.className='map-link-details';
+    controls.className='map-link-controls';
+    let picker;
+    if(links.length>1){
+      picker=document.createElement('select');
+      picker.setAttribute('aria-label','Link');
+      links.forEach(({link},index)=>picker.add(new Option(mapLinkLabel(link),index)));
+      picker.onchange=()=>{
+        selectedLink=Number(picker.value);
+        for(const view of views){
+          view.picker.value=picker.value;
+          renderLink(view.body);
+        }
+      };
+      controls.append(picker);
+    }
+    controls.append(mapPopupButton('Show in analysis',()=>{
+      closeMapSelection();
+      $('map-analysis-selection').hidden=true;
+      links[selectedLink].showAnalysis();
+    }));
+    views.push({picker,body});
+    content.append(controls,body);
+    renderLink(body);
+    if(site)appendMapSiteFacts(content,site);
+  },()=>controller.abort());
+}
 function showSiteInAnalysis(site){
   closeMapSelection();
-  if(result?.links?.length){
-    const index=result.links.findIndex(link=>link.source_id===site.id||link.target_id===site.id);
-    if(index>=0)profile(index);
-  }
   const section=openMapAnalysisSelection(site.label);
   appendMapSiteFacts(section,site);
 }
@@ -510,7 +643,8 @@ function showMapObjectPopup(point,content,opener,onClose,{hasPanel=false,editor=
     options.autoPan=false;
     map.stop();
     if(window.matchMedia('(max-width: 1050px)').matches){
-      options.maxHeight=Math.min(options.maxHeight,map.getSize().y*.34);
+      const heightShare=content.querySelector('.map-link-details') ? .38 : .34;
+      options.maxHeight=Math.min(options.maxHeight,map.getSize().y*heightShare);
     }
   }
   const popup=L.popup(mapPopupOptions(options));
@@ -521,7 +655,7 @@ function showMapObjectPopup(point,content,opener,onClose,{hasPanel=false,editor=
   });
   popup.setLatLng(point).setContent(content).openOn(map);
   syncMapEditControls();
-  (content.querySelector('input:not(:disabled), button:not(:disabled)')||popup.getElement().querySelector('.leaflet-popup-close-button'))?.focus({preventScroll:true});
+  (content.querySelector('input:not(:disabled), select:not(:disabled), button:not(:disabled)')||popup.getElement().querySelector('.leaflet-popup-close-button'))?.focus({preventScroll:true});
 }
 function closeMapSelection(restoreFocus=false){
   if(!mapSelection)return;
@@ -3280,7 +3414,13 @@ function renderRouteInspectorLink(item,link,error){
     metrics.append(field);
   }
   body.append(metrics);
-  if(!link.profile)return;
+  appendMapLinkProfile(body,link);
+}
+function appendMapLinkProfile(body,link){
+  if(!link.profile){
+    body.append(mapText('p','Terrain profile unavailable.'));
+    return;
+  }
   const clearance=link.required_fresnel_clearance??result?.rf_settings?.required_fresnel_clearance??rf.required_fresnel_clearance;
   const canvas=document.createElement('canvas'),legend=document.createElement('div');
   canvas.setAttribute('role','img');
@@ -3295,12 +3435,17 @@ function renderRouteInspectorLink(item,link,error){
     legend.append(item);
   }
   body.append(canvas,legend);
-  drawRouteProfileChart(canvas,link,lines,78);
+  requestAnimationFrame(()=>{
+    if(canvas.isConnected)drawRouteProfileChart(canvas,link,lines,78);
+  });
 }
 $('route-link-inspector-close').onclick=()=>closeRouteLinkInspector(true);
 function openRouteLink(index){
   setMainView('view-analysis');
-  profile(index,true);
+  profile(index);
+  const picker=$('analysis-link-select');
+  picker.scrollIntoView({block:'nearest'});
+  picker.focus({preventScroll:true});
 }
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?`Passes configured validation criteria${issues.length?` · ${issues.slice(0,2).join(', ')}`:''}`:issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
 function resetRouteResultView(){
@@ -3393,7 +3538,7 @@ function render(){
   links.forEach((link,index)=>{
     const a=sites[link.source_id],b=sites[link.target_id];
     if(a&&b&&[...mapPoint(a),...mapPoint(b)].every(Number.isFinite)){
-      const line=L.polyline([mapPoint(a),mapPoint(b)],{...routeLinkMapStyle(link),weight:4}).addTo(routeLayer);
+      const line=new MapLinkLine([mapPoint(a),mapPoint(b)],{...routeLinkMapStyle(link),weight:4}).addTo(routeLayer);
       routeLinkLayers[index]=line;
       line.bindTooltip(routeMapLinkTooltip(link));
       bindMapLink(line,()=>link,()=>openRouteLink(index));
@@ -3408,7 +3553,7 @@ function formatMetric(value,digits=1){return Number.isFinite(value)?value.toFixe
 function routeProfileLines(profileData,clearance){
   const curved=values=>values.map((value,i)=>value+profileData.earth_bulge_m[i]);
   return [
-    {label:'Ground terrain',color:'#94785d',values:curved(profileData.dtm_elevation_m)},
+    {label:'Terrain + curvature',color:'#94785d',values:curved(profileData.dtm_elevation_m)},
     ...(profileData.surface_available?[{label:'Surface',color:'#508c62',values:curved(profileData.surface_elevation_m)}]:[]),
     {label:'Line of sight',color:'#457bab',values:profileData.los_elevation_m},
     {label:`${(clearance*100).toFixed(0)}% Fresnel lower edge`,color:'#b36e14',dash:[5,3],
