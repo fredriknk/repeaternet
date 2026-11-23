@@ -10,6 +10,7 @@ mod downloads;
 mod link_http;
 mod live_coverage_http;
 mod live_terrain;
+mod placement_http;
 mod provider_http;
 mod route_http;
 mod route_inputs;

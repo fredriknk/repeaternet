@@ -297,7 +297,7 @@ test('invalidating a certified route replaces its verdict until a current result
     coverageHeightOverrides: {}, inspectionRequest: 0, inspectionController: null,
     predictedCoverageLayer: layer, coverageDiffLayer: layer, inspectionLayer: layer, routeLayer: layer,
     routeLinkInspector: null, closeRouteLinkInspector() {},
-    queueMicrotask() {}, refreshSiteSelection() {},
+    queueMicrotask() {}, refreshSiteSelection() {}, clearPlacementPreview() {},
     closeMapSelection() {}, clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
     updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {}, syncRoutedRouterMarkers() {},
   });

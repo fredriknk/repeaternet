@@ -115,6 +115,26 @@ Mesh result payloads add names, connected client and new-router counts, and
 selection updates these alongside the active sites and links. Plan JSON exports
 carry a current certified topology when available. Import uses the plan inputs.
 
+### Placement optimization
+
+`POST /api/optimize-placement` accepts `site_ids` (2–32 selected IDs) and optional
+`radius_m` (greater than zero, up to 2,000 m). It uses the active project's saved
+plan and current alternative. The server resolves which sites can move and
+restricts the alternative's links to the selection. Without a current
+alternative, the optimizer builds the link set from pairs initially within the
+configured range. Route search and placement use the same road access filter
+and respect optional `exclusions_wgs84` plan polygons (lists of `[latitude, longitude]` pairs).
+
+The optimizer scans a terrain grid around each router's original position for
+up to four rounds. It reevaluates links incident to each trial position at the
+final RF sample step. Moves improve the weakest margin first and the total
+margin second, and preserve evaluable links. Missing profiles rank below RF
+results. The planner scheduler queues the job, `/api/state` exposes an active
+`placement_job`, `GET /api/optimize-placement/{id}` returns progress and the
+terminal preview, and `POST /api/cancel` accepts its job ID. Placement previews
+are held in memory and tied to the project inputs, terrain and route snapshot.
+Apply uses the dashboard's existing plan edit, undo and autosave path.
+
 ### Live coverage
 
 1. `live_coverage.js` lists the active endpoints or named clients and routers
@@ -218,7 +238,7 @@ Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
 `workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
 the deferred classic scripts load in order
 `main_view_navigation.js`, `coverage_raster.js`, `live_coverage.js`,
-`site_selection.js`, `mesh_mode.js`, `app.js` and `coverage_inspection.js`.
+`site_selection.js`, `mesh_mode.js`, `placement.js`, `app.js` and `coverage_inspection.js`.
 
 `siteSelection.ids` returns a snapshot of the selected site IDs in the current
 project. Call `toggle(id)`, `replace(ids)` or `clear()` on `siteSelection` to

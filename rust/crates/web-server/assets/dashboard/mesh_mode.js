@@ -195,7 +195,7 @@ function renderMeshClients() {
       html: mapText('span', client.name)});
     const marker = L.marker(mapPoint(client), {icon, draggable: !mapEditsLocked(), title: client.name, zIndexOffset: 150});
     clientMarkers.set(client.id, marker);
-    bindMapSite(marker, () => meshClientDescription(client), {selectable: false});
+    bindMapSite(marker, () => meshClientDescription(client));
     bindLiveCoverageDrag(marker, () => meshClientCoverageSite(client));
     marker.on('dragend', () => {
       const point = marker.getLatLng().wrap();

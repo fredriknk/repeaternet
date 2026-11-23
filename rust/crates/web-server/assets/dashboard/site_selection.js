@@ -216,11 +216,22 @@ function validateBulkSiteFields(sites, rawFields) {
   return {changes};
 }
 
+function pinSelectedSearchRouter(site) {
+  const router = {id:'M-' + randomId(), name:nextManualRouterName(), latitude:site.latitude,
+    longitude:site.longitude, antenna_height_m:site.antenna_height_m, policy:'optional',
+    terminal_clutter:site.terminal_clutter};
+  const radio = rf.site_overrides?.[site.id];
+  if (radio) saveSiteRadio(router.id, {...radio});
+  manualRouters.push(router);
+  return router;
+}
+
 function updateSelectedSites(sites, changes) {
   const selectedIds = [];
   let changed = false;
   for (const site of sites) {
     const height = changes.antenna_height_m, gain = changes.gain_dbi, policy = changes.policy;
+    if (site.kind === 'client') { selectedIds.push(site.id); continue; }
     const setHeight = height !== undefined && height !== site.antenna_height_m;
     const setGain = gain !== undefined && gain !== site.gain_dbi;
     const setPolicy = site.kind === 'known' && policy !== undefined && policy !== site.policy;
@@ -238,10 +249,7 @@ function updateSelectedSites(sites, changes) {
     }
     let router;
     if (site.kind === 'search') {
-      router = {id:'M-' + randomId(), name:nextManualRouterName(), latitude:site.latitude,
-        longitude:site.longitude, antenna_height_m:site.antenna_height_m, policy:'optional',
-        terminal_clutter:site.terminal_clutter};
-      manualRouters.push(router);
+      router = pinSelectedSearchRouter(site);
     } else {
       router = (site.kind === 'known' ? meshcoreRouters : manualRouters).find(router => router.id === site.id);
     }
@@ -249,9 +257,7 @@ function updateSelectedSites(sites, changes) {
       router.antenna_height_m = height;
       if (site.kind === 'known') router.height_override = true;
     }
-    if (setGain || (site.kind === 'search' && site.gain_dbi !== rf.router.gain_dbi)) {
-      saveSiteRadio(router.id, {...rf.site_overrides?.[router.id], gain_dbi:setGain ? gain : site.gain_dbi});
-    }
+    if (setGain) saveSiteRadio(router.id, {...rf.site_overrides?.[router.id], gain_dbi:gain});
     if (setPolicy) routerPolicies.set(router.id, policy);
     selectedIds.push(router.id);
   }
@@ -278,7 +284,7 @@ function removeSelectedSites(sites) {
 
 function commitBulkSiteEdit(sites, changes, {remove = false} = {}) {
   if (!rf || mapEditsLocked()) return;
-  const invalid = ['a', 'b'].find(key => !validEndpointCoords(key));
+  const invalid = routeMode === 'mesh' ? null : ['a', 'b'].find(key => !validEndpointCoords(key));
   if (invalid) {
     focusProjectTransitionError($(invalid), `Correct Endpoint ${invalid.toUpperCase()} before editing the selected sites.`);
     return;
@@ -323,13 +329,13 @@ function renderSiteSelection() {
     clear.setAttribute('aria-label', 'Clear site selection');
     header.append(heading, clear);
     panel.append(header, summary);
-    if (sites.length > 1) forms.push(renderBulkSiteForm(panel, sites, rawFields, forms));
     if (selectionMessage) {
       const feedback = mapText('p', selectionMessage);
       feedback.className = 'hint';
       feedback.role = 'status';
       panel.append(feedback);
     }
+    if (renderPlacementPreview(panel)) continue;
     const actions = siteSelection.actions.filter(action => action.isAvailable?.(sites) ?? true);
     for (const action of actions) {
       const button = mapEditControl(mapPopupButton(action.label, () => {
@@ -337,6 +343,9 @@ function renderSiteSelection() {
       }));
       button.dataset.selectionFocus = 'action-' + action.id;
       panel.append(button);
+    }
+    if (sites.length > 1 && sites.some(site => site.kind !== 'client')) {
+      forms.push(renderBulkSiteForm(panel, sites, rawFields, forms));
     }
   }
 
@@ -391,8 +400,11 @@ function renderBulkSiteForm(panel, sites, rawFields, forms) {
     };
   }
 
-  field('antenna_height_m', 'Antenna height · m', sites);
-  field('gain_dbi', 'Antenna gain · dBi', sites);
+  const editableSites = sites.filter(site => site.kind !== 'client');
+  if (editableSites.length) {
+    field('antenna_height_m', 'Antenna height · m', editableSites);
+    field('gain_dbi', 'Antenna gain · dBi', editableSites);
+  }
   if (existing.length) field('policy', 'Existing router policy', existing, routerPolicyLabels);
   const notes = [];
   if (existing.length < sites.length) notes.push('Policy applies to existing routers only.');

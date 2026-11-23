@@ -63,7 +63,7 @@ function planFixture() {
     manualRouters: [{id:'P1', antenna_height_m:12, policy:'optional'}],
     selectedManualRouterId: 'P1', selectedKnownRouterId: 'K1',
     randomId: () => 'new', nextManualRouterName: () => 'P2',
-    mapEditsLocked: () => false, validEndpointCoords: () => [60, 10],
+    routeMode: 'endpoints', mapEditsLocked: () => false, validEndpointCoords: () => [60, 10],
     recordEdit: () => calls.push('recordEdit'),
     invalidate: () => calls.push('invalidate'),
     scheduleCoverageCheck: () => calls.push('scheduleCoverageCheck'),

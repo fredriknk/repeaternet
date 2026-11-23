@@ -18,8 +18,9 @@ pub use candidates::{
 pub use graph::RoutingGraph;
 pub use mesh::connect_mesh;
 pub use optimizer::{
-    Cancellation, LinkEvaluation, OptimizationRequest, OptimizationResult, Progress,
-    RouteOptimizer, SearchHooks, SearchStatus, Stage,
+    Cancellation, LinkEvaluation, OptimizationRequest, OptimizationResult, PlacementLink,
+    PlacementMargin, PlacementPreview, PlacementRequest, PlacementSite, Progress, RouteOptimizer,
+    SearchHooks, SearchStatus, Stage,
 };
 pub use screening::{backbone_site_indices, screening_pair_indices};
 pub use topology::{select_active_solution_index, solve_topologies, ClientPaths, NetworkSolution};

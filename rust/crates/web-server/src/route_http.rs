@@ -245,18 +245,8 @@ struct Prepared {
 
 fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepared> {
     let terrain = context.open()?;
-    let (transform, points, elevations) = terrain_http::ground(&terrain, &inputs.locations)?;
-    let gaps = terrain_http::uncovered(&inputs.locations, &points, &elevations, terrain.bounds());
-    if !gaps.is_empty() {
-        let names: Vec<_> = gaps
-            .iter()
-            .filter_map(|item| item["name"].as_str())
-            .collect();
-        return Err(ApiError::invalid(format!(
-            "Ground-terrain coverage is missing at: {}",
-            names.join(", ")
-        )));
-    }
+    let (transform, mut sites) = project_sites(&terrain, &inputs.locations)?;
+    let points: Vec<_> = sites.iter().map(|site| site.rf.position).collect();
     if !inputs.mesh && points[0] == points[1] {
         return Err(ApiError::invalid("Place endpoints at different locations"));
     }
@@ -310,6 +300,38 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
             ));
         }
     }
+    let fixed_routers = sites.split_off(inputs.client_count);
+    let request = OptimizationRequest {
+        clients: sites,
+        fixed_routers,
+        terrain_bounds: Some(bounds.as_array()),
+        exclusions: route_inputs::project_exclusions(&inputs.plan, &transform)?,
+        ..Default::default()
+    };
+    Ok(Prepared {
+        terrain,
+        transform,
+        request,
+        inputs,
+    })
+}
+
+pub(crate) fn project_sites(
+    terrain: &RasterTerrain,
+    locations: &[route_inputs::Location],
+) -> ApiResult<(Transformer, Vec<PlanningSite>)> {
+    let (transform, points, elevations) = terrain_http::ground(terrain, locations)?;
+    let gaps = terrain_http::uncovered(locations, &points, &elevations, terrain.bounds());
+    if !gaps.is_empty() {
+        let names: Vec<_> = gaps
+            .iter()
+            .filter_map(|item| item["name"].as_str())
+            .collect();
+        return Err(ApiError::invalid(format!(
+            "Ground-terrain coverage is missing at: {}",
+            names.join(", ")
+        )));
+    }
     let surfaces = if terrain.has_surface() {
         terrain
             .sample(&points, TerrainLayer::SurfaceDom)
@@ -317,8 +339,7 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
     } else {
         vec![f64::NAN; points.len()]
     };
-    let mut sites = inputs
-        .locations
+    let sites = locations
         .iter()
         .zip(points)
         .zip(elevations)
@@ -337,7 +358,7 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
                 terminal_clutter: location.terminal_clutter,
                 clutter_height_m: None,
             };
-            rf.sample_terminal_clutter(&terrain)
+            rf.sample_terminal_clutter(terrain)
                 .map_err(terrain_http::terrain_invalid)?;
             Ok(PlanningSite {
                 rf,
@@ -351,19 +372,7 @@ fn preflight(context: &TerrainContext, inputs: RouteInputs) -> ApiResult<Prepare
             })
         })
         .collect::<ApiResult<Vec<_>>>()?;
-    let fixed_routers = sites.split_off(inputs.client_count);
-    let request = OptimizationRequest {
-        clients: sites,
-        fixed_routers,
-        terrain_bounds: Some(bounds.as_array()),
-        ..Default::default()
-    };
-    Ok(Prepared {
-        terrain,
-        transform,
-        request,
-        inputs,
-    })
+    Ok((transform, sites))
 }
 
 pub async fn start(
@@ -437,6 +446,50 @@ pub async fn start(
         tokio::spawn(run(app.clone(), Workspace::worker(key, &session.project_id), Arc::new(job), prepared, outstanding, worker));
         Ok(Json(session.job_payload()))
     }).await
+}
+
+pub(crate) fn road_access(
+    #[cfg_attr(not(test), allow(unused_variables))] app: &AppState,
+    crs: repeaternet_terrain::TerrainCrs,
+    settings: &repeaternet_optimizer::CandidateSettings,
+    cache_directory: &FsPath,
+) -> ApiResult<Option<repeaternet_providers::roads::TiledRoadAccess>> {
+    use repeaternet_providers::roads::{RoadAccessClasses, TiledRoadAccess};
+    settings
+        .road_access_enabled
+        .then(|| {
+            let classes = match settings.road_access_classes {
+                repeaternet_optimizer::RoadAccessClasses::PublicRoads => {
+                    RoadAccessClasses::PublicRoads
+                }
+                repeaternet_optimizer::RoadAccessClasses::AllDrivable => {
+                    RoadAccessClasses::AllDrivable
+                }
+            };
+            #[cfg(test)]
+            if let Some(endpoint) = &app.overpass_endpoint {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+                return TiledRoadAccess::with_client(
+                    crs,
+                    classes,
+                    settings.maximum_road_distance_m,
+                    cache_directory.join("overpass"),
+                    endpoint,
+                    reqwest::blocking::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .unwrap(),
+                );
+            }
+            TiledRoadAccess::new(
+                crs,
+                classes,
+                settings.maximum_road_distance_m,
+                cache_directory.join("overpass"),
+            )
+        })
+        .transpose()
+        .map_err(terrain_http::terrain_invalid)
 }
 
 pub fn now() -> f64 {
@@ -546,45 +599,13 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         }
     };
     let cancellation = || job.control.cancellation();
-    use repeaternet_providers::roads::{RoadAccessClasses, TiledRoadAccess};
-    let roads = inputs
-        .candidates
-        .road_access_enabled
-        .then(|| {
-            let classes = match inputs.candidates.road_access_classes {
-                repeaternet_optimizer::RoadAccessClasses::PublicRoads => {
-                    RoadAccessClasses::PublicRoads
-                }
-                repeaternet_optimizer::RoadAccessClasses::AllDrivable => {
-                    RoadAccessClasses::AllDrivable
-                }
-            };
-            #[cfg(test)]
-            if let Some(endpoint) = &app.overpass_endpoint {
-                let _ = rustls::crypto::ring::default_provider().install_default();
-                return TiledRoadAccess::with_client(
-                    terrain.crs(),
-                    classes,
-                    inputs.candidates.maximum_road_distance_m,
-                    job.context.cache_directory.join("overpass"),
-                    endpoint,
-                    reqwest::blocking::Client::builder()
-                        .no_proxy()
-                        .build()
-                        .unwrap(),
-                )
-                .map(std::cell::RefCell::new);
-            }
-            TiledRoadAccess::new(
-                terrain.crs(),
-                classes,
-                inputs.candidates.maximum_road_distance_m,
-                job.context.cache_directory.join("overpass"),
-            )
-            .map(std::cell::RefCell::new)
-        })
-        .transpose()
-        .map_err(crate::terrain_http::terrain_invalid)?;
+    let roads = road_access(
+        &app,
+        terrain.crs(),
+        &inputs.candidates,
+        &job.context.cache_directory,
+    )?
+    .map(std::cell::RefCell::new);
     let cancelled = || cancellation() != Cancellation::Continue;
     let road_progress = |stage: &str, done, total| {
         if let Some(session) = session.blocking_lock().as_mut().filter(|s| job.matches(s)) {
@@ -843,6 +864,17 @@ async fn cancel_job(
     }
     workspace
         .run(app, move |_, _, session| {
+            if let Some(job) = session.placement_job.as_ref().filter(|job| job.active())
+                && (payload["job_id"].is_null() || payload["job_id"] == job.status["job_id"])
+            {
+                if keep {
+                    return Err(ApiError::conflict(
+                        "Placement previews can only be cancelled",
+                    ));
+                }
+                job.control.cancel(false);
+                return Ok(Json(json!({"ok": true})));
+            }
             if let Some(id) = payload.get("job_id").filter(|value| !value.is_null())
                 && id.as_str() != session.job_id.as_deref()
             {

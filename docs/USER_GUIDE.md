@@ -377,6 +377,19 @@ coordinates use latitude, longitude to six decimals.
   number). Adjust its settings and select **Pin router** to add it to your plan.
   To remove one search-found router, choose **Remove** in its popup or in
   **Route → Routers → Search-found routers**.
+- Select at least one proposed or search-found router and another site, then
+  choose **Optimize placement** on the map or in **1 Route**. Set **Move radius · m**
+  and run the optimization. Endpoints, mesh clients and existing MeshCore
+  routers stay fixed and can anchor links. **How links are chosen** explains
+  which selected links count. The search uses links between selected sites in
+  the current route or mesh, or pairs within the configured link range before
+  a solution is available. It improves the weakest predicted margin first, then the
+  total margin, using the plan's terrain and road filter.
+- In **Placement preview**, hollow circles mark proposed positions and the table
+  shows the predicted margins before and after. Choose **Apply** to move the
+  routers or **Discard** to close the preview. Applying adds moved search-found
+  sites as proposed routers, marks the previous route stale and refreshes live
+  coverage. One **Undo** restores the entire edit.
 - Drag either endpoint or a proposed router to move it. Dragging a site on
   the primary route previews its adjacent hops. Dragging a search-found site
   pins it as a new **Required** proposed router. Its old route links disappear

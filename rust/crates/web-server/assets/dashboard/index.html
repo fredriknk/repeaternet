@@ -17,6 +17,7 @@
     <script defer src="/assets/live_coverage.js"></script>
     <script defer src="/assets/site_selection.js"></script>
     <script defer src="/assets/mesh_mode.js"></script>
+    <script defer src="/assets/placement.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
@@ -66,7 +67,8 @@
         <p id="action-dialog-copy"></p>
         <div id="action-dialog-detail" hidden></div>
         <label id="action-dialog-field-label" for="action-dialog-value" hidden>
-          Project name<input id="action-dialog-value" maxlength="80" autocomplete="off">
+          Project name<input id="action-dialog-value" maxlength="80" autocomplete="off" aria-describedby="action-dialog-field-error">
+          <span id="action-dialog-field-error" class="field-error" hidden></span>
         </label>
         <div class="dialog-actions">
           <button id="action-dialog-cancel" type="button">Cancel</button>
@@ -628,6 +630,11 @@
                 <span><i class="legend-probe-link"></i> Handheld probe link</span>
                 <span><i class="legend-candidate"></i> Searched candidate site</span>
                 <span><i class="legend-site is-multi-selected"><b>✓</b></i> Selected site</span>
+                <div id="placement-map-legend" hidden>
+                  <span><i class="legend-placement-site"></i> Proposed position</span>
+                  <span><i class="legend-placement-move"></i> Router move</span>
+                  <span><i class="legend-proposed-link"></i> Predicted placement link</span>
+                </div>
               </div>
             </div>
           </details>
