@@ -160,6 +160,12 @@ pub(super) fn radio_mismatch(tx: &Radio, rx: &Radio) -> bool {
 /// 6 dBi antenna at both ends. A link received more strongly than free space
 /// allows with this budget has a wrong position or a misattributed relay.
 pub(super) const MAX_PLAUSIBLE_BUDGET_DBM: f64 = 30.0 + 6.0 + 6.0;
+pub(super) const DEFAULT_NOISE_DBM: f64 = -117.0;
+
+pub(super) fn detection_floor_dbm(radio: &Radio, noise_dbm: Option<f64>) -> f64 {
+    let sf = radio.sf.filter(|sf| (5..=12).contains(sf)).unwrap_or(8);
+    noise_dbm.unwrap_or(DEFAULT_NOISE_DBM) - 2.5 * f64::from(sf - 4)
+}
 
 /// True when `signal_dbm` exceeds what free space allows over `distance_m`.
 pub(super) fn implausible_signal(signal_dbm: f64, distance_m: f64, freq_mhz: f64) -> bool {

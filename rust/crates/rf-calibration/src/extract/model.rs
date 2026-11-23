@@ -79,6 +79,7 @@ impl Node {
                 .and_then(|data| data.role.as_deref())
                 .or_else(|| node.and_then(|data| data.role.as_deref())),
             radio: observer.or(node).map(|data| &data.radio),
+            observer_radio: observer.map(|data| &data.radio),
             noise_floor: observer.and_then(|data| data.noise_floor),
         }
     }
@@ -124,6 +125,7 @@ impl Node {
 pub(super) struct MetadataRef<'a> {
     pub role: Option<&'a str>,
     pub radio: Option<&'a Radio>,
+    pub observer_radio: Option<&'a Radio>,
     pub noise_floor: Option<f64>,
 }
 
@@ -192,6 +194,7 @@ pub(super) struct Source {
     pub nodes: BTreeMap<String, Node>,
     pub links: BTreeMap<(String, String, Evidence), Group>,
     pub counts: BTreeMap<&'static str, u64>,
+    pub fallback_radio: Radio,
 }
 
 impl Source {
@@ -202,6 +205,7 @@ impl Source {
             nodes: BTreeMap::new(),
             links: BTreeMap::new(),
             counts: BTreeMap::new(),
+            fallback_radio: Radio::default(),
         }
     }
 
@@ -289,6 +293,28 @@ impl Source {
                         .filter_map(|s| Some(stats::split_power(s.rssi?, s.snr?)))
                         .unzip();
                     let signal = stats::summarize(signal);
+                    let new_core_evidence = matches!(
+                        evidence,
+                        Evidence::CorescopeRelayHop
+                            | Evidence::CorescopeTraceHop
+                            | Evidence::CorescopeNeighborReport
+                    );
+                    let radio = if new_core_evidence {
+                        link_radio(
+                            Some(&self.fallback_radio),
+                            b.metadata(ms).observer_radio,
+                            false,
+                            None,
+                        )
+                    } else {
+                        link_radio(
+                            tx_radio,
+                            rx_radio,
+                            self.meshtastic,
+                            reference.and_then(|s| s.region.as_deref()),
+                        )
+                    };
+                    let receiver_noise_floor_dbm = b.metadata(ms).noise_floor;
                     let freq_mhz = tx_radio
                         .or(rx_radio)
                         .and_then(|radio| radio.freq_mhz)
@@ -298,6 +324,23 @@ impl Source {
                     }) {
                         flags.insert("implausible_signal");
                     }
+                    let detection = if *evidence == Evidence::CorescopeRelayHop {
+                        let floor = quality::detection_floor_dbm(&radio, receiver_noise_floor_dbm);
+                        if quality::implausible_signal(
+                            floor,
+                            distance_m,
+                            radio.freq_mhz.unwrap_or(869.5),
+                        ) {
+                            flags.insert("implausible_distance");
+                        }
+                        Some(Detection {
+                            heard: samples.len() as u32,
+                            opportunities: 0,
+                            basis: "distinct_flood_packet_hashes_witnessing_hop".into(),
+                        })
+                    } else {
+                        group.detection.clone()
+                    };
                     LinkRecord {
                         schema: SCHEMA_VERSION,
                         link_id: format!("{}:{tx}>{rx}:{}", self.id, evidence.as_str()),
@@ -313,12 +356,7 @@ impl Source {
                         tx: a.endpoint(tx, tx_position, ms, quality),
                         rx: b.endpoint(rx, rx_position, ms, quality),
                         distance_m,
-                        radio: link_radio(
-                            tx_radio,
-                            rx_radio,
-                            self.meshtastic,
-                            reference.and_then(|s| s.region.as_deref()),
-                        ),
+                        radio,
                         n: samples.len() as u32,
                         first_ms: samples.first().map(|s| s.ms),
                         last_ms: samples.last().map(|s| s.ms),
@@ -326,7 +364,8 @@ impl Source {
                         snr_db: stats::summarize(samples.iter().filter_map(|s| s.snr).collect()),
                         signal_dbm: signal,
                         noise_dbm: stats::summarize(noise),
-                        detection: group.detection.clone(),
+                        receiver_noise_floor_dbm,
+                        detection,
                         flags: flags.into_iter().map(str::to_owned).collect(),
                     }
                 })

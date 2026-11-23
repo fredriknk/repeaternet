@@ -280,7 +280,7 @@ def _predict_link(engine, profile, link, source, maps, heights, cache_key):
                 k = 1.0
                 loss, diag = delta_prediction(model, d, terrain, freq, tx, rx, k)
                 total = fspl + loss
-            common = {"schema": 1, "link_id": link["link_id"], "path_id": profile["path_id"],
+            common = {"schema": profile["schema"], "link_id": link["link_id"], "path_id": profile["path_id"],
                       "engine": engine, "surface": surface, "tx_height_m": tx, "rx_height_m": rx,
                       "k_factor": k, "step_m": step_m, "freq_mhz": freq, "fspl_db": fspl,
                       "v_max": None, "line_of_sight": diag.get("line_of_sight")}

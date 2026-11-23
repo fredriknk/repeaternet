@@ -96,6 +96,8 @@ Committed docs, tests and fixtures contain only aggregates or synthetic data.
 | Source | Evidence | Signal | Radio |
 | --- | --- | --- | --- |
 | CoreScope (`corescope.eth0.no`, Norway, and `analyzer.on8ar.eu`, Benelux) | Observer receptions. The final entry in `resolved_path` is the last relay. For an empty path, the advert sender is the transmitter (zero hop). | RSSI and SNR per reception | Observer snapshot `radio` string `freq,bw,sf,cr` (869.618 MHz, 62.5 kHz, SF8 in Norway) and `noise_floor` |
+| CoreScope flood routes | Decoded advert sender-to-first-relay and relay-to-relay hops | Detection count only | Receiver observer radio, otherwise the instance's most common observer configuration |
+| CoreScope TRACE and observer neighbour reports | Directed TRACE hops and neighbours heard by a reporting observer | Receiver SNR | Same radio fallback as flood routes |
 | Meshtastic map captures (`map.868.no` Norway, others worldwide) | Gateway receptions with a confirmed transmitter, traceroute legs, neighbour reports | Gateway RSSI and SNR. Traceroutes and neighbours have SNR only. | Node `radios` history (preset, region, sometimes TX power) |
 | SondeHub | Radiosonde to ground station, 400–406 MHz | RSSI or SNR | Sonde type, sometimes TX power |
 
@@ -119,7 +121,7 @@ subcommand reads its snapshot separately.
 ### File contracts
 
 [`dataset.rs`](../rust/crates/rf-calibration/src/dataset.rs) defines the JSONL
-records. All records currently carry schema version 1.
+records. All records currently carry schema version 2.
 
 - `links.jsonl` has one record per directed transmitter–receiver pair,
   capture source and evidence type, sorted by `link_id`. The source names
@@ -139,6 +141,10 @@ records. All records currently carry schema version 1.
   p10, median, p90 and median absolute deviation (MAD × 1.4826).
   Quantiles interpolate linearly between adjacent sorted samples. A
   quantity with no samples is null.
+- The capture hostname is part of `source`, including for
+  `corescope-capture-<host>.sqlite3` snapshots.
+  `receiver_noise_floor_dbm` carries the observer's configured floor at the
+  reference time when available.
 - `nodes.jsonl` has one record per source and pseudonym, sorted by that
   pair. It uses the latest valid position and latest applicable metadata,
   with the distinct valid coordinate count and maximum pairwise separation
@@ -154,7 +160,9 @@ records. All records currently carry schema version 1.
   quantiles (min, p10, p50, p90, max), detection totals and non-detection
   counts. Endpoint flag counts count the two endpoints of each link record.
   The per-source inventory includes node flag counts and input diagnostics,
-  including opportunities that did not qualify for a published detection.
+  including opportunities that did not qualify for a published detection and
+  invalid, short, ambiguous or unresolved hop inputs. Grouped quality drop
+  counts show flags that exclude links from the default fit.
   Extract also prints the group counts to stdout.
 
 ### CoreScope receptions
@@ -222,6 +230,32 @@ a zero-hop record exists, there. With at least 20 opportunities and zero
 heard, publish the tally as `corescope_non_detection` with `n = 0`, null
 signal summaries and null reception timestamps. Each pair's tally appears
 at most once in the link output.
+
+### CoreScope relay, TRACE and neighbour hops
+
+`corescope_relay_hop` uses adjacent resolved relays on flood routes 0 and 1.
+For adverts, the sender also supplies the first hop. Each encoded endpoint
+requires at least two bytes of hash and a matching, unique located key from
+the node snapshots. The final relay-to-observer reception stays in the
+observer series. Count each witnessed directed pair once per packet hash.
+Relay rows have null signal summaries, `detection.heard = n`, and
+`detection.opportunities = 0` for an unknown denominator. The fit excludes
+`implausible_distance` when free-space loss alone exceeds the 42 dBm
+maximum plausible budget minus the demodulation floor.
+
+`corescope_trace_hop` uses SNR entry i for the directed pair at i−1 and i.
+Entry 0 has an unknown transmitter. A pair is accepted when exactly one
+directed assignment from the located hash candidates is within 100 km, the
+existing CoreScope opportunity radius. Repeated traces contribute to the
+pair's SNR statistics. `corescope_neighbor_report` uses the reported
+neighbour's key and the observer's SNR, timestamped by the report time
+(or receipt time) less its reported age. Older databases without either
+table contribute zero rows for that source.
+
+The receiver's observer radio takes precedence. Missing settings use the
+most common complete radio configuration across observers in the instance,
+using each observer's latest complete configuration. Radio field provenance
+records the choice.
 
 ### Meshtastic measurements
 
@@ -307,11 +341,20 @@ Absolute bias comes from `c`, and its uncertainty is reported with it.
 
 ### Censoring
 
-Only packets above the demodulation floor are logged (SNR about −10 dB for
-SF8, −17.5 dB for SF11, −20 dB for SF12). Each link likelihood is therefore a
-normal density truncated at the floor. Non-detections and detection ratios
-add a probit term `P(S > floor)`. Results are also reported on links whose
-median SNR is at least 5 dB above the floor, where censoring is negligible.
+The Tobit fit and held-out score use a normal density for measured link
+signals, an upper bound for never-heard pairs, and a lower bound for relay
+detections. Each relay pair contributes one `P(S ≥ floor)` term. A missing
+relay hop supplies no evidence. The demodulation floor is receiver noise plus
+the SF-dependent SNR threshold (−10 dB for SF8, −17.5 dB for SF11 and −20 dB
+for SF12). Relay links use −117 dBm when receiver noise is unknown. Relay
+detections count as heard in the augmented AUC.
+
+The default report adds sections for each new evidence type alongside the
+existing fit. The relay fit can use observer measurements and non-detections
+as anchors. TRACE and neighbour SNR each have their own fit block.
+Configured observer noise normalises SNR to a common noise reference, and
+node offsets absorb unknown receiver noise. Use `--evidence` to select the
+records included in a run.
 
 ## Engines
 
