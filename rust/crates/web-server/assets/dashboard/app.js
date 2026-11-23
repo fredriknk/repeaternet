@@ -21,13 +21,15 @@ let coverageBusy = false, coverageJob = null, coverageDisplayInfo = null, covera
 let coverageRunReused=false,coverageEstimate=null,coverageEstimateRequest=0,coverageRevision=0,coveragePreflightBusy=false,coverageLoadingRun=false,coverageLoadRequest=0,coveragePollRequest=0,coverageRunMetadata=[];
 let coverageTerrainCheck=null,coverageTerrainUnknownKey=null,coverageTerrainJobId=null;
 let coverageDrawingPoints=[];
-const map = L.map('map',{zoomSnap:0,wheelPxPerZoomLevel:120});
+const map = L.map('map',{zoomSnap:0,wheelPxPerZoomLevel:120,boxZoom:false});
 let pendingMapFit = null, mapHintTimer = null, mapContextPopup = null;
 let mapSelection = null, mapObjectPopup = null, endpointNames = {};
 let labelledRoute = null, routeSiteLabels = new Map();
 const mapPane = $('view-map'), mapWrap = map.getContainer().parentElement;
+const mobileViewport=window.matchMedia('(max-width: 650px)');
 const mapResizeObserver = new ResizeObserver(resizeMapViewport);
 mapResizeObserver.observe(mapPane);
+mapResizeObserver.observe(mapWrap);
 const fallbackBasemaps = [
   {id:'osm',name:'OpenStreetMap',kind:'xyz',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',max_zoom:19,attribution:'© OpenStreetMap contributors',default:true},
   {id:'kartverket-topo',name:'Kartverket topo',kind:'xyz',url:'https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png',max_zoom:18,attribution:'© Kartverket',coverage:{type:'bbox',bbox:[4,57.9,31.3,71.3]}}
@@ -108,7 +110,7 @@ function resizeMapViewport(){
   if(!mapPane.clientWidth||!mapPane.clientHeight)return;
   const top=mapPane.getBoundingClientRect().top+window.scrollY;
   mapWrap.style.setProperty('--map-viewport-height',`${Math.max(240,window.innerHeight-top)}px`);
-  map.invalidateSize({pan:false});
+  map.invalidateSize({pan:mobileViewport.matches});
   applyPendingMapFit();
 }
 function applyPendingMapFit(){
@@ -211,6 +213,7 @@ function randomId(){
 function setHistoryButtons(){$('undo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!undoStack.length;$('redo').disabled=busy||routePreflightBusy||coverageBusy||coveragePreflightBusy||coverageLoadingRun||switchingProject||!redoStack.length;}
 function recordEdit(){try{const next=clone(plan());if(lastHistoryPlan&&JSON.stringify(next)!==JSON.stringify(lastHistoryPlan)){undoStack.push(lastHistoryPlan);if(undoStack.length>50)undoStack.shift();redoStack=[];}lastHistoryPlan=next;setHistoryButtons();if(projectInfo) scheduleAutosave();}catch(e){status(e.message,true);}}
 function invalidate(reason='planning inputs'){
+  queueMicrotask(refreshSiteSelection);
   if(!routeLinkInspector?.committing)closeRouteLinkInspector();
   closeMapSelection(true);
   $('map-analysis-selection').hidden=true;
@@ -320,12 +323,14 @@ function mapSiteElement(id){
 function isMapContextKey(event){
   return event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10');
 }
-function bindMapObject(layer,label,details,edit){
+function bindMapObject(layer,label,details,edit,selectSite){
   const keyboardPoint=()=>layer.getLatLng?.()||layer.getCenter();
   const activate=(action,point)=>{
     if(interactionMode==='browse')action(point,()=>layer.getElement());
   };
-  layer.on('click',event=>activate(details,event.latlng||keyboardPoint()));
+  layer.on('click',event=>{
+    if(!selectSite?.(event.originalEvent))activate(details,event.latlng||keyboardPoint());
+  });
   layer.on('contextmenu',event=>{
     L.DomEvent.stopPropagation(event);
     activate(edit,event.latlng||keyboardPoint());
@@ -338,12 +343,13 @@ function bindMapObject(layer,label,details,edit){
     element.tabIndex=0;
     element.setAttribute('role','button');
     element.setAttribute('aria-label',label());
-    element.setAttribute('aria-keyshortcuts','Enter Space Shift+F10');
+    element.setAttribute('aria-keyshortcuts',selectSite?'Enter Space Shift+Enter Shift+F10':'Enter Space Shift+F10');
     element.addEventListener('keydown',event=>{
       const action=isMapContextKey(event)?edit:['Enter',' '].includes(event.key)?details:null;
       if(!action)return;
       event.preventDefault();
       event.stopPropagation();
+      if(action===details&&selectSite?.(event))return;
       activate(action,keyboardPoint());
     });
     bindMapLongPress(element,()=>activate(edit,keyboardPoint()));
@@ -382,7 +388,9 @@ function bindMapSite(marker,describe){
   const opener=()=>mapSiteElement(describe().id)||marker.getElement();
   bindMapObject(marker,()=>describe().label,
     (point)=>showMapSiteDetails(describe(),point,opener),
-    (point)=>openMapSiteEditor(describe(),point,opener));
+    (point)=>openMapSiteEditor(describe(),point,opener),
+    event=>selectMapSite(describe().id,event,opener));
+  trackSelectableMarker(marker,describe);
 }
 function mapLinkLabel(link){
   return link.source_id&&link.target_id?[link.source_id,link.target_id].map(id=>findMapSite(id)?.label||routeSiteLabel(id)).join(' → '):'Link';
@@ -793,7 +801,7 @@ fitMapSites();
 for(const name of ['a','b'])$(name).addEventListener('input',()=>updatePlanReadiness());
 function setInteractionMode(next){
   if(!['browse','place-a','place-b','place-router','place-target','draw-coverage-area','inspect-coverage'].includes(next))return;
-  if(next!=='browse'){setMainView('view-map');closeMapSelection();map.closePopup();}
+  if(next!=='browse'){clearSiteSelection();setMainView('view-map');closeMapSelection();map.closePopup();}
   if(interactionMode==='draw-coverage-area'&&next!=='draw-coverage-area'){coverageDrawingPoints=[];map.doubleClickZoom.enable();if($('coverage-area'))$('coverage-area').value=coverageSettings.area_mode;}
   if(interactionMode==='inspect-coverage'&&next!=='inspect-coverage'){
     inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;
@@ -808,7 +816,6 @@ function setInteractionMode(next){
   if($('coverage-inspect'))$('coverage-inspect').textContent=next==='inspect-coverage'?'Stop inspecting locations':'Inspect a map location';
   if($('coverage-area')){syncCoverageAreaControls();renderCoverageArea();}
 }
-const mobileViewport=window.matchMedia('(max-width: 650px)');
 const mobileDestinationIds=['setup','map','analysis'];
 function setMobileDestination(id,persist=true){
   if(!mobileDestinationIds.includes(id))id='map';
@@ -895,6 +902,7 @@ $('inspection-show-map').onclick=()=>setMainView('view-map');
 window.addEventListener('keydown',event=>{
   if(document.querySelector('dialog[open]'))return;
   if(event.key==='Escape'){
+    if(clearSiteSelection())event.preventDefault();
     if(mapSelection||mapObjectPopup?.isOpen()){
       closeMapSelection(true);
       event.preventDefault();
@@ -925,6 +933,7 @@ window.addEventListener('keydown',event=>{
     $(action).click();
   }
 });
+installSiteSelection();
 document.querySelectorAll('[data-place]').forEach(button=>button.onclick=()=>{
   if(!mapEditsLocked())setInteractionMode(`place-${button.dataset.place}`);
 });
@@ -2824,6 +2833,7 @@ async function applyHistory(from,to){
   if(!from.length)return;
   const invalid=['a','b'].find(name=>!validEndpointCoords(name));
   if(invalid){focusProjectTransitionError($(invalid),`Correct Endpoint ${invalid.toUpperCase()} before using undo or redo.`);return;}
+  clearSiteSelectionFeedback();
   to.push(clone(plan()));load(from.pop());lastHistoryPlan=clone(plan());setHistoryButtons();
   if(!projectInfo)return;
   scheduleAutosave();
@@ -2842,7 +2852,7 @@ $('undo').onclick=()=>applyHistory(undoStack,redoStack);
 $('redo').onclick=()=>applyHistory(redoStack,undoStack);
 $('alternative-select').onchange=chooseAlternative;$('analysis-link-select').onchange=event=>profile(Number(event.target.value));
 $('import-plan').onclick=()=>{if(!busy&&!switchingProject)$('open').click();};
-$('open').onchange=async e=>{try{load(JSON.parse(await e.target.files[0].text()));undoStack=[];redoStack=[];lastHistoryPlan=clone(plan());setHistoryButtons();scheduleAutosave();status('Plan opened and saved to this project. Upload matching terrain if needed.');}catch(e){status(e.message,true);}e.target.value='';};
+$('open').onchange=async e=>{try{load(JSON.parse(await e.target.files[0].text()));clearSiteSelection();undoStack=[];redoStack=[];lastHistoryPlan=clone(plan());setHistoryButtons();scheduleAutosave();status('Plan opened and saved to this project. Upload matching terrain if needed.');}catch(e){status(e.message,true);}e.target.value='';};
 function emptyProjectPlan(){return {format:'repeaternet-web',version:1,a:[59.9139,10.7522],b:[59.95,10.85],rf:clone(baseRf),candidates:clone(baseCandidates),terrain:{...defaultTerrainOptions},coverage:clone(defaultCoverageSettings),coverage_targets:{type:'FeatureCollection',features:[]},search_effort:'balanced',known_routers:[],manual_routers:[]};}
 function showPlanSummary(data){const summary=data.projects?.previous_result;if(summary){const prefix=summary.stale?'Saved result is stale':'Last certified result';status(`${prefix}: ${summary.router_count} router(s), ${summary.alternatives?.length||0} alternative(s). Rerun to restore the full route and profiles.`);}else if(data.job.state==='interrupted'){status('Previous search was interrupted by restart. The saved inputs are ready to rerun.',true);}else status('Project ready. Changes save automatically.');}
 function showCertifiedRoute(saved){
@@ -2861,6 +2871,7 @@ async function restoreProjectResult(data){
   return true;
 }
 async function installProject(response){
+  clearSiteSelection();
   if(loadedSharedProject)loadedSharedProject={id:response.id,revision:response.plan_revision};
   coverageTerrainCheck=null;coverageTerrainUnknownKey=null;setCoverageTerrainStatus('');
   for(const control of document.querySelectorAll('[data-project-transition-invalid]'))clearProjectTransitionError(control);
@@ -3304,6 +3315,7 @@ function openRouteLink(index){
 }
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?`Passes configured validation criteria${issues.length?` · ${issues.slice(0,2).join(', ')}`:''}`:issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
 function resetRouteResultView(){
+  queueMicrotask(refreshSiteSelection);
   closeRouteLinkInspector();
   $('prediction-spread').hidden=true;
   closeMapSelection(true);
@@ -3350,6 +3362,7 @@ function renderRouteVerdict({links,band,margin,requested,achieved,resilient}={})
   verdict.dataset.state=state;verdict.textContent=parts.join(' ');
 }
 function render(){
+  queueMicrotask(refreshSiteSelection);
   closeRouteLinkInspector();
   $('prediction-spread').hidden=true;
   closeMapSelection(true);
