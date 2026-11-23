@@ -193,6 +193,45 @@ aside { min-width: 0; min-height: 0; }
 .plan-section-nav strong { font-size: 13px; }
 .plan-section-nav small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-view > section[hidden] { display: none !important; }
+.site-selection-panel {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+#sidebar-site-selection { margin: 8px 12px; }
+.site-selection-header, .site-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.site-selection-header { justify-content: space-between; }
+.site-selection-panel h2 { margin: 0; }
+.site-selection-panel p { margin: 4px 0; }
+.site-selection-labels {
+  max-height: 3em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+}
+.site-selection-panel .hint { color: var(--muted); font-size: 12px; }
+.site-selection-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+  margin: 6px 0 8px;
+}
+.site-selection-fields label:has(select) { grid-column: 1 / -1; }
+.site-selection-panel :is(label, button, input:not([type=checkbox]), select) {
+  color: var(--text);
+  font-size: 13px;
+}
+.site-selection-panel :is(button, input, select) { min-height: 36px; padding: 5px 8px; }
+@media (max-width: 650px) {
+  .site-selection-panel :is(button, input, select) { min-height: 44px; }
+}
 .help-disclosure { margin: 8px 0; padding: 0; border: 0; }
 .help-disclosure summary { width: fit-content; min-height: 32px; display: flex; align-items: center; color: #486f5c; font-size: 12px; }
 .help-disclosure[open] { padding: 8px 10px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; }

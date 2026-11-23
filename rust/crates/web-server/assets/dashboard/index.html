@@ -15,6 +15,7 @@
     <script defer src="/assets/main_view_navigation.js"></script>
     <script defer src="/assets/coverage_raster.js"></script>
     <script defer src="/assets/live_coverage.js"></script>
+    <script defer src="/assets/site_selection.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
@@ -113,6 +114,7 @@
           <button type="button" data-workspace-target="workspace-compare" aria-pressed="false"><span class="nav-step">3</span> Scenarios</button>
         </nav>
         <div class="workspace-view" id="workspace-plan" aria-label="Plan route">
+        <section id="sidebar-site-selection" class="site-selection-panel" aria-labelledby="sidebar-site-selection-heading" hidden></section>
         <div class="readiness-card" id="plan-readiness" data-readiness="needs-terrain" role="status" aria-live="polite">
           <p id="plan-readiness-copy">Example coordinates show a short Oslo route. Add ground terrain before searching.</p>
           <button id="review-readiness" type="button">Review terrain</button>
@@ -507,6 +509,8 @@
         <div class="main-view-pane map-pane" id="view-map" role="tabpanel" aria-labelledby="view-map-tab" tabindex="0">
         <div class="map-wrap">
           <div id="map"></div>
+          <div id="site-selection-box" aria-hidden="true" hidden></div>
+          <div id="site-selection-status" class="visually-hidden" role="status"></div>
           <div class="map-top">
           <div class="map-tools" role="group" aria-label="Map tools">
             <div class="map-tool-group" role="group" aria-label="Place sites">
@@ -517,6 +521,7 @@
             </div>
             <div class="map-tool-group" role="group" aria-label="Map view and history">
               <button type="button" id="fit">Fit all</button>
+              <button type="button" id="select-map-sites" aria-pressed="false" title="Select sites · Shift+click or Shift+drag">Select sites</button>
               <button type="button" id="undo" disabled>Undo</button>
               <button type="button" id="redo" disabled>Redo</button>
             </div>
@@ -603,10 +608,12 @@
                 <span><i class="legend-probe"></i> Temporary handheld probe</span>
                 <span><i class="legend-probe-link"></i> Handheld probe link</span>
                 <span><i class="legend-candidate"></i> Searched candidate site</span>
+                <span><i class="legend-site is-multi-selected"><b>✓</b></i> Selected site</span>
               </div>
             </div>
           </details>
         </div>
+          <section id="map-site-selection" class="site-selection-panel" aria-labelledby="map-site-selection-heading" hidden></section>
         </div>
         <div class="main-view-pane analysis-pane" id="view-analysis" role="tabpanel" aria-labelledby="view-analysis-tab" tabindex="0" hidden>
         <div class="results">
