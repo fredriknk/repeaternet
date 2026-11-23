@@ -23,6 +23,7 @@ type SessionLock = Arc<AsyncMutex<Option<Session>>>;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub store: ProjectStore,
+    pub shared_projects: bool,
     pub data_directory: PathBuf,
     pub terrain_limits: repeaternet_providers::sources::TileLimits,
     pub providers: Arc<Mutex<Arc<repeaternet_providers::sources::ProviderRegistry>>>,
@@ -41,6 +42,7 @@ pub(crate) struct AppState {
     // Acquire a workspace lock before submitting blocking work, so waiting
     // requests do not occupy blocking threads or serialize other workspaces.
     sessions: Arc<Mutex<HashMap<String, SessionLock>>>,
+    browsers: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ impl AppState {
         });
         Self {
             store,
+            shared_projects: false,
             data_directory: data_directory.into(),
             terrain_limits: Default::default(),
             providers: Arc::new(Mutex::new(Arc::new(providers))),
@@ -62,6 +65,7 @@ impl AppState {
             corescope_endpoint: repeaternet_providers::corescope::DEFAULT_BASE_URL.into(),
             defaults: Arc::new(dashboard_defaults()),
             sessions: Arc::default(),
+            browsers: Arc::default(),
             scheduler: Arc::new(crate::route_http::Scheduler::from_env()),
             uploads: Arc::new(tokio::sync::Semaphore::new(2)),
             live_terrain: Arc::new(crate::live_terrain::LiveTerrainCache::from_env()),
@@ -94,7 +98,23 @@ impl AppState {
         Ok(registry.clone())
     }
 
-    pub fn session(&self, key: &str) -> SessionLock {
+    pub fn browser_selection(&self, browser: &str) -> Arc<AsyncMutex<()>> {
+        self.browsers
+            .lock()
+            .expect("browser registry poisoned")
+            .entry(browser.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    pub fn session(&self, key: &str, project_id: &str) -> SessionLock {
+        // Shared files and workers use one runtime lock per project. A browser's
+        // selection is independent of that lock and can point to any project.
+        let key = if self.shared_projects {
+            project_id
+        } else {
+            key
+        };
         self.sessions
             .lock()
             .expect("workspace registry poisoned")
@@ -255,7 +275,8 @@ pub(crate) fn project_item(project: Project) -> Value {
 }
 
 pub(crate) fn opened_project(project: Project) -> Value {
-    json!({"id": project.id, "name": project.name, "plan": project.plan})
+    json!({"id": project.id, "name": project.name, "plan": project.plan,
+        "plan_revision": plan_fingerprint(&project.plan, false)})
 }
 
 pub(crate) fn historical_result(

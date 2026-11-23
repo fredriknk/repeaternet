@@ -41,11 +41,12 @@ fn router_with_state(app: AppState, token: &str, loopback_only: bool) -> Router 
 }
 
 fn build_router(
-    app: AppState,
+    mut app: AppState,
     token: &str,
     loopback_only: bool,
     trusted_proxy: Option<IpAddr>,
 ) -> Router {
+    app.shared_projects = !token.is_empty();
     let security = security::Security::new(token, loopback_only, trusted_proxy);
     Router::new()
         .route("/", get(index))
@@ -377,6 +378,18 @@ mod tests {
                 .contains("; Secure")
         );
         let cookie = format!("{access}; {}", set_cookie(index.headers()));
+        let state = app
+            .clone()
+            .oneshot(
+                forwarded(Method::GET, "/api/state", trusted)
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let state: Value =
+            serde_json::from_slice(&to_bytes(state.into_body(), 16 * 1024).await.unwrap()).unwrap();
         for (origin, expected) in [
             (public_origin, StatusCode::OK),
             ("https://elsewhere.example", StatusCode::FORBIDDEN),
@@ -387,6 +400,14 @@ mod tests {
                     forwarded(Method::POST, "/api/projects/autosave", trusted)
                         .header(header::ORIGIN, origin)
                         .header(header::COOKIE, &cookie)
+                        .header(
+                            "x-repeaternet-project",
+                            state["projects"]["active_id"].as_str().unwrap(),
+                        )
+                        .header(
+                            "x-repeaternet-plan-revision",
+                            state["projects"]["plan_revision"].as_str().unwrap(),
+                        )
                         .header(header::CONTENT_TYPE, "application/json")
                         .body(Body::from(r#"{"plan":{"a":[59,10]}}"#))
                         .unwrap(),

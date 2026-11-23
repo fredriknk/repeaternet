@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::{
     api::{ApiError, ApiResult, ObjectBody, Workspace, active_project, ensure_idle, save_plan},
-    catalog::{AppState, Session, random_id},
+    catalog::{self, AppState, Session, random_id},
     live_coverage_http,
     route_http::{self, Control},
     route_inputs,
@@ -209,7 +209,7 @@ impl Download {
             "terrain-generations"
         });
         {
-            let entry = app.session(key);
+            let entry = app.session(key, &self.context.project_id);
             let mut guard = entry.blocking_lock();
             let session = guard
                 .as_mut()
@@ -222,14 +222,14 @@ impl Download {
             status["stage"] = json!(if self.supplemental() {
                 "Preparing coverage terrain"
             } else {
-                "Downloading ground terrain"
+                "Preparing ground terrain"
             });
         }
         if !self.supplemental() {
             for kind in ["dtm", "dom"] {
                 for path in self.context.route.paths(kind) {
                     if cancelled() {
-                        return Err(ApiError::conflict("Terrain download cancelled"));
+                        return Err(ApiError::conflict("Terrain preparation cancelled"));
                     }
                     let tile = GeoTiff::open(self.context.directory.join(path))
                         .map_err(terrain_invalid)?;
@@ -258,7 +258,7 @@ impl Download {
                     &self.choice,
                     cancelled.clone(),
                     |tile| {
-                        let lock = app.session(key);
+                        let lock = app.session(key, &self.context.project_id);
                         let mut guard = lock.blocking_lock();
                         if let Some(session) = guard.as_mut().filter(|s| self.matches(s, id)) {
                             let status = self.status(session);
@@ -821,7 +821,7 @@ async fn enqueue(
             session.job_payload()
         };
         let job = TerrainJob { id, control, download };
-        tokio::spawn(run(app.clone(), Workspace(key.to_owned()), Arc::new(job), outstanding, worker));
+        tokio::spawn(run(app.clone(), Workspace::worker(key, &session.project_id), Arc::new(job), outstanding, worker));
         Ok(Json(response))
     }).await
 }
@@ -889,6 +889,9 @@ impl TerrainJob {
                 self.publish(app, key, session, stage.generation)?;
                 status["warnings"] = json!(stage.warnings);
                 status["providers_used"] = json!(stage.providers_used);
+                if let Some(plan) = &self.download.plan {
+                    status["plan_revision"] = json!(catalog::plan_fingerprint(plan, false));
+                }
                 return Ok(true);
             }
             Ok(false)
@@ -898,9 +901,9 @@ impl TerrainJob {
             Ok(true) => ("terrain_ready", "Terrain prepared and ready".to_owned()),
             _ if self.cancelled() && supplemental => (
                 "cancelled",
-                "Coverage terrain download cancelled".to_owned(),
+                "Coverage terrain preparation cancelled".to_owned(),
             ),
-            _ if self.cancelled() => ("cancelled", "Terrain download cancelled".to_owned()),
+            _ if self.cancelled() => ("cancelled", "Terrain preparation cancelled".to_owned()),
             Err(error) => ("failed", error.detail().to_owned()),
             Ok(false) => ("failed", "Terrain worker unavailable".to_owned()),
         };
@@ -929,7 +932,7 @@ async fn run(
 ) {
     let worker = app.scheduler.wait_worker(worker, &job.control).await;
     let outcome = if worker.is_some() && !job.cancelled() {
-        let (app, key, job) = (app.clone(), workspace.0.clone(), job.clone());
+        let (app, key, job) = (app.clone(), workspace.key.clone(), job.clone());
         tokio::task::spawn_blocking(move || job.stage(&app, &key))
             .await
             .unwrap_or_else(|error| Err(ApiError::internal(error)))

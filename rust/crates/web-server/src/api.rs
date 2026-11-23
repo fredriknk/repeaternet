@@ -3,12 +3,12 @@ use std::time::UNIX_EPOCH;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Multipart, Path, Request, State},
-    http::{StatusCode, header, request::Parts},
+    http::{Method, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
 };
 use repeaternet_project_store::{
-    Error as StoreError, Project, ProjectStore, normalize_project_name,
+    Error as StoreError, Project, ProjectStore, SHARED_WORKSPACE_KEY, normalize_project_name,
 };
 use serde_json::{Map, Value, json};
 
@@ -224,35 +224,152 @@ impl From<StoreError> for ApiError {
     }
 }
 
+const PROJECT_HEADER: &str = "x-repeaternet-project";
+const PLAN_REVISION_HEADER: &str = "x-repeaternet-plan-revision";
+const PROJECT_CHANGED: &str = "The active project changed. Reload the project.";
+const PLAN_CHANGED: &str =
+    "The plan changed in another browser. Reload the project before editing.";
+
 #[derive(Clone)]
-pub(crate) struct Workspace(pub(crate) String);
+pub(crate) struct Workspace {
+    pub(crate) key: String,
+    browser: Option<String>,
+    worker_project: String,
+    project: Option<String>,
+    plan_revision: Option<String>,
+}
 
 impl FromRequestParts<AppState> for Workspace {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, _: &AppState) -> Result<Self, Self::Rejection> {
-        security::workspace(&parts.headers)
-            .map(Self)
-            .ok_or_else(workspace_required)
+    async fn from_request_parts(
+        parts: &mut Parts,
+        app: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // The token authenticates access to the catalog. The existing random
+        // workspace cookie identifies this browser profile (including its tabs).
+        let browser = security::workspace(&parts.headers).ok_or_else(workspace_required)?;
+        if !app.shared_projects {
+            return Ok(Self::worker(&browser, ""));
+        }
+        let read = |name| {
+            parts
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let project = read(PROJECT_HEADER);
+        let plan_revision = read(PLAN_REVISION_HEADER);
+        let writes_plan = matches!(
+            (&parts.method, parts.uri.path()),
+            (
+                &Method::POST,
+                "/api/projects/autosave"
+                    | "/api/projects/recover-previous"
+                    | "/api/optimize"
+                    | "/api/terrain/prepare"
+            ) | (&Method::PUT, "/api/coverage/targets")
+        );
+        if writes_plan && (project.is_none() || plan_revision.is_none()) {
+            return Err(problem(
+                StatusCode::PRECONDITION_REQUIRED,
+                "Open the project to get its current plan revision",
+            ));
+        }
+        Ok(Self {
+            key: SHARED_WORKSPACE_KEY.to_owned(),
+            browser: Some(browser),
+            worker_project: String::new(),
+            project,
+            plan_revision,
+        })
     }
 }
 
 impl Workspace {
+    pub fn worker(key: &str, project_id: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            browser: None,
+            worker_project: project_id.to_owned(),
+            project: None,
+            plan_revision: None,
+        }
+    }
+
     pub async fn run<T: Send + 'static>(
         self,
         app: AppState,
         action: impl FnOnce(&AppState, &str, &mut Session) -> ApiResult<T> + Send + 'static,
     ) -> ApiResult<T> {
-        let key = self.0;
-        let mut session = app.session(&key).lock_owned().await;
+        self.run_with_selection(app, move |app, key, session, _| action(app, key, session))
+            .await
+    }
+
+    async fn run_with_selection<T: Send + 'static>(
+        self,
+        app: AppState,
+        action: impl FnOnce(&AppState, &str, &mut Session, Option<&str>) -> ApiResult<T>
+        + Send
+        + 'static,
+    ) -> ApiResult<T> {
+        let Self {
+            key,
+            browser,
+            worker_project,
+            project,
+            plan_revision,
+        } = self;
+        let selection = match &browser {
+            Some(browser) => Some(app.browser_selection(browser).lock_owned().await),
+            None => None,
+        };
+        let project_id = if let Some(browser) = &browser {
+            let store = app.store.clone();
+            let browser = browser.clone();
+            tokio::task::spawn_blocking(move || -> ApiResult<String> {
+                Ok(store.shared_selection(&browser)?.id)
+            })
+            .await
+            .map_err(ApiError::internal)??
+        } else {
+            worker_project
+        };
+        let mut session = app.session(&key, &project_id).lock_owned().await;
         tokio::task::spawn_blocking(move || {
+            let _selection = selection;
+            let selected = if browser.is_some() {
+                Some(
+                    app.store
+                        .get(&key, &project_id)?
+                        .filter(|project| !project.archived)
+                        .ok_or_else(|| ApiError::conflict(PROJECT_CHANGED))?,
+                )
+            } else {
+                None
+            };
             if session.is_none() {
-                let active = app.store.active(&key)?;
+                let active = match selected {
+                    Some(project) => project,
+                    None if app.shared_projects => return Err(ApiError::conflict(PROJECT_CHANGED)),
+                    None => app.store.active(&key)?,
+                };
                 let mut opened = Session::open(&active, None);
                 restore_project_route(&app, &key, &active, &mut opened)?;
                 *session = Some(opened);
             }
-            action(&app, &key, session.as_mut().expect("initialized workspace"))
+            let session = session.as_mut().expect("initialized workspace");
+            if project.as_ref().is_some_and(|id| id != &session.project_id) {
+                return Err(ApiError::conflict(PROJECT_CHANGED));
+            }
+            if let Some(expected) = plan_revision {
+                let current = active_project(&app.store, &key, session)?;
+                if expected != catalog::plan_fingerprint(&current.plan, false) {
+                    return Err(ApiError::conflict(PLAN_CHANGED));
+                }
+            }
+            action(&app, &key, session, browser.as_deref())
         })
         .await
         .map_err(ApiError::internal)?
@@ -408,6 +525,23 @@ fn open_project(
     Ok(Json(catalog::opened_project(project)))
 }
 
+fn select_project(
+    app: &AppState,
+    key: &str,
+    session: &mut Session,
+    browser: Option<&str>,
+    project: Project,
+) -> ApiResult<Json<Value>> {
+    if let Some(browser) = browser {
+        let project = app
+            .store
+            .select_shared(browser, &project.id)?
+            .ok_or_else(|| ApiError::missing("Project not found"))?;
+        return Ok(Json(catalog::opened_project(project)));
+    }
+    open_project(app, key, session, project)
+}
+
 async fn state(State(app): State<AppState>, workspace: Workspace) -> ApiResult<Json<Value>> {
     workspace.run(app, |app, key, session| {
         let store = &app.store;
@@ -438,10 +572,13 @@ async fn state(State(app): State<AppState>, workspace: Workspace) -> ApiResult<J
         if let Some(settings) = project.plan.get("coverage") {
             payload["coverage_settings"] = settings.clone();
         }
+        let plan_revision = catalog::plan_fingerprint(&project.plan, false);
         payload["plan"] = if project.plan.as_object().is_some_and(Map::is_empty) { Value::Null } else { project.plan };
         payload["projects"] = json!({
             "active_id": project.id,
             "active_name": project.name,
+            "shared": app.shared_projects,
+            "plan_revision": plan_revision,
             "has_previous_revision": project.previous_plan.is_some(),
             "items": store.list_active(key)?.into_iter().map(catalog::project_item).collect::<Vec<_>>(),
             "archived_items": store.list_archived(key)?.into_iter().map(catalog::project_item).collect::<Vec<_>>(),
@@ -495,6 +632,7 @@ async fn autosave(
                 "ok": true, "project_id": saved.id,
                 "updated_at": UNIX_EPOCH.elapsed().unwrap_or_default().as_secs_f64(),
                 "has_previous_revision": saved.previous_plan.is_some(),
+                "plan_revision": catalog::plan_fingerprint(&saved.plan, false),
                 "route_result_available": session.route_result.is_some(),
             })))
         })
@@ -530,11 +668,13 @@ async fn create(
     ObjectBody(mut body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
     workspace
-        .run(app, move |app, key, session| {
-            ensure_idle(session)?;
+        .run_with_selection(app, move |app, key, session, browser| {
+            if browser.is_none() {
+                ensure_idle(session)?;
+            }
             let plan = body.remove("plan").unwrap_or_else(|| json!({}));
             let project = app.store.create(key, project_name(&body)?, &plan)?;
-            open_project(app, key, session, project)
+            select_project(app, key, session, browser, project)
         })
         .await
 }
@@ -545,7 +685,14 @@ async fn activate(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     workspace
-        .run(app, move |app, key, session| {
+        .run_with_selection(app, move |app, key, session, browser| {
+            if let Some(browser) = browser {
+                let project = app
+                    .store
+                    .select_shared(browser, &id)?
+                    .ok_or_else(|| ApiError::missing("Project not found"))?;
+                return Ok(Json(catalog::opened_project(project)));
+            }
             ensure_idle(session)?;
             let project = app
                 .store
@@ -563,13 +710,15 @@ async fn duplicate(
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
     workspace
-        .run(app, move |app, key, session| {
-            ensure_idle(session)?;
+        .run_with_selection(app, move |app, key, session, browser| {
+            if browser.is_none() {
+                ensure_idle(session)?;
+            }
             let project = app
                 .store
                 .duplicate(key, &id, project_name(&body)?)?
                 .ok_or_else(|| ApiError::missing("Project not found"))?;
-            open_project(app, key, session, project)
+            select_project(app, key, session, browser, project)
         })
         .await
 }
@@ -591,6 +740,32 @@ async fn rename(
         .await
 }
 
+fn idle_project_lock(
+    app: &AppState,
+    key: &str,
+    id: &str,
+) -> ApiResult<Option<tokio::sync::OwnedMutexGuard<Option<Session>>>> {
+    if !app.shared_projects {
+        return Ok(None);
+    }
+    // The current project is already locked. Never wait with two project
+    // locks, since another browser could be archiving in the opposite order.
+    let guard = app
+        .session(key, id)
+        .try_lock_owned()
+        .map_err(|_| ApiError::conflict("The project is in use. Try again."))?;
+    if let Some(session) = guard.as_ref()
+        && (session.calculations_active()
+            || session.inspection_active()
+            || session.upload.available_permits() == 0)
+    {
+        return Err(ApiError::conflict(
+            "Wait for the project's active work to finish",
+        ));
+    }
+    Ok(Some(guard))
+}
+
 async fn archive(
     State(app): State<AppState>,
     workspace: Workspace,
@@ -599,6 +774,10 @@ async fn archive(
     workspace
         .run(app, move |app, key, session| {
             ensure_idle(session)?;
+            if id == session.project_id {
+                return Err(StoreError::ArchiveActive.into());
+            }
+            let _target = idle_project_lock(app, key, &id)?;
             if !app.store.archive(key, &id)? {
                 return Err(ApiError::missing("Project not found"));
             }
@@ -614,13 +793,15 @@ async fn restore(
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
     workspace
-        .run(app, move |app, key, session| {
-            ensure_idle(session)?;
+        .run_with_selection(app, move |app, key, session, browser| {
+            if browser.is_none() {
+                ensure_idle(session)?;
+            }
             let project = app
                 .store
                 .restore(key, &id, project_name(&body)?)?
                 .ok_or_else(|| ApiError::missing("Archived project not found"))?;
-            open_project(app, key, session, project)
+            select_project(app, key, session, browser, project)
         })
         .await
 }
@@ -631,7 +812,11 @@ async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     workspace
-        .run(app, move |app, key, _| {
+        .run(app, move |app, key, session| {
+            if id == session.project_id {
+                return Err(StoreError::DeleteActive.into());
+            }
+            let _target = idle_project_lock(app, key, &id)?;
             let target = app
                 .store
                 .get(key, &id)?
@@ -701,7 +886,8 @@ async fn save_targets(
         let mut project = active_project(&app.store, key, session)?;
         project.plan["coverage_targets"] = targets.clone();
         save_plan(&app.store, key, &project.id, &project.plan)?;
-        Ok(Json(json!({"ok": true, "count": targets["features"].as_array().map_or(0, Vec::len), "targets": targets})))
+        Ok(Json(json!({"ok": true, "count": targets["features"].as_array().map_or(0, Vec::len), "targets": targets,
+            "plan_revision": catalog::plan_fingerprint(&project.plan, false)})))
     }).await
 }
 

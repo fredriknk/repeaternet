@@ -49,7 +49,6 @@ pub async fn start(
     )?;
     let body = Value::Object(body);
     workspace
-        .clone()
         .run(app, move |app, key, session| {
             if session.calculations_active() {
                 return Err(ApiError::conflict(
@@ -154,7 +153,7 @@ pub async fn start(
             session.inspection_control = Some(control.clone());
             tokio::spawn(run(
                 app.clone(),
-                workspace,
+                Workspace::worker(key, &session.project_id),
                 id,
                 inputs,
                 outstanding,

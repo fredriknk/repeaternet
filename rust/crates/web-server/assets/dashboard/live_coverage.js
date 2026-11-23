@@ -775,7 +775,7 @@ function bindLiveCoverageControls() {
   fitLegend();
 }
 
-/* Download supplemental terrain for the union of every site's coverage radius. */
+/* Prepare supplemental terrain for the union of every site's coverage radius. */
 async function requestLiveCoverageTerrain() {
   const sites = [...liveCoverage.slots.values()].map(slot => ({latitude: slot.site.latitude, longitude: slot.site.longitude}));
   if (!sites.length || coverageTerrainJobId) return;
@@ -792,8 +792,9 @@ async function requestLiveCoverageTerrain() {
       setCoverageTerrainStatus('Installed terrain tiles already span every coverage radius. Remaining gaps are missing elevation values in the source data.');
       return;
     }
-    const copy = `Download ${estimate.tile_count} terrain tile(s) at ${estimate.effective_resolution_m} m for ${estimate.missing_area_km2.toLocaleString(undefined, {maximumFractionDigits: 1})} km² without terrain · about ${estimate.estimated_raw_mib.toFixed(1)} MiB uncompressed · ${estimate.cache_hits}/${estimate.cache_total} product tiles cached.`;
-    const confirmed = await askActionDialog({title: 'Download terrain for live coverage?', copy, confirm: 'Download terrain', terrainEstimate: estimate});
+    const copy = coverageTerrainEstimateCopy(estimate);
+    const action = terrainFromCache(estimate) ? cachedTerrainAction(estimate) : 'Download terrain';
+    const confirmed = await askActionDialog({title: action+' for live coverage?', copy, confirm: action, terrainEstimate: estimate});
     if (!confirmed) { setCoverageTerrainStatus(''); return; }
     const job = await api('/api/coverage/terrain/prepare', request);
     if (!job.job_id) { setCoverageTerrainStatus(job.stage); return; }

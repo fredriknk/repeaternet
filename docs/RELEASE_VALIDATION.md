@@ -32,7 +32,7 @@ The JSON report records the copied binary's version and SHA-256 and the result o
 
 - Verify health, sign-in, incorrect token rejection, foreign-origin write rejection, the login redirect and the two session cookies. Fetch the registered CSS and JavaScript paths listed in the script and all three Leaflet marker PNGs. [Verifier asset list](../tools/verify-rust-release.ps1)
 - Create and autosave a project, upload the terrain, calculate a route with a sampled profile and export GeoJSON.
-- Confirm that a second process fails to bind the same port while the original stays healthy. Force-stop and restart on the same address, then check the saved plan, uploaded terrain and persisted route summary with the original cookies. Verify that a second cookie session sees a separate workspace.
+- Confirm that a second process fails to bind the same port while the original stays healthy. Force-stop and restart on the same address, then check the saved plan, uploaded terrain and persisted route summary with the original cookies. Sign in with the same token in a fresh cookie session and verify that it sees the first session's project in the shared catalog. Create another project in the second session and check that both sessions keep their own active project and see the new project in the catalog.
 - Inspect direct PE imports with the first available `objdump`, `dumpbin` or `llvm-readobj`. Unexpected imports fail the check. With `-RequirePeTool`, a missing tool also fails. Otherwise the report marks PE inspection as skipped. The import table covers imports visible to the tool. Dynamic loads and Windows version compatibility still require runtime checks.
 
 ## Package the verified executable

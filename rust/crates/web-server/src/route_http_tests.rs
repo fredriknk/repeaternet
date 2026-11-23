@@ -1129,27 +1129,36 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
     let authenticated = format!("{access}; {}", set_cookie(&cookies));
     let initial = state(&app, &authenticated).await;
     let project_id = initial["projects"]["active_id"].as_str().unwrap();
-    let missing = api(
-        &app,
-        &authenticated,
-        Method::POST,
-        "/api/optimize",
-        plan(),
-        StatusCode::UNPROCESSABLE_ENTITY,
-    )
-    .await;
+    let mutate_plan = |path: &'static str, data: Value, expected| {
+        let app = app.clone();
+        let authenticated = authenticated.clone();
+        async move {
+            let current = state(&app, &authenticated).await;
+            let revision = current["projects"]["plan_revision"].as_str().unwrap();
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header("host", "127.0.0.1:8000")
+                .header("cookie", &authenticated)
+                .header("content-type", "application/json")
+                .header("x-repeaternet-project", project_id)
+                .header("x-repeaternet-plan-revision", revision)
+                .body(Body::from(data.to_string()))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let (parts, body) = response.into_parts();
+            let body: Value =
+                serde_json::from_slice(&to_bytes(body, 1024 * 1024).await.unwrap()).unwrap();
+            assert_eq!(parts.status, expected, "{body}");
+            body
+        }
+    };
+    let optimize = |plan, status| mutate_plan("/api/optimize", plan, status);
+    let missing = optimize(plan(), StatusCode::UNPROCESSABLE_ENTITY).await;
     assert_eq!(missing["detail"], "Prepare or upload ground terrain first");
     let mut wrong_rf = plan();
     wrong_rf["rf"]["router"] = json!({"pattern_csv": "../unsafe.csv"});
-    api(
-        &app,
-        &authenticated,
-        Method::POST,
-        "/api/optimize",
-        wrong_rf,
-        StatusCode::UNPROCESSABLE_ENTITY,
-    )
-    .await;
+    optimize(wrong_rf, StatusCode::UNPROCESSABLE_ENTITY).await;
     let uploaded = upload(&app, &authenticated, "dtm", TILE, StatusCode::OK).await;
     let name = uploaded["name"].as_str().unwrap();
     assert_eq!(name.len(), 20);
@@ -1186,25 +1195,9 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         readiness["uncovered_sites"][0]["reason"],
         "outside_coverage"
     );
-    api(
-        &app,
-        &authenticated,
-        Method::POST,
-        "/api/optimize",
-        outside,
-        StatusCode::UNPROCESSABLE_ENTITY,
-    )
-    .await;
+    optimize(outside, StatusCode::UNPROCESSABLE_ENTITY).await;
 
-    let job = api(
-        &app,
-        &authenticated,
-        Method::POST,
-        "/api/optimize",
-        plan(),
-        StatusCode::OK,
-    )
-    .await;
+    let job = optimize(plan(), StatusCode::OK).await;
     let completed = terminal(&app, &authenticated).await;
     assert_eq!(completed["job"]["state"], "complete", "{completed}");
     assert_eq!(completed["projects"]["previous_result"]["found"], true);
@@ -1320,7 +1313,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
     let reopened_job = state(&app, &authenticated).await["job"].clone();
     let mut expected = selected.clone();
     expected["input_revision"] = reopened_job["input_revision"].clone();
-    assert_ne!(expected["input_revision"], selected["input_revision"]);
+    assert_eq!(reopened_job["input_revision"], selected["input_revision"]);
     assert_eq!(
         api(
             &app,
@@ -1382,10 +1375,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
 
     let mut coverage_only = completed["plan"].clone();
     coverage_only["coverage"] = json!({"cell_size_m": 250});
-    api(
-        &app,
-        &authenticated,
-        Method::POST,
+    mutate_plan(
         "/api/projects/autosave",
         json!({"project_id": project_id, "plan": coverage_only}),
         StatusCode::OK,
@@ -1402,10 +1392,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
     .await;
     let mut changed = coverage_only.clone();
     changed["rf"]["frequency_mhz"] = json!(868.1);
-    let edited = api(
-        &app,
-        &authenticated,
-        Method::POST,
+    let edited = mutate_plan(
         "/api/projects/autosave",
         json!({"project_id": project_id, "plan": changed}),
         StatusCode::OK,
@@ -1421,10 +1408,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         StatusCode::NOT_FOUND,
     )
     .await;
-    let undone = api(
-        &app,
-        &authenticated,
-        Method::POST,
+    let undone = mutate_plan(
         "/api/projects/autosave",
         json!({"project_id": project_id, "plan": coverage_only}),
         StatusCode::OK,
@@ -1448,15 +1432,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
     assert_eq!(recovered["links"], reselected["links"]);
     let mut stale = plan();
     stale["input_revision"] = job["input_revision"].clone();
-    api(
-        &app,
-        &authenticated,
-        Method::POST,
-        "/api/optimize",
-        stale,
-        StatusCode::CONFLICT,
-    )
-    .await;
+    optimize(stale, StatusCode::CONFLICT).await;
     api(
         &app,
         &authenticated,
@@ -1466,15 +1442,7 @@ async fn authenticated_upload_to_profiles_alternatives_exports_and_restart() {
         StatusCode::OK,
     )
     .await;
-    api(
-        &app,
-        &authenticated,
-        Method::POST,
-        "/api/optimize",
-        plan(),
-        StatusCode::UNPROCESSABLE_ENTITY,
-    )
-    .await;
+    optimize(plan(), StatusCode::UNPROCESSABLE_ENTITY).await;
     api(
         &app,
         &authenticated,
@@ -2467,6 +2435,7 @@ async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_an
     let estimate = post("/api/terrain/estimate", body.clone()).await;
     assert_eq!(estimate["tile_count"], 1);
     assert_eq!(estimate["cache_hits"], 0);
+    assert!(estimate["estimated_uncached_raw_mib"].as_f64().unwrap() > 0.0);
     let job = post("/api/terrain/prepare", body.clone()).await;
     let finished = terminal(&app, &cookie).await;
     assert_eq!(finished["job"]["state"], "terrain_ready", "{finished}");
@@ -2477,10 +2446,12 @@ async fn kartverket_http_prepares_reuses_cache_and_keeps_terrain_after_cancel_an
         true
     );
 
-    assert_eq!(
-        post("/api/terrain/estimate", body.clone()).await["cache_hits"],
-        1
-    );
+    assert!(root.path().join("shared-cache/composed").is_dir());
+    post("/api/projects", json!({"name": "Same corridor"})).await;
+    let estimate = post("/api/terrain/estimate", body.clone()).await;
+    assert_eq!(estimate["cache_hits"], estimate["cache_total"]);
+    assert_eq!(estimate["cache_hits"], 1);
+    assert_eq!(estimate["estimated_uncached_raw_mib"], 0.0);
     post("/api/terrain/prepare", body.clone()).await;
     let finished = terminal(&app, &cookie).await;
     assert_eq!(finished["job"]["state"], "terrain_ready");

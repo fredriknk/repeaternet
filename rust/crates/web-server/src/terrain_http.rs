@@ -49,15 +49,7 @@ impl TerrainContext {
     ) -> ApiResult<Self> {
         let project = active_project(&app.store, key, session)?;
         let directory = app.store.project_path(key, &project)?;
-        let data_root = directory
-            .ancestors()
-            .nth(if project.directory == "." {
-                1
-            } else {
-                project.directory.split(['/', '\\']).count() + 1
-            })
-            .ok_or_else(|| ApiError::conflict("Invalid project directory"))?;
-        let cache_directory = repeaternet_providers::shared_cache_directory(data_root);
+        let cache_directory = repeaternet_providers::shared_cache_directory(&app.data_directory);
         let route = TerrainFiles::read(&directory, false);
         let supplemental = supplemental.then(|| TerrainFiles::read(&directory, true));
         let fingerprint = route

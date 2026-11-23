@@ -64,6 +64,160 @@ async fn state(app: &Router, key: &str) -> Value {
 }
 
 #[tokio::test]
+async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan() {
+    let root = tempfile::tempdir().unwrap();
+    let (local, store) = open(root.path());
+    let legacy_a = store.create(A, "Survey", &json!({"note":"A"})).unwrap();
+    let legacy_b = store.create(B, "Survey", &json!({"note":"B"})).unwrap();
+    let archive = store.create(B, "Archived survey", &json!({})).unwrap();
+    store.activate(B, &legacy_b.id).unwrap().unwrap();
+    store.archive(B, &archive.id).unwrap();
+    let legacy_path = store.project_path(A, &legacy_a).unwrap();
+    fs::create_dir(legacy_path.join("dtm")).unwrap();
+    fs::write(legacy_path.join("dtm/ground.tif"), "saved tile").unwrap();
+    assert_eq!(
+        state(&local, A).await["projects"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let app = router(store.clone(), root.path(), "lan-token", true, None);
+    let cookie_a = format!("planner_access=lan-token; planner_workspace={A}");
+    let cookie_b = format!("planner_access=lan-token; planner_workspace={B}");
+    let request = |method, path: &str, cookie: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, "127.0.0.1")
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+    };
+    let call = |request: Request| {
+        let app = app.clone();
+        async move {
+            let response = app.oneshot(request).await.unwrap();
+            let (parts, body) = response.into_parts();
+            let value: Value =
+                serde_json::from_slice(&to_bytes(body, 1024 * 1024).await.unwrap()).unwrap();
+            (parts.status, value)
+        }
+    };
+    let get = |cookie| {
+        call(
+            request(Method::GET, "/api/state", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let activate = |cookie, id| {
+        let path = format!("/api/projects/{id}/activate");
+        call(
+            request(Method::POST, path.as_str(), cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    assert_eq!(activate(&cookie_a, &legacy_a.id).await.0, StatusCode::OK);
+    let (status, first) = get(&cookie_a).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        get("planner_access=lan-token").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(activate(&cookie_b, &legacy_b.id).await.0, StatusCode::OK);
+    let (status, second) = get(&cookie_b).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(second["projects"]["active_id"], legacy_b.id);
+    assert_eq!(first["projects"]["items"], second["projects"]["items"]);
+    assert_eq!(
+        first["projects"]["archived_items"],
+        second["projects"]["archived_items"]
+    );
+    assert_eq!(first["projects"]["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["projects"]["archived_items"][0]["id"], archive.id);
+    let (_, still_first) = get(&cookie_a).await;
+    assert_eq!(still_first["projects"]["active_id"], legacy_a.id);
+    assert_eq!(still_first["job"], first["job"]);
+    assert_eq!(
+        still_first["projects"]["plan_revision"],
+        first["projects"]["plan_revision"]
+    );
+
+    let (status, opened) = activate(&cookie_b, &legacy_a.id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(opened["plan"]["note"], "A");
+    assert_eq!(get(&cookie_b).await.1["terrain"]["dtm"][0], "ground.tif");
+    let revision = opened["plan_revision"].as_str().unwrap();
+    let save = |cookie, revision, note| {
+        call(
+            request(Method::POST, "/api/projects/autosave", cookie)
+                .header("x-repeaternet-project", &legacy_a.id)
+                .header("x-repeaternet-plan-revision", revision)
+                .body(Body::from(json!({"plan":{"note":note}}).to_string()))
+                .unwrap(),
+        )
+    };
+    let ((status_a, body_a), (status_b, body_b)) = tokio::join!(
+        save(&cookie_a, revision, "edit from A"),
+        save(&cookie_b, revision, "edit from B"),
+    );
+    let (saved, conflict, winner, stale_client) = if status_a == StatusCode::OK {
+        assert_eq!(status_b, StatusCode::CONFLICT);
+        (body_a, body_b, "edit from A", &cookie_b)
+    } else {
+        assert_eq!(status_b, StatusCode::OK);
+        assert_eq!(status_a, StatusCode::CONFLICT);
+        (body_b, body_a, "edit from B", &cookie_a)
+    };
+    assert!(
+        conflict["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Reload the project")
+    );
+    let (_, reloaded) = get(stale_client).await;
+    assert_eq!(reloaded["plan"]["note"], winner);
+    assert_eq!(
+        reloaded["projects"]["plan_revision"],
+        saved["plan_revision"]
+    );
+    assert_eq!(
+        save(
+            stale_client,
+            reloaded["projects"]["plan_revision"].as_str().unwrap(),
+            "after reload"
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(legacy_path.join("dtm/ground.tif").is_file());
+
+    let (status, created) = call(
+        request(Method::POST, "/api/projects", &cookie_b)
+            .body(Body::from(r#"{"name":"New survey"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, first) = get(&cookie_a).await;
+    let (_, second) = get(&cookie_b).await;
+    assert_eq!(first["projects"]["active_id"], legacy_a.id);
+    assert_eq!(second["projects"]["active_id"], created["id"]);
+    assert_eq!(first["projects"]["items"], second["projects"]["items"]);
+    let (status, conflict) = save(&cookie_b, revision, "wrong project").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        conflict["detail"]
+            .as_str()
+            .unwrap()
+            .contains("active project changed")
+    );
+}
+
+#[tokio::test]
 async fn project_lifecycle_preserves_assets_and_revisions() {
     let root = tempfile::tempdir().unwrap();
     let (app, store) = open(root.path());
@@ -608,7 +762,7 @@ async fn runtime_guards_share_the_workspace_lock_and_autosave_cancels_inspection
     let app = api::router(app_state.clone());
     let initial = state(&app, A).await;
     let active = initial["projects"]["active_id"].as_str().unwrap();
-    let session = app_state.session(A);
+    let session = app_state.session(A, "");
     session.lock().await.as_mut().unwrap().route_job["state"] = json!("running");
     expect(
         &app,

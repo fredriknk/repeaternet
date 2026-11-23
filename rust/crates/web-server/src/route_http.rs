@@ -432,8 +432,9 @@ pub async fn start(
             "state": state, "stage": if worker.is_some() { "Opening terrain" } else { "Waiting for a planner worker" },
             "done": 0, "total": 1, "started_at": now(),
             "search_effort": plan["search_effort"], "resolved_search": plan["resolved_search"],
+            "plan_revision": catalog::plan_fingerprint(plan, false),
         });
-        tokio::spawn(run(app.clone(), Workspace(key.to_owned()), Arc::new(job), prepared, outstanding, worker));
+        tokio::spawn(run(app.clone(), Workspace::worker(key, &session.project_id), Arc::new(job), prepared, outstanding, worker));
         Ok(Json(session.job_payload()))
     }).await
 }
@@ -472,7 +473,7 @@ async fn run(
                 tokio::task::spawn_blocking(move || {
                     compute(
                         computation_app,
-                        &computation_workspace.0,
+                        &computation_workspace.key,
                         computation_job,
                         prepared,
                     )
@@ -523,7 +524,7 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         request,
         inputs,
     } = prepared;
-    let session = app.session(key);
+    let session = app.session(key, &job.context.project_id);
     let mut last_progress: Option<(repeaternet_optimizer::Stage, Instant)> = None;
     let mut progress = |progress: Progress| {
         if last_progress.is_some_and(|(stage, when)| {

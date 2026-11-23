@@ -40,7 +40,8 @@ browser does not open, use the address printed by the server. If the operator
 configured an access token, enter it in **Access token** and choose **Sign in**.
 On your own device, select **Keep me signed in for 30 days** to stay signed in
 when you reopen the browser. The browser must keep cookies for the same server
-address. The browser's workspace cookie identifies your projects separately.
+address. On a token-protected server, anyone who signs in sees the same projects
+and archived projects, including those created in older browser workspaces.
 
 ![Sign-in form asking for the server access token](images/token-sign-in.png)
 
@@ -50,7 +51,13 @@ Choose a project in the top bar or use **＋ New**, give it a **Project name**
 and choose **Create**. A new project starts with example coordinates near Oslo.
 Plan edits save automatically. The top bar shows saving or saved status, with
 workspace storage usage when available. If saving fails, correct any invalid
-fields or restore the connection, then choose **Retry save**.
+fields or restore the connection, then choose **Retry save**. On a token-protected
+server, signed-in browsers share the project list, archived projects and saved
+files. Each browser profile remembers its own active project, and different
+projects can run calculations at the same time. Tabs in the same browser
+profile share that selection. If someone saves a newer plan for the project
+you are editing, the planner blocks your stale save. Choose **Reload project**
+to discard your unsaved edits and open the latest saved plan.
 
 ![Project selector, New button, project menu and saved status in the top bar](images/project-top-bar.png)
 
@@ -73,10 +80,10 @@ Open **⋯** for project actions.
 
 ![Archived project expanded with its Restore button](images/project-archived.png)
 
-Projects and saved coverage runs live on the server. The browser's workspace
-cookie lets it reopen the same project list. Another browser profile or a cleared
-cookie can open a different workspace. The dashboard has no user accounts or
-cross-browser project-sharing controls. A compact route summary survives a server
+Projects and saved coverage runs live on the server. On a server without an
+access token, the browser's workspace cookie lets it reopen the same project
+list. Another browser profile or clearing that cookie can open a different
+workspace. A compact route summary survives a server
 restart. Rerun the saved plan to rebuild full route profiles and restore the
 certified route for current analysis. Saved coverage runs can be opened separately.
 
@@ -102,11 +109,13 @@ the selector describes which providers cover the route and which may fill gaps.
 Choose a specific provider to prefer it, then use **Fill gaps from other
 sources** to control whether the planner can use other providers as needed.
 
-Choose **Estimate terrain download**. Review the planned tile count, effective
-resolution, disk usage, free space, cache hits and the list of sources with
-their attributions and warnings. Choose **Download planned terrain** to review
-and confirm the download. If you start with **Find repeater route** and ground
-tiles are missing, the combined estimate offers **Download and find route**.
+Choose **Estimate terrain**. Review the tile count, effective resolution,
+space needed on the server, and sources. The download size counts only tiles
+that still need fetching. When all tiles are already in the server's shared
+cache, **Use cached terrain tiles** installs them in the project without a
+download. Otherwise, choose **Download terrain** to confirm the fetch. If you
+start with **Find repeater route**, the same review can also start the search as
+soon as the tiles are ready.
 
 Under **Download options**, **Requested resolution · m** defaults to 10 m.
 **Coarsen automatically to stay within the pixel budget** allows larger pixels
@@ -529,11 +538,12 @@ example "2 sites overlap · R1 · 12.3 dB · A · 4.1 dB".
 Coverage uses route terrain first, then supplemental coverage terrain. If a
 project has no terrain yet, **2 Coverage** says so and **Open terrain setup**
 takes you to **Terrain** in **1 Route**. When part of a site's radius has no
-terrain, the site list reports the share and **Download terrain for coverage
-area** appears in **Sources & range**. Review the missing area, tile count,
-resolution, size and cache reuse, then confirm. The download covers every
-shown site's radius. Use **Cancel coverage terrain download** or **Reconnect to
-terrain download** as needed. Coverage updates by itself when the tiles are
+terrain, the site list reports the share. Choose **Prepare terrain for coverage
+area** in **Sources & range** and review the estimate. Choose **Use cached
+terrain tiles** when the cache already holds every tile, or **Download terrain**
+to fetch the remaining tiles. The supplemental terrain covers every
+shown site's radius. Use **Cancel terrain preparation** or **Reconnect to
+terrain preparation** as needed. Coverage updates by itself when the tiles are
 ready.
 
 ![Supplemental coverage terrain estimate with missing area, tile count, disk size and source list](images/coverage-terrain-download.png)

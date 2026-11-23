@@ -27,17 +27,19 @@ test('terrain estimation sends the route plan over HTTP without crypto.randomUUI
     mapEditsLocked: () => false, validTerrainResolution: () => true,
     validEndpointCoords: name => plan[name],
     clearTerrainEstimateReview() {}, previewTerrainSources() {}, renderTerrainEstimateDetail() {}, setTerrainDomNote() {},
-    terrainEstimateReview: null, terrainEstimateCost: () => '1 tile',
+    terrainEstimateReview: null,
     sourceJsonRequest: (method, snapshot) => ({ method, body: JSON.stringify(snapshot) }),
     async api(url, request) {
       requests.push([url, request.method, JSON.parse(request.body)]);
-      return { summary: 'Terrain available' };
+      return { summary: 'Terrain available', cache_hits: 1, cache_total: 1,
+        estimated_disk_mib: 1, available_disk_mib: 10 };
     },
     status(message, error) { if (error) errors.push(message); },
   });
   vm.runInContext(
     section('function randomId(', 'function setHistoryButtons(') +
     section('function createRouteOperation(', 'async function startRouteSearch(') +
+    section('function terrainFromCache(', 'function renderTerrainEstimateDetail(') +
     section('async function estimateTerrain(', 'async function startTerrainPreparation(') +
     section('function routeOperationIsCurrent(', 'async function pollTerrainJob('),
     context,
@@ -47,6 +49,8 @@ test('terrain estimation sends the route plan over HTTP without crypto.randomUUI
   assert.deepEqual(requests, [['/api/terrain/estimate', 'POST', plan]]);
   assert.equal(context.terrainEstimateReview.operation.id, 'ffffffff-ffff-4fff-bfff-ffffffffffff');
   assert.equal($('prepare-terrain').hidden, false);
+  assert.equal($('prepare-terrain').textContent, 'Use 1 cached terrain tile');
+  assert.match($('terrain-estimate-copy').textContent, /No download needed/);
 });
 
 test('registry definitions populate the layer control and a failed GET leaves the fallback', async () => {

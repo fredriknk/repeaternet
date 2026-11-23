@@ -327,7 +327,7 @@ pub async fn start(
             session.coverage_control = Some(control.clone());
             tokio::spawn(run(
                 app.clone(),
-                workspace,
+                Workspace::worker(key, &session.project_id),
                 Job {
                     context,
                     storage,
@@ -369,7 +369,7 @@ async fn run(
     let started = Instant::now();
     let result = if let Some(worker) = worker {
         let app = app.clone();
-        let key = workspace.0.clone();
+        let key = workspace.key.clone();
         let storage = storage.clone();
         let id = id.clone();
         let control = control.clone();
@@ -480,7 +480,12 @@ fn compute(
     progress["state"] = json!("running");
     progress["stage"] = json!("Calculating coverage");
     let mut manifest = storage.progress(id, progress, &[])?;
-    let session = app.session(key);
+    let session = app.session(
+        key,
+        prepared.manifest["project_id"]
+            .as_str()
+            .expect("coverage project ID"),
+    );
     let update = |manifest: &Value| {
         if let Some(session) = session.blocking_lock().as_mut() {
             session.coverage_job = Some(manifest.clone());

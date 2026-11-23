@@ -262,10 +262,15 @@ comparison. [Export formats and limits](crates/exports/README.md)
 | `GET /leaflet/{file}` | Registered Leaflet files. Names are `leaflet.css`, `leaflet.js`, `images/marker-icon.png`, `images/marker-icon-2x.png` and `images/marker-shadow.png`. |
 
 Asset and discovery paths are matched in the router fallback. Both cookies use
-`HttpOnly` and `SameSite=Strict`. The workspace cookie lasts one year and
-identifies the project workspace. Keep the same browser profile and host to
-reopen it. A shared token controls instance access. Workspace cookies separate
-project catalogs within that instance. The server requires a loopback
+`HttpOnly` and `SameSite=Strict`. Without an access token, the workspace cookie
+lasts one year and identifies the project workspace. With an access token,
+signed-in clients share the catalog, including projects in legacy workspace
+directories. The workspace cookie identifies each browser profile's active
+project. Plan writes (autosave, recovery, route terrain
+preparation, optimization and saving targets) require `X-RepeaterNet-Project`
+and `X-RepeaterNet-Plan-Revision`. Get both values as `projects.active_id` and
+`projects.plan_revision` from `/api/state`. A stale project or revision returns
+409. The server requires a loopback
 `Host` for direct requests to a loopback listener. Writes that carry
 `Origin` must match the effective host and scheme.
 
