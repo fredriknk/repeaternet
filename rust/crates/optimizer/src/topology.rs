@@ -26,6 +26,7 @@ pub struct NetworkSolution {
     pub requested_path_count: usize,
     pub achieved_path_count: usize,
     pub diagnostics: Vec<String>,
+    pub paint_coverage: Option<crate::PaintCoverage>,
 }
 
 impl NetworkSolution {
@@ -421,6 +422,7 @@ fn make_solution(
             .map(|s| s.rf.id.clone())
             .collect(),
         client_paths,
+        paint_coverage: None,
         requested_path_count: requested,
         achieved_path_count: achieved,
         diagnostics: Vec::new(),

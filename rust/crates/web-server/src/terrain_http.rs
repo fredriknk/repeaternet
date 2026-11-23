@@ -412,6 +412,7 @@ pub async fn coverage(
     let locations = route_inputs::readiness_locations(&plan, &app.defaults)?;
     let mesh = route_inputs::mesh_mode(&plan)?;
     let width = route_inputs::terrain_candidates(&plan, &app.defaults)?.corridor_width_m;
+    let paint = crate::mesh_paint::MeshPaint::active(&plan)?;
     let captured = workspace
         .clone()
         .run(app.clone(), move |app, key, session| {
@@ -422,19 +423,23 @@ pub async fn coverage(
         let terrain = captured.open()?;
         let (transform, points, elevations) = ground(&terrain, &locations)?;
         let surface = terrain.has_surface();
-        let [start, end] = [points[0], points[1]];
-        let resolution = (4.0 * terrain.resolution_m()).max(100.0);
-        let count =
-            ((start.distance_to(end) / resolution).ceil() + 1.0).clamp(2.0, 2001.0) as usize;
-        let line: Vec<_> = (0..if mesh { 0 } else { count })
-            .map(|i| {
-                let f = i as f64 / (count - 1) as f64;
-                Point {
-                    x: start.x + (end.x - start.x) * f,
-                    y: start.y + (end.y - start.y) * f,
-                }
-            })
-            .collect();
+        let line = if mesh {
+            Vec::new()
+        } else {
+            let [start, end] = [points[0], points[1]];
+            let resolution = (4.0 * terrain.resolution_m()).max(100.0);
+            let count =
+                ((start.distance_to(end) / resolution).ceil() + 1.0).clamp(2.0, 2001.0) as usize;
+            (0..count)
+                .map(|i| {
+                    let f = i as f64 / (count - 1) as f64;
+                    Point {
+                        x: start.x + (end.x - start.x) * f,
+                        y: start.y + (end.y - start.y) * f,
+                    }
+                })
+                .collect()
+        };
         let line_ground = terrain
             .sample(&line, TerrainLayer::GroundDtm)
             .map_err(terrain_invalid)?;
@@ -451,8 +456,19 @@ pub async fn coverage(
         if !gap.is_empty() {
             gaps.push(gap);
         }
+        let painted = paint
+            .as_ref()
+            .map(|paint| paint.projected(&transform))
+            .transpose()?
+            .unwrap_or_default();
+        let paint_gaps = terrain
+            .sample(&painted, TerrainLayer::GroundDtm)
+            .map_err(terrain_invalid)?
+            .iter()
+            .filter(|height| !height.is_finite())
+            .count();
         let (area_samples, area_gaps) = if mesh {
-            let anchors: Vec<_> = locations
+            let mut anchors: Vec<_> = locations
                 .iter()
                 .zip(&points)
                 .filter(|(site, _)| {
@@ -461,6 +477,7 @@ pub async fn coverage(
                 })
                 .map(|(_, &point)| point)
                 .collect();
+            anchors.extend(painted.iter().copied());
             mesh_area_gaps(&terrain, &anchors, width)?
         } else {
             (0, 0)
@@ -473,8 +490,10 @@ pub async fn coverage(
                 .collect::<ApiResult<Vec<_>>>()
         };
         let report = json!({
-            "covered": uncovered.is_empty(),
+            "covered": uncovered.is_empty() && (painted.is_empty() || paint_gaps < painted.len()),
             "uncovered_sites": uncovered,
+            "paint_cells": painted.len(),
+            "paint_gaps": paint_gaps,
             "line_gaps": gaps,
             "area_samples": area_samples,
             "area_gaps": area_gaps,

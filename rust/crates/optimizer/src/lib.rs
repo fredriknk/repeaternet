@@ -5,6 +5,7 @@ mod candidates;
 mod endpoint_access;
 mod graph;
 mod mesh;
+mod mesh_paint;
 mod optimizer;
 mod parallel;
 mod paths;
@@ -17,6 +18,7 @@ pub use candidates::{
 };
 pub use graph::RoutingGraph;
 pub use mesh::connect_mesh;
+pub use mesh_paint::{PaintCoverage, PaintObjective};
 pub use optimizer::{
     Cancellation, LinkEvaluation, OptimizationRequest, OptimizationResult, PlacementLink,
     PlacementMargin, PlacementPreview, PlacementRequest, PlacementSite, Progress, RouteOptimizer,

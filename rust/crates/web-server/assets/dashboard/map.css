@@ -534,3 +534,37 @@
 }
 .client-map-icon:focus-visible { outline: 2px solid #55368b; outline-offset: 2px; }
 .legend-client::before { width: 9px; height: 9px; }
+
+#map.mesh-paint-active { cursor: crosshair; touch-action: none; }
+.map-tools #paint-mesh-tool,
+.map-tools #erase-mesh-tool,
+.map-tools #cancel-map-mode,
+#mesh-paint-map-controls label {
+  min-height: 36px;
+  font-size: 13px;
+}
+#mesh-paint-brush { width: auto; min-height: 36px; font-size: 13px; }
+.map-wrap:has(#map.mesh-paint-active) .map-tools
+  :is([data-place], #select-map-sites, #remove-search-routers, .map-tool-group[aria-label="Map overlays"]) {
+  display: none;
+}
+.legend-painted-cell::before, .legend-uncovered-cell::before { content: none !important; }
+.legend-painted-cell, .legend-uncovered-cell {
+  display: inline-block;
+  width: 1.35em;
+  height: .85em;
+  border: 2px solid #185f70;
+  background: #61b9c54d;
+}
+.legend-uncovered-cell {
+  border: 2px dashed var(--map-invalid);
+  background: #e3947960;
+}
+@media (max-width: 650px) {
+  .map-tools #paint-mesh-tool,
+  .map-tools #erase-mesh-tool,
+  .map-tools #cancel-map-mode,
+  #mesh-paint-map-controls label,
+  #mesh-paint-brush { min-height: 44px; }
+  .map-wrap:has(#map.mesh-paint-active) .live-coverage-legend { display: none; }
+}

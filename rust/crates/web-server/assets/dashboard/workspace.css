@@ -769,3 +769,15 @@ aside summary { font-size: 13px; }
   .mesh-client-list button,
   #mesh-client-fields button { min-height: 44px; }
 }
+
+.mesh-paint-settings {
+  margin-top: 16px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+}
+.mesh-paint-settings h3 { margin: 0 0 4px; font-size: 14px; }
+.mesh-paint-settings .fields { margin: 10px 0; }
+.mesh-paint-settings button { min-height: 36px; font-size: 13px; }
+@media (max-width: 650px) {
+  .mesh-paint-settings button { min-height: 44px; }
+}

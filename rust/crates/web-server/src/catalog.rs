@@ -348,14 +348,21 @@ pub(crate) fn random_id<const N: usize>() -> Result<String, crate::api::ApiError
 fn write_canonical_json(output: &mut String, value: &Value, route_only: bool) {
     match value {
         Value::Object(fields) => {
+            let painted = route_only
+                && fields.get("mode").is_some_and(|v| v == "mesh")
+                && fields
+                    .get("mesh_paint")
+                    .and_then(|value| value["cells"].as_array())
+                    .is_some_and(|cells| !cells.is_empty());
             let mut fields: Vec<_> = fields
                 .iter()
                 .filter(|(key, _)| {
                     !route_only
-                        || !matches!(
-                            key.as_str(),
-                            "coverage" | "coverage_targets" | "resolved_search"
-                        )
+                        || match key.as_str() {
+                            "coverage" | "mesh_paint" => painted,
+                            "coverage_targets" | "resolved_search" => false,
+                            _ => true,
+                        }
                 })
                 .collect();
             fields.sort_unstable_by_key(|(key, _)| *key);
@@ -366,7 +373,15 @@ fn write_canonical_json(output: &mut String, value: &Value, route_only: bool) {
                 }
                 write_ascii_string(output, key);
                 output.push(':');
-                write_canonical_json(output, value, false);
+                if painted && key == "coverage" {
+                    let mut profile = value["client"].clone();
+                    if let Some(profile) = profile.as_object_mut() {
+                        profile.remove("name");
+                    }
+                    write_canonical_json(output, &profile, false);
+                } else {
+                    write_canonical_json(output, value, false);
+                }
             }
             output.push('}');
         }

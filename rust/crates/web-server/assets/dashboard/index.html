@@ -16,6 +16,7 @@
     <script defer src="/assets/coverage_raster.js"></script>
     <script defer src="/assets/live_coverage.js"></script>
     <script defer src="/assets/site_selection.js"></script>
+    <script defer src="/assets/mesh_paint.js"></script>
     <script defer src="/assets/mesh_mode.js"></script>
     <script defer src="/assets/placement.js"></script>
     <script defer src="/assets/app.js"></script>
@@ -149,6 +150,21 @@
               <button type="button" id="add-client-coordinate" data-map-edit>Add by coordinates</button>
             </div>
             <div id="mesh-client-editor" hidden></div>
+            <section class="mesh-paint-settings" aria-labelledby="mesh-paint-title">
+              <h3 id="mesh-paint-title">Painted coverage area</h3>
+              <p id="mesh-paint-count" class="hint" role="status"></p>
+              <div class="map-editor-actions">
+                <button type="button" id="mesh-paint-start" aria-pressed="false">Paint coverage area</button>
+                <button type="button" id="mesh-paint-clear" hidden>Clear painted area</button>
+              </div>
+              <div class="fields">
+                <label>Target share · %<input id="mesh-paint-target-percent" type="number" min="1" max="100" step="1" aria-describedby="mesh-paint-target-percent-error"></label>
+                <p class="field-error" id="mesh-paint-target-percent-error" hidden>Enter a whole percentage from 1 to 100.</p>
+                <label>Handheld margin · dB<input id="mesh-paint-minimum-margin" type="number" min="0" max="60" step="any" aria-describedby="mesh-paint-minimum-margin-error"></label>
+                <p class="field-error" id="mesh-paint-minimum-margin-error" hidden>Enter a margin from 0 to 60 dB.</p>
+              </div>
+              <button type="button" id="mesh-paint-handheld">Edit handheld radio settings</button>
+            </section>
           </div>
             </section>
           </div>
@@ -309,12 +325,12 @@
             <summary>Handheld radio assumptions</summary>
             <p class="hint">Example profile only; adjust to match the client radio you care about.</p>
             <div class="fields">
-              <label>Height AGL · m<input id="client-height" type="number" min="0.1" max="1000" step="any" value="1.5"></label>
-              <label>Transmit power · dBm<input id="client-tx" type="number" min="-20" max="60" step="any" value="20"></label>
-              <label>Antenna gain · dBi<input id="client-gain" type="number" min="-30" max="60" step="any" value="2.15"></label>
-              <label>Feed loss · dB<input id="client-feed" type="number" min="0" max="100" step="any" value="0"></label>
-              <label>Sensitivity · dBm<input id="client-sensitivity" type="number" min="-200" max="0" step="any" value="-130"></label>
-              <label>Other losses · dB<input id="client-loss" type="number" min="0" max="200" step="any" value="0"></label>
+              <label>Height AGL · m<input id="client-height" required type="number" min="0.1" max="1000" step="any" value="1.5"></label>
+              <label>Transmit power · dBm<input id="client-tx" required type="number" min="-20" max="60" step="any" value="20"></label>
+              <label>Antenna gain · dBi<input id="client-gain" required type="number" min="-30" max="60" step="any" value="2.15"></label>
+              <label>Feed loss · dB<input id="client-feed" required type="number" min="0" max="100" step="any" value="0"></label>
+              <label>Sensitivity · dBm<input id="client-sensitivity" required type="number" min="-200" max="0" step="any" value="-130"></label>
+              <label>Other losses · dB<input id="client-loss" required type="number" min="0" max="200" step="any" value="0"></label>
             </div>
           </details>
           </div>
@@ -536,7 +552,18 @@
               <button type="button" data-place="b" aria-pressed="false">Set B</button>
               <button type="button" data-place="client" aria-pressed="false" hidden>Add client</button>
               <button type="button" data-place="router" aria-pressed="false">Add router</button>
+              <button type="button" id="paint-mesh-tool" aria-pressed="false" hidden>Paint coverage area</button>
               <button type="button" id="cancel-map-mode" hidden>Cancel</button>
+            </div>
+            <div id="mesh-paint-map-controls" class="map-tool-group" role="group" aria-label="Coverage brush" hidden>
+              <label for="mesh-paint-brush">Brush size
+                <select id="mesh-paint-brush">
+                  <option value="1">Small</option>
+                  <option value="5" selected>Medium</option>
+                  <option value="11">Large</option>
+                </select>
+              </label>
+              <button type="button" id="erase-mesh-tool" aria-pressed="false">Erase</button>
             </div>
             <div class="map-tool-group" role="group" aria-label="Map view and plan edits">
               <button type="button" id="fit">Fit all</button>
@@ -609,6 +636,8 @@
             <div class="map-legend-grid">
               <div>
                 <span><i class="legend-endpoints"></i> Endpoints A / B</span>
+                <span id="mesh-paint-legend" hidden><i class="legend-painted-cell"></i> Painted coverage area</span>
+                <span id="mesh-paint-uncovered-legend" hidden><i class="legend-uncovered-cell"></i> Uncovered painted cells</span>
                 <span id="mesh-client-legend" hidden><i class="legend-client"></i> Named client</span>
                 <span><i class="legend-site legend-manual"><b>P1</b></i> Your proposed router (also in route)</span>
                 <span><i class="legend-site legend-proposed"><b>R1</b></i> New site found by search</span>
@@ -651,6 +680,7 @@
           <div id="result-details">
           <div id="route-verdict" class="route-verdict" hidden></div>
           <div id="metrics"></div>
+          <p id="mesh-paint-analysis" class="hint" hidden></p>
           <p id="prediction-spread" class="hint" hidden></p>
           <section id="map-analysis-selection" hidden></section>
           <div id="status" role="status" aria-live="polite">Find a route to see alternatives, hops, link budgets and terrain profiles here.</div>

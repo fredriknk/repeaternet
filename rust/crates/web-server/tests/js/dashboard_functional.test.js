@@ -298,7 +298,7 @@ test('invalidating a certified route replaces its verdict until a current result
     predictedCoverageLayer: layer, coverageDiffLayer: layer, inspectionLayer: layer, routeLayer: layer,
     routeLinkInspector: null, closeRouteLinkInspector() {},
     queueMicrotask() {}, refreshSiteSelection() {}, clearPlacementPreview() {},
-    closeMapSelection() {}, clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
+    renderMeshPaint() {}, closeMapSelection() {}, clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
     updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {}, syncRoutedRouterMarkers() {},
   });
   vm.runInContext(section('function invalidate(', 'function updatePlanReadiness(') +

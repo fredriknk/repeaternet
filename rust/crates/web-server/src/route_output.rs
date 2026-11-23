@@ -17,6 +17,8 @@ pub struct Alternative {
     pub summary: Value,
     pub sites: Vec<Value>,
     pub links: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_coverage: Option<Value>,
 }
 
 pub struct RouteOutput {
@@ -156,6 +158,7 @@ fn alternative_id(solution: &NetworkSolution) -> String {
 
 fn alternative(solution: &NetworkSolution, transform: &Transformer, complete: bool) -> Alternative {
     Alternative {
+        paint_coverage: None,
         rf_sites: solution.sites.iter().map(|site| site.rf.clone()).collect(),
         client_paths: solution.client_paths.values().flatten().cloned().collect(),
         summary: json!({
@@ -191,6 +194,16 @@ pub fn build(
         .iter()
         .map(|item| alternative(item, transform, complete))
         .collect();
+    if let Some(paint) = &inputs.paint {
+        for (item, solution) in alternatives.iter_mut().zip(&result.alternatives) {
+            let report = paint.result(solution.paint_coverage.as_ref());
+            // Retain the map cells across alternative selection and restart.
+            let mut summary = report.clone();
+            summary.as_object_mut().unwrap().remove("uncovered_cells");
+            item.summary["paint_coverage"] = summary;
+            item.paint_coverage = Some(report);
+        }
+    }
     let mut payload = json!({
         "found": result.found(), "router_count": 0, "existing_router_count": 0, "proposed_router_count": 0,
         "route": [], "links": [], "diagnostics": result.diagnostics,
@@ -221,6 +234,9 @@ pub fn build(
         payload["new_router_count"] = json!(0);
         payload["client_pairs"] = json!([]);
     }
+    if let Some(paint) = &inputs.paint {
+        payload["paint_coverage"] = paint.result(None);
+    }
     if let Some(index) = result.active_index {
         select(&mut payload, &alternatives, index);
     }
@@ -235,6 +251,9 @@ pub fn select(payload: &mut Value, alternatives: &[Alternative], index: usize) {
     payload["active_alternative_id"] = active.summary["id"].clone();
     payload["route"] = json!(active.sites);
     payload["links"] = json!(active.links);
+    if let Some(paint) = &active.paint_coverage {
+        payload["paint_coverage"] = paint.clone();
+    }
     for key in [
         "router_count",
         "existing_router_count",

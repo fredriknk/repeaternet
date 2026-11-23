@@ -114,6 +114,19 @@ impl PolarMargins {
         self.grid.samples_per_ray
     }
 
+    /// Interpolated usable margin at a projected point. Outside the sweep
+    /// radius there is no prediction.
+    pub fn margin_at_point(&self, point: Point) -> f64 {
+        let dx = point.x - self.site.x;
+        let dy = point.y - self.site.y;
+        let radius = dx.hypot(dy);
+        if radius > self.grid.radius_m {
+            f64::NAN
+        } else {
+            self.margin_at(dx, dy, radius)
+        }
+    }
+
     fn margin_at(&self, dx: f64, dy: f64, radius: f64) -> f64 {
         let bearing = dx.atan2(dy) * (self.grid.rays as f64 / TAU);
         let first = bearing.floor();

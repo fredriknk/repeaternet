@@ -220,7 +220,7 @@ fn mesh_tree(
 
 /// Grow a node-weighted Steiner subset using multi-source shortest paths from
 /// the routers already in the installation. A client stops path expansion.
-fn grow(
+pub(crate) fn grow(
     graph: &RoutingGraph<'_>,
     terminals: &BTreeSet<usize>,
     root: usize,
@@ -238,45 +238,15 @@ fn grow(
             .iter()
             .copied()
             .filter(|&node| node == root || !graph.sites[node].is_client());
-        let mut heap = BinaryHeap::new();
-        let mut best = vec![None; graph.sites.len()];
-        let mut predecessor = vec![None; graph.sites.len()];
-        for node in sources {
-            let score = (0, 0, OrderedFloat(f64::NEG_INFINITY));
-            heap.push(Reverse((score, node)));
-            best[node] = Some(score);
-        }
-        let target = loop {
-            let Reverse((score, node)) = heap.pop()?;
-            if cancelled() {
-                return None;
-            }
-            if best[node] != Some(score) {
-                continue;
-            }
-            if remaining.contains(&node) {
-                break node;
-            }
-            if node != root && graph.sites[node].is_client() {
-                continue;
-            }
-            for &(to, link) in &graph.neighbors[node] {
-                if banned == Some(to) {
-                    continue;
-                }
-                let new_router = graph.sites[to].needs_new_router() && !installed.contains(&to);
-                let trial = (
-                    score.0 + usize::from(new_router),
-                    score.1 + 1,
-                    score.2.max(OrderedFloat(-link.worst_margin_db())),
-                );
-                if best[to].is_none_or(|current| trial < current) {
-                    best[to] = Some(trial);
-                    predecessor[to] = Some(node);
-                    heap.push(Reverse((trial, to)));
-                }
-            }
-        };
+        let (target, predecessor) = steiner_paths(
+            graph,
+            sources,
+            &installed,
+            banned,
+            |node| remaining.contains(&node),
+            cancelled,
+        );
+        let target = target?;
         remaining.remove(&target);
         installed.insert(target);
         let mut node = target;
@@ -288,18 +258,84 @@ fn grow(
     Some(installed.difference(terminals).copied().collect())
 }
 
+/// Return the least-cost attachment from the installed routers to each
+/// reachable site, or stop once the predicate selects a terminal.
+pub(crate) fn steiner_paths(
+    graph: &RoutingGraph<'_>,
+    sources: impl IntoIterator<Item = usize>,
+    installed: &BTreeSet<usize>,
+    banned: Option<usize>,
+    stop: impl Fn(usize) -> bool,
+    cancelled: &dyn Fn() -> bool,
+) -> (Option<usize>, Vec<Option<usize>>) {
+    let mut heap = BinaryHeap::new();
+    let mut best = vec![None; graph.sites.len()];
+    let mut predecessor = vec![None; graph.sites.len()];
+    for node in sources {
+        let score = (0, 0, OrderedFloat(f64::NEG_INFINITY));
+        heap.push(Reverse((score, node)));
+        best[node] = Some(score);
+    }
+    while let Some(Reverse((score, node))) = heap.pop() {
+        if cancelled() {
+            break;
+        }
+        if best[node] != Some(score) {
+            continue;
+        }
+        if stop(node) {
+            return (Some(node), predecessor);
+        }
+        if score.1 != 0 && graph.sites[node].is_client() {
+            continue;
+        }
+        for &(to, link) in &graph.neighbors[node] {
+            if banned == Some(to) {
+                continue;
+            }
+            let new_router = graph.sites[to].needs_new_router() && !installed.contains(&to);
+            let trial = (
+                score.0 + usize::from(new_router),
+                score.1 + 1,
+                score.2.max(OrderedFloat(-link.worst_margin_db())),
+            );
+            if best[to].is_none_or(|current| trial < current) {
+                best[to] = Some(trial);
+                predecessor[to] = Some(node);
+                heap.push(Reverse((trial, to)));
+            }
+        }
+    }
+    (None, predecessor)
+}
+
 pub(crate) fn mesh_installation(
     graph: &RoutingGraph<'_>,
     max_hops: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<NetworkSolution> {
+    installation(graph, max_hops, false, cancelled)
+}
+
+pub(crate) fn installation(
+    graph: &RoutingGraph<'_>,
+    max_hops: usize,
+    keep_all: bool,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<NetworkSolution> {
     let clients: Vec<_> = (0..graph.sites.len())
         .filter(|&node| graph.sites[node].is_client())
         .collect();
     let required: Vec<_> = (0..graph.sites.len())
-        .filter(|&node| graph.sites[node].is_required())
+        .filter(|&node| {
+            !graph.sites[node].is_client() && (keep_all || graph.sites[node].is_required())
+        })
         .collect();
-    if clients.len() < 2 {
+    if clients.len() < 2 && !keep_all {
+        return None;
+    }
+    let router_root = keep_all.then(|| required.first().copied()).flatten();
+    if clients.len() < 2 && router_root.is_none() {
         return None;
     }
     let mut margins: Vec<_> = graph
@@ -313,23 +349,45 @@ pub(crate) fn mesh_installation(
         let mut paths = BTreeMap::new();
         let mut used = BTreeSet::new();
         let mut unattached: BTreeSet<_> = required.iter().copied().collect();
+        let mut path_to = |prev: &[Option<usize>], mut node: usize| {
+            let mut path = vec![node];
+            while let Some(from) = prev[node] {
+                used.insert(pair(from, node));
+                path.push(from);
+                node = from;
+            }
+            path.reverse();
+            path
+        };
+        if let Some(root) = router_root {
+            let prev = mesh_tree(graph, root, graph.sites.len(), |_, link| {
+                link.worst_margin_db() >= threshold
+            });
+            // Paint routers must form a backbone. A handheld client can
+            // attach as a leaf but cannot join two router components.
+            for target in required
+                .iter()
+                .chain(&clients)
+                .copied()
+                .filter(|&i| i != root)
+            {
+                prev[target]?;
+                if collect {
+                    path_to(&prev, target);
+                }
+            }
+            unattached.clear();
+        }
         for (index, &source) in clients.iter().enumerate() {
             if cancelled() {
                 return None;
             }
+            if clients.len() < 2 {
+                break;
+            }
             let prev = mesh_tree(graph, source, max_hops, |_, link| {
                 link.worst_margin_db() >= threshold
             });
-            let mut path_to = |mut node: usize| {
-                let mut path = vec![node];
-                while let Some(from) = prev[node] {
-                    used.insert(pair(from, node));
-                    path.push(from);
-                    node = from;
-                }
-                path.reverse();
-                path
-            };
             for &target in &clients[index + 1..] {
                 prev[target]?;
                 if collect {
@@ -338,7 +396,7 @@ pub(crate) fn mesh_installation(
                             graph.sites[source].rf.id.clone(),
                             graph.sites[target].rf.id.clone(),
                         ),
-                        vec![graph.path_ids(&path_to(target))],
+                        vec![graph.path_ids(&path_to(&prev, target))],
                     );
                 }
             }
@@ -347,7 +405,7 @@ pub(crate) fn mesh_installation(
                     return true;
                 }
                 if collect {
-                    path_to(node);
+                    path_to(&prev, node);
                 }
                 false
             });
@@ -356,8 +414,17 @@ pub(crate) fn mesh_installation(
     };
     // Feasibility is monotone in the margin threshold, even with a hop limit.
     let count = margins.partition_point(|&margin| paths(margin, false).is_some());
-    let (client_paths, used) = paths(*margins.get(count.checked_sub(1)?)?, true)?;
-    let nodes: BTreeSet<_> = used.iter().flat_map(|&(a, b)| [a, b]).collect();
+    let threshold = if graph.sites.len() == 1 && router_root.is_some() {
+        f64::NEG_INFINITY
+    } else {
+        *margins.get(count.checked_sub(1)?)?
+    };
+    let (client_paths, used) = paths(threshold, true)?;
+    let nodes: BTreeSet<_> = used
+        .iter()
+        .flat_map(|&(a, b)| [a, b])
+        .chain(router_root)
+        .collect();
     let sites: Vec<_> = nodes
         .iter()
         .map(|&node| graph.sites[node].clone())
@@ -386,6 +453,7 @@ pub(crate) fn mesh_installation(
         client_paths,
         requested_path_count: 1,
         achieved_path_count: 1,
+        paint_coverage: None,
         diagnostics: vec![
             "Mesh search compares sampled installations. A global minimum is not guaranteed."
                 .into(),

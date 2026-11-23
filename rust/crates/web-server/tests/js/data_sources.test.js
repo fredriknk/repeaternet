@@ -181,7 +181,7 @@ test('terrain source and fallback round-trip through plan and load and record an
     $, Option: function (text, value) { Object.assign(this, { text, value }); },
     coords: name => name === 'a' ? [59, 10] : [60, 11],
     planEndpoint: name => name === 'a' ? [59, 10] : [60, 11],
-    routeMode: 'endpoints', meshClients: [],
+    routeMode: 'endpoints', meshClients: [], meshPaint: {},
     dataSources: { terrain: [
       { id: 'local', name: 'Local elevation', resolution_m: 2, coverage: { type: 'global' } },
       { id: 'regional', name: 'Regional', resolution_m: 1, region: 'Norway', coverage: { type: 'bbox', bbox: [4, 57.9, 31.3, 71.3] } },
@@ -192,7 +192,7 @@ test('terrain source and fallback round-trip through plan and load and record an
     invalidate: () => actions.push('invalidate'),
     scheduleCoverageCheck: () => actions.push('scheduleCoverageCheck'),
     buildSettings() {}, syncCoverageInputs() {}, mark() {}, renderMeshcoreRouters() {},
-    loadPlanningMode() {}, syncPlanningMode() {},
+    readMeshPaint: () => ({}), loadPlanningMode() {}, syncPlanningMode() {},
     renderManualRouters() {}, ensureManualRouterNames() {}, renderCoverageTargets() {}, selectedKnownRouters: () => [],
     baseRf: {}, baseCandidates: {}, defaultCoverageSettings: { client: {} },
     selectedKnownRouterId: null, dismissedSearchRouters: null, planExclusions: undefined, clone: structuredClone,
@@ -232,7 +232,7 @@ test('a preview response is stale as soon as route changes schedule the next pre
   const context = vm.createContext({
     $: id => ({ 'terrain-source-preview': copy, 'terrain-dom-note': domNote }[id] || { hidden: false }),
     dataSources: {}, terrainOptions: { source: 'auto' }, manualRouters: [],
-    routeMode: 'endpoints', meshClients: [], candidates: {},
+    routeMode: 'endpoints', meshClients: [], meshPaint: {}, candidates: {},
     routeLocationsReady: () => true,
     terrainPreviewRequest: 0, terrainPreviewTimer: null, terrainPreviewKey: null,
     terrainPreviewDomNote: '', terrainEstimateReview: null,

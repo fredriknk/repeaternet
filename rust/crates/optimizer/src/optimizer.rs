@@ -2,9 +2,11 @@ use crate::cache::CacheKey;
 use crate::candidates::{
     candidate_grid_spacing, dense_corridor_half_width_m, generate_with_access_pool, sample,
 };
+use crate::mesh_paint::{self, SiteMasks, MAX_PAINT_SITES};
 use crate::parallel::{for_each_batched, worker_count};
 use crate::screening::screened_pairs;
 use crate::topology::solve_graph;
+use crate::PaintObjective;
 use crate::{
     backbone_site_indices, link_is_clear, pair, select_active_solution_index, CandidateSettings,
     InfrastructurePolicy, LinkMetricsCache, NetworkSolution, OptimizationError,
@@ -110,6 +112,7 @@ pub enum Stage {
     CheckingInteriorBridgeLinks,
     EvaluatingRfLinks,
     SearchingTopologies,
+    MeasuringPaintCoverage,
     ValidatingSolutionAlternatives,
     RefiningRouterPositions,
     PreparingSolutionProfiles,
@@ -124,6 +127,7 @@ impl Stage {
             Self::CheckingTwoRepeaterSummitLinks => "Checking two-repeater summit links",
             Self::CheckingInteriorBridgeLinks => "Checking interior bridge links",
             Self::EvaluatingRfLinks => "Evaluating RF links",
+            Self::MeasuringPaintCoverage => "Measuring handheld coverage",
             Self::SearchingTopologies => "Searching topologies",
             Self::ValidatingSolutionAlternatives => "Validating solution alternatives",
             Self::RefiningRouterPositions => "Refining router positions",
@@ -383,7 +387,7 @@ impl<'a> RouteOptimizer<'a> {
         request: OptimizationRequest,
         hooks: SearchHooks<'_>,
     ) -> Result<OptimizationResult, OptimizationError> {
-        self.optimize_mode(request, hooks, false)
+        self.optimize_mode(request, hooks, false, None)
     }
 
     pub fn optimize_mesh(
@@ -391,7 +395,21 @@ impl<'a> RouteOptimizer<'a> {
         request: OptimizationRequest,
         hooks: SearchHooks<'_>,
     ) -> Result<OptimizationResult, OptimizationError> {
-        self.optimize_mode(request, hooks, true)
+        self.optimize_mode(request, hooks, true, None)
+    }
+
+    pub fn optimize_painted_mesh(
+        &self,
+        request: OptimizationRequest,
+        paint: PaintObjective<'_>,
+        hooks: SearchHooks<'_>,
+    ) -> Result<OptimizationResult, OptimizationError> {
+        if paint.cells.is_empty() || !(1..=100).contains(&paint.target_percent) {
+            return Err(OptimizationError::InvalidInput(
+                "Add a painted coverage area and a target share".into(),
+            ));
+        }
+        self.optimize_mode(request, hooks, true, Some(paint))
     }
 
     fn optimize_mode(
@@ -399,6 +417,7 @@ impl<'a> RouteOptimizer<'a> {
         request: OptimizationRequest,
         hooks: SearchHooks<'_>,
         mesh: bool,
+        paint: Option<PaintObjective<'_>>,
     ) -> Result<OptimizationResult, OptimizationError> {
         let builtin = LinkEvaluator::new(self.terrain, self.rf);
         let mut search = Search {
@@ -438,8 +457,13 @@ impl<'a> RouteOptimizer<'a> {
         }
         let automatic_candidates = request.candidates.is_none()
             && self.settings.infrastructure_policy != InfrastructurePolicy::ExistingOnly;
-        let (sites, filter_counts, access_budget) =
-            self.prepare_sites(request, &search.rf, &|| search.hooks.cancelled(), mesh)?;
+        let (sites, filter_counts, access_budget) = self.prepare_sites(
+            request,
+            &search.rf,
+            &|| search.hooks.cancelled(),
+            mesh,
+            paint.as_ref().map_or(&[], |area| area.cells),
+        )?;
         search.sites = sites;
         search.access_budget = access_budget;
         search.generated_candidates = automatic_candidates;
@@ -463,22 +487,32 @@ impl<'a> RouteOptimizer<'a> {
                 .filter(|site| site.is_client() || site.is_required())
                 .map(|site| site.rf.position)
                 .collect();
-            let extent = terminals
+            let paint_cells = paint.as_ref().map_or(&[][..], |paint| paint.cells);
+            let anchors: Vec<_> = terminals
+                .into_iter()
+                .chain(paint_cells.iter().copied())
+                .collect();
+            let extent = anchors
                 .iter()
-                .flat_map(|a| terminals.iter().map(move |b| a.distance_to(*b)))
+                .flat_map(|a| anchors.iter().map(move |b| a.distance_to(*b)))
                 .fold(0.0, f64::max);
+            let subject = if paint.is_some() {
+                "search area"
+            } else {
+                "route"
+            };
             let corridor = self.settings.corridor_width_m;
             let dense = dense_corridor_half_width_m(extent, corridor);
             search.diagnostics.push(if dense < corridor {
                 format!(
-                    "Candidate sites: {generated} generated for a {:.1} km route, dense within {:.1} km and sparse out to {:.1} km.",
+                    "Candidate sites: {generated} generated for a {:.1} km {subject}, dense within {:.1} km and sparse out to {:.1} km.",
                     extent / 1000.0,
                     dense / 1000.0,
                     corridor / 1000.0
                 )
             } else {
                 format!(
-                    "Candidate sites: {generated} generated for a {:.1} km route, within {:.1} km.",
+                    "Candidate sites: {generated} generated for a {:.1} km {subject}, within {:.1} km.",
                     extent / 1000.0,
                     corridor / 1000.0
                 )
@@ -499,7 +533,11 @@ impl<'a> RouteOptimizer<'a> {
             .enumerate()
             .map(|(i, site)| (site.rf.id.clone(), i))
             .collect();
-        search.run()
+        if let Some(paint) = paint {
+            search.run_painted_mesh(paint)
+        } else {
+            search.run()
+        }
     }
 
     fn rf_evaluation<'b>(&'b self, builtin: &'b dyn LinkEvaluation) -> RfEvaluation<'b> {
@@ -516,6 +554,7 @@ impl<'a> RouteOptimizer<'a> {
         evaluation: &RfEvaluation<'_>,
         cancelled: &dyn Fn() -> bool,
         mesh: bool,
+        paint_cells: &[Point],
     ) -> Result<PreparedSites, OptimizationError> {
         let OptimizationRequest {
             clients,
@@ -530,7 +569,7 @@ impl<'a> RouteOptimizer<'a> {
             InfrastructurePolicy::ExistingOnly => site.origin == SiteOrigin::Known,
             InfrastructurePolicy::ExistingAndProposed => true,
         };
-        if clients.len() < 2
+        if (paint_cells.is_empty() && clients.len() < 2)
             || clients
                 .iter()
                 .any(|site| !site.is_client() || !site.included())
@@ -620,14 +659,15 @@ impl<'a> RouteOptimizer<'a> {
                 access_budget = access::ACCESS_PER_TERMINAL * terminals.len();
             }
             let network = mesh || terminals.len() > 2;
-            let mesh_area = mesh.then(|| {
-                let points: Vec<_> = terminals.iter().map(|site| site.rf.position).collect();
-                repeaternet_terrain::corridor::MeshArea::new(&points)
-            });
-            let (mut low, mut high) = (terminals[0].rf.position, terminals[1].rf.position);
+            let anchors: Vec<_> = terminals
+                .iter()
+                .map(|site| site.rf.position)
+                .chain(paint_cells.iter().copied())
+                .collect();
+            let mesh_area = mesh.then(|| repeaternet_terrain::corridor::MeshArea::new(&anchors));
+            let (mut low, mut high) = (anchors[0], anchors.get(1).copied().unwrap_or(anchors[0]));
             if network {
-                for site in &terminals {
-                    let point = site.rf.position;
+                for point in anchors {
                     low = Point {
                         x: low.x.min(point.x),
                         y: low.y.min(point.y),
@@ -759,6 +799,25 @@ impl<'a> RouteOptimizer<'a> {
                 )?;
                 if self.site_filter.is_some() {
                     filter_counts = Some(counts);
+                }
+                if !paint_cells.is_empty() && sites.len() + generated.len() > MAX_PAINT_SITES {
+                    // Keep candidates near the paint and mesh terminals within the bounded pool.
+                    let area = mesh_area
+                        .as_ref()
+                        .expect("paint uses mesh candidate generation");
+                    let mut ranked: Vec<_> = generated
+                        .into_iter()
+                        .map(|site| (area.distance_to(site.rf.position), site))
+                        .collect();
+                    ranked.sort_by(|(a, left), (b, right)| {
+                        a.total_cmp(b)
+                            .then_with(|| right.site_quality.total_cmp(&left.site_quality))
+                    });
+                    generated = ranked
+                        .into_iter()
+                        .take(MAX_PAINT_SITES.saturating_sub(sites.len()))
+                        .map(|(_, site)| site)
+                        .collect();
                 }
                 for (i, mut site) in generated.into_iter().enumerate() {
                     if network {
@@ -1129,6 +1188,81 @@ impl Search<'_, '_> {
                 self.finish(alternatives)
             });
         }
+    }
+
+    fn run_painted_mesh(
+        mut self,
+        paint: PaintObjective<'_>,
+    ) -> Result<OptimizationResult, OptimizationError> {
+        if self.sites.len() > MAX_PAINT_SITES {
+            return Err(OptimizationError::InvalidInput(format!(
+                "Paint search supports up to {MAX_PAINT_SITES} candidate and fixed sites"
+            )));
+        }
+        let terminals = self
+            .sites
+            .iter()
+            .enumerate()
+            .filter_map(|(i, site)| (site.is_client() || site.is_required()).then_some(i))
+            .collect();
+        self.screen(&terminals)?;
+        let mut masks = SiteMasks::new();
+        let count = self.sites.len();
+        self.hooks.notify(Stage::MeasuringPaintCoverage, 0, count);
+        for (i, site) in self.sites.iter().enumerate() {
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            let coverage = (paint.evaluate)(site)?;
+            if coverage.len() != paint.cells.len() {
+                return Err(OptimizationError::InvalidInput(
+                    "Coverage evaluation returned the wrong number of cells".into(),
+                ));
+            }
+            masks.insert(site.rf.id.clone(), mesh_paint::mask(coverage));
+            self.hooks
+                .notify(Stage::MeasuringPaintCoverage, i + 1, count);
+        }
+        // Certification can change the graph. Re-run the cover search on the
+        // corrected links without recomputing the per-site handheld coverage.
+        const ROUNDS: usize = 12;
+        for round in 0..ROUNDS {
+            if self.hooks.cancelled() {
+                return Ok(self.interrupted());
+            }
+            self.hooks.notify(Stage::SearchingTopologies, round, ROUNDS);
+            let graph = RoutingGraph::from_links(&self.sites, self.links.values())?;
+            let mut alternatives = mesh_paint::connect_cover(
+                &graph,
+                self.settings,
+                paint.cells.len(),
+                paint.target_percent,
+                &masks,
+                &|| self.hooks.cancelled(),
+            );
+            let pending = self.pending_pairs(&alternatives);
+            if !pending.is_empty() {
+                self.validate_pairs(pending)?;
+                self.publish_certified(&alternatives)?;
+                continue;
+            }
+            self.restore_profiles(&mut alternatives)?;
+            return Ok(if self.hooks.cancelled() {
+                self.interrupted()
+            } else {
+                self.finish(alternatives)
+            });
+        }
+        if self.hooks.cancelled() {
+            return Ok(self.interrupted());
+        }
+        let alternatives = self
+            .snapshot
+            .take()
+            .map_or_else(Vec::new, |snapshot| snapshot.alternatives);
+        self.diagnostics
+            .push("Paint search reached its link certification limit.".into());
+        Ok(self.finish(alternatives))
     }
 
     fn solve(
@@ -1576,7 +1710,17 @@ impl Search<'_, '_> {
                 continue;
             }
             let graph = RoutingGraph::from_links(&solution.sites, self.links.values())?;
-            let topology = if self.mesh {
+            let topology = if solution.paint_coverage.is_some() {
+                // All selected sites were checked above. Keep the coverage
+                // sites as terminals when rebuilding the certified topology.
+                crate::mesh::installation(&graph, self.settings.maximum_hops, true, &|| {
+                    self.hooks.cancelled()
+                })
+                .map(|mut topology| {
+                    topology.paint_coverage = solution.paint_coverage.clone();
+                    topology
+                })
+            } else if self.mesh {
                 crate::mesh::mesh_installation(&graph, self.settings.maximum_hops, &|| {
                     self.hooks.cancelled()
                 })
@@ -1674,7 +1818,7 @@ impl Search<'_, '_> {
             alternatives
                 .iter()
                 .enumerate()
-                .max_by(|(_, a), (_, b)| crate::mesh::compare(a, b))
+                .max_by(|(_, a), (_, b)| mesh_paint::compare(a, b))
                 .map(|(index, _)| index)
         } else {
             select_active_solution_index(&alternatives, self.settings.priority)

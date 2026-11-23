@@ -1764,6 +1764,7 @@
     "/api/optimize": {
       "post": {
         "summary": "Optimize",
+        "description": "Queue an endpoint or mesh search using the current terrain. In mesh mode, a nonempty mesh_paint area allows a search with zero or one named client.",
         "operationId": "optimize_api_optimize_post",
         "requestBody": {
           "content": {
@@ -1771,6 +1772,29 @@
               "schema": {
                 "additionalProperties": true,
                 "type": "object",
+                "properties": {
+                  "mesh_paint": {
+                    "type": "object",
+                    "required": ["cells", "target_percent", "minimum_margin_db"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "cells": {
+                        "description": "Unique [x, y] indices on the 250 m EPSG:3857 grid. The extent is limited to 120 cells per axis.",
+                        "type": "array",
+                        "maxItems": 1024,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2,
+                          "items": {"type": "integer", "minimum": -80150, "maximum": 80149}
+                        }
+                      },
+                      "target_percent": {"type": "integer", "minimum": 1, "maximum": 100},
+                      "minimum_margin_db": {"type": "number", "minimum": 0, "maximum": 60}
+                    }
+                  }
+                },
                 "title": "Body"
               }
             }
@@ -1896,6 +1920,7 @@
     "/api/result": {
       "get": {
         "summary": "Result",
+        "description": "Painted mesh results include paint_coverage with cell_count, covered_cells, covered_fraction, target_percent, minimum_margin_db, target_met and uncovered_cells in the plan grid. A connected mesh can fall short of the coverage target.",
         "operationId": "result_api_result_get",
         "responses": {
           "200": {

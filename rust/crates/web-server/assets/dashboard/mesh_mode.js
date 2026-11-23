@@ -3,7 +3,7 @@ let meshClients = [];
 const clientMarkers = new Map();
 
 function routeLocationsReady() {
-  return routeMode === 'mesh' ? meshClients.length >= 2
+  return routeMode === 'mesh' ? meshClients.length >= 2 || activeMeshPaint()
     : !!(validEndpointCoords('a') && validEndpointCoords('b'));
 }
 
@@ -67,6 +67,7 @@ function syncPlanningMode() {
     else if (!map.hasLayer(marker)) marker.addTo(map);
   }
   renderMeshClients();
+  syncMeshPaintPanel();
   refreshSiteSelection();
 }
 
@@ -282,6 +283,14 @@ function renderMeshPairs(pairs) {
 }
 
 function meshVerdict(snapshot, margin) {
+  const paint = snapshot.paint_coverage;
+  if (paint) {
+    if (!snapshot.found) return 'No connected mesh was found for the painted coverage area.';
+    const coverage = `${(paint.covered_fraction * 100).toFixed(1)}% of painted cells covered.`;
+    const target = paint.target_met ? 'Coverage target met.' : `Below the ${paint.target_percent}% coverage target.`;
+    const clients = snapshot.client_count ? ' All clients are connected.' : '';
+    return `${coverage} ${target}${clients}${snapshot.search_complete ? '' : ' Search incomplete.'}`;
+  }
   if (!snapshot.found) return `No solution connected all ${snapshot.client_count} clients within the search limits.`;
   const verdict = `All ${snapshot.clients_connected} clients are connected. The weakest link has ${formatMetric(margin)} dB of margin.`;
   return snapshot.search_complete ? verdict : verdict + ' Search incomplete.';
@@ -290,10 +299,10 @@ function meshVerdict(snapshot, margin) {
 function meshMetricTiles(snapshot, margin, band) {
   const hops = snapshot.client_pairs.reduce((largest, pair) => Math.max(largest, pair.hops), 0);
   return [
-    [`${snapshot.clients_connected}/${snapshot.client_count}`, 'Clients connected', ''],
+    [snapshot.client_count ? `${snapshot.clients_connected}/${snapshot.client_count}` : '—', 'Clients connected', ''],
     [String(snapshot.new_router_count), 'New routers needed', ''],
-    [formatMetric(margin) + ' dB', 'Weakest link · ' + band.label, 'margin-' + band.cls],
-    [String(hops), 'Largest client-to-client hop count', '']
+    [Number.isFinite(margin) ? formatMetric(margin) + ' dB' : '—', 'Weakest link' + (Number.isFinite(margin) ? ' · ' + band.label : ''), Number.isFinite(margin) ? 'margin-' + band.cls : ''],
+    [snapshot.client_count >= 2 ? String(hops) : '—', 'Largest client-to-client hop count', '']
   ];
 }
 
@@ -301,5 +310,6 @@ function meshTopology(snapshot) {
   return {sites: snapshot.route,
     links: snapshot.links.map(({source_id, target_id, distance_m, worst_margin_db}) =>
       ({source_id, target_id, distance_m, worst_margin_db})),
-    client_pairs: snapshot.client_pairs};
+    client_pairs: snapshot.client_pairs,
+    ...(snapshot.paint_coverage ? {paint_coverage: snapshot.paint_coverage} : {})};
 }

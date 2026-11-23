@@ -6,12 +6,13 @@ const vm = require('node:vm');
 
 const assets = join(__dirname, '../../assets/dashboard');
 const meshScript = readFileSync(join(assets, 'mesh_mode.js'), 'utf8');
+const paintScript = readFileSync(join(assets, 'mesh_paint.js'), 'utf8');
 const app = readFileSync(join(assets, 'app.js'), 'utf8');
 const parseCoordinates = app.slice(app.indexOf('function parseCoordinates('), app.indexOf('function validEndpointCoords('));
 
 function load(globals = {}) {
   const context = vm.createContext({validEndpointCoords: () => [59, 10], ...globals});
-  vm.runInContext(parseCoordinates + meshScript, context);
+  vm.runInContext(parseCoordinates + paintScript + meshScript, context);
   return context;
 }
 
@@ -36,6 +37,9 @@ test('plans can save a draft mesh, but search requires two distinct named client
   assert.equal(context.routeLocationsReady(), true);
   context.loadPlanningMode({mode: 'mesh', clients: [frank]});
   assert.equal(context.routeLocationsReady(), false);
+  vm.runInContext("meshPaint.cells = [[0, 0]]; loadPlanningMode({mode: 'mesh', clients: []});", context);
+  assert.equal(context.routeLocationsReady(), true);
+  vm.runInContext('meshPaint.cells = [];', context);
   const bob = {...frank, id: 'CL-two', name: 'Bob', longitude: 10.7};
   context.loadPlanningMode({mode: 'mesh', clients: [frank, bob]});
   assert.equal(context.routeLocationsReady(), true);
