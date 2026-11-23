@@ -221,8 +221,8 @@ objective** for how feasible alternatives are ranked.
 
 | Objective | What it prioritizes |
 | --- | --- |
-| **Fewest total routers** | Starts with the smallest total router count and prefers reuse when margins are comparable. This is the default. |
-| **Fewest new installations** | Use of existing infrastructure to reduce the number of new sites. |
+| **Fewest hops** | Starts with the route that needs the fewest hops, then prefers the route with fewer new routers when margins are comparable. This is the default. |
+| **Fewest new installations** | Keeps the number of routers that still have to be installed (sites placed by the search and your proposed P routers) as low as possible, even if the route needs more hops. |
 | **Minimum infrastructure cost** | A planning proxy based on installations and mast heights. |
 | **Maximum reliability** | Independent paths, then RF quality among equally redundant options. It can favor extra routers. |
 
@@ -265,7 +265,7 @@ summarizes the trade-off. **Only suggest sites near roads** adds the optional
 | **Maximum hops** | 7 links per endpoint-to-endpoint path, including backup paths. A direct route uses 1 hop and each intermediate router adds 1 hop. |
 
 When routes have the same clearance class and their weakest links fall in the
-same 1 dB margin band, **Fewest total routers** can prefer the route that needs
+same 1 dB margin band, **Fewest hops** can prefer the route that needs
 fewer new sites.
 
 Open **Advanced search limits** to adjust the search area, candidate grid or

@@ -595,7 +595,7 @@ function updatePlanStepSummaries(report=terrainReadiness){
   const routerSummary=$('section-summary-routers');
   if(routerSummary&&typeof candidates!=='undefined'&&candidates){const included=meshcoreRouters.filter(router=>['optional','required'].includes(routerPolicies.get(router.id)||router.policy)).length,manual=manualRouters.filter(router=>(router.policy||'optional')!=='excluded').length;routerSummary.textContent=included||manual?`${included} existing · ${manual} proposed by you`:meshcoreRouters.length?`${meshcoreRouters.length} found · none included`:'Planner proposes new sites';setStepState('router-setup',included||manual?'done':'todo');}
   if(rf&&$('section-summary-radio')){$('section-summary-radio').textContent=`${formatMetric(Number(rf.frequency_mhz),1)} MHz · ${diffractionModelName(rf.diffraction_model)}`;}
-  if(candidates&&$('section-summary-search')){const objective={minimum_routers:'Fewest routers',fewest_new_installations:'Fewest new installations',minimum_infrastructure:'Minimum infrastructure',maximum_reliability:'Maximum reliability'}[candidates.priority]||'Custom objective';const effort={quick:'quick',balanced:'balanced',thorough:'thorough'}[searchEffort]||searchEffort;$('section-summary-search').textContent=`${objective} · ${effort}${candidates.road_access_enabled?' · near roads':''}`;}
+  if(candidates&&$('section-summary-search')){const objective={minimum_routers:'Fewest hops',fewest_new_installations:'Fewest new installations',minimum_infrastructure:'Minimum infrastructure',maximum_reliability:'Maximum reliability'}[candidates.priority]||'Custom objective';const effort={quick:'quick',balanced:'balanced',thorough:'thorough'}[searchEffort]||searchEffort;$('section-summary-search').textContent=`${objective} · ${effort}${candidates.road_access_enabled?' · near roads':''}`;}
 }
 const coverageSectionIds=['display','range','handheld','runs'];
 function setCoverageSection(id,persist=true){if(!coverageSectionIds.includes(id))id='display';for(const sectionId of coverageSectionIds){const active=sectionId===id,panel=document.querySelector(`[data-coverage-panel="${sectionId}"]`),button=document.querySelector(`[data-coverage-section="${sectionId}"]`);if(panel)panel.hidden=!active;if(button)button.setAttribute('aria-pressed',String(active));}if(persist)try{localStorage.setItem('repeaternet.coverage-section',id);}catch{}}
@@ -785,7 +785,7 @@ function buildSettings(){
   const title=document.createElement('h3');title.textContent='Route preferences';
   intent.append(title);
   select(intent,candidates,'infrastructure_policy','Which sites can the route use?',[['existing_and_proposed','Use existing + proposed'],['existing_only','Existing only'],['proposed_only','Proposed only']]);
-  select(intent,candidates,'priority','Route objective',[['minimum_routers','Fewest total routers'],['fewest_new_installations','Fewest new installations'],['minimum_infrastructure','Minimum infrastructure cost'],['maximum_reliability','Maximum reliability']]);
+  select(intent,candidates,'priority','Route objective',[['minimum_routers','Fewest hops'],['fewest_new_installations','Fewest new installations'],['minimum_infrastructure','Minimum infrastructure cost'],['maximum_reliability','Maximum reliability']]);
   const routeLimits=document.createElement('div');routeLimits.className='fields';
   validatedSetting(routeLimits,candidates,'maximum_new_routers','Maximum new routers','maximum-new-routers',0,null,1);
   validatedSetting(routeLimits,candidates,'maximum_hops','Maximum hops','maximum-hops',1,null,1);
@@ -2679,7 +2679,7 @@ function renderAlternativeChoices(){
   const alternatives=result?.alternatives||[],panel=$('alternatives'),selector=$('alternative-select'),cards=$('alternative-cards');selector.replaceChildren();cards.replaceChildren();
   if(!alternatives.length){panel.hidden=true;return;}
   selector.value=result.active_alternative_id||alternatives.find(item=>item.selected)?.id||alternatives[0].id;
-  const objective={minimum_routers:'fewest routers',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'independent paths and RF quality before router count'}[candidates.priority]||'configured objective';
+  const objective={minimum_routers:'fewest hops',fewest_new_installations:'fewest new installations',minimum_infrastructure:'lowest infrastructure cost',maximum_reliability:'independent paths and RF quality before router count'}[candidates.priority]||'configured objective';
   const table=document.createElement('table'),head=document.createElement('thead'),body=document.createElement('tbody');table.className='alternative-table';table.setAttribute('aria-label','Route alternatives');head.innerHTML='<tr><th>Alternative</th><th>Existing · new</th><th>Primary length</th><th>Weakest link</th><th>Primary weakest</th><th>LOS-blocked hops</th><th>Independent paths</th></tr>';table.append(head,body);cards.append(table);
   for(const [index,item] of alternatives.entries()){
     const routers=`${item.router_count} ${item.router_count===1?'router':'routers'}`,weakest=Number.isFinite(item.minimum_margin_db)?`${item.minimum_margin_db.toFixed(1)} dB weakest`:'no margin';

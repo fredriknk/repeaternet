@@ -822,7 +822,7 @@ pub fn select_active_solution_index(
             )
             .map(|(index, ..)| index);
     }
-    // Fewest total routers starts with the shortest route. A longer route
+    // Fewest hops (minimum_routers) starts with the shortest route. A longer route
     // competes with it when it has the same clearance and margin band.
     let baseline = alternatives.iter().min_by(|a, b| {
         let (a_clear, a_margin) = primary_connection_quality(a);
