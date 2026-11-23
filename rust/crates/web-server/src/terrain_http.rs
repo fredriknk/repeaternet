@@ -408,7 +408,10 @@ pub async fn coverage(
     Query(query): Query<CoverageQuery>,
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
-    let locations = route_inputs::readiness_locations(&Value::Object(body), &app.defaults)?;
+    let plan = Value::Object(body);
+    let locations = route_inputs::readiness_locations(&plan, &app.defaults)?;
+    let mesh = route_inputs::mesh_mode(&plan)?;
+    let width = route_inputs::terrain_candidates(&plan, &app.defaults)?.corridor_width_m;
     let captured = workspace
         .clone()
         .run(app.clone(), move |app, key, session| {
@@ -423,7 +426,7 @@ pub async fn coverage(
         let resolution = (4.0 * terrain.resolution_m()).max(100.0);
         let count =
             ((start.distance_to(end) / resolution).ceil() + 1.0).clamp(2.0, 2001.0) as usize;
-        let line: Vec<_> = (0..count)
+        let line: Vec<_> = (0..if mesh { 0 } else { count })
             .map(|i| {
                 let f = i as f64 / (count - 1) as f64;
                 Point {
@@ -448,6 +451,20 @@ pub async fn coverage(
         if !gap.is_empty() {
             gaps.push(gap);
         }
+        let (area_samples, area_gaps) = if mesh {
+            let anchors: Vec<_> = locations
+                .iter()
+                .zip(&points)
+                .filter(|(site, _)| {
+                    site.kind == repeaternet_rf_core::SiteKind::Client
+                        || site.policy == repeaternet_optimizer::RouterPolicy::Required
+                })
+                .map(|(_, &point)| point)
+                .collect();
+            mesh_area_gaps(&terrain, &anchors, width)?
+        } else {
+            (0, 0)
+        };
         let uncovered = uncovered(&locations, &points, &elevations, terrain.bounds());
         let outlines = |tiles: &[GeoTiff]| {
             tiles
@@ -459,6 +476,8 @@ pub async fn coverage(
             "covered": uncovered.is_empty(),
             "uncovered_sites": uncovered,
             "line_gaps": gaps,
+            "area_samples": area_samples,
+            "area_gaps": area_gaps,
             "dtm_outlines": outlines(terrain.ground_tiles())?,
             "dom_outlines": outlines(terrain.surface_tiles())?,
             "surface_available": surface,
@@ -473,6 +492,55 @@ pub async fn coverage(
             Ok(Json(report))
         })
         .await
+}
+
+fn mesh_area_gaps(
+    terrain: &RasterTerrain,
+    anchors: &[Point],
+    width: f64,
+) -> ApiResult<(usize, usize)> {
+    let hull = repeaternet_terrain::corridor::MeshArea::new(anchors);
+    let bounds = anchors.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |[left, bottom, right, top], point| {
+            [
+                left.min(point.x),
+                bottom.min(point.y),
+                right.max(point.x),
+                top.max(point.y),
+            ]
+        },
+    );
+    let [left, bottom, right, top] = [
+        bounds[0] - width,
+        bounds[1] - width,
+        bounds[2] + width,
+        bounds[3] + width,
+    ];
+    let mut samples = Vec::new();
+    for row in 0..=32 {
+        for column in 0..=32 {
+            let point = Point {
+                x: left + (right - left) * f64::from(column) / 32.0,
+                y: bottom + (top - bottom) * f64::from(row) / 32.0,
+            };
+            if hull.distance_to(point) <= width {
+                samples.push(point);
+            }
+        }
+    }
+    let elevations = terrain
+        .sample(&samples, TerrainLayer::GroundDtm)
+        .map_err(terrain_invalid)?;
+    Ok((
+        samples.len(),
+        elevations.iter().filter(|value| !value.is_finite()).count(),
+    ))
 }
 
 pub fn ground(

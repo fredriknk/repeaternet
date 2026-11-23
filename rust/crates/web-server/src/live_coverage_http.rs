@@ -75,6 +75,7 @@ struct LiveSite {
 enum LiveSiteKind {
     EndpointA,
     EndpointB,
+    Client,
     Router,
 }
 
@@ -83,6 +84,7 @@ impl From<LiveSiteKind> for SiteKind {
         match kind {
             LiveSiteKind::EndpointA => Self::EndpointA,
             LiveSiteKind::EndpointB => Self::EndpointB,
+            LiveSiteKind::Client => Self::Client,
             LiveSiteKind::Router => Self::Router,
         }
     }

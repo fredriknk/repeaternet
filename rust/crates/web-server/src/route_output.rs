@@ -6,6 +6,9 @@ use repeaternet_terrain::Transformer;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+
+use crate::route_inputs::RouteInputs;
 
 #[derive(Serialize, Deserialize)]
 pub struct Alternative {
@@ -158,6 +161,8 @@ fn alternative(solution: &NetworkSolution, transform: &Transformer, complete: bo
         summary: json!({
             "id": alternative_id(solution), "name": solution.name,
             "router_count": solution.router_count(), "existing_router_count": solution.existing_router_count(),
+            "new_router_count": solution.new_router_count(),
+            "largest_hop_count": solution.client_paths.values().flatten().map(|path| path.len().saturating_sub(1)).max().unwrap_or(0),
             "proposed_router_count": solution.proposed_router_count(), "minimum_margin_db": solution.minimum_margin_db(),
             "primary_minimum_margin_db": solution.primary_links().map(LinkResult::worst_margin_db).reduce(f64::min),
             "primary_los_blocked_hops": solution.primary_links().filter(|link| !link.los_clear).count(),
@@ -175,9 +180,13 @@ fn alternative(solution: &NetworkSolution, transform: &Transformer, complete: bo
     }
 }
 
-pub fn build(result: OptimizationResult, transform: &Transformer, rf: &Value) -> RouteOutput {
+pub fn build(
+    result: OptimizationResult,
+    transform: &Transformer,
+    inputs: &RouteInputs,
+) -> RouteOutput {
     let complete = result.search_complete;
-    let alternatives: Vec<_> = result
+    let mut alternatives: Vec<_> = result
         .alternatives
         .iter()
         .map(|item| alternative(item, transform, complete))
@@ -186,10 +195,32 @@ pub fn build(result: OptimizationResult, transform: &Transformer, rf: &Value) ->
         "found": result.found(), "router_count": 0, "existing_router_count": 0, "proposed_router_count": 0,
         "route": [], "links": [], "diagnostics": result.diagnostics,
         "elapsed_seconds": result.elapsed.as_secs_f64(), "search_complete": complete,
-        "requested_path_count": 1, "achieved_path_count": 1, "rf_settings": rf,
+        "requested_path_count": 1, "achieved_path_count": 1, "rf_settings": inputs.rf_payload,
         "candidates": result.candidates.iter().map(|item| site(item, transform)).collect::<Vec<_>>(),
         "active_alternative_id": null, "alternatives": [],
     });
+    if inputs.mesh {
+        let names: BTreeMap<_, _> = inputs
+            .locations
+            .iter()
+            .map(|site| (site.id.as_str(), &site.name))
+            .collect();
+        for site in payload["candidates"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .chain(alternatives.iter_mut().flat_map(|alt| &mut alt.sites))
+        {
+            if let Some(name) = site["id"].as_str().and_then(|id| names.get(id)) {
+                site["name"] = json!(name);
+            }
+        }
+        payload["mode"] = json!("mesh");
+        payload["client_count"] = json!(inputs.client_count);
+        payload["clients_connected"] = json!(0);
+        payload["new_router_count"] = json!(0);
+        payload["client_pairs"] = json!([]);
+    }
     if let Some(index) = result.active_index {
         select(&mut payload, &alternatives, index);
     }
@@ -212,6 +243,32 @@ pub fn select(payload: &mut Value, alternatives: &[Alternative], index: usize) {
         "achieved_path_count",
     ] {
         payload[key] = active.summary[key].clone();
+    }
+    if payload["mode"] == "mesh" {
+        let margins: BTreeMap<_, _> = active
+            .links
+            .iter()
+            .filter_map(|link| {
+                let a = link["source_id"].as_str()?;
+                let b = link["target_id"].as_str()?;
+                Some(((a.min(b), a.max(b)), link["worst_margin_db"].as_f64()?))
+            })
+            .collect();
+        payload["client_pairs"] = json!(active.client_paths.iter().map(|path| {
+            let margin = path.windows(2).filter_map(|edge| {
+                let (a,b) = (edge[0].as_str(), edge[1].as_str());
+                margins.get(&(a.min(b), a.max(b))).copied()
+            }).reduce(f64::min);
+            json!({"from": path.first(), "to": path.last(), "path": path, "hops": path.len().saturating_sub(1), "worst_margin_db": margin})
+        }).collect::<Vec<_>>());
+        payload["clients_connected"] = json!(
+            active
+                .sites
+                .iter()
+                .filter(|site| site["kind"] == "client")
+                .count()
+        );
+        payload["new_router_count"] = active.summary["new_router_count"].clone();
     }
     payload["alternatives"] = json!(
         alternatives

@@ -84,9 +84,41 @@ worker threads. Terrain uploads use separate admission limits.
    restores a saved completed or stopped snapshot if the plan and route
    terrain fingerprints match.
 
+### Named-client mesh search
+
+The JSON plan stored by project-store accepts `mode: "endpoints"` (also the
+default when omitted) or `mode: "mesh"`. `clients` contains entries with a
+stable `CL-` ID, a name, WGS84 latitude and longitude, and `antenna_height_m`.
+A saved draft can contain fewer than two clients. Search and terrain planning
+require two distinct client locations. The A/B fields are kept when switching
+modes. Each mesh client uses the A radio profile with its own antenna height.
+
+Mesh requests use the standard optimization, terrain readiness, estimate and
+download endpoints. The shared projected `MeshArea` uses the convex hull of
+the clients and required routers. Candidate generation and terrain planning
+buffer it by the configured search width. Terrain downloads also include
+buffers around other included routers. Readiness checks sample the search
+area and report any terrain gaps separately from missing terrain at sites.
+
+`optimizer::connect_mesh` is the reusable connection step. It grows
+node-weighted Steiner subsets across a screened `RoutingGraph`, using
+several roots and charging generated routers once per installation. It
+explores alternate subsets and prunes optional routers. Per-pair paths
+enforce the hop limit and stop expansion at intermediate clients. The step
+ranks the subsets it finds by new-router count, weakest link and maximum
+pair hop count. It does not guarantee a global minimum. The optimizer
+rechecks selected installations at certification resolution and refines
+each moved router against every incident link before restoring profiles.
+
+Mesh result payloads add names, connected client and new-router counts, and
+`client_pairs` with site IDs, hops and weakest margin for each pair. Alternative
+selection updates these alongside the active sites and links. Plan JSON exports
+carry a current certified topology when available. Import uses the plan inputs.
+
 ### Live coverage
 
-1. `live_coverage.js` lists every endpoint and router on the map and sends one
+1. `live_coverage.js` lists the active endpoints or named clients and routers
+   on the map and sends one
    `POST /api/live-coverage` per site with its position, height, the handheld
    profile, view, radius and resolution. Radio settings come from the saved
    plan, so the dashboard flushes autosave first.
@@ -186,8 +218,7 @@ Leaflet CSS, then `style.css` (base), `meshcore.css`, `coverage.css`,
 `workspace.css` (shell, panels and Analysis) and `map.css`. After Leaflet,
 the deferred classic scripts load in order
 `main_view_navigation.js`, `coverage_raster.js`, `live_coverage.js`,
-`site_selection.js`, `app.js`
-and `coverage_inspection.js`.
+`site_selection.js`, `mesh_mode.js`, `app.js` and `coverage_inspection.js`.
 
 `siteSelection.ids` returns a snapshot of the selected site IDs in the current
 project. Call `toggle(id)`, `replace(ids)` or `clear()` on `siteSelection` to
@@ -201,6 +232,7 @@ to the map and Route sidebar selection panels. The optional
 ID snapshot to `run(ids)` and respects the edit lock. The registration returns
 a function that removes the action. Plan edits from these actions still use the
 shared history, invalidation and coverage refresh chain.
+
 Put new styles in the layer that owns the feature.
 
 Register a new asset and its content type in

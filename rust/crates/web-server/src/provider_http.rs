@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use geo::{BooleanOps, LineString, MultiPolygon, Polygon};
+use geo::{BooleanOps, Buffer, LineString, MultiPolygon, Polygon};
 use repeaternet_optimizer::Cancellation;
 use repeaternet_optimizer::InfrastructurePolicy;
 use repeaternet_providers::{
@@ -17,7 +17,8 @@ use repeaternet_providers::{
     },
 };
 use repeaternet_terrain::{
-    Bounds, GeoTiff, LonLat, Point, TerrainCrs, Transformer, corridor::corridor_geometry,
+    Bounds, GeoTiff, LonLat, Point, TerrainCrs, Transformer,
+    corridor::{MeshArea, corridor_geometry},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -36,8 +37,17 @@ pub async fn meshcore(
     workspace: Workspace,
     ObjectBody(body): ObjectBody,
 ) -> ApiResult<Json<Value>> {
-    let (a, b) = (endpoint(body.get("a"), "a")?, endpoint(body.get("b"), "b")?);
-    let width = body
+    let plan = Value::Object(body);
+    let mesh = route_inputs::mesh_mode(&plan)?;
+    let locations = if mesh {
+        route_inputs::mesh_clients(&plan, &Default::default(), true)?
+            .into_iter()
+            .map(|site| site.coordinate)
+            .collect()
+    } else {
+        vec![endpoint(plan.get("a"), "a")?, endpoint(plan.get("b"), "b")?]
+    };
+    let width = plan
         .get("corridor_width_m")
         .unwrap_or(&app.defaults["candidates"]["corridor_width_m"])
         .as_f64()
@@ -57,8 +67,20 @@ pub async fn meshcore(
                     format!("Could not load MeshCore routers from CoreScope: {error}"),
                 )
             })?;
-        let result = corescope::filter_corridor(&routers, a, b, width, chrono::Utc::now())
-            .map_err(terrain_invalid)?;
+        let now = chrono::Utc::now();
+        let result = if mesh {
+            let crs = TerrainCrs::for_wgs84_location(locations[0]).map_err(terrain_invalid)?;
+            let transform = Transformer::new(crs).map_err(terrain_invalid)?;
+            let points = project_points(&transform, &locations)?;
+            let area = MeshArea::new(&points);
+            corescope::filter_repeaters(&routers, now, |point| {
+                let distance = area.distance_to(transform.forward(point).ok()?);
+                (distance <= width).then_some(distance)
+            })
+        } else {
+            corescope::filter_corridor(&routers, locations[0], locations[1], width, now)
+        }
+        .map_err(terrain_invalid)?;
         Ok(Json(json!(result)))
     })
     .await
@@ -73,13 +95,25 @@ fn endpoint(value: Option<&Value>, name: &str) -> ApiResult<LonLat> {
     route_inputs::coordinate(&pair[0], &pair[1], name)
 }
 
-fn download_locations(body: &Value, policy: InfrastructurePolicy) -> ApiResult<Vec<LonLat>> {
-    let a = endpoint(body.get("a"), "a")?;
-    let b = endpoint(body.get("b"), "b")?;
-    if a == b {
-        return Err(ApiError::invalid("Place endpoints at different locations"));
-    }
-    let mut locations = vec![a, b];
+fn download_locations(
+    body: &Value,
+    policy: InfrastructurePolicy,
+) -> ApiResult<(Vec<LonLat>, Option<usize>)> {
+    let mesh = route_inputs::mesh_mode(body)?;
+    let mut locations = if mesh {
+        route_inputs::mesh_clients(body, &Default::default(), true)?
+            .into_iter()
+            .map(|item| item.coordinate)
+            .collect()
+    } else {
+        let a = endpoint(body.get("a"), "a")?;
+        let b = endpoint(body.get("b"), "b")?;
+        if a == b {
+            return Err(ApiError::invalid("Place endpoints at different locations"));
+        }
+        vec![a, b]
+    };
+    let mut optional = Vec::new();
     for (field, enabled, malformed) in [
         (
             "known_routers",
@@ -107,15 +141,19 @@ fn download_locations(body: &Value, policy: InfrastructurePolicy) -> ApiResult<V
                 }));
             }
             if enabled && router["policy"] != "excluded" {
-                locations.push(route_inputs::coordinate(
-                    &router["latitude"],
-                    &router["longitude"],
-                    "router",
-                )?);
+                let coordinate =
+                    route_inputs::coordinate(&router["latitude"], &router["longitude"], "router")?;
+                if mesh && router["policy"] != "required" {
+                    optional.push(coordinate);
+                } else {
+                    locations.push(coordinate);
+                }
             }
         }
     }
-    Ok(locations)
+    let mesh_hull_count = mesh.then_some(locations.len());
+    locations.extend(optional);
+    Ok((locations, mesh_hull_count))
 }
 
 #[derive(Deserialize)]
@@ -340,14 +378,29 @@ fn route_area(
     transform: &Transformer,
     locations: &[LonLat],
     width: f64,
+    mesh_hull_count: Option<usize>,
 ) -> ApiResult<(Vec<Point>, MultiPolygon<f64>)> {
-    let points = locations
+    let points = project_points(transform, locations)?;
+    let geometry = if let Some(count) = mesh_hull_count {
+        let mut polygons = vec![MeshArea::new(&points[..count]).buffered(width)];
+        polygons.extend(
+            points[count..]
+                .iter()
+                .map(|point| geo::Point::new(point.x, point.y).buffer(width)),
+        );
+        geo::unary_union(&polygons)
+    } else {
+        corridor_geometry(&points[..2], width, &points[2..]).map_err(terrain_invalid)?
+    };
+    Ok((points, geometry))
+}
+
+fn project_points(transform: &Transformer, locations: &[LonLat]) -> ApiResult<Vec<Point>> {
+    locations
         .iter()
         .map(|&site| transform.forward(site))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(terrain_invalid)?;
-    let corridor = corridor_geometry(&points[..2], width, &points[2..]).map_err(terrain_invalid)?;
-    Ok((points, corridor))
+        .map_err(terrain_invalid)
 }
 
 fn route_crs(
@@ -355,6 +408,7 @@ fn route_crs(
     context: &TerrainContext,
     locations: &[LonLat],
     width: f64,
+    mesh_hull_count: Option<usize>,
     choice: &SourceChoice,
 ) -> ApiResult<TerrainCrs> {
     if let Some(path) = ["dtm", "dom"]
@@ -381,7 +435,7 @@ fn route_crs(
     };
     let provisional = TerrainCrs::for_wgs84_location(center).map_err(terrain_invalid)?;
     let transform = Transformer::new(provisional).map_err(terrain_invalid)?;
-    let (_, geometry) = route_area(&transform, locations, width)?;
+    let (_, geometry) = route_area(&transform, locations, width, mesh_hull_count)?;
     let footprint = geographic_footprint(&transform, &geometry).map_err(terrain_invalid)?;
     registry
         .target_crs(&footprint, choice)
@@ -396,16 +450,23 @@ pub async fn preview_sources(
     let options = Options::read(body.get("terrain"))?;
     let choice = options.choice();
     let candidates = route_inputs::terrain_candidates(&body, &app.defaults)?;
-    let locations = download_locations(&body, candidates.infrastructure_policy)?;
+    let (locations, mesh_hull_count) = download_locations(&body, candidates.infrastructure_policy)?;
     let width = candidates.corridor_width_m;
     workspace
         .run(app, move |app, key, session| {
             let registry = app.provider_snapshot()?;
             require_choice(&registry, &choice)?;
             let context = TerrainContext::capture(app, key, session, false)?;
-            let crs = route_crs(&registry, &context, &locations, width, &choice)?;
+            let crs = route_crs(
+                &registry,
+                &context,
+                &locations,
+                width,
+                mesh_hull_count,
+                &choice,
+            )?;
             let transform = Transformer::new(crs).map_err(terrain_invalid)?;
-            let (_, geometry) = route_area(&transform, &locations, width)?;
+            let (_, geometry) = route_area(&transform, &locations, width, mesh_hull_count)?;
             let footprint = geographic_footprint(&transform, &geometry).map_err(terrain_invalid)?;
             let mut result =
                 json!(registry.describe_area(&footprint, options.include_dom, &choice));
@@ -421,6 +482,7 @@ async fn route_plan(
     mut body: Value,
     preparing: bool,
 ) -> ApiResult<Download> {
+    route_inputs::validate_plan_mode(&mut body)?;
     let options = Options::read(body.get("terrain"))?;
     if !(1.0..=1000.0).contains(&options.requested_resolution_m) {
         return Err(ApiError::invalid(
@@ -429,7 +491,7 @@ async fn route_plan(
     }
     let choice = options.choice();
     let candidates = route_inputs::terrain_candidates(&body, &app.defaults)?;
-    let locations = download_locations(&body, candidates.infrastructure_policy)?;
+    let (locations, mesh_hull_count) = download_locations(&body, candidates.infrastructure_policy)?;
     let width = candidates.corridor_width_m;
     let limits = app.terrain_limits;
     let requested_fingerprint = body
@@ -451,9 +513,16 @@ async fn route_plan(
         })
         .await?;
     tokio::task::spawn_blocking(move || {
-        let crs = route_crs(&registry, &context, &locations, width, &choice)?;
+        let crs = route_crs(
+            &registry,
+            &context,
+            &locations,
+            width,
+            mesh_hull_count,
+            &choice,
+        )?;
         let transform = Transformer::new(crs).map_err(terrain_invalid)?;
-        let (points, geometry) = route_area(&transform, &locations, width)?;
+        let (points, geometry) = route_area(&transform, &locations, width, mesh_hull_count)?;
         if choice.source != "auto" && !choice.fallback {
             let footprint = geographic_footprint(&transform, &geometry).map_err(terrain_invalid)?;
             if registry.rank(Product::Dtm, &footprint, &choice).is_empty() {
@@ -479,11 +548,14 @@ async fn route_plan(
                 crs,
                 bounds,
                 options.requested_resolution_m,
-                DownloadArea::Corridor {
-                    points: &points[..2],
-                    half_width_m: width,
-                    extra_points: &points[2..],
-                },
+                mesh_hull_count.map_or(
+                    DownloadArea::Corridor {
+                        points: &points[..2],
+                        half_width_m: width,
+                        extra_points: &points[2..],
+                    },
+                    |_| DownloadArea::Geometry(&geometry),
+                ),
                 PlanOptions {
                     auto_resolution: options.auto_resolution,
                     ..PlanOptions::default()

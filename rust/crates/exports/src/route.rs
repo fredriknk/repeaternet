@@ -41,7 +41,27 @@ pub fn write_route_csv(output: impl Write, route: &Value) -> Result<(), ExportEr
     let mut csv = csv::WriterBuilder::new()
         .terminator(csv::Terminator::CRLF)
         .from_writer(output);
-    csv.write_record(CSV_FIELDS)?;
+    let mesh = route["mode"] == "mesh";
+    let sites: HashMap<_, _> = rows(&route["route"])
+        .iter()
+        .map(|site| (id(site, "id"), site))
+        .collect();
+    let mut fields = CSV_FIELDS.to_vec();
+    if mesh {
+        fields.extend([
+            "from_name",
+            "from_kind",
+            "from_latitude",
+            "from_longitude",
+            "from_height_m",
+            "to_name",
+            "to_kind",
+            "to_latitude",
+            "to_longitude",
+            "to_height_m",
+        ]);
+    }
+    csv.write_record(fields)?;
     let decimal = |value: Option<f64>, precision| {
         value.map_or_else(String::new, |value| format!("{value:.precision$}"))
     };
@@ -53,7 +73,7 @@ pub fn write_route_csv(output: impl Write, route: &Value) -> Result<(), ExportEr
     for (i, link) in rows(&route["links"]).iter().enumerate() {
         let f = &link["forward"];
         let r = &link["reverse"];
-        csv.write_record([
+        let mut cells = vec![
             (i + 1).to_string(),
             id(link, "source_id").into(),
             id(link, "target_id").into(),
@@ -82,7 +102,22 @@ pub fn write_route_csv(output: impl Write, route: &Value) -> Result<(), ExportEr
             decimal(r["terminal_clutter_db"].as_f64(), 2),
             decimal(f["step_allowance_db"].as_f64(), 2),
             decimal(r["step_allowance_db"].as_f64(), 2),
-        ])?;
+        ];
+        if mesh {
+            for endpoint in ["source_id", "target_id"] {
+                let site = sites
+                    .get(id(link, endpoint))
+                    .ok_or_else(|| invalid("Mesh link references a missing site"))?;
+                cells.extend([
+                    id(site, "name").into(),
+                    id(site, "kind").into(),
+                    decimal(site["latitude"].as_f64(), 6),
+                    decimal(site["longitude"].as_f64(), 6),
+                    decimal(site["antenna_height_m"].as_f64(), 1),
+                ]);
+            }
+        }
+        csv.write_record(cells)?;
     }
     csv.flush()?;
     Ok(())
@@ -112,7 +147,13 @@ pub fn write_route_geojson(
     reverse: Option<Transform<'_>>,
 ) -> Result<(), ExportError> {
     let mut coordinates = HashMap::new();
-    write!(out, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
+    write!(out, "{{\"type\":\"FeatureCollection\",")?;
+    if route["mode"] == "mesh" {
+        write!(out, "\"mode\":\"mesh\",\"client_pairs\":")?;
+        serde_json::to_writer(&mut out, &route["client_pairs"])?;
+        write!(out, ",")?;
+    }
+    write!(out, "\"features\":[")?;
     for (index, site) in rows(&route["route"]).iter().enumerate() {
         let coord = if let Some([lon, lat]) = site_coordinate(site) {
             [Some(lon), Some(lat)]
@@ -148,9 +189,7 @@ pub fn write_route_geojson(
         if index > 0 {
             write!(out, ",")?;
         }
-        serde_json::to_writer(
-            &mut out,
-            &json!({
+        let mut feature = json!({
                 "type": "Feature", "geometry": {"type": "Point", "coordinates": coord},
                 "properties": {
                     "id": site["id"], "kind": site["kind"], "dtm_elevation_m": site["ground_elevation_m"],
@@ -158,8 +197,11 @@ pub fn write_route_geojson(
                     "antenna_absolute_elevation_m": absolute, "terrain_slope": site["terrain_slope"],
                     "site_quality": site["site_quality"],
                 },
-            }),
-        )?;
+        });
+        if let Some(name) = site.get("name") {
+            feature["properties"]["name"] = name.clone();
+        }
+        serde_json::to_writer(&mut out, &feature)?;
     }
     for link in rows(&route["links"]) {
         let coord = |key| {

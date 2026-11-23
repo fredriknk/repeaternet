@@ -337,6 +337,7 @@ mod tests {
             &exclusions,
             Some(&filter),
             &|| false,
+            None,
         )
         .unwrap();
         assert_eq!(counts, [8, 9]);
@@ -421,6 +422,7 @@ mod tests {
             &[],
             None,
             &|| false,
+            None,
         )
         .unwrap();
         let initial = generated.clone();
@@ -470,6 +472,7 @@ mod tests {
             &[],
             None,
             &|| false,
+            None,
         )
         .unwrap();
         assert!(dropped.len() > CHECKS_PER_CLIENT);

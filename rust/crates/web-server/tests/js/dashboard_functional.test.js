@@ -224,6 +224,7 @@ test('project transitions accept fractional mesh buffers and reveal a hidden inv
       setAttribute() {}, remove() { elements.delete(this.id); },
     }) },
     validEndpointCoords: () => true,
+    routeMode: 'endpoints',
     setWorkspace: id => destinations.push(id), setCoverageSection: id => destinations.push(id),
     syncCoverageLocks() {}, setHistoryButtons() {},
     busy: false, routePreflightBusy: false, coverageBusy: false,

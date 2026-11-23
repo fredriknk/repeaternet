@@ -10,6 +10,7 @@ function load(globals = {}) {
   const context = vm.createContext({
     TextDecoder, Math, JSON, Number, String, Object, Array, Float32Array, Uint8Array, Uint8ClampedArray, DataView, Set, Map,
     localStorage: { getItem() { return null; }, setItem() {} },
+    routeMode: 'endpoints', meshClients: [],
     ...globals,
   });
   vm.runInContext(source, context);

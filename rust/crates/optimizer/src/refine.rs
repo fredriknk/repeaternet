@@ -2,7 +2,7 @@
 
 use super::{Cancellation, OptimizationError, Search, Stage};
 use crate::parallel::for_each_unordered;
-use crate::{link_is_clear, pair, SiteOrigin};
+use crate::{link_is_clear, pair, NetworkSolution, SiteOrigin};
 use repeaternet_rf_core::{LinkResult, Point, RfError, Site, SiteKind, TerrainLayer};
 
 /// Ranking of a router position: clear hops first, then the weaker adjacent
@@ -15,6 +15,14 @@ fn position_score(left: &LinkResult, right: &LinkResult) -> Score {
         left.worst_margin_db().min(right.worst_margin_db()),
         left.minimum_fresnel_clearance_ratio
             .min(right.minimum_fresnel_clearance_ratio),
+    )
+}
+
+fn include_link(score: Score, link: &LinkResult) -> Score {
+    (
+        score.0 && link_is_clear(link),
+        score.1.min(link.worst_margin_db()),
+        score.2.min(link.minimum_fresnel_clearance_ratio),
     )
 }
 
@@ -88,8 +96,7 @@ impl Search<'_, '_> {
     fn best_position(
         &self,
         index: usize,
-        before: usize,
-        after: usize,
+        neighbors: &[usize],
         trial_id: &str,
         positions: &[Position],
     ) -> Result<Option<(Score, Site)>, OptimizationError> {
@@ -120,10 +127,14 @@ impl Search<'_, '_> {
                     Err(error) => Err(error.into()),
                 }
             };
-            Ok::<_, OptimizationError>(match (link(before)?, link(after)?) {
-                (Some(left), Some(right)) => Some((position_score(&left, &right), trial)),
-                _ => None,
-            })
+            let mut score = (true, f64::INFINITY, f64::INFINITY);
+            for &other in neighbors {
+                let Some(result) = link(other)? else {
+                    return Ok(None);
+                };
+                score = include_link(score, &result);
+            }
+            Ok::<_, OptimizationError>(Some((score, trial)))
         };
         let cancellation = self.hooks.cancellation;
         let cancelled = || cancellation.is_some_and(|poll| poll() != Cancellation::Continue);
@@ -196,7 +207,7 @@ impl Search<'_, '_> {
                     trial_id = format!("{}.{suffix}", self.sites[index].rf.id);
                 }
                 let Some((score, rf)) =
-                    self.best_position(index, before, after, &trial_id, &positions)?
+                    self.best_position(index, &[before, after], &trial_id, &positions)?
                 else {
                     continue;
                 };
@@ -222,5 +233,111 @@ impl Search<'_, '_> {
             }
         }
         Ok(moved)
+    }
+
+    /// Move each installed router as one site, checking all of its mesh links.
+    pub(super) fn refine_mesh(
+        &mut self,
+        alternatives: &mut [NetworkSolution],
+    ) -> Result<(), OptimizationError> {
+        if self.settings.refine_radius_m <= 0.0 || !self.generated_candidates {
+            return Ok(());
+        }
+        let anchors: Vec<_> = self
+            .sites
+            .iter()
+            .filter(|site| site.is_client() || site.is_required())
+            .map(|site| site.rf.position)
+            .collect();
+        let area = repeaternet_terrain::corridor::MeshArea::new(&anchors);
+        for solution in alternatives {
+            let total = solution.sites.len();
+            for slot in 0..total {
+                if self.hooks.cancelled() {
+                    return Ok(());
+                }
+                let id = solution.sites[slot].rf.id.clone();
+                let index = self.by_id[&id];
+                if !self.movable(index) {
+                    continue;
+                }
+                self.hooks
+                    .notify(Stage::RefiningRouterPositions, slot + 1, total);
+                let incident: Vec<_> = solution
+                    .links
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(link_index, link)| {
+                        let other = if link.source_id == id {
+                            &link.target_id
+                        } else if link.target_id == id {
+                            &link.source_id
+                        } else {
+                            return None;
+                        };
+                        Some((link_index, self.by_id[other]))
+                    })
+                    .collect();
+                let neighbors: Vec<_> = incident.iter().map(|&(_, node)| node).collect();
+                let current = incident
+                    .iter()
+                    .fold((true, f64::INFINITY, f64::INFINITY), |score, &(edge, _)| {
+                        include_link(score, &solution.links[edge])
+                    });
+                let mut positions = self.refinement_positions(self.sites[index].rf.position)?;
+                positions.retain(|&(point, ..)| {
+                    area.distance_to(point) <= self.settings.corridor_width_m
+                        && !crate::candidates::excluded(point, &self.exclusions)
+                });
+                let trial_id = format!("{id}.{}", self.sites.len());
+                let Some((score, rf)) =
+                    self.best_position(index, &neighbors, &trial_id, &positions)?
+                else {
+                    continue;
+                };
+                if score <= current || score.1 < current.1 || self.hooks.cancelled() {
+                    continue;
+                }
+                let mut site = self.sites[index].clone();
+                site.rf = rf;
+                let new_index = self.sites.len();
+                self.by_id.insert(trial_id.clone(), new_index);
+                self.sites.push(site.clone());
+                let hops: Vec<_> = neighbors
+                    .iter()
+                    .map(|&node| pair(node, new_index))
+                    .collect();
+                self.certify_unordered(&hops, Stage::RefiningRouterPositions)?;
+                let Some(links) = hops
+                    .iter()
+                    .map(|key| self.links.get(key))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                let score = links
+                    .iter()
+                    .fold((true, f64::INFINITY, f64::INFINITY), |score, link| {
+                        include_link(score, link)
+                    });
+                if score <= current || score.1 < current.1 {
+                    continue;
+                }
+                for ((edge, _), link) in incident.into_iter().zip(links) {
+                    solution.links[edge] = link.clone();
+                }
+                solution.sites[slot] = site;
+                for node in solution
+                    .router_ids
+                    .iter_mut()
+                    .chain(solution.client_paths.values_mut().flatten().flatten())
+                {
+                    if *node == id {
+                        node.clone_from(&trial_id);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

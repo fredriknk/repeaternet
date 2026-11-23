@@ -8,3 +8,4 @@ require('./dashboard_functional.test.js');
 require('./main_view_navigation.test.js');
 require('./repeater_roads.test.js');
 require('./site_selection.test.js');
+require('./mesh_mode.test.js');

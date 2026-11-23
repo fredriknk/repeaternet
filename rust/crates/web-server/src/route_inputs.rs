@@ -28,6 +28,8 @@ pub struct Location {
 
 pub struct RouteInputs {
     pub plan: Value,
+    pub mesh: bool,
+    pub client_count: usize,
     pub locations: Vec<Location>,
     pub rf: RfSettings,
     pub rf_payload: Value,
@@ -359,19 +361,113 @@ pub(crate) fn coordinate(lat: &Value, lon: &Value, name: &str) -> ApiResult<LonL
     }
 }
 
+pub(crate) fn mesh_mode(plan: &Value) -> ApiResult<bool> {
+    match plan.get("mode").and_then(Value::as_str) {
+        None if plan.get("mode").is_none() => Ok(false),
+        Some("endpoints") => Ok(false),
+        Some("mesh") => Ok(true),
+        _ => Err(ApiError::invalid("Mode must be endpoints or mesh")),
+    }
+}
+
+pub(crate) fn validate_plan_mode(plan: &mut Value) -> ApiResult<()> {
+    if mesh_mode(plan)? || plan.get("clients").is_some() {
+        mesh_clients(plan, &AntennaSettings::default(), false)?;
+    }
+    if let Some(fields) = plan.as_object_mut() {
+        fields.remove("mesh_topology");
+    }
+    Ok(())
+}
+
+pub(crate) fn mesh_clients(
+    plan: &Value,
+    antenna: &AntennaSettings,
+    for_search: bool,
+) -> ApiResult<Vec<Location>> {
+    let list = plan["clients"]
+        .as_array()
+        .ok_or_else(|| ApiError::invalid("Clients must be a list"))?;
+    if for_search && list.len() < 2 {
+        return Err(ApiError::invalid("Add at least two clients to find a mesh"));
+    }
+    let mut ids = HashSet::new();
+    let mut points = HashSet::new();
+    list.iter()
+        .map(|item| {
+            let id = item["id"]
+                .as_str()
+                .filter(|id| {
+                    id.starts_with("CL-")
+                        && id.len() > 3
+                        && id.len() <= 64
+                        && id
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                })
+                .ok_or_else(|| ApiError::invalid("Each client needs a valid id"))?;
+            if !ids.insert(id) {
+                return Err(ApiError::invalid("Client ids must be unique"));
+            }
+            let name = item["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.chars().count() <= 80
+                        && !name.chars().any(char::is_control)
+                })
+                .ok_or_else(|| {
+                    ApiError::invalid("Each client needs a name of up to 80 characters")
+                })?;
+            let coordinate = coordinate(&item["latitude"], &item["longitude"], name)?;
+            let key = [coordinate.latitude, coordinate.longitude].map(|v| (v + 0.0).to_bits());
+            if !points.insert(key) {
+                return Err(ApiError::invalid("Place clients at different locations"));
+            }
+            let height = number(&item["antenna_height_m"])
+                .filter(|v| (0.1..=1000.0).contains(v))
+                .ok_or_else(|| {
+                    ApiError::invalid(format!(
+                        "{name} antenna height must be between 0.1 and 1,000 m"
+                    ))
+                })?;
+            Ok(Location {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                coordinate,
+                kind: SiteKind::Client,
+                origin: SiteOrigin::Optimized,
+                policy: RouterPolicy::Optional,
+                height,
+                height_override: true,
+                terminal_clutter: antenna.terminal_clutter,
+            })
+        })
+        .collect()
+}
+
 fn locations(
     plan: &Value,
     rf: &RfSettings,
     policy: InfrastructurePolicy,
 ) -> ApiResult<(Vec<Location>, usize)> {
     let clutter_overrides = router_clutter_overrides(plan)?;
-    let mut locations = Vec::new();
+    let mesh = mesh_mode(plan)?;
+    let mut locations = if mesh {
+        mesh_clients(plan, &rf.endpoint_a, true)?
+    } else {
+        Vec::new()
+    };
     let mut ids = HashSet::new();
     let mut excluded_known = 0;
     for (key, id, kind, antenna) in [
         ("a", "A", SiteKind::EndpointA, &rf.endpoint_a),
         ("b", "B", SiteKind::EndpointB, &rf.endpoint_b),
-    ] {
+    ]
+    .into_iter()
+    .filter(|_| !mesh)
+    {
         let fields = plan[key]
             .as_array()
             .filter(|values| values.len() == 2)
@@ -552,6 +648,7 @@ pub fn readiness_locations(plan: &Value, defaults: &Value) -> ApiResult<Vec<Loca
 }
 
 pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
+    validate_plan_mode(&mut plan)?;
     let rf_payload = merged(defaults, &plan, "rf")?;
     let rf = rf(&rf_payload)?;
     let candidate_values = merged(defaults, &plan, "candidates")?;
@@ -568,16 +665,22 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         }
     };
     let candidates = effort.resolve(&requested);
+    let mesh = mesh_mode(&plan)?;
     let (locations, excluded_known) = locations(&plan, &rf, candidates.infrastructure_policy)?;
-    if locations[0].coordinate == locations[1].coordinate {
+    if !mesh && locations[0].coordinate == locations[1].coordinate {
         return Err(ApiError::invalid("Place endpoints at different locations"));
     }
-    let fixed = &locations[2..];
-    if fixed
+    let client_count = locations
         .iter()
-        .filter(|site| site.policy == RouterPolicy::Required)
-        .count()
-        >= candidates.maximum_hops
+        .take_while(|site| site.kind != SiteKind::Router)
+        .count();
+    let fixed = &locations[client_count..];
+    if !mesh
+        && fixed
+            .iter()
+            .filter(|site| site.policy == RouterPolicy::Required)
+            .count()
+            >= candidates.maximum_hops
     {
         return Err(ApiError::invalid(
             "Increase Maximum hops to fit all required routers between the endpoints",
@@ -605,6 +708,8 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
     });
     Ok(RouteInputs {
         plan,
+        mesh,
+        client_count,
         locations,
         rf,
         rf_payload,
@@ -615,6 +720,30 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_validates_a_draft_and_uses_each_named_clients_height() {
+        let defaults = crate::catalog::dashboard_defaults();
+        let mut plan = json!({
+            "mode": "mesh",
+            "clients": [
+                {"id": "CL-1", "name": "Frank", "latitude": 59.9, "longitude": 10.7, "antenna_height_m": 1.5},
+                {"id": "CL-2", "name": "Bob", "latitude": 59.95, "longitude": 10.8, "antenna_height_m": 3},
+                {"id": "CL-3", "name": "Alice", "latitude": 59.96, "longitude": 10.8, "antenna_height_m": 2}
+            ],
+            "mesh_topology": {"sites": []}
+        });
+        let inputs = parse(plan.clone(), &defaults).unwrap();
+        assert!(inputs.mesh);
+        assert_eq!(inputs.client_count, 3);
+        assert_eq!(inputs.locations[1].name, "Bob");
+        assert_eq!(inputs.locations[1].height, 3.0);
+        assert_eq!(inputs.locations[1].kind, SiteKind::Client);
+        assert!(inputs.plan.get("mesh_topology").is_none());
+        plan["clients"].as_array_mut().unwrap().truncate(1);
+        assert!(validate_plan_mode(&mut plan).is_ok());
+        assert!(parse(plan, &defaults).is_err());
+    }
 
     #[test]
     fn legacy_router_limit_loads_with_new_defaults() {

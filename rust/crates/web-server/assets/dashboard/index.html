@@ -16,6 +16,7 @@
     <script defer src="/assets/coverage_raster.js"></script>
     <script defer src="/assets/live_coverage.js"></script>
     <script defer src="/assets/site_selection.js"></script>
+    <script defer src="/assets/mesh_mode.js"></script>
     <script defer src="/assets/app.js"></script>
     <script defer src="/assets/coverage_inspection.js"></script>
   </head>
@@ -121,8 +122,10 @@
         </div>
         <div class="plan-steps">
           <div class="plan-step" data-step="endpoint-setup">
-            <button type="button" class="plan-step-header" data-plan-section="endpoint-setup" aria-expanded="false" aria-controls="endpoint-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">1</span><span class="step-copy"><strong>Endpoints</strong><small id="section-summary-endpoints">Set start and destination</small></span><span class="step-chevron" aria-hidden="true"></span></button>
+            <button type="button" class="plan-step-header" data-plan-section="endpoint-setup" aria-expanded="false" aria-controls="endpoint-setup"><span class="step-index" data-step-state="todo" aria-hidden="true">1</span><span class="step-copy"><strong id="route-site-step-label">Endpoints</strong><small id="section-summary-endpoints">Set start and destination</small></span><span class="step-chevron" aria-hidden="true"></span></button>
             <section id="endpoint-setup" class="plan-step-body" hidden>
+          <label>Planning mode<select id="planning-mode" data-map-edit><option value="endpoints">Endpoints (A→B)</option><option value="mesh">Mesh</option></select></label>
+          <div id="endpoint-fields">
           <p class="hint">Select A or B, then click its location on the map. You can also drag either pin or enter latitude and longitude below.</p>
           <div class="endpoint">
             <button data-place="a" aria-label="Place start point on map" title="Click, then click the map to place A" class="pin">A</button>
@@ -136,6 +139,15 @@
           </div>
           <button id="edit-endpoint-b" type="button" data-map-edit>Edit endpoint B</button>
           <p id="b-error" class="field-error" hidden></p>
+          </div>
+          <div id="mesh-client-fields" hidden>
+            <ul id="mesh-client-list" class="mesh-client-list" aria-label="Clients"></ul>
+            <div class="map-editor-actions">
+              <button type="button" id="add-client-map" data-place="client" aria-pressed="false" data-map-edit>Add on map</button>
+              <button type="button" id="add-client-coordinate" data-map-edit>Add by coordinates</button>
+            </div>
+            <div id="mesh-client-editor" hidden></div>
+          </div>
             </section>
           </div>
           <div class="plan-step" data-step="terrain-setup">
@@ -267,7 +279,7 @@
           <div id="coverage-section-range" data-coverage-panel="range" hidden>
             <fieldset class="live-source-groups">
               <legend>Show coverage for</legend>
-              <label class="check-line"><input id="live-src-endpoints" type="checkbox" data-display-only checked> Endpoints A and B</label>
+              <label class="check-line"><input id="live-src-endpoints" type="checkbox" data-display-only checked> <span id="live-terminal-source-label">Endpoints A and B</span></label>
               <label class="check-line"><input id="live-src-proposed" type="checkbox" data-display-only checked> Proposed routers</label>
               <label class="check-line"><input id="live-src-route" type="checkbox" data-display-only checked> Routers in the selected route</label>
               <label class="check-line"><input id="live-src-existing" type="checkbox" data-display-only checked> Existing routers included in the search</label>
@@ -520,6 +532,7 @@
             <div class="map-tool-group" role="group" aria-label="Place sites">
               <button type="button" data-place="a" aria-pressed="false">Set A</button>
               <button type="button" data-place="b" aria-pressed="false">Set B</button>
+              <button type="button" data-place="client" aria-pressed="false" hidden>Add client</button>
               <button type="button" data-place="router" aria-pressed="false">Add router</button>
               <button type="button" id="cancel-map-mode" hidden>Cancel</button>
             </div>
@@ -594,6 +607,7 @@
             <div class="map-legend-grid">
               <div>
                 <span><i class="legend-endpoints"></i> Endpoints A / B</span>
+                <span id="mesh-client-legend" hidden><i class="legend-client"></i> Named client</span>
                 <span><i class="legend-site legend-manual"><b>P1</b></i> Your proposed router (also in route)</span>
                 <span><i class="legend-site legend-proposed"><b>R1</b></i> New site found by search</span>
                 <span><i class="legend-site legend-existing"><b>Hill</b></i> MeshCore router in route</span>
@@ -645,6 +659,13 @@
               <div id="alternative-cards" class="alternative-cards"></div>
             </details>
           </div>
+          <section id="mesh-pairs" hidden aria-labelledby="mesh-pairs-title">
+            <h3 id="mesh-pairs-title">Client pairs</h3>
+            <div class="table-scroll"><table aria-labelledby="mesh-pairs-title">
+              <thead><tr><th scope="col">Path</th><th scope="col">Hops</th><th scope="col">Weakest margin</th></tr></thead>
+              <tbody id="mesh-pair-rows"></tbody>
+            </table></div>
+          </section>
           <div class="analysis-detail-grid">
           <details id="hops-disclosure" open hidden>
             <summary>Links <span class="hint">· select a row to show its terrain profile</span></summary>

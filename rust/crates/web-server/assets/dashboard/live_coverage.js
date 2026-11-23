@@ -307,7 +307,9 @@ function liveCoverageSites() {
     sites.push(site);
   };
   const routerHeight = rf?.router?.height_agl_m ?? 3;
-  if (sources.endpoints) {
+  if (sources.endpoints && routeMode === 'mesh') {
+    meshClients.forEach(client => add(meshClientCoverageSite(client)));
+  } else if (sources.endpoints) {
     for (const name of ['a', 'b']) {
       const point = validEndpointCoords(name);
       if (point) add({slot: `endpoint:${name}`, id: name.toUpperCase(), label: name.toUpperCase(), group: 'Endpoint',
@@ -320,7 +322,8 @@ function liveCoverageSites() {
       antenna_height_m: liveCoverageSiteHeight(router.antenna_height_m, routerHeight), terminal_clutter: router.terminal_clutter}));
   }
   if (sources.route && result?.found && !resultStale) {
-    const active = result.alternatives?.find(item => item.id === result.active_alternative_id)?.route || result.route || [];
+    const active = result.mode === 'mesh' ? result.route || []
+      : result.alternatives?.find(item => item.id === result.active_alternative_id)?.route || result.route || [];
     for (const site of active) {
       if (['endpoint_a', 'endpoint_b', 'client'].includes(site.kind)) continue;
       const known = site.origin === 'known';
@@ -504,7 +507,10 @@ function proposedMeshSites(drag){
       longitude:moving?drag.latlng.lng:site.longitude,antenna_height_m:height,
       terminal_clutter:site.terminal_clutter},isProposed});
   };
-  for(const key of ['a','b']){
+  if(routeMode==='mesh')for(const client of meshClients){
+    add(meshClientCoverageSite(client),client.id,'client',client.antenna_height_m);
+  }
+  for(const key of routeMode==='mesh'?[]:['a','b']){
     const point=validEndpointCoords(key);
     if(point)add({latitude:point[0],longitude:point[1]},key.toUpperCase(),'endpoint_'+key,rf['endpoint_'+key].height_agl_m);
   }

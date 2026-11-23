@@ -358,14 +358,24 @@ pub fn filter_corridor(
             return Err(invalid("Route coordinates are outside WGS84 bounds"));
         }
     }
+    filter_repeaters(repeaters, now, |point| {
+        within_corridor_latlon(point, a, b, width_m).then(|| distance_to_segment_m(point, a, b))
+    })
+}
+
+/// Filter by an area-specific distance function, with the usual router metadata.
+pub fn filter_repeaters(
+    repeaters: &[CoreScopeRepeater],
+    now: DateTime<Utc>,
+    distance_for: impl Fn(LonLat) -> Option<f64>,
+) -> Result<CorridorRepeaters> {
     let mut routers = Vec::new();
     for repeater in repeaters {
         let point = LonLat {
             longitude: repeater.longitude,
             latitude: repeater.latitude,
         };
-        if within_corridor_latlon(point, a, b, width_m) {
-            let distance = distance_to_segment_m(point, a, b);
+        if let Some(distance) = distance_for(point) {
             if !distance.is_finite() {
                 return Err(response_error(PROVIDER, "invalid corridor distance"));
             }
