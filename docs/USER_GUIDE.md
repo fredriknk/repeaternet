@@ -200,8 +200,8 @@ set **Height AGL · m**, **Gain · dBi** and **Feed loss · dB** for **Endpoint 
 **Endpoint B** and **Repeaters**. AGL is height above ground level. Each role
 also has a **Terminal clutter** setting. The default is **None**. Choose
 **Nearby trees and buildings (P.2108 from DOM)** to use local surface height
-around the site. On a proposed or MeshCore router, use **Terminal clutter**
-in its sidebar row or map popup to override the repeater default for that site.
+around the site. On a proposed or MeshCore router, open **Edit site** from the
+sidebar or right-click the map marker to override the repeater default.
 
 Under **Propagation model**, the default **Diffraction model** is
 **Delta-Bullington**. You can choose **Bullington** (the previous default) or
@@ -302,15 +302,16 @@ coordinates use latitude, longitude to six decimals.
 
 ![Map toolbar with placement, fit, edit history and candidate controls](images/map-toolbar.png)
 
-![Right-click menu with endpoint, proposed router and coordinate actions](images/map-context-menu.png)
+![Right-click menu with placement, handheld probe and coordinate actions](images/map-context-menu.png)
 
 - Click a site or link, or press **Enter** or **Space** on its focused map
   marker or line. The popup and the map details panel show the same readings.
   Select **Show in analysis** in either place to open that site or link.
 - Right-click or long-press a site, or focus it and press **Shift+F10**, to
-  edit its name, antenna height, gain and terminal clutter. Terminal clutter is
-  a local loss in dB applied to links at that site. For proposed routers, you
-  can also change search policy, enter new coordinates or remove the router.
+  edit its name, antenna height, gain and terminal clutter. With P.2108 enabled,
+  the engine estimates local loss from nearby trees and buildings. For proposed
+  routers, you can also change search policy, enter new coordinates or remove
+  the router.
   Editing a search-found site adds it to the plan as a proposed router.
   Right-click a link to choose which of its two sites to edit. **Esc** closes
   the popup and returns focus to the map object.
@@ -322,6 +323,11 @@ coordinates use latitude, longitude to six decimals.
   routers, including optional routers outside the certified route. These links
   update as you drag a marker and stay on the map after release. Click one to
   see its margin and open its terrain profile in **Analysis**.
+- With live or saved coverage visible, right-click a location and choose
+  **Analyse links from here**. The temporary handheld probe shows the predicted
+  margin and distance to each usable site. Select **Show profile** for an
+  elevation profile. **Close** or **Esc** clears the probe. **Add proposed
+  router** or **Add coverage target** saves the location to the project.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
@@ -353,7 +359,9 @@ marks proposed and MeshCore routers used by the route.
 
 ![Route-site details popup with coordinates, radio assumptions and an Analysis button](images/map-route-site.png)
 
-![Map legend showing endpoint and router markers, margin bands and stale links](images/map-legend.png)
+![Map legend showing site markers, route links, proposed mesh links and probe links](images/map-legend.png)
+
+![Temporary handheld probe with predicted links and margins](images/map-coverage-probe.png)
 
 ![Layers control expanded with five basemaps and five coverage overlays](images/map-layer-control.png)
 

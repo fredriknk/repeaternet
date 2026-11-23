@@ -37,7 +37,7 @@ function enterCoverageInspect(){
   setInteractionMode(interactionMode==='inspect-coverage'?'browse':'inspect-coverage');
 }
 
-async function waitForInspection(jobId,requestId,signal){
+async function waitForInspection(jobId,requestId,signal,showStatus=setCoverageStatus){
   while(requestId===inspectionRequest){
     const job=await api(`/api/coverage/inspect/${encodeURIComponent(jobId)}`,{signal});
     if(requestId!==inspectionRequest)return null;
@@ -49,7 +49,7 @@ async function waitForInspection(jobId,requestId,signal){
     if(job.state==='failed')throw Error(job.stage);
     if(['cancelled','superseded'].includes(job.state)){activeInspectionId=null;return null;}
     const client=(coverageDisplayInfo||coverageJob)?.settings?.client||coverageSettings.client;
-    setCoverageStatus(`${job.stage} · ${job.source_count} router link(s) · client height ${client.height_agl_m} m${(coverageDisplayInfo||coverageJob)?.stale?' · saved historical run assumptions':''}`);
+    showStatus(`${job.stage} · ${job.source_count} router link(s) · client height ${client.height_agl_m} m${(coverageDisplayInfo||coverageJob)?.stale?' · saved historical run assumptions':''}`);
     await new Promise((resolve,reject)=>{const done=()=>{signal.removeEventListener('abort',abort);resolve();},abort=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);reject(new DOMException('Aborted','AbortError'));},timer=setTimeout(done,250);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();});
   }
   return null;
@@ -149,3 +149,205 @@ function drawCoverageInspectionProfile(link){
 }
 
 $('coverage-inspect').onclick=enterCoverageInspect;
+
+
+let coverageProbe=null;
+
+function mapProbeContext(){
+  const display=coverageDisplayInfo||coverageJob;
+  if(map.hasLayer(predictedCoverageLayer)&&predictedCoverageLayer.getLayers().length&&
+    (display?.preview||display?.state==='complete')&&coverageRouteReady()&&display.route_current!==false){
+    return {kind:'saved',display,client:display.settings.client,mode:coverageSettings.mode};
+  }
+  if(liveCoverage.layer&&map.hasLayer(liveCoverage.layer)&&liveCoverageVisibleRasters().length){
+    return {kind:'live',client:clone(coverageSettings.client),mode:liveCoverage.settings.mode};
+  }
+  return null;
+}
+function appendMapProbeAction(menu,point){
+  if(!mapProbeContext())return;
+  menu.append(mapPopupButton('Analyse links from here',()=>{
+    map.closePopup(mapContextPopup);
+    void openCoverageProbe(point);
+  }));
+}
+async function openCoverageProbe(point){
+  const context=mapProbeContext();
+  if(!context||mapEditsLocked())return;
+  if(interactionMode!=='browse')setInteractionMode('browse');
+  closeMapSelection();
+  const controller=new AbortController(),layer=L.layerGroup().addTo(map);
+  const probe={...context,point,controller,layer,panels:[],projectId:projectInfo?.active_id,rows:[]};
+  coverageProbe=probe;
+  L.circleMarker(point,{radius:8,color:'#233d70',fillColor:'#fff',fillOpacity:1,weight:3,interactive:false}).addTo(layer);
+  showMapDetails('Handheld probe',point,()=>map.getContainer(),content=>appendCoverageProbe(content,probe),
+    ()=>clearCoverageProbe(probe));
+  try{
+    const rows=probe.kind==='saved'?await savedProbeLinks(probe):await liveProbeLinks(probe);
+    if(coverageProbe!==probe||!rows)return;
+    probe.rows=rows.sort((a,b)=>b.margin-a.margin);
+    for(const row of probe.rows){
+      const style=routeLinkMapStyle({valid:true,worst_margin_db:row.margin},false);
+      L.polyline([mapPoint(row.site),point],{...style,weight:3,dashArray:'8 4 2 4',interactive:false}).addTo(layer);
+    }
+    updateCoverageProbe(probe,probe.rows.length?'':probe.message||'No usable links at this location.');
+  }catch(error){
+    if(coverageProbe===probe&&error.name!=='AbortError')updateCoverageProbe(probe,error.message);
+  }
+}
+function clearCoverageProbe(probe){
+  if(coverageProbe!==probe)return;
+  coverageProbe=null;
+  probe.controller.abort();
+  probe.profileController?.abort();
+  if(probe.kind==='saved'){
+    inspectionRequest++;
+    cancelActiveInspection();
+  }
+  probe.layer.remove();
+}
+function appendCoverageProbe(content,probe){
+  appendMapFacts(content,[
+    ['Coordinates',coordinateLabel([probe.point.lat,probe.point.lng])],
+    ['Handheld height · m',formatMetric(probe.client.height_agl_m)],
+    ['Handheld gain · dBi',formatMetric(probe.client.gain_dbi)]
+  ]);
+  const status=mapText('p','Checking links…'),list=document.createElement('div'),actions=document.createElement('div');
+  status.setAttribute('role','status');
+  actions.className='map-editor-actions';
+  actions.append(
+    mapEditControl(mapPopupButton('Add proposed router',()=>{
+      if(mapEditsLocked())return;
+      const router=addManualRouterAt(probe.point.lat,probe.point.lng);
+      if(router)mapSiteElement(router.id)?.focus({preventScroll:true});
+    })),
+    mapEditControl(mapPopupButton('Add coverage target',async()=>{
+      if(mapEditsLocked()||probe.addingTarget)return;
+      probe.addingTarget=true;
+      try{
+        await savePointCoverageTarget(probe.point.lat,probe.point.lng,'Coverage target');
+        if(coverageProbe===probe){
+          closeMapSelection(true);
+          setMapHint('Coverage target saved.',true);
+        }
+      }catch(error){
+        if(coverageProbe===probe)updateCoverageProbe(probe,error.message);
+      }finally{
+        probe.addingTarget=false;
+      }
+    }))
+  );
+  content.append(status,list,actions);
+  probe.panels.push({status,list});
+}
+function updateCoverageProbe(probe,message){
+  for(const {status,list} of probe.panels){
+    status.textContent=message;
+    status.hidden=!message;
+    list.replaceChildren();
+    for(const row of probe.rows){
+      const item=document.createElement('article'),overview=document.createElement('div'),profileBody=document.createElement('div');
+      overview.className='map-probe-link';
+      overview.append(mapText('strong',row.label),marginPill(row.margin),
+        mapText('span',formatMetric(row.distance/1000,2)+' km'),
+        mapPopupButton('Show profile',()=>void openCoverageProbeProfile(probe,row,profileBody)));
+      item.append(overview,profileBody);
+      list.append(item);
+    }
+  }
+  resizeCoverageProbePopup();
+}
+function resizeCoverageProbePopup(){
+  const focused=document.activeElement;
+  const popup=mapObjectPopup;
+  const restore=popup?.getElement()?.contains(focused);
+  popup?.update();
+  if(restore&&focused.checkVisibility())focused.focus({preventScroll:true});
+  keepMapDetailsInView();
+}
+function coverageProbeMargin(mode,source){
+  if(mode==='downlink')return source.valid_downlink?source.downlink_margin_db:null;
+  if(mode==='uplink')return source.valid_uplink?source.uplink_margin_db:null;
+  return source.valid_two_way?source.two_way_margin_db:null;
+}
+function coverageProbeLabel(site){
+  return findMapSite(site.id)?.label||site.name||routeSiteLabel(site.id);
+}
+async function savedProbeInspection(probe,sourceId,signal){
+  const requestId=++inspectionRequest;
+  cancelActiveInspection();
+  const settings=probe.display.settings;
+  const payload=coveragePayload(settings,probe.display.source_height_overrides);
+  if(!probe.display.preview)payload.coverage_job_id=probe.display.job_id;
+  if(sourceId)payload.profile_source_id=sourceId;
+  payload.latitude=probe.point.lat;
+  payload.longitude=probe.point.lng;
+  const isCurrent=()=>coverageProbe===probe&&requestId===inspectionRequest&&!signal.aborted;
+  const job=await startCurrentInspection(payload,isCurrent);
+  if(!job||!isCurrent())return null;
+  activeInspectionId=job.job_id;
+  return waitForInspection(job.job_id,requestId,signal,()=>{});
+}
+async function savedProbeLinks(probe){
+  const response=await savedProbeInspection(probe,null,probe.controller.signal);
+  if(!response)return null;
+  probe.message=response.message;
+  probe.servingProfile=response.profile_link;
+  const sites=new Map((response.source_sites||[]).map(site=>[site.id,site]));
+  return response.sources.flatMap(source=>{
+    const site=sites.get(source.source_id);
+    const margin=coverageProbeMargin(probe.mode,source);
+    return site&&margin!==null&&margin>=0?[{site,label:coverageProbeLabel(site),margin,distance:source.distance_m}]:[];
+  });
+}
+async function liveProbeLinks(probe){
+  const visible=liveCoverageSites().filter(site=>!liveCoverage.hidden.has(site.slot)&&
+    map.distance(probe.point,mapPoint(site))<=liveCoverage.settings.radius_km*1000);
+  const rows=[];
+  let next=0,failures=0;
+  const evaluate=async()=>{
+    while(next<visible.length&&!probe.controller.signal.aborted){
+      const site=visible[next++];
+      try{
+        const link=await liveProbeLink(probe,site,false,probe.controller.signal);
+        const clear=rf.validation_mode!=='strict_los'||(link.los_clear&&link.fresnel_clear);
+        const margin=coverageProbeMargin(probe.mode,{
+          valid_downlink:clear&&link.forward.valid,downlink_margin_db:link.forward.usable_margin_db,
+          valid_uplink:clear&&link.reverse.valid,uplink_margin_db:link.reverse.usable_margin_db,
+          valid_two_way:link.valid,two_way_margin_db:link.worst_margin_db
+        });
+        if(margin!==null&&margin>=0)rows.push({site,label:site.label,margin,distance:link.distance_m});
+      }catch(error){
+        if(error.name==='AbortError')return;
+        failures++;
+      }
+    }
+  };
+  await Promise.all([evaluate(),evaluate()]);
+  if(failures===visible.length&&failures)probe.message='Terrain data is missing at this point or along the candidate links.';
+  return rows;
+}
+function liveProbeLink(probe,site,profile,signal){
+  const target={id:'coverage-probe',kind:'client',latitude:probe.point.lat,longitude:probe.point.lng,
+    antenna_height_m:probe.client.height_agl_m};
+  return requestMapLink(site,target,{projectId:probe.projectId,client:probe.client,profile,signal});
+}
+async function openCoverageProbeProfile(probe,row,body){
+  probe.profileController?.abort();
+  const controller=new AbortController();
+  probe.profileController=controller;
+  body.textContent='Loading terrain profile…';
+  try{
+    const profile=probe.kind==='live'?await liveProbeLink(probe,row.site,true,controller.signal):
+      probe.servingProfile?.source_id===row.site.id?probe.servingProfile:
+        (await savedProbeInspection(probe,row.site.id,controller.signal))?.profile_link;
+    if(coverageProbe!==probe||controller.signal.aborted)return;
+    if(profile?.profile)renderRouteInspectorLink({body},profile);
+    else body.textContent='Profile unavailable for this link.';
+    if(mapObjectPopup?.getElement()?.contains(body))resizeCoverageProbePopup();
+  }catch(error){
+    if(coverageProbe===probe&&error.name!=='AbortError')body.textContent=error.message;
+  }finally{
+    if(controller.signal.aborted&&body.textContent==='Loading terrain profile…')body.textContent='';
+  }
+}

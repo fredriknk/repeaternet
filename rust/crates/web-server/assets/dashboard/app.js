@@ -351,22 +351,27 @@ function bindMapObject(layer,label,details,edit){
   layer.on('add',bindElement);
   if(layer.getElement())bindElement();
 }
-function bindMapLongPress(element,open){
+function bindMapLongPress(element,open,accept=()=>true){
   let press, timer, suppressUntil=0;
   const clear=()=>{clearTimeout(timer);press=null;};
   element.addEventListener('pointerdown',event=>{
-    if(event.pointerType!=='touch'||!event.isPrimary||interactionMode!=='browse')return;
+    if(event.pointerType!=='touch'||!event.isPrimary||interactionMode!=='browse'||!accept(event))return;
     press=event;
     timer=setTimeout(()=>{
+      const pressed=press;
       clear();
       suppressUntil=performance.now()+800;
-      open();
+      open(pressed);
     },550);
   });
   element.addEventListener('pointermove',event=>{
     if(press&&Math.hypot(event.clientX-press.clientX,event.clientY-press.clientY)>10)clear();
   });
   for(const name of ['pointerup','pointercancel','pointerleave'])element.addEventListener(name,clear);
+  element.addEventListener('touchend',event=>{
+    // Prevent the tap synthesized on release from stealing the editor's focus.
+    if(performance.now()<suppressUntil&&event.cancelable)event.preventDefault();
+  },{passive:false});
   element.addEventListener('click',event=>{
     if(performance.now()>=suppressUntil)return;
     event.preventDefault();
@@ -462,11 +467,11 @@ function requestMapLink(source,target,{projectId=projectInfo?.active_id,profile=
   return api('/api/link/evaluate',{method:'POST',headers:{'Content-Type':'application/json'},signal,
     body:JSON.stringify({source,target,include_profile:profile,project_id:projectId,client})});
 }
-function showMapDetails(title,point,opener,fill){
+function showMapDetails(title,point,opener,fill,onClose){
   const content=document.createElement('div');
   content.append(mapText('strong',title));
   fill(content);
-  showMapObjectPopup(point,content,opener);
+  showMapObjectPopup(point,content,opener,onClose,{hasPanel:true});
   const panel=$('map-object-details');
   $('map-object-title').textContent=title;
   const body=$('map-object-body');
@@ -474,20 +479,41 @@ function showMapDetails(title,point,opener,fill){
   fill(body);
   panel.hidden=false;
   panel.scrollTop=0;
-  keepMapPopupClearOfPanel(panel);
+  keepMapDetailsInView();
 }
-function keepMapPopupClearOfPanel(panel){
-  const popup=mapObjectPopup?.getElement()?.getBoundingClientRect(), box=panel.getBoundingClientRect();
-  if(!popup||popup.right<=box.left||popup.left>=box.right||popup.bottom<=box.top||popup.top>=box.bottom)return;
-  const delta=mobileViewport.matches?[0,popup.bottom-box.top+8]:[popup.right-box.left+8,0];
-  map.panBy(delta,{animate:false});
+function keepMapDetailsInView(){
+  const panel=$('map-object-details');
+  if(panel.hidden||!mapObjectPopup?.isOpen())return;
+  const popup=mapObjectPopup.getElement().getBoundingClientRect();
+  const frame=map.getContainer().getBoundingClientRect(),box=panel.getBoundingClientRect();
+  const stacked=window.matchMedia('(max-width: 1050px)').matches;
+  const top=frame.top+mapPopupOptions().autoPanPaddingTopLeft[1];
+  const right=stacked?frame.right-12:box.left-8;
+  const bottom=stacked?box.top-8:frame.bottom-28;
+  const dx=popup.right>right?popup.right-right:Math.min(0,popup.left-frame.left-12);
+  const dy=popup.bottom>bottom?popup.bottom-bottom:Math.min(0,popup.top-top);
+  if(Math.abs(dx)>=1||Math.abs(dy)>=1)map.panBy([Math.round(dx),Math.round(dy)],{animate:false});
 }
-function showMapObjectPopup(point,content,opener){
+map.on('resize',keepMapDetailsInView);
+function showMapObjectPopup(point,content,opener,onClose,{hasPanel=false,editor=false}={}){
   closeRouteLinkInspector();
   closeMapSelection();
-  mapSelection={opener};
+  mapSelection={opener,onClose};
   if(!['queued','running','preparing','failed','disconnected'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;
-  const popup=L.popup(mapPopupOptions({maxHeight:Math.min(380,map.getSize().y*.56),closeOnEscapeKey:false}));
+  const options={maxHeight:Math.min(380,map.getSize().y*.56),closeOnEscapeKey:false};
+  if(editor){
+    const available=map.getSize().y-mapPopupOptions().autoPanPaddingTopLeft[1]-80;
+    options.maxHeight=Math.max(options.maxHeight,Math.min(560,available));
+  }
+  if(hasPanel){
+    // Position against the measured panel after both surfaces have been rendered.
+    options.autoPan=false;
+    map.stop();
+    if(window.matchMedia('(max-width: 1050px)').matches){
+      options.maxHeight=Math.min(options.maxHeight,map.getSize().y*.34);
+    }
+  }
+  const popup=L.popup(mapPopupOptions(options));
   mapObjectPopup=popup;
   popup.on('remove',()=>{
     if(mapObjectPopup!==popup)return;
@@ -499,10 +525,11 @@ function showMapObjectPopup(point,content,opener){
 }
 function closeMapSelection(restoreFocus=false){
   if(!mapSelection)return;
-  const {opener}=mapSelection,popup=mapObjectPopup;
+  const {opener,onClose}=mapSelection,popup=mapObjectPopup;
   mapSelection=null;
   mapObjectPopup=null;
   $('map-object-details').hidden=true;
+  onClose?.();
   if(popup?.isOpen())map.closePopup(popup);
   if(restoreFocus){
     const target=opener();
@@ -594,7 +621,7 @@ function openMapSiteEditor(site,point,opener){
     const id=applyMapSiteEdit(site,changes);
     (mapSiteElement(id)||map.getContainer()).focus({preventScroll:true});
   };
-  showMapObjectPopup(point,content,opener);
+  showMapObjectPopup(point,content,opener,undefined,{editor:true});
 }
 function saveSiteRadio(id,changes){
   const overrides=rf.site_overrides??={};
@@ -613,7 +640,7 @@ function applyMapSiteEdit(site,{latitude,longitude,gain_dbi,terminal_clutter,...
     id='M-'+randomId();
     manualRouters.push({id});
   }
-  saveSiteRadio(id,{gain_dbi});
+  if(gain_dbi!==site.gain_dbi)saveSiteRadio(id,{gain_dbi});
   changes.terminal_clutter=terminal_clutter==='default'?undefined:terminal_clutter;
   if(site.kind==='known')setRouterPolicy(id,changes.policy,{...changes,name_override:true,height_override:true});
   else moveManualRouter(manualRouters.find(item=>item.id===id),point,changes);
@@ -914,6 +941,8 @@ function placeMapSite(mode,point){
   }
 }
 map.on('contextmenu',event=>openMapContextMenu(event.latlng));
+bindMapLongPress(map.getContainer(),event=>openMapContextMenu(map.mouseEventToLatLng(event)),
+  event=>!event.target.closest('.leaflet-interactive, .leaflet-control, .leaflet-popup'));
 map.getContainer().addEventListener('keydown',event=>{
   if(event.target!==map.getContainer()||!isMapContextKey(event))return;
   event.preventDefault();
@@ -932,6 +961,7 @@ function openMapContextMenu(latlng){
     button.disabled||=!rf;
     menu.append(button);
   }
+  appendMapProbeAction(menu,point);
   menu.append(mapPopupButton('Copy coordinates',async()=>{
     try{
       await navigator.clipboard.writeText(coordinateLabel([point.lat,point.lng]));

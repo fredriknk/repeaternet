@@ -19,7 +19,8 @@ npm run capture
 ```
 
 The tool launches the release binary on a free loopback port and uses a
-fresh, temporary data directory. A healthy full run takes roughly 30–60
+fresh, temporary data directory. Set `RF_PLANNER_CACHE_DIR` to reuse an
+existing shared terrain cache. A healthy full run takes roughly 30–60
 seconds. Slow providers or retries can add several minutes. Route data
 comes from Kartverket and CoreScope, and map views use OpenStreetMap
 tiles. The Search image shows the Overpass road filter enabled. The live

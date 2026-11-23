@@ -20,7 +20,7 @@ async function startServer(exe, data, token, signal) {
     env: {
       ...process.env,
       RF_PLANNER_TOKEN: token,
-      RF_PLANNER_CACHE_DIR: path.join(data, 'shared-cache'),
+      RF_PLANNER_CACHE_DIR: process.env.RF_PLANNER_CACHE_DIR || path.join(data, 'shared-cache'),
     },
     stdio: ['ignore', 'pipe', 'inherit'],
     windowsHide: true,

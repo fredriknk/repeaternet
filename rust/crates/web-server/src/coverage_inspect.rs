@@ -72,7 +72,7 @@ pub async fn start(
             let mut guard = serde_json::to_value(&live).map_err(ApiError::internal)?;
             guard["coverage_store_format"] = json!(FORMAT);
             guard["stale"] = json!(false);
-            let (settings, sources, source_display, links, radio) = if let Some(run) = &saved {
+            let (settings, mut sources, source_display, links, radio) = if let Some(run) = &saved {
                 if run["state"] != "complete" {
                     return Err(ApiError::conflict(
                         "Select a completed coverage run for exact-point inspection",
@@ -116,6 +116,17 @@ pub async fn start(
                     coverage_runs::radio(app, &project.plan, route)?,
                 )
             };
+            if let Some(id) = body.get("profile_source_id") {
+                let id = id
+                    .as_str()
+                    .ok_or_else(|| ApiError::invalid("Invalid profile source"))?;
+                sources.retain(|source| source.id == id);
+                if sources.is_empty() {
+                    return Err(ApiError::invalid(
+                        "That site is outside the selected coverage sources",
+                    ));
+                }
+            }
             guard["settings"] = json!(settings);
             guard["radio_settings"] = radio.clone();
             let inputs = Inspection {
@@ -318,6 +329,7 @@ fn compute(
     {
         result["selected_source"]["clutter_height_m"] = json!(source.clutter_height_m);
     }
+    result["source_sites"] = inputs.source_display.clone();
     result["selected_source_component"] = Value::Null;
     result["selected_source_component_size"] = Value::Null;
     if let Some(id) = point.coverage.selected_source_id.as_deref() {

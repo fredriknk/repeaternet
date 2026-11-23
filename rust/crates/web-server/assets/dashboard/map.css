@@ -377,7 +377,9 @@
 .map-site-editor .field-error { display: block; }
 @media (max-width: 650px) {
   .map-popup button, .map-site-editor :is(input, select) { min-height: 44px; }
-  #map-object-details { max-height: 34%; }
+}
+@media (max-width: 1050px) {
+  #map-object-details { inset: auto 8px 26px; width: auto; max-height: 34%; }
 }
 .map-popup .map-remove-router { justify-self: start; color: #9c2534; }
 .map-popup .map-link-list { margin: 0; padding-left: 16px; }
@@ -401,8 +403,8 @@
   overflow: auto;
   pointer-events: auto;
 }
-/* Router popup controls and the live legend share the top of the map. */
-.map-wrap:has(.leaflet-popup .router-terminal-clutter) .live-coverage-legend { visibility: hidden; }
+/* The live legend shares space with the site editor on the map. */
+.map-wrap:has(.leaflet-popup .map-site-editor) .live-coverage-legend { visibility: hidden; }
 .live-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .live-legend-head h3 { margin: 0; }
 .live-legend-head button { min-height: 32px; padding: 2px 8px; font-size: 12px; }
@@ -424,7 +426,12 @@
   .live-legend-head button { min-height: 44px; }
 }
 /* The link inspector owns the right side of the map while it is open. */
-.map-wrap:has(:is(#route-link-inspector, #map-object-details):not([hidden])) .live-coverage-legend { display: none; }
+.map-wrap:has(:is(#route-link-inspector, #map-object-details):not([hidden])) .coverage-map-legend { display: none; }
 
 .map-legend-grid i.legend-proposed-link::before { height: 0; border-top: 2px dotted var(--map-strong); background: none; }
 #map-analysis-selection canvas { display: block; height: 78px; max-width: 100%; }
+
+.map-legend-grid i.legend-probe::before { width: 8px; height: 8px; border: 2px solid #233d70; border-radius: 50%; background: #fff; }
+.map-legend-grid i.legend-probe-link::before { height: 0; border-top: 3px dashed var(--map-strong); background: none; }
+.map-probe-link { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-block: 4px; }
+.map-popup article canvas { max-width: 100%; height: 78px; }

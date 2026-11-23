@@ -186,13 +186,6 @@ function createWorkflow(run) {
     await field('#b', '60.203769, 10.714008');
     await shot('route-endpoints', '.plan-step[data-step=endpoint-setup]');
     await click('fit');
-    if (wants('map-context-menu')) {
-      await $('#map').click({ button: 'right', position: { x: 510, y: 405 } });
-      await shot('map-context-menu', '.leaflet-popup');
-      await click('fit');
-      if (await $('.leaflet-popup-close-button').isVisible()) await $('.leaflet-popup-close-button').click();
-    }
-
     await step('search');
     await openDetails(searchDetails);
     await field('[data-key=corridor_width_m]', 3500);
@@ -328,6 +321,20 @@ function createWorkflow(run) {
     await shot('analysis-terrain-profile', '#profile');
     await shot('route-exports', '#exports');
     await click('view-map-tab');
+  }
+
+  async function coverageProbe() {
+    await mapReady();
+    const position = await run.page.evaluate(() => {
+      const { x, y } = map.latLngToContainerPoint([60.106, 10.726]);
+      return { x, y };
+    });
+    await $('#map').click({ button: 'right', position });
+    await shot('map-context-menu', '.leaflet-popup');
+    await by('Analyse links from here').click();
+    await $('#map-object-details .map-probe-link').first().waitFor({ state:'visible', timeout:30_000 });
+    await shot('map-coverage-probe', null, mapReady);
+    await run.page.keyboard.press('Escape');
   }
 
   async function coverageSetup() {
@@ -573,7 +580,7 @@ function createWorkflow(run) {
     { id: 'sign-in', after: [], images: ['token-sign-in'], run: signIn },
     { id: 'map-controls', after: ['sign-in'], images: ['map-toolbar', 'map-legend', 'map-layer-control'], run: mapControls },
     { id: 'route-setup', after: ['sign-in'], images: [
-      'route-endpoints', 'map-context-menu', 'route-search-advanced', 'route-search',
+      'route-endpoints', 'route-search-advanced', 'route-search',
       'route-radio', 'route-radio-antenna', 'route-proposed-router', 'project-menu', 'project-top-bar',
     ], run: routeSetup },
     { id: 'terrain-estimate', after: ['route-setup'], images: ['route-terrain', 'kartverket-estimate'], run: terrainEstimate },
@@ -586,6 +593,7 @@ function createWorkflow(run) {
       'dashboard-route-overview', 'map-route-site', 'analysis-verdict', 'analysis-alternatives',
       'analysis-links', 'analysis-terrain-profile', 'route-exports',
     ], run: routeResults },
+    { id: 'coverage-probe', after: ['route-search'], images: ['map-context-menu', 'map-coverage-probe'], run: coverageProbe },
     { id: 'coverage-setup', after: ['route-search'], images: [
       'live-coverage-map', 'live-coverage-overlap', 'coverage-handheld',
     ], run: coverageSetup },
