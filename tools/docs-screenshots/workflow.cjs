@@ -287,8 +287,7 @@ function createWorkflow(run) {
     await crop('route-router-controls', '#router-setup > h3:first-of-type', '#router-setup > .known-controls');
     await crop('route-meshcore', '#meshcore-list');
     if (wants('map-router-policy')) {
-      await $('#meshcore-list .router-focus').first().click();
-      await $('.leaflet-overlay-pane path[stroke="#3f2c66"]').first().click();
+      await $('#meshcore-list [data-map-edit]').first().click();
       await shot('map-router-policy', '.leaflet-popup');
       await $('.leaflet-popup-close-button').click();
     }
@@ -316,7 +315,6 @@ function createWorkflow(run) {
     await shot('dashboard-route-overview', null, mapReady);
     if (wants('map-route-site')) {
       await $('.map-site-proposed,.map-site-existing').first().click();
-      if (await $('#route-link-inspector-site').isVisible()) await click('route-link-inspector-site');
       await shot('map-route-site', '.leaflet-popup');
       await $('.leaflet-popup-close-button').click();
     }

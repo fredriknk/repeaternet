@@ -49,6 +49,10 @@ The layout has one owner per job. Put new features where users already look:
   `scheduleCoverageCheck()`. Autosave and undo come from `recordEdit()`. Never
   mutate plan state without this chain. Reuse helpers such as `editEndpoint()`,
   `addManualRouterAt()`, `moveManualRouter()` and `setRouterPolicy()`.
+- Select a site or link to open matching read-only details on the map and in its
+  details panel. Both offer **Show in analysis**. Open editing with right-click,
+  touch long-press or Shift+F10 on the focused map object. A link offers editing
+  for either of its sites.
 - Respect the edit lock: check `mapEditsLocked()` and wrap new controls with
   `mapEditControl()` so they disable while jobs run or projects switch.
 - The map toolbar is a single solid group (white background, shadow, clear
@@ -100,8 +104,8 @@ The layout has one owner per job. Put new features where users already look:
 - One marker per place. Shape says the kind of site: endpoints are circles,
   your proposed routers are hexagonal tags named `P1, P2…`, sites found by the
   search are squares `R1, R2…`, MeshCore routers are round. **Required** is a
-  pin badge, never just a thicker border. When a current route uses a router,
-  the route marker replaces the router's own marker (`syncRoutedRouterMarkers`).
+  pin badge, never just a thicker border. A proposed router keeps its brown
+  hexagonal tag when used in a route. An underline marks route membership.
   Never set `position` on a Leaflet marker icon class; Leaflet positions icons
   absolutely, and overriding it makes markers drift off their coordinates.
   (Added 2026-11-22 after users could not tell which router belonged to which

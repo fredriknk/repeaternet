@@ -56,10 +56,14 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             free_space_path_loss_db(source.distance_to(target), self.settings.frequency_mhz)?;
         let power = received_power_dbm(
             self.settings.tx_power_dbm,
-            tx.pattern.peak_gain_dbi(),
+            self.settings
+                .site_gain_override(source)
+                .unwrap_or_else(|| tx.pattern.peak_gain_dbi()),
             tx.feed_loss_db,
             fspl,
-            rx.pattern.peak_gain_dbi(),
+            self.settings
+                .site_gain_override(target)
+                .unwrap_or_else(|| rx.pattern.peak_gain_dbi()),
             rx.feed_loss_db,
             self.settings.miscellaneous_loss_db,
         );
@@ -279,6 +283,7 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             Some(radio) => SiteRadio {
                 id: &site.id,
                 antenna: &radio.antenna,
+                gain_override: None,
                 tx_power_dbm: radio.tx_power_dbm,
                 sensitivity_dbm: radio.sensitivity_dbm,
                 miscellaneous_loss_db: radio.miscellaneous_loss_db,
@@ -286,6 +291,7 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
             None => SiteRadio {
                 id: &site.id,
                 antenna: self.settings.antenna_settings(site.kind),
+                gain_override: self.settings.site_gain_override(site),
                 tx_power_dbm: self.settings.tx_power_dbm,
                 sensitivity_dbm: self.settings.effective_sensitivity_dbm()?,
                 miscellaneous_loss_db: self.settings.miscellaneous_loss_db,
@@ -297,6 +303,7 @@ impl<'a, T: TerrainSource + ?Sized> LinkEvaluator<'a, T> {
 struct SiteRadio<'a> {
     id: &'a str,
     antenna: &'a AntennaSettings,
+    gain_override: Option<f64>,
     tx_power_dbm: f64,
     sensitivity_dbm: f64,
     miscellaneous_loss_db: f64,
@@ -321,8 +328,12 @@ impl LinkPath {
         fade_margin_db: f64,
     ) -> DirectionResult {
         let arrival_angle_deg = -departure_angle_deg;
-        let tx_gain_dbi = source.antenna.pattern.gain_at(departure_angle_deg);
-        let rx_gain_dbi = target.antenna.pattern.gain_at(arrival_angle_deg);
+        let tx_gain_dbi = source
+            .gain_override
+            .unwrap_or_else(|| source.antenna.pattern.gain_at(departure_angle_deg));
+        let rx_gain_dbi = target
+            .gain_override
+            .unwrap_or_else(|| target.antenna.pattern.gain_at(arrival_angle_deg));
         let total_path_loss_db = self.fspl_db
             + self.diffraction_loss_db
             + self.clutter_loss_db

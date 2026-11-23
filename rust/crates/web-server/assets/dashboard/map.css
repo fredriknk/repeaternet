@@ -6,7 +6,7 @@
   --map-invalid: #b52b37;
   --map-proposed: #87421f;
   --map-existing: #443579;
-  --map-manual: #2d3b45;
+  --map-manual: #794520;
   --map-known-required: #61418a;
   --map-known-optional: #c9b3df;
   --map-known-excluded: #a8b1aa;
@@ -298,7 +298,13 @@
   box-shadow: 0 2px 6px #0006;
 }
 .map-site-proposed::before { border-radius: 5px; background: var(--map-proposed); }
-.map-site-existing::before { border-radius: 14px; background: var(--map-existing); }
+.map-site-existing::before { border-radius: 50%; background: var(--map-existing); }
+.map-site-dot::before { inset: 7px; background: var(--map-known-optional); border-color: var(--map-existing); }
+.map-site-dot.is-required::before { background: var(--map-known-required); }
+.map-site-dot.is-excluded::before { inset: 9px; background: var(--map-known-excluded); border-color: #718079; }
+.map-site-dot .map-pin-badge { top: -2px; right: -2px; }
+.map-site.is-in-route .map-site-label { text-decoration: underline; text-underline-offset: 3px; }
+.leaflet-interactive[role="button"]:focus-visible { outline: 3px solid #145fa9; outline-offset: 2px; }
 /* Proposed routers (placed by the user) are hexagonal tags, so they never look
    like a search result (square) or a MeshCore router (round). */
 .map-site-manual { filter: drop-shadow(0 2px 3px #0005); }
@@ -355,9 +361,24 @@
 .map-popup strong { font-size: 14px; }
 .map-popup label { color: #344b42; }
 .map-popup input:not([type=checkbox]), .map-popup select { padding: 6px 8px; margin-top: 3px; }
-.map-popup .router-terminal-clutter select { min-height: 36px; font-size: 13px; }
-@media (max-width: 650px) { .map-popup .router-terminal-clutter select { min-height: 44px; } }
-.map-popup button { padding: 5px 8px; font-size: 12px; }
+.map-popup button { min-height: 36px; padding: 5px 8px; font-size: 13px; }
+.map-popup .map-object-facts, #map-analysis-selection .map-object-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin: 4px 0;
+}
+.map-object-facts dd { margin: 0; font-weight: 650; }
+.map-popup .leaflet-popup-content p { margin: 4px 0; }
+.map-site-editor { display: grid; gap: 8px; }
+.map-site-editor .coordinate-grid { gap: 8px; }
+.map-site-editor .coordinate-grid input { width: 100%; }
+.map-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.map-site-editor .field-error { display: block; }
+@media (max-width: 650px) {
+  .map-popup button, .map-site-editor :is(input, select) { min-height: 44px; }
+  #map-object-details { max-height: 34%; }
+}
 .map-popup .map-remove-router { justify-self: start; color: #9c2534; }
 .map-popup .map-link-list { margin: 0; padding-left: 16px; }
 .map-popup .map-link-list button { padding: 1px 3px; border: 0; }
@@ -403,4 +424,4 @@
   .live-legend-head button { min-height: 44px; }
 }
 /* The link inspector owns the right side of the map while it is open. */
-.map-wrap:has(#route-link-inspector:not([hidden])) .live-coverage-legend { display: none; }
+.map-wrap:has(:is(#route-link-inspector, #map-object-details):not([hidden])) .live-coverage-legend { display: none; }

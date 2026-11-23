@@ -304,25 +304,20 @@ coordinates use latitude, longitude to six decimals.
 
 ![Right-click menu with endpoint, proposed router and coordinate actions](images/map-context-menu.png)
 
-- Drag either endpoint or a proposed router to move it. Open a proposed
-  router's popup to change its name, antenna height or policy, or use
-  **Remove**.
-- Open a MeshCore router marker to read its ID and activity and choose **Excluded**,
-  **Optional** or **Required**.
-- Select an endpoint or router on the primary route to see its adjacent hops.
-  Each hop shows distance, usable margin, line of sight, minimum Fresnel
-  clearance and an elevation profile. Press **Enter** or **Space** on a focused
-  marker to open the inspector, and **Esc** to close it.
-- Drag an endpoint or proposed route site to preview the adjacent hops and
-  their colours on the map as you move it. Dropping a proposed route site pins
-  it as a new **Required** proposed router. The previous route is marked stale,
-  its site markers turn grey and dashed, and the inspector keeps the preview
-  for the dropped location. Use **Undo** to revert the move, or run a new search
-  to validate the edited route.
-- From the inspector, open **Site details** for a router's height, type, policy
-  and distance to a mapped road when available. Select a link there to open its
-  profile in **Analysis**. **Edit proposed router** or **Edit MeshCore router**,
-  when shown, opens the router's settings.
+- Click a site or link, or press **Enter** or **Space** on its focused map
+  marker or line. The popup and the map details panel show the same readings.
+  Select **Show in analysis** in either place to open that site or link.
+- Right-click or long-press a site, or focus it and press **Shift+F10**, to
+  edit its name, antenna height, gain and terminal clutter. Terminal clutter is
+  a local loss in dB applied to links at that site. For proposed routers, you
+  can also change search policy, enter new coordinates or remove the router.
+  Editing a search-found site adds it to the plan as a proposed router.
+  Right-click a link to choose which of its two sites to edit. **Esc** closes
+  the popup and returns focus to the map object.
+- Drag either endpoint or a proposed router to move it. Dragging a site on
+  the primary route previews its adjacent hops. Dragging a search-found site
+  pins it as a new **Required** proposed router. The previous route becomes
+  stale. Use **Undo** to revert the move or run a new search to validate it.
 - **Fit all** frames the plan sites and current route. **Undo** and **Redo** step
   through recent plan edits. **Candidates** shows generated sites from the search.
   **Roads near repeaters** toggles the selected alternative's nearby road geometry
@@ -340,20 +335,19 @@ Each site has one marker, and its shape says what kind of site it is:
 | Marker | Meaning |
 | --- | --- |
 | Green **A** and blue **B** circles | Endpoints |
-| Dark hexagon with a name (**P1**) | A proposed router you placed |
+| Brown hexagon with a name (**P1**) | A proposed router you placed |
 | Brown square (**R1**, **R2**…) | A new site the search found |
 | Round purple dot | A MeshCore router. Light purple means **Optional**, dark purple means **Required**, a small grey dot means **Excluded** |
 | Purple pill with a name | A MeshCore router used by the route |
 | Small dark pin badge | The router is **Required** in every route |
 | Grey dashed marker | A site in a stale route |
 
-When a route is current, the route marker replaces the router's own marker,
-so a proposed router in the route keeps its name and pin badge instead of
-appearing twice. When the route goes stale, the routers' own markers return.
+Proposed routers keep the same brown tag in a certified route. An underline
+marks proposed and MeshCore routers used by the route.
 
-![Existing router popup with Excluded, Optional and Required buttons](images/map-router-policy.png)
+![MeshCore router edit form with radio settings and search policy](images/map-router-policy.png)
 
-![Certified proposed route-site popup with its height and link margins](images/map-route-site.png)
+![Route-site details popup with coordinates, radio assumptions and an Analysis button](images/map-route-site.png)
 
 ![Map legend showing endpoint and router markers, margin bands and stale links](images/map-legend.png)
 

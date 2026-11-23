@@ -105,6 +105,12 @@ pub struct RadioBudget {
     pub miscellaneous_loss_db: f64,
 }
 
+/// Per-site antenna gain in the link budget.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SiteRadioOverrides {
+    pub gain_dbi: Option<f64>,
+}
+
 /// Shared propagation settings. Defaults match the EU868 MeshCore configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RfSettings {
@@ -125,6 +131,7 @@ pub struct RfSettings {
     pub lora: LoRaSettings,
     pub clutter_loss_enabled: bool,
     pub clutter_loss_db_per_m: f64,
+    pub site_overrides: std::collections::BTreeMap<String, SiteRadioOverrides>,
 }
 
 impl Default for RfSettings {
@@ -147,6 +154,7 @@ impl Default for RfSettings {
             lora: LoRaSettings::default(),
             clutter_loss_enabled: false,
             clutter_loss_db_per_m: 0.0,
+            site_overrides: Default::default(),
         }
     }
 }
@@ -158,6 +166,12 @@ impl RfSettings {
             return self.lora.sensitivity_dbm();
         }
         Ok(self.receiver_sensitivity_dbm)
+    }
+
+    pub fn site_gain_override(&self, site: &crate::Site) -> Option<f64> {
+        self.site_overrides
+            .get(&site.id)
+            .and_then(|radio| radio.gain_dbi)
     }
 
     /// Default antenna for a site role. Clients share the endpoint A configuration.

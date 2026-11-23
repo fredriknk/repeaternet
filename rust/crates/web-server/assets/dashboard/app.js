@@ -23,6 +23,7 @@ let coverageTerrainCheck=null,coverageTerrainUnknownKey=null,coverageTerrainJobI
 let coverageDrawingPoints=[];
 const map = L.map('map',{zoomSnap:0,wheelPxPerZoomLevel:120});
 let pendingMapFit = null, mapHintTimer = null, mapContextPopup = null;
+let mapSelection = null, mapObjectPopup = null, endpointNames = {};
 let labelledRoute = null, routeSiteLabels = new Map();
 const mapPane = $('view-map'), mapWrap = map.getContainer().parentElement;
 const mapResizeObserver = new ResizeObserver(resizeMapViewport);
@@ -176,16 +177,25 @@ function mark(name,latlng){
     const icon=L.divIcon({className:'site-marker '+(name==='b'?'destination':''),html:label,iconSize:[32,32]});
     markers[name]=L.marker(latlng,{draggable:!mapEditsLocked(),icon,title:'Endpoint '+label});
     markers[name].bindTooltip('',{direction:'top',offset:[0,-12]});
+    bindMapSite(markers[name],()=>endpointMapSite(name));
     bindRouteSiteInspector(markers[name],label,point=>editEndpoint(name,point));
     bindLiveCoverageDrag(markers[name],()=>({slot:`endpoint:${name}`,id:label,kind:`endpoint_${name}`,antenna_height_m:liveCoverageSiteHeight(rf?.[`endpoint_${name}`]?.height_agl_m,2)}));
     markers[name].addTo(map);
   }
   markers[name].setTooltipContent(`${label} · ${$(name).value}`);
 }
-function editEndpoint(name,point){
+function editEndpoint(name,point,changes){
+  if(mapEditsLocked())return;
   mark(name,[point.lat,point.lng]);
+  if(changes){
+    endpointNames[name]=changes.name;
+    rf['endpoint_'+name].height_agl_m=changes.antenna_height_m;
+    rf['endpoint_'+name].gain_dbi=changes.gain_dbi;
+    rf['endpoint_'+name].terminal_clutter=changes.terminal_clutter;
+    buildSettings();
+  }
   recordEdit();
-  invalidate('endpoint coordinates');
+  invalidate(changes?'endpoint settings':'endpoint coordinates');
   scheduleCoverageCheck();
 }
 function clone(value){return JSON.parse(JSON.stringify(value));}
@@ -202,6 +212,8 @@ function setHistoryButtons(){$('undo').disabled=busy||routePreflightBusy||covera
 function recordEdit(){try{const next=clone(plan());if(lastHistoryPlan&&JSON.stringify(next)!==JSON.stringify(lastHistoryPlan)){undoStack.push(lastHistoryPlan);if(undoStack.length>50)undoStack.shift();redoStack=[];}lastHistoryPlan=next;setHistoryButtons();if(projectInfo) scheduleAutosave();}catch(e){status(e.message,true);}}
 function invalidate(reason='planning inputs'){
   if(!routeLinkInspector?.committing)closeRouteLinkInspector();
+  closeMapSelection(true);
+  $('map-analysis-selection').hidden=true;
   clearTerrainEstimateReview();
   invalidateCoverageEstimate(`${reason} changed. Review a new coverage estimate before previewing or calculating.`);
   setInteractionMode('browse');
@@ -248,10 +260,7 @@ function mapSiteIcon(type,label,policy,{stale=false}={}){
   const content=document.createElement('span'),text=mapText('span',label);
   content.className='map-site-content';text.className='map-site-label';content.append(text);
   if(policy==='required')content.append(mapPinBadge());
-  return L.divIcon({className:`map-site map-site-${type}${policy?' is-'+policy:''}${stale?' is-stale':''}`,html:content,iconSize:[width,30],tooltipAnchor:[0,-12],popupAnchor:[0,-13]});
-}
-function requiredRouterBadgeIcon(){
-  return L.divIcon({className:'map-pin-marker',html:mapPinBadge(),iconSize:[16,16],iconAnchor:[1,15]});
+  return L.divIcon({className:`map-site map-site-${type}${!label?' map-site-dot':''}${policy?' is-'+policy:''}${stale?' is-stale':''}`,html:content,iconSize:[width,30],tooltipAnchor:[0,-12],popupAnchor:[0,-13]});
 }
 function nextManualRouterName(){
   const numbers=manualRouters.map(router=>/^P(\d+)$/.exec(router.name?.trim()||'')?.[1]).filter(Boolean).map(Number);
@@ -268,67 +277,349 @@ function routedRouterIds(){
 function syncRoutedRouterMarkers(){
   const routed=routedRouterIds();
   for(const [id,marker] of manualMapMarkers){
-    const show=!routed.has(id);
-    if(show&&!manualLayer.hasLayer(marker)){
-      marker.addTo(manualLayer);
-      if(marker.dragging)mapEditsLocked()?marker.dragging.disable():marker.dragging.enable();
-    }else if(!show&&manualLayer.hasLayer(marker))manualLayer.removeLayer(marker);
+    marker.getElement()?.classList.toggle('is-in-route',routed.has(id));
+  }
+  for(const layer of routeLayer.getLayers()){
+    if(!layer.options?.siteId)continue;
+    const point=layer.getLatLng();
+    const replaced=manualRouters.some(router=>coordinateLabel(mapPoint(router))===coordinateLabel([point.lat,point.lng]));
+    if(layer.getElement())layer.getElement().hidden=replaced;
   }
   syncManualRouterTitles();
   renderKnownMapMarkers();
 }
-function openRouterEditor(site){
-  const latlng=mapPoint(site);
-  if(site.origin==='manual'){
-    const marker=manualMapMarkers.get(site.id);
-    if(!marker)return false;
-    if(manualLayer.hasLayer(marker))marker.openPopup();
-    else{L.popup(mapPopupOptions()).setLatLng(latlng).setContent(marker.getPopup().getContent()).openOn(map);focusManualRouter(site.id);syncMapEditControls();}
-    focusRouterEditor(marker.getPopup().getContent(),'input[type="text"]');
-    return true;
-  }
-  const router=selectedKnownRouters().find(item=>item.id===site.id);
-  if(!router)return false;
-  const marker=knownMapMarkers.get(site.id);
-  if(marker&&knownLayer.hasLayer(marker))marker.openPopup();
-  else{L.popup(mapPopupOptions()).setLatLng(latlng).setContent(knownRouterPopup(router,router.policy)).openOn(map);focusKnownRouter(router.id,{focus:false});syncMapEditControls();}
-  focusRouterEditor(map._popup?.getElement(),'.map-policy-buttons [aria-pressed="true"]');
-  return true;
+
+function endpointMapSite(key){
+  const id=key.toUpperCase(), point=markers[key].getLatLng(), radio=rf?.['endpoint_'+key];
+  return {id,key,kind:'endpoint',label:id,name:endpointNames[key]||'Endpoint '+id,
+    latitude:point.lat,longitude:point.lng,antenna_height_m:radio?.height_agl_m,
+    gain_dbi:radio?.gain_dbi,terminal_clutter:radio?.terminal_clutter};
 }
-function focusRouterEditor(container,selector){
-  requestAnimationFrame(()=>{const target=container?.querySelector(selector);if(target?.checkVisibility?.()!==false)target?.focus({preventScroll:true});});
+function routerMapSite(router,kind,nearest){
+  const radio=rf?.site_overrides?.[router.id];
+  const label=kind==='search'?routeSiteLabel(router.id):router.name||routeSiteLabel(router.id);
+  const height=kind==='known'&&!router.height_override?rf.router.height_agl_m:router.antenna_height_m;
+  return {id:router.id,kind,label,name:kind==='search'?nextManualRouterName():label,
+    latitude:router.latitude,longitude:router.longitude,antenna_height_m:height??rf.router.height_agl_m,
+    policy:kind==='known'?routerPolicies.get(router.id)||router.policy||'excluded':router.policy||'optional',
+    gain_dbi:radio?.gain_dbi??rf.router.gain_dbi,terminal_clutter:router.terminal_clutter,nearest};
+}
+function findMapSite(id){
+  if(id==='A'||id==='B')return endpointMapSite(id.toLowerCase());
+  const manual=manualRouters.find(item=>item.id===id);
+  if(manual)return routerMapSite(manual,'manual');
+  const known=meshcoreRouters.find(item=>item.id===id);
+  if(known)return routerMapSite(known,'known');
+  const site=result?.route?.find(item=>item.id===id);
+  return site&&routerMapSite(site,'search');
+}
+function mapSiteElement(id){
+  return (markers[id.toLowerCase()]||manualMapMarkers.get(id)||knownMapMarkers.get(id)||
+    routeLayer.getLayers().find(layer=>layer.options?.siteId===id))?.getElement();
+}
+function isMapContextKey(event){
+  return event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10');
+}
+function bindMapObject(layer,label,details,edit){
+  const keyboardPoint=()=>layer.getLatLng?.()||layer.getCenter();
+  const activate=(action,point)=>{
+    if(interactionMode==='browse')action(point,()=>layer.getElement());
+  };
+  layer.on('click',event=>activate(details,event.latlng||keyboardPoint()));
+  layer.on('contextmenu',event=>{
+    L.DomEvent.stopPropagation(event);
+    activate(edit,event.latlng||keyboardPoint());
+  });
+  const bindElement=()=>{
+    const element=layer.getElement();
+    // Leaflet reuses marker icons when moving a layer between panes.
+    if(element._plannerInteraction)return;
+    element._plannerInteraction=true;
+    element.tabIndex=0;
+    element.setAttribute('role','button');
+    element.setAttribute('aria-label',label());
+    element.setAttribute('aria-keyshortcuts','Enter Space Shift+F10');
+    element.addEventListener('keydown',event=>{
+      const action=isMapContextKey(event)?edit:['Enter',' '].includes(event.key)?details:null;
+      if(!action)return;
+      event.preventDefault();
+      event.stopPropagation();
+      activate(action,keyboardPoint());
+    });
+    bindMapLongPress(element,()=>activate(edit,keyboardPoint()));
+  };
+  layer.on('add',bindElement);
+  if(layer.getElement())bindElement();
+}
+function bindMapLongPress(element,open){
+  let press, timer, suppressUntil=0;
+  const clear=()=>{clearTimeout(timer);press=null;};
+  element.addEventListener('pointerdown',event=>{
+    if(event.pointerType!=='touch'||!event.isPrimary||interactionMode!=='browse')return;
+    press=event;
+    timer=setTimeout(()=>{
+      clear();
+      suppressUntil=performance.now()+800;
+      open();
+    },550);
+  });
+  element.addEventListener('pointermove',event=>{
+    if(press&&Math.hypot(event.clientX-press.clientX,event.clientY-press.clientY)>10)clear();
+  });
+  for(const name of ['pointerup','pointercancel','pointerleave'])element.addEventListener(name,clear);
+  element.addEventListener('click',event=>{
+    if(performance.now()>=suppressUntil)return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  },true);
+}
+function bindMapSite(marker,describe){
+  const opener=()=>mapSiteElement(describe().id)||marker.getElement();
+  bindMapObject(marker,()=>describe().label,
+    (point)=>showMapSiteDetails(describe(),point,opener),
+    (point)=>openMapSiteEditor(describe(),point,opener));
+}
+function bindMapLink(line,link,index){
+  const label=()=>routeSiteLabel(link.source_id)+' → '+routeSiteLabel(link.target_id);
+  bindMapObject(line,label,(point,opener)=>{
+    showMapDetails(label(),point,opener,content=>{
+      appendMapFacts(content,[
+        ['Distance · km',formatMetric(link.distance_m/1000,2)],
+        ['Usable margin',marginPill(link.worst_margin_db)],
+        ['Forward / reverse margin · dB',formatMetric(link.forward.usable_margin_db)+' / '+formatMetric(link.reverse.usable_margin_db)],
+        ['Forward / reverse RX · dBm',formatMetric(link.forward.received_power_dbm)+' / '+formatMetric(link.reverse.received_power_dbm)]
+      ]);
+      content.append(mapText('p',linkIssues(link)),mapPopupButton('Show in analysis',()=>{
+        closeMapSelection();
+        $('map-analysis-selection').hidden=true;
+        openRouteLink(index);
+      }));
+    });
+  },(point,opener)=>{
+    const content=document.createElement('div');
+    content.append(mapText('strong','Edit link sites'));
+    for(const id of [link.source_id,link.target_id]){
+      const site=findMapSite(id);
+      if(site)content.append(mapEditControl(mapPopupButton('Edit '+site.label,()=>openMapSiteEditor(site,L.latLng(mapPoint(site)),opener))));
+    }
+    showMapObjectPopup(point,content,opener);
+  });
+}
+function appendMapFacts(content,facts){
+  const list=document.createElement('dl');
+  list.className='map-object-facts';
+  for(const [label,value] of facts){
+    const row=document.createElement('div'),reading=document.createElement('dd');
+    reading.append(value);
+    row.append(mapText('dt',label),reading);
+    list.append(row);
+  }
+  content.append(list);
+}
+function appendMapSiteFacts(content,site){
+  const kind={endpoint:'Endpoint',manual:'Proposed router',known:'MeshCore router',search:'Site found by search'}[site.kind];
+  content.append(mapText('p',kind+(site.policy?' · '+routerPolicyLabels[site.policy]:'')+(site.kind==='endpoint'?' · '+site.name:'')));
+  appendMapFacts(content,[
+    ['Coordinates',coordinateLabel(mapPoint(site))],
+    ['Antenna height · m',formatMetric(site.antenna_height_m)],
+    ['Antenna gain · dBi',formatMetric(site.gain_dbi)],
+    ['Terminal clutter',terminalClutterOptions.find(([value])=>value===(site.terminal_clutter||rf.router.terminal_clutter))?.[1]??'None'],
+    ...(Number.isFinite(site.nearest)?[['Nearest road · m',String(Math.round(site.nearest))]]:[])
+  ]);
 }
 const terminalClutterOptions = [['none','None'],['p2108_dom','Nearby trees and buildings (P.2108 from DOM)']];
-function routerTerminalClutterControl(router){
-  const label=mapText('label','Terminal clutter'),choice=mapEditControl(document.createElement('select'));
-  label.className='router-terminal-clutter';
-  choice.add(new Option('Repeater default',''));
-  for(const [value,name] of terminalClutterOptions)choice.add(new Option(name,value));
-  choice.dataset.terminalClutterRouter=router.id;
-  if(router.name)choice.setAttribute('aria-label',`Terminal clutter for ${router.name}`);
-  choice.value=router.terminal_clutter??'';
-  choice.onchange=()=>setRouterTerminalClutter(router.id,choice);
-  label.append(choice);
-  return label;
+function showMapSiteDetails(site,point,opener){
+  showMapDetails(site.label,point,opener,content=>{
+    appendMapSiteFacts(content,site);
+    content.append(mapPopupButton('Show in analysis',()=>showSiteInAnalysis(site)));
+  });
 }
-function setRouterTerminalClutter(id,choice){
-  const router=manualRouters.find(item=>item.id===id)??meshcoreRouters.find(item=>item.id===id);
-  if(!router)return;
-  if(mapEditsLocked()){
-    choice.value=router.terminal_clutter??'';
-    return;
+function showSiteInAnalysis(site){
+  closeMapSelection();
+  if(result?.links?.length){
+    const index=result.links.findIndex(link=>link.source_id===site.id||link.target_id===site.id);
+    if(index>=0)profile(index);
   }
-  if(choice.value)router.terminal_clutter=choice.value;
-  else delete router.terminal_clutter;
-  const selector=`[data-terminal-clutter-router="${CSS.escape(id)}"]`;
-  for(const control of document.querySelectorAll(selector))control.value=choice.value;
-  // The proposed router popup keeps its controls even while closed.
-  const popupControl=manualMapMarkers.get(id)?.getPopup()?.getContent().querySelector(selector);
-  if(popupControl)popupControl.value=choice.value;
+  setMainView('view-analysis');
+  const section=$('map-analysis-selection'),title=mapText('h3',site.label);
+  title.tabIndex=-1;
+  section.replaceChildren(title);
+  appendMapSiteFacts(section,site);
+  section.hidden=false;
+  title.scrollIntoView({block:'nearest'});
+  title.focus({preventScroll:true});
+}
+function showMapDetails(title,point,opener,fill){
+  const content=document.createElement('div');
+  content.append(mapText('strong',title));
+  fill(content);
+  showMapObjectPopup(point,content,opener);
+  const panel=$('map-object-details');
+  $('map-object-title').textContent=title;
+  const body=$('map-object-body');
+  body.replaceChildren();
+  fill(body);
+  panel.hidden=false;
+  panel.scrollTop=0;
+  keepMapPopupClearOfPanel(panel);
+}
+function keepMapPopupClearOfPanel(panel){
+  const popup=mapObjectPopup?.getElement()?.getBoundingClientRect(), box=panel.getBoundingClientRect();
+  if(!popup||popup.right<=box.left||popup.left>=box.right||popup.bottom<=box.top||popup.top>=box.bottom)return;
+  const delta=mobileViewport.matches?[0,popup.bottom-box.top+8]:[popup.right-box.left+8,0];
+  map.panBy(delta,{animate:false});
+}
+function showMapObjectPopup(point,content,opener){
+  closeRouteLinkInspector();
+  closeMapSelection();
+  mapSelection={opener};
+  if(!['queued','running','preparing','failed','disconnected'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;
+  const popup=L.popup(mapPopupOptions({maxHeight:Math.min(380,map.getSize().y*.56),closeOnEscapeKey:false}));
+  mapObjectPopup=popup;
+  popup.on('remove',()=>{
+    if(mapObjectPopup!==popup)return;
+    closeMapSelection(popup.getElement()?.contains(document.activeElement)||document.activeElement===document.body);
+  });
+  popup.setLatLng(point).setContent(content).openOn(map);
+  syncMapEditControls();
+  (content.querySelector('input:not(:disabled), button:not(:disabled)')||popup.getElement().querySelector('.leaflet-popup-close-button'))?.focus({preventScroll:true});
+}
+function closeMapSelection(restoreFocus=false){
+  if(!mapSelection)return;
+  const {opener}=mapSelection,popup=mapObjectPopup;
+  mapSelection=null;
+  mapObjectPopup=null;
+  $('map-object-details').hidden=true;
+  if(popup?.isOpen())map.closePopup(popup);
+  if(restoreFocus){
+    const target=opener();
+    (target?.checkVisibility()?target:map.getContainer()).focus({preventScroll:true});
+  }
+}
+function openMapSiteFromSidebar(marker,describe){
+  if(!marker||mapEditsLocked())return;
+  const site=describe();
+  setMainView('view-map');
+  requestAnimationFrame(()=>{
+    map.panTo(marker.getLatLng(),{animate:false});
+    openMapSiteEditor(site,marker.getLatLng(),()=>mapSiteElement(site.id));
+  });
+}
+function mapEditorField(form,key,label,value,{min,max,type='number',choices}={}){
+  const wrapper=mapText('label',label),control=mapEditControl(document.createElement(choices?'select':'input'));
+  control.name=key;
+  if(choices){
+    for(const [value,label] of Object.entries(choices))control.add(new Option(label,value));
+  }else{
+    control.type=type;
+    if(type==='number'){
+      control.min=min;
+      control.max=max;
+      control.step='any';
+    }else control.maxLength=32;
+  }
+  control.value=value??'';
+  control.required=true;
+  const error=mapText('small','');
+  error.className='field-error';
+  error.hidden=true;
+  control.addEventListener('input',()=>{
+    control.removeAttribute('aria-invalid');
+    error.hidden=true;
+  });
+  wrapper.append(control,error);
+  form.append(wrapper);
+  return {control,error};
+}
+function openMapSiteEditor(site,point,opener){
+  const content=document.createElement('div'),form=document.createElement('form');
+  content.append(mapText('strong','Edit '+site.label),form);
+  form.className='map-site-editor';
+  form.noValidate=true;
+  if(site.kind==='search')form.append(mapText('p','Saving adds this location as a proposed router.'));
+  const fields={
+    name:mapEditorField(form,'name','Name',site.name,{type:'text'}),
+    antenna_height_m:mapEditorField(form,'antenna_height_m','Antenna height · m',site.antenna_height_m,{min:.1,max:site.kind==='known'?500:1000}),
+    gain_dbi:mapEditorField(form,'gain_dbi','Antenna gain · dBi',site.gain_dbi,{min:-100,max:100}),
+    terminal_clutter:mapEditorField(form,'terminal_clutter','Terminal clutter',site.terminal_clutter||(site.kind==='endpoint'?'none':'default'),{choices:Object.fromEntries(site.kind==='endpoint'?terminalClutterOptions:[['default','Repeater default'],...terminalClutterOptions])})
+  };
+  if(site.policy)fields.policy=mapEditorField(form,'policy','Use in search',site.policy,{choices:routerPolicyLabels});
+  if(site.kind!=='known'){
+    const coordinates=document.createElement('div');
+    coordinates.className='coordinate-grid';
+    form.append(coordinates);
+    fields.latitude=mapEditorField(coordinates,'latitude','Latitude',site.latitude.toFixed(6),{min:-90,max:90});
+    fields.longitude=mapEditorField(coordinates,'longitude','Longitude',site.longitude.toFixed(6),{min:-180,max:180});
+  }
+  const actions=document.createElement('div'),save=mapEditControl(mapText('button','Save changes'));
+  actions.className='map-editor-actions';
+  save.type='submit';
+  actions.append(save);
+  if(site.kind==='manual')actions.append(mapEditControl(mapPopupButton('Remove',()=>{
+    if(mapEditsLocked())return;
+    closeMapSelection();
+    removeManualRouter(site.id);
+    map.getContainer().focus({preventScroll:true});
+  })));
+  form.append(actions);
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if(mapEditsLocked())return;
+    const changes={};
+    for(const [key,{control,error}] of Object.entries(fields)){
+      const raw=control.value.trim(),numeric=control.type==='number';
+      if(!raw||!control.validity.valid||(numeric&&!Number.isFinite(Number(raw)))){
+        error.textContent=raw?control.validationMessage:'Enter a value.';
+        error.hidden=false;
+        control.setAttribute('aria-invalid','true');
+        control.focus();
+        return;
+      }
+      changes[key]=numeric?Number(raw):raw;
+    }
+    closeMapSelection();
+    const id=applyMapSiteEdit(site,changes);
+    (mapSiteElement(id)||map.getContainer()).focus({preventScroll:true});
+  };
+  showMapObjectPopup(point,content,opener);
+}
+function saveSiteRadio(id,changes){
+  const overrides=rf.site_overrides??={};
+  if(changes)overrides[id]=changes;
+  else delete overrides[id];
+  if(!Object.keys(overrides).length)delete rf.site_overrides;
+}
+function applyMapSiteEdit(site,{latitude,longitude,gain_dbi,terminal_clutter,...changes}){
+  const point={lat:latitude,lng:longitude};
+  if(site.kind==='endpoint'){
+    editEndpoint(site.key,point,{...changes,gain_dbi,terminal_clutter});
+    return site.id;
+  }
+  let id=site.id;
+  if(site.kind==='search'){
+    id='M-'+randomId();
+    manualRouters.push({id});
+  }
+  saveSiteRadio(id,{gain_dbi});
+  changes.terminal_clutter=terminal_clutter==='default'?undefined:terminal_clutter;
+  if(site.kind==='known')setRouterPolicy(id,changes.policy,{...changes,name_override:true,height_override:true});
+  else moveManualRouter(manualRouters.find(item=>item.id===id),point,changes);
+  return id;
+}
+function removeManualRouter(id){
+  if(mapEditsLocked())return;
+  manualRouters=manualRouters.filter(item=>item.id!==id);
+  if(selectedManualRouterId===id)selectedManualRouterId=null;
+  saveSiteRadio(id,null);
   recordEdit();
-  invalidate('router terminal clutter');
+  invalidate('proposed router removed');
+  renderManualRouters();
   scheduleCoverageCheck();
 }
+$('map-object-close').onclick=()=>closeMapSelection(true);
+
+
+
 function moveRouteSiteToStalePane(marker){
   if(marker.options.pane==='staleRouteSitePane')return;
   const {type,label,policy}=marker._routeSiteIcon;
@@ -338,83 +629,15 @@ function moveRouteSiteToStalePane(marker){
   routeLayer.addLayer(marker);
   marker.dragging?.disable();
 }
-function manualRouterControls(router,marker){
-  const fields=[];
-  function changeName(name){
-    const value=name.value.trim();
-    if(!value||mapEditsLocked()||value===router.name){
-      name.value=manualRouterName(router);
-      return;
-    }
-    router.name=value;
-    updateManualMarker(marker,router);
-    saveRouterEdit('proposed router name');
-  }
-  function changeHeight(height){
-    if(!height.reportValidity()||!height.value||mapEditsLocked()){
-      height.value=router.antenna_height_m;
-      return;
-    }
-    router.antenna_height_m=height.valueAsNumber;
-    saveRouterEdit('proposed router antenna height');
-  }
-  function changePolicy(policy){
-    if(mapEditsLocked()){
-      policy.value=router.policy||'optional';
-      return;
-    }
-    router.policy=policy.value;
-    updateManualMarker(marker,router);
-    saveRouterEdit('proposed router policy');
-  }
-  function saveRouterEdit(reason){
-    for(const {name,height,policy} of fields){
-      name.value=manualRouterName(router);
-      height.value=router.antenna_height_m;
-      policy.value=router.policy||'optional';
-    }
-    recordEdit();
-    invalidate(reason);
-    scheduleCoverageCheck();
-    syncManualRouterTitles();
-  }
-  function removeRouter(){
-    if(mapEditsLocked())return;
-    manualRouters=manualRouters.filter(item=>item.id!==router.id);
-    if(selectedManualRouterId===router.id)selectedManualRouterId=null;
-    saveRouterEdit('proposed router selection');
-    renderManualRouters();
-  }
-  return function makeControls(){
-    const nameLabel=mapText('label','Name'),name=mapEditControl(document.createElement('input'));
-    name.type='text';name.maxLength=24;name.required=true;name.autocomplete='off';
-    name.value=manualRouterName(router);
-    name.onchange=()=>changeName(name);
-    nameLabel.append(name);
-    const heightLabel=mapText('label','Antenna height · m'),height=mapEditControl(document.createElement('input'));
-    height.type='number';height.min='0.1';height.max='1000';height.step='any';height.required=true;
-    height.value=router.antenna_height_m;
-    height.onchange=()=>changeHeight(height);
-    heightLabel.append(height);
-    const policyLabel=mapText('label','Use in search'),policy=mapEditControl(document.createElement('select'));
-    for(const [value,label] of Object.entries(routerPolicyLabels))policy.add(new Option(label,value));
-    policy.value=router.policy||'optional';
-    policy.onchange=()=>changePolicy(policy);
-    policyLabel.append(policy);
-    const remove=mapEditControl(mapPopupButton('Remove',removeRouter));
-    fields.push({name,height,policy});
-    return {nameLabel,heightLabel,policyLabel,remove};
-  };
-}
 function updateManualMarker(marker,router){
   const policy=router.policy||'optional';
   marker.options.title=manualRouterName(router);
   marker.setIcon(mapSiteIcon('manual',shortMapLabel(manualRouterName(router)),policy));
-  const heading=marker.getPopup?.()?.getContent()?.querySelector?.('.manual-popup-title');
-  if(heading)heading.textContent=`${manualRouterName(router)} · Proposed router`;
   marker.setTooltipContent(mapText('span',`${manualRouterName(router)} · Proposed router · ${routerPolicyLabels[policy]}`));
 }
-function moveManualRouter(router,point){
+function moveManualRouter(router,point,changes){
+  if(mapEditsLocked())return;
+  if(changes)Object.assign(router,changes);
   router.latitude=Number(point.lat.toFixed(6));
   router.longitude=Number(point.lng.toFixed(6));
   recordEdit();
@@ -444,18 +667,12 @@ function renderManualRouters(){
   for(const router of manualRouters){
     const marker=L.marker(mapPoint(router),{draggable:!mapEditsLocked(),title:manualRouterName(router),routerId:router.id}).bindTooltip('');
     updateManualMarker(marker,router);
-    const makeControls=manualRouterControls(router,marker);
-    const popup=document.createElement('div'),popupControls=makeControls();
-    popupControls.remove.className='map-remove-router';
-    const heading=mapText('strong',`${manualRouterName(router)} · Proposed router`);heading.className='manual-popup-title';
-    popup.append(heading,mapText('span',coordinateLabel(mapPoint(router))),
-      popupControls.nameLabel,popupControls.heightLabel,popupControls.policyLabel,routerTerminalClutterControl(router),popupControls.remove);
-    marker.bindPopup(popup,mapPopupOptions());
-    marker.on('popupopen',()=>{focusManualRouter(router.id);syncMapEditControls();});
-    marker.on('dragend',event=>moveManualRouter(router,event.target.getLatLng().wrap()));
+    bindMapSite(marker,()=>routerMapSite(router,'manual'));
+    bindRouteSiteInspector(marker,router.id,point=>moveManualRouter(router,point));
     bindLiveCoverageDrag(marker,()=>({slot:`manual:${router.id}`,id:router.id,kind:'router',antenna_height_m:liveCoverageSiteHeight(router.antenna_height_m,rf?.router?.height_agl_m??3),terminal_clutter:router.terminal_clutter}));
     manualMapMarkers.set(router.id,marker);
-    if(!routed.has(router.id))marker.addTo(manualLayer);
+    marker.addTo(manualLayer);
+    marker.getElement().classList.toggle('is-in-route',routed.has(router.id));
     const row=document.createElement('div');row.className='known-router manual-router'+(selectedManualRouterId===router.id?' selected':'');row.dataset.manualRouterId=router.id;
     const title=manualRouterTitle(router,routed);
     const coordinates=document.createElement('div');coordinates.className='coordinate-grid manual-coordinate-grid';
@@ -463,60 +680,41 @@ function renderManualRouters(){
     const longitudeLabel=document.createElement('label'),longitude=document.createElement('input');longitudeLabel.textContent='Longitude';longitude.type='number';longitude.min='-180';longitude.max='180';longitude.step='any';longitude.value=router.longitude;longitudeLabel.append(longitude);coordinates.append(latitudeLabel,longitudeLabel);
     const move=mapEditControl(document.createElement('button'));move.type='button';move.className='text-button';move.textContent='Apply coordinates';move.onclick=()=>{if(mapEditsLocked())return;const coordinates=parseCoordinates(latitude.value,longitude.value);if(!coordinates){status('Enter a valid latitude (−90 to 90) and longitude (−180 to 180).',true);return;}const [lat,lng]=coordinates;moveManualRouter(router,{lat,lng});};
     const focus=document.createElement('button');focus.type='button';focus.className='text-button';focus.textContent='Show on map';focus.onclick=()=>focusManualRouter(router.id,{pan:true});
-    const {nameLabel,heightLabel,policyLabel,remove}=makeControls();
-    remove.className='text-button remove-router';
-    row.append(title,coordinates,move,focus,nameLabel,heightLabel,policyLabel,remove,routerTerminalClutterControl(router));list.append(row);
+    const edit=mapEditControl(mapPopupButton('Edit site',()=>openMapSiteFromSidebar(marker,()=>routerMapSite(router,'manual'))));
+    edit.className='text-button';
+    row.append(title,coordinates,move,focus,edit);list.append(row);
   }
 }
 function focusManualRouter(id,{pan=false}={}){selectedManualRouterId=id;for(const row of document.querySelectorAll('#manual-list [data-manual-router-id]'))row.classList.toggle('selected',row.dataset.manualRouterId===id);const router=manualRouters.find(item=>item.id===id),row=[...document.querySelectorAll('#manual-list [data-manual-router-id]')].find(item=>item.dataset.manualRouterId===id);if(pan&&router)map.setView([router.latitude,router.longitude],Math.max(map.getZoom(),12));row?.scrollIntoView({block:'nearest'});}
 function routerIsRecent(router){const heard=Date.parse(router.last_heard||''),age=Date.now()-heard;return Number.isFinite(heard)&&age>=0&&age<=7*24*60*60*1000;}
 function visibleKnownRouters(){const activity=$('meshcore-filter').value,policy=$('meshcore-policy-filter').value,query=$('meshcore-search').value.trim().toLocaleLowerCase();return meshcoreRouters.filter(router=>{const routerPolicy=routerPolicies.get(router.id)||router.policy||'excluded',matchesActivity=activity==='all'||(activity==='active'&&router.relay_active===true)||(activity==='recent'&&routerIsRecent(router))||(activity==='active_recent'&&router.relay_active===true&&routerIsRecent(router)),matchesPolicy=policy==='all'||routerPolicy===policy,matchesQuery=!query||`${router.name||''} ${router.id}`.toLocaleLowerCase().includes(query);return matchesActivity&&matchesPolicy&&matchesQuery;});}
-function setRouterPolicy(id,policy){if(busy||routePreflightBusy||coverageBusy||switchingProject)return;routerPolicies.set(id,policy);recordEdit();invalidate('existing router selection');renderMeshcoreRouters();scheduleCoverageCheck();}
-function focusKnownRouter(id,{pan=false,focus=true}={}){selectedKnownRouterId=id;let rows=[...document.querySelectorAll('#meshcore-list [data-router-id]')],row=rows.find(item=>item.dataset.routerId===id);if(!row){$('meshcore-search').value='';$('meshcore-filter').value='all';$('meshcore-policy-filter').value='all';renderMeshcoreRouters();row=[...document.querySelectorAll('#meshcore-list [data-router-id]')].find(item=>item.dataset.routerId===id);status('Filters cleared to show the router selected on the map.');}for(const item of document.querySelectorAll('#meshcore-list [data-router-id]')){const selected=item.dataset.routerId===id;item.classList.toggle('selected',selected);if(selected)item.setAttribute('aria-current','true');else item.removeAttribute('aria-current');}const router=meshcoreRouters.find(item=>item.id===id);if(pan&&router&&mobileViewport.matches)setMainView('view-map');if(pan&&router)map.setView([router.latitude,router.longitude],Math.max(map.getZoom(),12));if(row){row.scrollIntoView({block:'nearest'});if(focus)row.querySelector('select')?.focus({preventScroll:true});}}
-function knownRouterPopup(router,policy){
-  const popup=document.createElement('div'),buttons=document.createElement('div');
-  buttons.className='map-policy-buttons';
-  const heard=Date.parse(router.last_heard||'');
-  const activity=router.relay_active===true?'Active':router.relay_active===false?'Inactive':'Unknown';
-  popup.append(mapText('strong',router.name||router.id),mapText('span','ID: '+router.id),
-    mapText('span','Last heard: '+(Number.isFinite(heard)?new Date(heard).toLocaleString():'Unknown')),
-    mapText('span','Relay activity: '+activity+(router.relay_count_24h==null?'':` · ${router.relay_count_24h} relays in 24 h`)));
-  for(const value of ['excluded','optional','required']){
-    const button=mapEditControl(mapPopupButton(routerPolicyLabels[value],()=>{
-      if(mapEditsLocked()||value===policy)return;
-      setRouterPolicy(router.id,value);
-      focusKnownRouter(router.id,{focus:false});
-      const marker=knownMapMarkers.get(router.id);marker?.openPopup();
-      requestAnimationFrame(()=>marker?.getPopup()?.getElement()?.querySelector('.map-policy-buttons [aria-pressed="true"]')?.focus({preventScroll:true}));
-    }));
-    button.setAttribute('aria-pressed',String(value===policy));
-    buttons.append(button);
-  }
-  popup.append(buttons,routerTerminalClutterControl(router));
-  return popup;
+function setRouterPolicy(id,policy,changes){
+  if(mapEditsLocked())return;
+  const router=meshcoreRouters.find(item=>item.id===id);
+  if(!router)return;
+  if(changes)Object.assign(router,changes);
+  routerPolicies.set(id,policy);
+  recordEdit();
+  invalidate(changes?'MeshCore router settings':'existing router selection');
+  renderMeshcoreRouters();
+  scheduleCoverageCheck();
 }
+function focusKnownRouter(id,{pan=false,focus=true}={}){selectedKnownRouterId=id;let rows=[...document.querySelectorAll('#meshcore-list [data-router-id]')],row=rows.find(item=>item.dataset.routerId===id);if(!row){$('meshcore-search').value='';$('meshcore-filter').value='all';$('meshcore-policy-filter').value='all';renderMeshcoreRouters();row=[...document.querySelectorAll('#meshcore-list [data-router-id]')].find(item=>item.dataset.routerId===id);status('Filters cleared to show the router selected on the map.');}for(const item of document.querySelectorAll('#meshcore-list [data-router-id]')){const selected=item.dataset.routerId===id;item.classList.toggle('selected',selected);if(selected)item.setAttribute('aria-current','true');else item.removeAttribute('aria-current');}const router=meshcoreRouters.find(item=>item.id===id);if(pan&&router&&mobileViewport.matches)setMainView('view-map');if(pan&&router)map.setView([router.latitude,router.longitude],Math.max(map.getZoom(),12));if(row){row.scrollIntoView({block:'nearest'});if(focus)row.querySelector('select')?.focus({preventScroll:true});}}
 function renderKnownMapMarkers(){
   knownLayer.clearLayers();
   knownMapMarkers.clear();
   const routed=routedRouterIds();
   for(const router of meshcoreRouters){
-    const policy=routerPolicies.get(router.id)||router.policy||'excluded',excluded=policy==='excluded',required=policy==='required';
-    const marker=L.circleMarker(mapPoint(router),{
-      radius:required?8:excluded?5:7,color:excluded?'#718079':'#3f2c66',
-      fillColor:required?'#61418a':excluded?'#a8b1aa':'#c9b3df',
-      weight:excluded?1:2,fillOpacity:excluded?.45:.95,opacity:excluded?.65:1
-    });
-    marker.bindTooltip(mapText('span',`${router.name||router.id} · MeshCore router · ${routerPolicyLabels[policy]}${router.stale?' · stale feed entry':''}`));
-    marker.bindPopup(()=>knownRouterPopup(router,policy),mapPopupOptions());
-    marker.on('popupopen',()=>{
-      focusKnownRouter(router.id,{focus:false});
-      if(knownMapMarkers.get(router.id)!==marker)knownMapMarkers.get(router.id)?.openPopup();
-      syncMapEditControls();
-    });
+    const policy=routerPolicies.get(router.id)||router.policy||'excluded';
+    const label=router.name||router.id, inRoute=routed.has(router.id);
+    const marker=L.marker(mapPoint(router),{
+      icon:mapSiteIcon('existing',inRoute?shortMapLabel(label):'',policy),
+      title:label, zIndexOffset:inRoute?100:0
+    }).bindTooltip(mapText('span',label+' · MeshCore router · '+routerPolicyLabels[policy]+(inRoute?' · in route':'')));
+    bindMapSite(marker,()=>routerMapSite(router,'known'));
     knownMapMarkers.set(router.id,marker);
-    if(routed.has(router.id))continue;
     marker.addTo(knownLayer);
-    if(required)L.marker(mapPoint(router),{icon:requiredRouterBadgeIcon(),interactive:false,keyboard:false}).addTo(knownLayer);
+    marker.getElement().classList.toggle('is-in-route',inRoute);
   }
 }
 function renderMeshcoreRouters(){
@@ -539,7 +737,7 @@ function renderMeshcoreRouters(){
         (replacement||$('meshcore-policy-filter')).focus({preventScroll:true});
       }
     };
-    const focus=document.createElement('button');focus.type='button';focus.className='text-button router-focus';focus.textContent='Show';focus.setAttribute('aria-label',`Show ${router.name||router.id} on map`);focus.onclick=()=>focusKnownRouter(router.id,{pan:true,focus:false});row.append(copy,choice,focus,routerTerminalClutterControl(router));list.append(row);
+    const focus=document.createElement('button');focus.type='button';focus.className='text-button router-focus';focus.textContent='Show';focus.setAttribute('aria-label',`Show ${router.name||router.id} on map`);focus.onclick=()=>focusKnownRouter(router.id,{pan:true,focus:false});const edit=mapEditControl(mapPopupButton('Edit site',()=>openMapSiteFromSidebar(knownMapMarkers.get(router.id),()=>routerMapSite(router,'known'))));edit.className='text-button';row.append(copy,choice,focus,edit);list.append(row);
   }
   if(!meshcoreRouters.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Routers within the search corridor will appear here.';list.append(empty);}else if(!visible.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='No saved routers match this search and filter.';list.append(empty);}
   $('include-all').disabled=busy||coverageBusy||!visible.length;$('include-none').disabled=busy||coverageBusy||!visible.some(router=>['optional','required'].includes(routerPolicies.get(router.id)||router.policy));
@@ -547,14 +745,15 @@ function renderMeshcoreRouters(){
 }
 for(const name of ['a','b']){
   $(name).addEventListener('input',()=>{clearTerrainEstimateReview();scheduleTerrainSourcePreview();});
-  $(name).onchange=()=>{try{mark(name,coords(name));recordEdit();invalidate('endpoint coordinates');scheduleCoverageCheck();}catch(e){status(e.message,true);}};
+  $(name).onchange=()=>{try{editEndpoint(name,L.latLng(coords(name)));}catch(e){status(e.message,true);}};
+  $('edit-endpoint-'+name).onclick=()=>openMapSiteFromSidebar(markers[name],()=>endpointMapSite(name));
   mark(name,coords(name));
 }
 fitMapSites();
 for(const name of ['a','b'])$(name).addEventListener('input',()=>updatePlanReadiness());
 function setInteractionMode(next){
   if(!['browse','place-a','place-b','place-router','place-target','draw-coverage-area','inspect-coverage'].includes(next))return;
-  if(next!=='browse'){setMainView('view-map');map.closePopup();}
+  if(next!=='browse'){setMainView('view-map');closeMapSelection();map.closePopup();}
   if(interactionMode==='draw-coverage-area'&&next!=='draw-coverage-area'){coverageDrawingPoints=[];map.doubleClickZoom.enable();if($('coverage-area'))$('coverage-area').value=coverageSettings.area_mode;}
   if(interactionMode==='inspect-coverage'&&next!=='inspect-coverage'){
     inspectionRequest++;inspectionController?.abort();cancelActiveInspection();inspectionLayer.clearLayers();$('coverage-inspection').hidden=true;
@@ -641,6 +840,7 @@ function setMainView(id,persist=true){
   const unchanged=$('workspace').dataset.mainView===id;
   for(const viewId of mainViewIds){const active=viewId===id,pane=$(viewId),tab=document.querySelector(`[data-main-view-target="${viewId}"]`);pane.hidden=!active;tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;}
   $('workspace').dataset.mainView=id;
+  if(id==='view-analysis')closeMapSelection();
   if(id==='view-analysis'&&!['queued','running','preparing','failed','disconnected'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;
   if(persist)try{localStorage.setItem('repeaternet.main-view',id);}catch{}
   if(persist&&mobileViewport.matches)setMobileDestination(id==='view-map'?'map':'analysis');
@@ -655,6 +855,11 @@ $('inspection-show-map').onclick=()=>setMainView('view-map');
 window.addEventListener('keydown',event=>{
   if(document.querySelector('dialog[open]'))return;
   if(event.key==='Escape'){
+    if(mapSelection||mapObjectPopup?.isOpen()){
+      closeMapSelection(true);
+      event.preventDefault();
+      return;
+    }
     const popup=map._popup;
     if(popup?.isOpen()&&popup!==mapContextPopup&&popup.getElement()?.contains(document.activeElement)){
       const opener=popup._source?.getElement?.();
@@ -689,14 +894,21 @@ function placeMapSite(mode,point){
     const router=addManualRouterAt(point.lat,point.lng);
     if(!router)return;
     focusManualRouter(router.id);
-    setMapHint('Proposed router added. Select its marker to edit it.',true);
+    setMapHint('Proposed router added. Right-click or long-press its marker to edit it.',true);
   }else{
     editEndpoint(mode==='place-a'?'a':'b',point);
     setMapHint('Endpoint placed. Drag its marker to fine-tune.',true);
   }
 }
-map.on('contextmenu',event=>{
-  const point=event.latlng.wrap(),menu=document.createElement('div');
+map.on('contextmenu',event=>openMapContextMenu(event.latlng));
+map.getContainer().addEventListener('keydown',event=>{
+  if(event.target!==map.getContainer()||!isMapContextKey(event))return;
+  event.preventDefault();
+  openMapContextMenu(map.getCenter());
+});
+function openMapContextMenu(latlng){
+  closeMapSelection();
+  const point=latlng.wrap(),menu=document.createElement('div');
   for(const [mode,label] of [
     ['place-a','Set start (A) here'],['place-b','Set destination (B) here'],['place-router','Add proposed router here']
   ]){
@@ -717,8 +929,8 @@ map.on('contextmenu',event=>{
     }
   }));
   mapContextPopup=L.popup(mapPopupOptions({className:'map-popup map-context-popup'})).setLatLng(point).setContent(menu).openOn(map);
-  (menu.querySelector('button:not(:disabled)'))?.focus({preventScroll:true});
-});
+  menu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+}
 map.on('click',e=>{
   if(mapEditsLocked())return;
   if(interactionMode==='draw-coverage-area'){coverageDrawingPoints.push(L.latLng(Number(e.latlng.lat.toFixed(6)),Number(e.latlng.lng.toFixed(6))));renderCoverageArea();syncCoverageAreaControls();return;}
@@ -2529,7 +2741,13 @@ async function pollTerrainJob(){
     }
   }catch(error){showJobConnectionError(error);}
 }
-async function loadMeshcore(){const button=$('load-meshcore');button.disabled=true;status('Loading nearby MeshCore routers from CoreScope…');try{const previous=new Map(routerPolicies),oldById=new Map(meshcoreRouters.map(router=>[router.id,router])),data=await api('/api/meshcore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({a:coords('a'),b:coords('b'),corridor_width_m:candidates.corridor_width_m})}),fresh=data.routers.map(router=>({...router,terminal_clutter:oldById.get(router.id)?.terminal_clutter,stale:false})),available=new Set(fresh.map(router=>router.id)),stale=meshcoreRouters.filter(router=>!available.has(router.id)).map(router=>({...router,stale:true,corridor_distance_m:null}));meshcoreRouters=[...fresh,...stale];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,previous.get(router.id)||oldById.get(router.id)?.policy||router.policy||'excluded']));recordEdit();invalidate('existing router set');renderMeshcoreRouters();scheduleCoverageCheck();status(`${data.count} nearby routers refreshed; ${stale.length} saved router(s) are now marked stale.`);}catch(e){status(e.message,true);}finally{button.disabled=busy;}}
+function preserveMeshCoreEdits(router,prior){
+  if(!prior)return {...router,stale:false};
+  const {name,height_override,antenna_height_m}=prior;
+  return {...router,...(prior.name_override?{name,name_override:true}:{}),
+    ...(height_override?{height_override,antenna_height_m}:{}),terminal_clutter:prior.terminal_clutter,stale:false};
+}
+async function loadMeshcore(){const button=$('load-meshcore');button.disabled=true;status('Loading nearby MeshCore routers from CoreScope…');try{const previous=new Map(routerPolicies),oldById=new Map(meshcoreRouters.map(router=>[router.id,router])),data=await api('/api/meshcore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({a:coords('a'),b:coords('b'),corridor_width_m:candidates.corridor_width_m})}),fresh=data.routers.map(router=>preserveMeshCoreEdits(router,oldById.get(router.id))),available=new Set(fresh.map(router=>router.id)),stale=meshcoreRouters.filter(router=>!available.has(router.id)).map(router=>({...router,stale:true,corridor_distance_m:null}));meshcoreRouters=[...fresh,...stale];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,previous.get(router.id)||oldById.get(router.id)?.policy||router.policy||'excluded']));recordEdit();invalidate('existing router set');renderMeshcoreRouters();scheduleCoverageCheck();status(`${data.count} nearby routers refreshed; ${stale.length} saved router(s) are now marked stale.`);}catch(e){status(e.message,true);}finally{button.disabled=busy;}}
 $('load-meshcore').onclick=loadMeshcore;
 for(const id of ['include-all','include-none'])$(id).onclick=()=>{const policy=id==='include-all'?'optional':'excluded';for(const router of visibleKnownRouters())routerPolicies.set(router.id,policy);recordEdit();invalidate('existing router policies');renderMeshcoreRouters();scheduleCoverageCheck();};
 $('meshcore-filter').onchange=renderMeshcoreRouters;$('meshcore-policy-filter').onchange=renderMeshcoreRouters;$('meshcore-search').oninput=renderMeshcoreRouters;
@@ -2548,7 +2766,7 @@ $('coverage-baseline-run').onchange=()=>updateComparisonReferenceOptions(compari
 $('coverage-load-run').onclick=()=>void loadSavedCoverageRun();$('coverage-reconnect').onclick=()=>{if(coverageJob?.job_id)void pollCoverage(coverageJob.job_id);};$('coverage-legend-search').oninput=renderCoverageLegend;
 map.on('moveend',invalidateChangedCoverageExtent);
 document.querySelectorAll('[data-height-preset]').forEach(button=>button.onclick=()=>applyCoverageHeightPreset(Number(button.dataset.heightPreset)));
-function plan(){return {format:'repeaternet-web',version:1,a:coords('a'),b:coords('b'),rf,candidates,terrain:terrainOptions,coverage:coverageSettings,coverage_targets:{type:'FeatureCollection',features:clone(coverageTargets)},search_effort:searchEffort,known_routers:selectedKnownRouters(),manual_routers:clone(manualRouters)};}
+function plan(){return {format:'repeaternet-web',version:1,a:coords('a'),b:coords('b'),rf,candidates,terrain:terrainOptions,coverage:coverageSettings,coverage_targets:{type:'FeatureCollection',features:clone(coverageTargets)},search_effort:searchEffort,known_routers:selectedKnownRouters(),manual_routers:clone(manualRouters),endpoint_names:clone(endpointNames)};}
 function loadRfSettings(saved){
   const settings={...baseRf,...saved};
   if(!Object.hasOwn(saved,'obstacle_surface')&&saved.diffraction_model==='bullington'){
@@ -2558,7 +2776,7 @@ function loadRfSettings(saved){
   return settings;
 }
 $('save').onclick=()=>{try{const blob=new Blob([JSON.stringify(plan(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='route.webplan.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){status(e.message,true);}};
-function load(data){if(!Array.isArray(data.a)||!Array.isArray(data.b)||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');rf=loadRfSettings(data.rf);candidates={...baseCandidates,...data.candidates};delete candidates.maximum_solution_routers;if(!candidates.infrastructure_policy)candidates.infrastructure_policy='existing_and_proposed';terrainOptions={...defaultTerrainOptions,...(data.terrain||{})};for(const [key,defaultValue] of Object.entries(defaultTerrainOptions)){if(typeof terrainOptions[key]!==typeof defaultValue)terrainOptions[key]=defaultValue;}coverageSettings={...JSON.parse(JSON.stringify(defaultCoverageSettings)),...(data.coverage||{}),client:{...defaultCoverageSettings.client,...(data.coverage?.client||{})}};coverageTargets=Array.isArray(data.coverage_targets?.features)?clone(data.coverage_targets.features):[];coverageTargetStates=new Map();syncTerrainControls();syncCoverageInputs();searchEffort=data.search_effort||'balanced';$('search-effort').value=searchEffort;meshcoreRouters=Array.isArray(data.known_routers)?data.known_routers.map(router=>({...router,provenance:router.provenance||'saved plan'})):[];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,router.policy||'optional']));if(!meshcoreRouters.some(router=>router.id===selectedKnownRouterId))selectedKnownRouterId=null;manualRouters=Array.isArray(data.manual_routers)?clone(data.manual_routers):[];ensureManualRouterNames();mark('a',data.a);mark('b',data.b);coords('a');coords('b');buildSettings();renderMeshcoreRouters();renderManualRouters();renderCoverageTargets();invalidate();$('fit').click();scheduleCoverageCheck();}
+function load(data){if(!Array.isArray(data.a)||!Array.isArray(data.b)||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');rf=loadRfSettings(data.rf);endpointNames=clone(data.endpoint_names||{});candidates={...baseCandidates,...data.candidates};delete candidates.maximum_solution_routers;if(!candidates.infrastructure_policy)candidates.infrastructure_policy='existing_and_proposed';terrainOptions={...defaultTerrainOptions,...(data.terrain||{})};for(const [key,defaultValue] of Object.entries(defaultTerrainOptions)){if(typeof terrainOptions[key]!==typeof defaultValue)terrainOptions[key]=defaultValue;}coverageSettings={...JSON.parse(JSON.stringify(defaultCoverageSettings)),...(data.coverage||{}),client:{...defaultCoverageSettings.client,...(data.coverage?.client||{})}};coverageTargets=Array.isArray(data.coverage_targets?.features)?clone(data.coverage_targets.features):[];coverageTargetStates=new Map();syncTerrainControls();syncCoverageInputs();searchEffort=data.search_effort||'balanced';$('search-effort').value=searchEffort;meshcoreRouters=Array.isArray(data.known_routers)?data.known_routers.map(router=>({...router,provenance:router.provenance||'saved plan'})):[];routerPolicies=new Map(meshcoreRouters.map(router=>[router.id,router.policy||'optional']));if(!meshcoreRouters.some(router=>router.id===selectedKnownRouterId))selectedKnownRouterId=null;manualRouters=Array.isArray(data.manual_routers)?clone(data.manual_routers):[];ensureManualRouterNames();mark('a',data.a);mark('b',data.b);coords('a');coords('b');buildSettings();renderMeshcoreRouters();renderManualRouters();renderCoverageTargets();invalidate();$('fit').click();scheduleCoverageCheck();}
 async function applyHistory(from,to){
   if(!from.length)return;
   const invalid=['a','b'].find(name=>!validEndpointCoords(name));
@@ -2815,14 +3033,9 @@ function renderAlternativeChoices(){
 }
 async function chooseAlternative(){if(resultStale||busy||coverageBusy||coverageLoadingRun||switchingProject||alternativeSelecting)return;const id=$('alternative-select').value;if(!id)return;alternativeSelecting=true;syncAlternativeControls();try{result=await api(`/api/alternatives/${encodeURIComponent(id)}/select`,{method:'POST'});resultStale=false;resultStaleReason='';coverageHeightOverrides={};invalidateCoverageEstimate('Selected route alternative changed. Review a new coverage estimate for this mesh.');coverageCells=[];coverageCursor=0;coverageStale=true;predictedCoverageLayer.clearLayers();setCoverageStatus('Route alternative changed. Recalculate coverage to match the selected mesh.');render();}catch(e){render();status(e.message,true);}finally{alternativeSelecting=false;syncAlternativeControls();}}
 function pinMovedRouter(site,point){
-  const latlng=point.wrap();
-  let router=manualRouters.find(item=>item.id===site.id);
-  if(!router){
-    router={id:'M-'+randomId(),name:nextManualRouterName(),antenna_height_m:site.antenna_height_m,policy:'required'};
-    manualRouters.push(router);
-  }
-  router.policy='required';
-  moveManualRouter(router,latlng);
+  const router={id:'M-'+randomId(),name:nextManualRouterName(),antenna_height_m:site.antenna_height_m,policy:'required'};
+  manualRouters.push(router);
+  moveManualRouter(router,point.wrap());
   focusManualRouter(router.id);
   setMapHint(`${routeSiteLabel(site.id)} pinned as required router ${manualRouterName(router)}. The grey marker shows the old route; run a new search to validate the route.`,true);
 }
@@ -2874,18 +3087,12 @@ function routeSiteNeighbors(id){
     return [{link,sites,line:routeLinkLayers[linkIndex]}];
   });
 }
-function bindRouteSiteInspector(marker,id,move,details){
-  const inspect=()=>{
-    if(interactionMode!=='browse')return;
-    if(!openRouteLinkInspector(id,marker,details,true))details?.();
-  };
-  marker.on('click',inspect);
-  marker.on('add',()=>marker.getElement().addEventListener('keydown',event=>{
-    if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();inspect();}
-  }));
-  if(!move)return;
+function bindRouteSiteInspector(marker,id,move){
+  let originalPoint;
   marker.on('dragstart',()=>{
-    if(!mapEditsLocked()&&!resultStale&&interactionMode==='browse')openRouteLinkInspector(id,marker,details,false);
+    originalPoint=marker.getLatLng();
+    closeMapSelection();
+    if(!mapEditsLocked()&&!resultStale&&interactionMode==='browse')openRouteLinkInspector(id,marker);
   });
   marker.on('drag',()=>{
     const inspector=routeLinkInspector;
@@ -2897,7 +3104,7 @@ function bindRouteSiteInspector(marker,id,move,details){
     const inspector=routeLinkInspector?.marker===marker?routeLinkInspector:null;
     const point=marker.getLatLng().wrap();
     if(mapEditsLocked()){
-      if(inspector)marker.setLatLng(inspector.originalPoint);
+      if(originalPoint)marker.setLatLng(originalPoint);
       return;
     }
     // Evaluate exactly the coordinates that the plan will save.
@@ -2911,9 +3118,8 @@ function bindRouteSiteInspector(marker,id,move,details){
     }
   });
 }
-function openRouteLinkInspector(id,marker,details,focus){
+function openRouteLinkInspector(id,marker){
   if(routeLinkInspector?.id===id&&routeLinkInspector.marker===marker){
-    if(focus)$('route-link-inspector-title').focus({preventScroll:true});
     return true;
   }
   const links=routeSiteNeighbors(id);
@@ -2922,8 +3128,7 @@ function openRouteLinkInspector(id,marker,details,focus){
   if(!['queued','running','preparing','failed','disconnected'].includes($('route-job-card').dataset.state))$('route-job-card').hidden=true;
   closeRouteLinkInspector();
   map.closePopup();
-  const originalPoint=L.latLng(mapPoint(links[0].sites.find(site=>site.id===id)));
-  routeLinkInspector={id,marker,originalPoint,links,route:result,projectId:projectInfo?.active_id};
+  routeLinkInspector={id,marker,links,route:result,projectId:projectInfo?.active_id};
   const panel=$('route-link-inspector'),container=$('route-link-inspector-links'),title=$('route-link-inspector-title');
   title.textContent=`Links at ${routeSiteLabel(id)}`;
   container.replaceChildren();
@@ -2933,25 +3138,11 @@ function openRouteLinkInspector(id,marker,details,focus){
     card.append(mapText('h3',item.sites.map(site=>routeSiteLabel(site.id)).join(' – ')),item.body);
     container.append(card);
   }
-  const detailsButton=$('route-link-inspector-site');
-  detailsButton.hidden=!details;
-  detailsButton.onclick=details?()=>{closeRouteLinkInspector(true);details();}:null;
   setRouteInspectorStatus(resultStale?'Previous route · stale.':'');
   panel.hidden=false;
   panel.scrollTop=0;
   for(const item of links)renderRouteInspectorLink(item,item.link);
-  if(focus){
-    title.focus({preventScroll:true});
-    keepRouteInspectorSiteVisible(marker,panel);
-  }
   return true;
-}
-function keepRouteInspectorSiteVisible(marker,panel){
-  const pin=marker.getElement()?.getBoundingClientRect();
-  const pane=panel.getBoundingClientRect(),gap=12;
-  if(!pin||pin.right+gap<=pane.left||pin.left>=pane.right||pin.bottom+gap<=pane.top||pin.top>=pane.bottom)return;
-  const offset=mobileViewport.matches?[0,pin.bottom-pane.top+gap]:[pin.right-pane.left+gap,0];
-  map.panBy(offset,{animate:false});
 }
 function setRouteInspectorStatus(message){
   const status=$('route-link-inspector-status');
@@ -2965,14 +3156,14 @@ function restoreRouteInspectorLine({link,sites,line}){
 }
 function closeRouteLinkInspector(restoreFocus=false){
   if(!routeLinkInspector)return;
-  const {marker,links} = routeLinkInspector;
+  const {marker,links,id:routeLinkInspectorId} = routeLinkInspector;
   routeLinkInspector=null;
   clearTimeout(routeLinkPreviewTimer);
   routeLinkPreviewTimer=null;
   for(const item of links)restoreRouteInspectorLine(item);
   $('route-link-inspector').hidden=true;
   if(restoreFocus){
-    const icon=marker.getElement();
+    const icon=mapSiteElement(routeLinkInspectorId)||marker.getElement();
     (icon?.checkVisibility()?icon:map.getContainer()).focus({preventScroll:true});
   }
 }
@@ -3069,37 +3260,12 @@ function openRouteLink(index){
   setMainView('view-analysis');
   profile(index,true);
 }
-function routeSitePopup(site,links,nearest){
-  const popup=document.createElement('div'),proposed=site.origin!=='known',neighbors=document.createElement('ul');
-  neighbors.className='map-link-list';
-  const policy=routeSitePolicy(site);
-  popup.append(mapText('strong',routeSiteLabel(site.id)),mapText('span','ID: '+site.id),
-    mapText('span','Type: '+routeSiteOriginLabel(site)+(policy?` · ${routerPolicyLabels[policy]}`:'')),
-    mapText('span',`Antenna height: ${site.antenna_height_m} m`));
-  if(Number.isFinite(nearest))popup.append(mapText('span',`Nearest road: ${Math.round(nearest)} m`));
-  else if(nearest===null)popup.append(mapText('span','No mapped road within the display radius.'));
-  links.forEach((link,index)=>{
-    if(link.source_id!==site.id&&link.target_id!==site.id)return;
-    const other=link.source_id===site.id?link.target_id:link.source_id;
-    const item=document.createElement('li');
-    item.append(mapPopupButton(`${routeSiteLabel(other)} · ${formatMetric(link.worst_margin_db)} dB`,()=>openRouteLink(index)));
-    neighbors.append(item);
-  });
-  if(neighbors.childElementCount)popup.append(mapText('b','Links and margins'),neighbors);
-  if(site.origin==='manual'?manualMapMarkers.has(site.id):knownMapMarkers.has(site.id))popup.append(mapPopupButton(site.origin==='manual'?'Edit proposed router':'Edit MeshCore router',()=>openRouterEditor(site)));
-  if(proposed&&!resultStale)popup.append(mapText('span','Drag to pin this site'));
-  return popup;
-}
-function routeSiteOriginLabel(site){return site.origin==='known'?'Existing MeshCore router':site.origin==='manual'?'Proposed router':'New site found by search';}
-function routeSitePolicy(site){
-  if(site.origin==='known')return routerPolicies.get(site.id)||meshcoreRouters.find(router=>router.id===site.id)?.policy||null;
-  if(site.origin==='manual'){const router=manualRouters.find(item=>item.id===site.id);return router?router.policy||'optional':null;}
-  return null;
-}
 function linkIssues(link){const issues=[];if(!link.los_clear)issues.push('LOS obstructed');if(!link.fresnel_clear)issues.push('Fresnel clearance not met');if(!link.forward.valid)issues.push('forward budget failed');if(!link.reverse.valid)issues.push('reverse budget failed');return link.valid?`Passes configured validation criteria${issues.length?` · ${issues.slice(0,2).join(', ')}`:''}`:issues.length?`Not certified · ${issues.join(', ')}`:'Not certified · radio criteria not met';}
 function resetRouteResultView(){
   closeRouteLinkInspector();
   $('prediction-spread').hidden=true;
+  closeMapSelection(true);
+  $('map-analysis-selection').hidden=true;
   routeLayer.clearLayers();candidateLayer.clearLayers();routeLinkLayers=[];
   $('metrics').replaceChildren();$('route-verdict').hidden=true;$('alternatives').hidden=true;$('hops').hidden=true;$('hops-disclosure').hidden=true;$('profile').hidden=true;$('exports').hidden=true;$('candidate-search-diagnostic').hidden=true;$('rf-validation-note').hidden=true;$('analysis-link-picker').hidden=true;
   $('route-show-map').disabled=true;$('result-title').textContent='A clear view of your connection.';$('status').textContent='Find a route to see alternatives, hops, link budgets and terrain profiles here.';$('status').className='';
@@ -3144,6 +3310,8 @@ function renderRouteVerdict({links,band,margin,requested,achieved,resilient}={})
 function render(){
   closeRouteLinkInspector();
   $('prediction-spread').hidden=true;
+  closeMapSelection(true);
+  $('map-analysis-selection').hidden=true;
   routeLayer.clearLayers();routeLinkLayers=[];$('metrics').replaceChildren();$('hops').querySelector('tbody').replaceChildren();$('profile').hidden=true;$('analysis-link-picker').hidden=true;$('hops-disclosure').hidden=true;$('rf-validation-note').hidden=true;
   syncAnalysisBadge();showRepeaterRoads();$('route-show-map').disabled=!result?.links?.length;syncRoutedRouterMarkers();
   const candidateDiagnostic=$('candidate-search-diagnostic');
@@ -3163,28 +3331,21 @@ function render(){
   const linkSelector=$('analysis-link-select');linkSelector.replaceChildren();links.forEach((link,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`${index+1}. ${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)} · ${(link.distance_m/1000).toFixed(2)} km · ${link.worst_margin_db.toFixed(1)} dB`;linkSelector.append(option);});$('analysis-link-picker').hidden=!links.length;
   const sites=Object.fromEntries(result.route.map(site=>[site.id,site]));
   result.route.filter(site=>!['endpoint_a','endpoint_b','client'].includes(site.kind)).forEach(site=>{
-    if(!mapPoint(site).every(Number.isFinite))return;
-    const proposed=site.origin!=='known',label=routeSiteLabel(site.id),policy=routeSitePolicy(site);
-    const origin=routeSiteOriginLabel(site)+(policy==='required'?' · Required':'');
-    const type=site.origin==='known'?'existing':site.origin==='manual'?'manual':'proposed';
+    if(!mapPoint(site).every(Number.isFinite)||['manual','known'].includes(site.origin))return;
+    const label=routeSiteLabel(site.id),type='proposed';
     const marker=L.marker(mapPoint(site),{
-      draggable:proposed&&!mapEditsLocked()&&!resultStale,
-      icon:mapSiteIcon(type,label,policy,{stale:resultStale}),title:label+' · '+origin,zIndexOffset:100,
+      draggable:!mapEditsLocked()&&!resultStale,
+      icon:mapSiteIcon(type,label,null,{stale:resultStale}),title:label,zIndexOffset:100,siteId:site.id,
       ...(resultStale?{pane:'staleRouteSitePane'}:{})
-    }).bindTooltip(mapText('span',`${label} · ${origin}`));
-    marker._routeSiteIcon={type,label,policy};
-    const nearest=active?.nearest_road_distance_m?.[site.id];
-    const details=()=>{
-      const content=routeSitePopup(site,links,nearest);
-      L.popup(mapPopupOptions({maxHeight:260})).setLatLng(marker.getLatLng()).setContent(content).openOn(map);
-      content.querySelector('button')?.focus({preventScroll:true});
-    };
-    marker._plannerDraggable=proposed;
-    if(proposed)bindLiveCoverageDrag(marker,()=>({slot:`route:${site.id}`,id:site.id,kind:'router',antenna_height_m:liveCoverageSiteHeight(site.antenna_height_m,rf?.router?.height_agl_m??3),terminal_clutter:site.terminal_clutter}));
-    bindRouteSiteInspector(marker,site.id,proposed?point=>{
+    }).bindTooltip(mapText('span',label+' · Site found by search'));
+    marker._routeSiteIcon={type,label};
+    marker._plannerDraggable=true;
+    bindMapSite(marker,()=>routerMapSite(site,'search',active?.nearest_road_distance_m?.[site.id]));
+    bindLiveCoverageDrag(marker,()=>({slot:'route:'+site.id,id:site.id,kind:'router',antenna_height_m:liveCoverageSiteHeight(site.antenna_height_m,rf?.router?.height_agl_m??3),terminal_clutter:site.terminal_clutter}));
+    bindRouteSiteInspector(marker,site.id,point=>{
       marker.setLatLng(mapPoint(site));
       pinMovedRouter(site,point);
-    }:null,details);
+    });
     marker.addTo(routeLayer);
   });
   links.forEach((link,index)=>{
@@ -3193,7 +3354,7 @@ function render(){
       const line=L.polyline([mapPoint(a),mapPoint(b)],{...routeLinkMapStyle(link),weight:4}).addTo(routeLayer);
       routeLinkLayers[index]=line;
       line.bindTooltip(routeMapLinkTooltip(link));
-      line.on('click',()=>{if(interactionMode==='browse')openRouteLink(index);});
+      bindMapLink(line,link,index);
     }
     const row=document.createElement('tr'),reason=linkIssues(link),resultCell=document.createElement('span');resultCell.className=link.valid?'link-result pass':'link-result fail';resultCell.textContent=link.valid?'Pass':'Fail';resultCell.title=reason;const linkName=document.createElement('span');linkName.textContent=`${analysisSiteLabel(link.source_id)} → ${analysisSiteLabel(link.target_id)}`;linkName.title=`${link.source_id} → ${link.target_id}`;for(const value of [linkName,(link.distance_m/1000).toFixed(2)+' km',marginPill(link.worst_margin_db),link.minimum_fresnel_clearance_ratio===null?'—':(link.minimum_fresnel_clearance_ratio*100).toFixed(0)+'%',link.los_clear?'Clear':'Obstructed',resultCell]){const cell=document.createElement('td');if(value instanceof Node)cell.append(value);else cell.textContent=value;row.append(cell);}row.tabIndex=0;row.setAttribute('aria-selected',String(index===selected));row.onclick=()=>profile(index);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();profile(index);}};$('hops').querySelector('tbody').append(row);
   });
