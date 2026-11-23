@@ -14,7 +14,7 @@ Model for link i from node t to node r (all quantities in dB):
 * ``X . beta`` holds optional correction covariates (fitted on training data
   only).
 * Links can be censored: ``cens = -1`` means y < bound (never heard),
-  ``cens = +1`` means y > bound (saturated SNR).
+  ``cens = +1`` means y >= bound (detected without a signal value or saturated SNR).
 
 Fitting is EM for a Tobit model: censored links are replaced by their
 conditional means under the current fit, and the M-step solves a ridge

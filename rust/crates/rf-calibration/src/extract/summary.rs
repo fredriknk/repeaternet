@@ -24,6 +24,7 @@ pub(super) struct Group {
     distinct_nodes: usize,
     flag_counts: BTreeMap<String, usize>,
     endpoint_flag_counts: BTreeMap<String, usize>,
+    quality_drop_counts: BTreeMap<String, usize>,
     distance_m: DistanceQuantiles,
     detection_opportunities: u64,
     detection_heard: u64,
@@ -70,6 +71,7 @@ impl<'a> Summary<'a> {
                     let mut nodes = BTreeSet::new();
                     let mut flag_counts = BTreeMap::new();
                     let mut endpoint_flag_counts = BTreeMap::new();
+                    let mut quality_drop_counts = BTreeMap::new();
                     let mut distances = Vec::with_capacity(links.len());
                     let mut detection_opportunities = 0;
                     let mut detection_heard = 0;
@@ -82,6 +84,44 @@ impl<'a> Summary<'a> {
                         }
                         for flag in &link.flags {
                             *flag_counts.entry(flag.clone()).or_default() += 1;
+                        }
+                        // Match the fit's default flag filter and count each drop once.
+                        let reason = link
+                            .flags
+                            .iter()
+                            .find(|flag| {
+                                matches!(
+                                    flag.as_str(),
+                                    "short_relay_prefix"
+                                        | "over_300km"
+                                        | "mqtt_suspect"
+                                        | "via_mqtt"
+                                        | "relayed"
+                                        | "self_link"
+                                        | "radio_mismatch"
+                                        | "implausible_signal"
+                                        | "implausible_distance"
+                                )
+                            })
+                            .cloned()
+                            .or_else(|| {
+                                [("tx", &link.tx), ("rx", &link.rx)].into_iter().find_map(
+                                    |(end, endpoint)| {
+                                        endpoint
+                                            .flags
+                                            .iter()
+                                            .find(|flag| {
+                                                matches!(
+                                                    flag.as_str(),
+                                                    "default_position" | "moved"
+                                                )
+                                            })
+                                            .map(|flag| format!("{end}_{flag}"))
+                                    },
+                                )
+                            });
+                        if let Some(reason) = reason {
+                            *quality_drop_counts.entry(reason).or_default() += 1;
                         }
                         if let Some(detection) = &link.detection {
                             detection_opportunities += u64::from(detection.opportunities);
@@ -100,6 +140,7 @@ impl<'a> Summary<'a> {
                         distinct_nodes: nodes.len(),
                         flag_counts,
                         endpoint_flag_counts,
+                        quality_drop_counts,
                         distance_m: DistanceQuantiles {
                             min: distances[0],
                             p10: quantile(&distances, 0.1),

@@ -5,6 +5,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::{
+    corescope_hops::{LocatedKeys, RelayHops, read_reports},
     model::{Metadata, Position, Sample, Source, TimedPosition, radio_basis},
     privacy::node_id,
     quality::{distance, point},
@@ -12,7 +13,7 @@ use super::{
 use crate::dataset::{Detection, Evidence, Radio};
 
 const ACTIVE_MS: i64 = 120_000;
-const MAX_DETECTION_M: f64 = 100_000.0;
+pub(super) const MAX_DETECTION_M: f64 = 100_000.0;
 const MIN_MISSES: u32 = 20;
 const DETECTION_BASIS: &str = "distinct_packet_hashes_per_tx_with_fully_resolved_or_zero_hop_witness; rx reception within ±120 s of the first sighting; endpoints within 100 km at first sighting; unknown transmitter at rx excluded unless heard is confirmed";
 
@@ -26,7 +27,8 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
     let host = url.host_str().context("missing CoreScope capture host")?;
     let mut source = Source::new(format!("corescope:{}", host.to_ascii_lowercase()), false);
     let identity = |id: &str| node_id(salt, "corescope", id);
-    read_snapshots(db, &mut source, &identity)?;
+    let (mut located_keys, observer_keys) = read_snapshots(db, &mut source, &identity)?;
+    source.fallback_radio = instance_radio(&source);
     for (counter, sql) in [
         (
             "neighbor_graph_snapshots",
@@ -53,13 +55,15 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
             resolved_path, sender_pubkey, advert_lat, advert_lon, direction,
             route_type,
             CASE WHEN json_valid(path_prefixes) AND json_type(path_prefixes) = 'array'
-                 THEN length(json_extract(path_prefixes, '$[#-1]')) END
+                 THEN length(json_extract(path_prefixes, '$[#-1]')) END,
+            path_prefixes, payload_type
          FROM observations ORDER BY seen_ms, endpoint, packet_id, observation_key",
     )?;
     let mut rows = query.query([])?;
     let mut activity: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     let mut packets: BTreeMap<String, Packet> = BTreeMap::new();
     let mut samples = Vec::new();
+    let mut relay_hops = RelayHops::default();
     let mut identities = BTreeMap::new();
     let mut id = |raw: String| {
         identities
@@ -95,6 +99,25 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
             continue;
         }
         let hash: String = row.get(2)?;
+        let route_type: Option<i64> = row.get(12)?;
+        let prefix_count = row
+            .get::<_, Option<i64>>(6)?
+            .and_then(|n| usize::try_from(n).ok());
+        let path: Option<Vec<Option<String>>> = row
+            .get::<_, Option<String>>(7)?
+            .and_then(|json| serde_json::from_str(&json).ok());
+        if matches!(route_type, Some(0 | 1)) && prefix_count.is_some_and(|n| n > 0) {
+            let prefixes: String = row.get(14)?;
+            let advert = row.get::<_, Option<i64>>(15)? == Some(4);
+            relay_hops.observe(
+                &mut source,
+                &located_keys,
+                (&hash, ms),
+                &prefixes,
+                path.as_deref(),
+                sender.as_deref().filter(|_| advert),
+            );
+        }
         let first_seen = row.get::<_, Option<i64>>(1)?.unwrap_or(ms);
         let packet = (!hash.is_empty()).then(|| {
             let packet = packets
@@ -118,19 +141,12 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
             .filter(|v| v.is_finite() && *v < 0.0);
         let snr = row.get::<_, Option<f64>>(5)?.filter(|v| v.is_finite());
         let valid_metrics = rssi.is_some() && snr.is_some();
-        let prefix_count = row
-            .get::<_, Option<i64>>(6)?
-            .and_then(|n| usize::try_from(n).ok());
-        let path: Option<Vec<Option<String>>> = row
-            .get::<_, Option<String>>(7)?
-            .and_then(|json| serde_json::from_str(&json).ok());
         // MeshCore flood packets (route types 0 and 1) accumulate the relays
         // that already forwarded them, so the final entry transmitted the
         // copy this observer heard. Direct packets carry the route ahead and
         // each relay strips itself, so their last relay is unknown. A
         // zero-hop advert is a direct packet with an empty path: its sender
         // is the transmitter whatever the route type.
-        let route_type: Option<i64> = row.get(12)?;
         if prefix_count != Some(0) && !matches!(route_type, Some(0 | 1)) {
             if valid_metrics {
                 source.count("receptions_direct_route_unattributed");
@@ -210,6 +226,9 @@ pub(super) fn read(db: &Connection, salt: &str) -> Result<Source> {
         source.add_sample(&tx, &rx, evidence, sample, flags);
     }
     attach_detection(&mut source, &activity, packets);
+    relay_hops.append(&mut source);
+    located_keys.extend(observer_keys);
+    read_reports(db, &mut source, &located_keys, &identity)?;
     Ok(source)
 }
 
@@ -227,7 +246,9 @@ fn read_snapshots(
     db: &Connection,
     source: &mut Source,
     id: &impl Fn(&str) -> String,
-) -> Result<()> {
+) -> Result<(LocatedKeys, LocatedKeys)> {
+    let mut located = LocatedKeys::new();
+    let mut observers = LocatedKeys::new();
     for (table, id_column, kind) in [
         ("nodes_snapshot", "pubkey", "node_snapshot"),
         ("observers_snapshot", "observer_id", "observer_snapshot"),
@@ -246,12 +267,18 @@ fn read_snapshots(
                 source.count("snapshots_invalid_time");
                 continue;
             };
-            let node = source.nodes.entry(id(&raw)).or_default();
+            let pseudonym = id(&raw);
+            let node = source.nodes.entry(pseudonym.clone()).or_default();
             let lat: Option<f64> = row.get(2)?;
             let lon: Option<f64> = row.get(3)?;
             if let Some((lat, lon)) = lat.zip(lon) {
                 node.saw_default |= lat == 0.0 && lon == 0.0;
                 if let Some(point) = point(lat, lon) {
+                    if kind == "node_snapshot" {
+                        located.insert(raw.to_ascii_lowercase(), pseudonym);
+                    } else {
+                        observers.insert(raw.to_ascii_lowercase(), pseudonym);
+                    }
                     node.positions.push(TimedPosition {
                         ms,
                         position: position(point, kind),
@@ -286,7 +313,29 @@ fn read_snapshots(
             }
         }
     }
-    Ok(())
+    Ok((located, observers))
+}
+
+fn instance_radio(source: &Source) -> Radio {
+    let mut counts = BTreeMap::new();
+    for node in source.nodes.values() {
+        // Snapshot polling frequency must not give an observer extra votes.
+        let Some(config) = node.observer_metadata.iter().rev().find_map(|(_, meta)| {
+            let r = &meta.radio;
+            Some((r.freq_mhz?.to_bits(), r.bw_khz?.to_bits(), r.sf?, r.cr?))
+        }) else {
+            continue;
+        };
+        *counts.entry(config).or_insert(0) += 1;
+    }
+    let Some(((freq, bw, sf, cr), _)) = counts.into_iter().max_by_key(|(_, count)| *count) else {
+        return Radio::default();
+    };
+    let config = format!("{},{},{sf},{cr}", f64::from_bits(freq), f64::from_bits(bw));
+    parse_radio(
+        &serde_json::json!({"radio": config}),
+        "instance_observer_radio_mode",
+    )
 }
 
 fn parse_radio(json: &Value, basis: &str) -> Radio {

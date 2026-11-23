@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Schema version written into every record. Bump on incompatible changes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Where a measurement came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -25,6 +25,12 @@ pub enum Evidence {
     CorescopeZeroHop,
     /// CoreScope pair that had opportunities to be heard but never was.
     CorescopeNonDetection,
+    /// A witnessed flood hop with no measured signal.
+    CorescopeRelayHop,
+    /// An adjacent pair on a directed TRACE route, with receiver SNR.
+    CorescopeTraceHop,
+    /// An observer's own SNR report for a neighbour.
+    CorescopeNeighborReport,
     /// Meshtastic gateway reception with a confirmed transmitter.
     MeshtasticGatewayRx,
     /// Meshtastic traceroute leg (towards or back).
@@ -124,6 +130,9 @@ pub struct LinkRecord {
     pub signal_dbm: Option<Stat>,
     /// Per-packet noise estimate, dBm: `rssi - 10*log10(1 + 10^(snr/10))`.
     pub noise_dbm: Option<Stat>,
+    /// Observer-configured receiver noise floor at the reference time.
+    #[serde(default)]
+    pub receiver_noise_floor_dbm: Option<f64>,
     /// Detection evidence: receptions versus opportunities, when inferable.
     pub detection: Option<Detection>,
     /// Link-level quality flags (`mqtt_suspect`, `over_300km`, `moved`,
@@ -135,6 +144,7 @@ pub struct LinkRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Detection {
     pub heard: u32,
+    /// Zero when no opportunity denominator is observable (relay hops).
     pub opportunities: u32,
     /// How opportunities were counted (for example
     /// `relayed_packets_while_rx_active`).
