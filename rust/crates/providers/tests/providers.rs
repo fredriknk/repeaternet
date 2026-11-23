@@ -455,7 +455,7 @@ fn wcs_mock_request_retry_courtesy_pause_and_atomic_generation() {
     // A staged generation cannot appear under its final name until the complete rename.
     let root = tmp.path().join("project");
     let stage =
-        StagedGeneration::copy_from_cache(&root, &sources, &sources[..1], &|| false).unwrap();
+        StagedGeneration::link_from_cache(&root, &sources, &sources[..1], &|| false).unwrap();
     assert!(!root.join("generation-1").exists());
     assert!(stage.path().join("dom/tile-0000.tif").exists());
     assert!(matches!(
@@ -463,7 +463,7 @@ fn wcs_mock_request_retry_courtesy_pause_and_atomic_generation() {
         Err(ProviderError::Cancelled)
     ));
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
-    let published = StagedGeneration::copy_from_cache(&root, &sources, &sources[..1], &|| false)
+    let published = StagedGeneration::link_from_cache(&root, &sources, &sources[..1], &|| false)
         .unwrap()
         .publish("generation-1", &|| false)
         .unwrap();
@@ -476,13 +476,32 @@ fn wcs_mock_request_retry_courtesy_pause_and_atomic_generation() {
         WEST_TIF
     );
     for name in ["generation-1", "../outside", "generation-2/"] {
-        let stage = StagedGeneration::copy_from_cache(&root, &sources, &[], &|| false).unwrap();
+        let stage = StagedGeneration::link_from_cache(&root, &sources, &[], &|| false).unwrap();
         assert!(matches!(
             stage.publish(name, &|| false),
             Err(ProviderError::InvalidInput(_))
         ));
     }
     assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(
+        fs::read(published.join("dom/tile-0000.tif")).unwrap(),
+        WEST_TIF
+    );
+
+    // Project tiles share the cache's bytes instead of duplicating them...
+    assert!(shares_bytes(
+        &sources[1],
+        &published.join("dtm/tile-0001.tif")
+    ));
+    // ...yet keep their terrain when the cache entry is replaced or cleared.
+    let replacement = sources[1].with_extension("replacement");
+    fs::write(&replacement, WEST_TIF).unwrap();
+    fs::rename(&replacement, &sources[1]).unwrap();
+    assert_eq!(
+        fs::read(published.join("dtm/tile-0001.tif")).unwrap(),
+        EAST_TIF
+    );
+    fs::remove_file(&sources[0]).unwrap();
     assert_eq!(
         fs::read(published.join("dom/tile-0000.tif")).unwrap(),
         WEST_TIF
@@ -815,4 +834,20 @@ fn corescope_respects_reported_total_and_nonretryable_status() {
     ));
     let requests = mock.finish();
     assert_eq!(requests[0].path, requests[1].path);
+}
+
+/// True when `a` and `b` are the same file on disk (hard links). Flips one
+/// byte in place through `a`, reads it back through `b`, then restores it.
+fn shares_bytes(a: &Path, b: &Path) -> bool {
+    use std::io::{Seek, SeekFrom};
+    let original = fs::read(a).unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(a).unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.write_all(&[original[0] ^ 0xff]).unwrap();
+    file.sync_all().unwrap();
+    let shared = fs::read(b).unwrap()[0] == original[0] ^ 0xff;
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.write_all(&original[..1]).unwrap();
+    file.sync_all().unwrap();
+    shared
 }

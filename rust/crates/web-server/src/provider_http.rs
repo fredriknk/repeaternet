@@ -284,7 +284,7 @@ impl Download {
         };
         let dtm = fetch(Product::Dtm, &self.dtm)?;
         let dom = fetch(Product::Dom, &self.dom)?;
-        let generation = StagedGeneration::copy_from_cache(&root, &dtm, &dom, cancelled.as_ref())
+        let generation = StagedGeneration::link_from_cache(&root, &dtm, &dom, cancelled.as_ref())
             .map_err(terrain_invalid)?;
         let metadata = serde_json::to_vec(&source_info).map_err(ApiError::internal)?;
         fs::write(generation.path().join("sources.json"), metadata).map_err(ApiError::internal)?;

@@ -52,6 +52,14 @@ struct Options {
     /// Serve the dashboard without opening a browser.
     #[arg(long)]
     no_browser: bool,
+    /// Give each browser its own private projects instead of one shared
+    /// project list. Terrain downloads are shared either way.
+    #[arg(
+        long,
+        env = "RF_PLANNER_PRIVATE_SESSIONS",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    private_sessions: bool,
 }
 
 #[tokio::main]
@@ -88,10 +96,24 @@ async fn main() -> Result<()> {
         store,
         &data,
         &token,
+        if options.private_sessions {
+            server::Sessions::Private
+        } else {
+            server::Sessions::Shared
+        },
         is_loopback(address.ip()),
         options.trusted_proxy,
     );
     println!("RepeaterNet is listening at {url}");
+    if options.private_sessions {
+        println!("Private sessions: each browser has its own projects.");
+    }
+    if token.is_empty() && !is_loopback(address.ip()) && options.trusted_proxy.is_none() {
+        eprintln!(
+            "Warning: listening on {address} without RF_PLANNER_TOKEN. Anyone who can \
+             reach this server can open, change and delete every project."
+        );
+    }
     if !options.no_browser
         && let Err(error) = open::that_detached(&url)
     {
@@ -217,6 +239,16 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_are_shared_unless_private_sessions_is_given() {
+        if env::var_os("RF_PLANNER_PRIVATE_SESSIONS").is_some() {
+            return; // The environment overrides the default under test.
+        }
+        let parse = |args: &[&str]| Options::try_parse_from(args).unwrap().private_sessions;
+        assert!(!parse(&["repeaternet"]));
+        assert!(parse(&["repeaternet", "--private-sessions"]));
+    }
 
     #[test]
     fn explicit_data_bypasses_default_resolution() {

@@ -36,6 +36,7 @@ the server. Windows also accepts Ctrl+Break, and Unix accepts SIGTERM.
 | `--data <directory>` | `RF_PLANNER_DATA` or the platform default below | Select the catalog and workspace data directory. The flag takes precedence. |
 | `--trusted-proxy <ip>` | `RF_PLANNER_TRUSTED_PROXY` or unset | Trust forwarded host and scheme from one socket peer IP. The flag takes precedence. |
 | `--no-browser` | Off | Serve without opening the default browser. |
+| `--private-sessions` | `RF_PLANNER_PRIVATE_SESSIONS` or off | Give each browser profile its own private project workspace instead of the shared project list. The terrain cache is shared either way. |
 | `-h`, `--help` | Off | Print usage and exit. |
 | `-V`, `--version` | Off | Print the executable version and exit. |
 
@@ -48,6 +49,7 @@ the server. Windows also accepts Ctrl+Break, and Unix accepts SIGTERM.
 | `XDG_DATA_HOME` | Unset by RepeaterNet | On non-Windows systems, a nonempty value selects `$XDG_DATA_HOME/repeaternet` when the data directory is implicit. |
 | `HOME` | Account environment, otherwise unset | On non-Windows systems, use `$HOME/.local/share/repeaternet` if `XDG_DATA_HOME` is absent or empty. If neither is set and nonempty, use `web-data`. |
 | `RF_PLANNER_TOKEN` | Unset or empty | Require a shared token when nonempty. An invalid Unicode value prevents startup. |
+| `RF_PLANNER_PRIVATE_SESSIONS` | Unset | `true`, `1`, `yes` or `on` enables `--private-sessions`. |
 | `RF_PLANNER_TRUSTED_PROXY` | Unset | Accept `X-Forwarded-Host` and `X-Forwarded-Proto` from this peer IP when `--trusted-proxy` is absent. |
 | `RF_PLANNER_MAX_ACTIVE_JOBS` | `1` | Concurrent planner workers. The outstanding job bound is twice this value and includes active jobs. The server clamps the worker count to at least 1 and within the semaphore limit. |
 | `RF_PLANNER_RF_CACHE_ENTRIES` | `50000` | Process-wide route scalar-metric cache capacity. The server uses at least one entry. |
@@ -55,7 +57,7 @@ the server. Windows also accepts Ctrl+Break, and Unix accepts SIGTERM.
 | `RF_PLANNER_TERRAIN_CACHE_MB` | Half of detected physical memory, reduced by the Linux cgroup limit when lower, or 1024 MiB if unavailable | Budget in MiB for resident decoded terrain windows shared by open rasters. Zero disables window retention. Reads still use the decoder's per-file block cache. |
 | `RF_PLANNER_LIVE_COVERAGE_CACHE_MB` | `512` | Process-wide retention budget in MiB for live coverage elevation tiles. Zero disables tile retention between requests. In-flight requests hold the tiles they use. |
 | `RF_PLANNER_COVERAGE_TERRAIN_RESOLUTION_M` | `25` | Starting resolution for supplemental Kartverket terrain. Values must be 1 through 1,000 m. An invalid supplied number gives HTTP 422 from the coverage terrain endpoints. The tile planner can coarsen this spacing. |
-| `RF_PLANNER_CACHE_DIR` | `<data>/shared-cache` | Shared Kartverket and Overpass download cache root. |
+| `RF_PLANNER_CACHE_DIR` | `<data>/shared-cache` | Shared Kartverket and Overpass download cache root. Projects hard-link prepared terrain from it, so keep it on the same volume as the data directory to avoid per-project copies. |
 | `RF_PLANNER_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass interpreter used for route road access and overlays. |
 | `RF_PLANNER_BIND` | `127.0.0.1` | Compose host-side binding for port 8000. Set it in the shell or Compose `.env` file. The container listens on `0.0.0.0:8000`. |
 
@@ -262,11 +264,11 @@ comparison. [Export formats and limits](crates/exports/README.md)
 | `GET /leaflet/{file}` | Registered Leaflet files. Names are `leaflet.css`, `leaflet.js`, `images/marker-icon.png`, `images/marker-icon-2x.png` and `images/marker-shadow.png`. |
 
 Asset and discovery paths are matched in the router fallback. Both cookies use
-`HttpOnly` and `SameSite=Strict`. Without an access token, the workspace cookie
-lasts one year and identifies the project workspace. With an access token,
-signed-in clients share the catalog, including projects in legacy workspace
-directories. The workspace cookie identifies each browser profile's active
-project. Plan writes (autosave, recovery, route terrain
+`HttpOnly` and `SameSite=Strict`. The workspace cookie lasts one year. By
+default all clients (signed in, when a token is set) share the catalog,
+including projects in legacy workspace directories, and the workspace cookie
+identifies each browser profile's active project. With `--private-sessions` the
+cookie instead identifies a private project workspace. In shared mode, plan writes (autosave, recovery, route terrain
 preparation, optimization and saving targets) require `X-RepeaterNet-Project`
 and `X-RepeaterNet-Plan-Revision`. Get both values as `projects.active_id` and
 `projects.plan_revision` from `/api/state`. A stale project or revision returns

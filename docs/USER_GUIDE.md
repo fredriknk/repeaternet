@@ -51,9 +51,9 @@ Choose a project in the top bar or use **＋ New**, give it a **Project name**
 and choose **Create**. A new project starts with example coordinates near Oslo.
 Plan edits save automatically. The top bar shows saving or saved status, with
 workspace storage usage when available. If saving fails, correct any invalid
-fields or restore the connection, then choose **Retry save**. On a token-protected
-server, signed-in browsers share the project list, archived projects and saved
-files. Each browser profile remembers its own active project, and different
+fields or restore the connection, then choose **Retry save**. Every browser that
+opens the server shares the project list, archived projects and saved files.
+Each browser profile remembers its own active project, and different
 projects can run calculations at the same time. Tabs in the same browser
 profile share that selection. If someone saves a newer plan for the project
 you are editing, the planner blocks your stale save. Choose **Reload project**
@@ -80,10 +80,13 @@ Open **⋯** for project actions.
 
 ![Archived project expanded with its Restore button](images/project-archived.png)
 
-Projects and saved coverage runs live on the server. On a server without an
-access token, the browser's workspace cookie lets it reopen the same project
-list. Another browser profile or clearing that cookie can open a different
-workspace. A compact route summary survives a server
+Projects and saved coverage runs live on the server, so a new browser, a
+cleared cookie or a server restart still shows the same projects. To give each
+browser profile its own private project list instead, start the server with
+`--private-sessions`. Downloaded terrain is shared by every project in either
+mode: a project links to the tiles in the shared cache instead of copying them,
+so preparing terrain for an area that is already cached downloads nothing. A
+compact route summary survives a server
 restart. Rerun the saved plan to rebuild full route profiles and restore the
 certified route for current analysis. Saved coverage runs can be opened separately.
 
