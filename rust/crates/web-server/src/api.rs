@@ -31,6 +31,14 @@ pub fn router(app: AppState) -> Router {
         .route("/api/export/{kind}", get(export))
         .route("/api/result", get(result))
         .route("/api/optimize", post(route_http::start))
+        .route(
+            "/api/optimize-placement",
+            post(crate::placement_http::start),
+        )
+        .route(
+            "/api/optimize-placement/{id}",
+            get(crate::placement_http::get),
+        )
         .route("/api/link/evaluate", post(crate::link_http::evaluate))
         .route(
             "/api/live-coverage",
@@ -268,6 +276,7 @@ impl FromRequestParts<AppState> for Workspace {
                 "/api/projects/autosave"
                     | "/api/projects/recover-previous"
                     | "/api/optimize"
+                    | "/api/optimize-placement"
                     | "/api/terrain/prepare"
             ) | (&Method::PUT, "/api/coverage/targets")
         );
@@ -552,6 +561,7 @@ async fn state(State(app): State<AppState>, workspace: Workspace) -> ApiResult<J
         let previous_result = catalog::historical_result(&project, &directory, &route_terrain);
         let mut payload = (*app.defaults).clone();
         payload["job"] = session.job_payload();
+        payload["placement_job"] = json!(session.placement_job.as_ref().filter(|job| job.active()).map(|job| &job.status));
         let coverage_job = session.coverage_job.clone().or_else(|| {
             let storage = coverage_runs::store(app, key, session).ok()?;
             let legacy = route_terrain.fingerprint(&directory, Some(&coverage_terrain))

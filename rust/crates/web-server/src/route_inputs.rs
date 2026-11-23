@@ -9,7 +9,7 @@ use repeaternet_rf_core::{
     SiteKind, SiteRadioOverrides, TerminalClutter, ValidationMode,
     calibration::CERTIFICATION_MAX_STEP_M,
 };
-use repeaternet_terrain::LonLat;
+use repeaternet_terrain::{LonLat, Point, Transformer};
 use serde_json::{Value, json};
 
 use crate::api::{ApiError, ApiResult};
@@ -34,6 +34,40 @@ pub struct RouteInputs {
     pub rf: RfSettings,
     pub rf_payload: Value,
     pub candidates: CandidateSettings,
+}
+
+pub fn project_exclusions(plan: &Value, transform: &Transformer) -> ApiResult<Vec<Vec<Point>>> {
+    let Some(value) = plan.get("exclusions_wgs84") else {
+        return Ok(Vec::new());
+    };
+    let invalid = || {
+        ApiError::invalid(
+            "Exclusions must be polygons with at least three latitude and longitude pairs",
+        )
+    };
+    value
+        .as_array()
+        .ok_or_else(invalid)?
+        .iter()
+        .map(|polygon| {
+            polygon
+                .as_array()
+                .filter(|points| points.len() >= 3)
+                .ok_or_else(invalid)?
+                .iter()
+                .map(|point| {
+                    let pair = point
+                        .as_array()
+                        .filter(|pair| pair.len() == 2)
+                        .ok_or_else(invalid)?;
+                    let location = coordinate(&pair[0], &pair[1], "exclusion point")?;
+                    transform
+                        .forward(location)
+                        .map_err(crate::terrain_http::terrain_invalid)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn merge(default: &mut Value, overrides: &Value) -> ApiResult<()> {
@@ -451,11 +485,12 @@ fn locations(
     plan: &Value,
     rf: &RfSettings,
     policy: InfrastructurePolicy,
+    include_excluded: bool,
 ) -> ApiResult<(Vec<Location>, usize)> {
     let clutter_overrides = router_clutter_overrides(plan)?;
     let mesh = mesh_mode(plan)?;
     let mut locations = if mesh {
-        mesh_clients(plan, &rf.endpoint_a, true)?
+        mesh_clients(plan, &rf.endpoint_a, !include_excluded)?
     } else {
         Vec::new()
     };
@@ -565,7 +600,7 @@ fn locations(
             } else {
                 rf.router.height_agl_m
             };
-            if !eligible || router_policy == RouterPolicy::Excluded {
+            if !include_excluded && (!eligible || router_policy == RouterPolicy::Excluded) {
                 excluded_known += usize::from(origin == SiteOrigin::Known);
                 continue;
             }
@@ -643,11 +678,20 @@ pub fn readiness_locations(plan: &Value, defaults: &Value) -> ApiResult<Vec<Loca
         plan,
         &RfSettings::default(),
         candidates.infrastructure_policy,
+        false,
     )?
     .0)
 }
 
-pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
+pub fn parse(plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
+    parse_with_scope(plan, defaults, false)
+}
+
+pub fn parse_for_placement(plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
+    parse_with_scope(plan, defaults, true)
+}
+
+fn parse_with_scope(mut plan: Value, defaults: &Value, placement: bool) -> ApiResult<RouteInputs> {
     validate_plan_mode(&mut plan)?;
     let rf_payload = merged(defaults, &plan, "rf")?;
     let rf = rf(&rf_payload)?;
@@ -666,8 +710,9 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
     };
     let candidates = effort.resolve(&requested);
     let mesh = mesh_mode(&plan)?;
-    let (locations, excluded_known) = locations(&plan, &rf, candidates.infrastructure_policy)?;
-    if !mesh && locations[0].coordinate == locations[1].coordinate {
+    let (locations, excluded_known) =
+        locations(&plan, &rf, candidates.infrastructure_policy, placement)?;
+    if !mesh && !placement && locations[0].coordinate == locations[1].coordinate {
         return Err(ApiError::invalid("Place endpoints at different locations"));
     }
     let client_count = locations
@@ -676,6 +721,7 @@ pub fn parse(mut plan: Value, defaults: &Value) -> ApiResult<RouteInputs> {
         .count();
     let fixed = &locations[client_count..];
     if !mesh
+        && !placement
         && fixed
             .iter()
             .filter(|site| site.policy == RouterPolicy::Required)

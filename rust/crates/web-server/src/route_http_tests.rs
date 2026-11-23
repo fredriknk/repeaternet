@@ -471,6 +471,79 @@ async fn coverage_terminal(app: &Router, cookie: &str, path: &str) -> Value {
 }
 
 #[tokio::test]
+async fn placement_uses_in_range_links_and_cancels_in_the_planner_queue() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, state_handle) = app(root.path(), "");
+    let cookie = cookie(A);
+    upload(&app, &cookie, "dtm", TILE, StatusCode::OK).await;
+    let mut saved = plan();
+    saved["candidates"]["maximum_link_distance_m"] = json!(200.0);
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/projects/autosave",
+        json!({"plan": saved}),
+        StatusCode::OK,
+    )
+    .await;
+    let body = json!({"site_ids": ["A", "B", "M-alternative"], "radius_m": 50.0});
+    let worker = state_handle.scheduler.reserve_worker().unwrap();
+    let queued = api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/optimize-placement",
+        body.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(queued["state"], "queued");
+    let path = format!(
+        "/api/optimize-placement/{}",
+        queued["job_id"].as_str().unwrap()
+    );
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/cancel",
+        json!({"job_id": queued["job_id"]}),
+        StatusCode::OK,
+    )
+    .await;
+    let cancelled = coverage_terminal(&app, &cookie, &path).await;
+    assert_eq!(cancelled["state"], "cancelled");
+    assert!(cancelled["preview"].is_null());
+    drop(worker);
+
+    let started = api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/optimize-placement",
+        body,
+        StatusCode::OK,
+    )
+    .await;
+    let path = format!(
+        "/api/optimize-placement/{}",
+        started["job_id"].as_str().unwrap()
+    );
+    let complete = coverage_terminal(&app, &cookie, &path).await;
+    assert_eq!(complete["state"], "complete", "{complete}");
+    assert_eq!(complete["preview"]["link_scope"], "range");
+    let links = complete["preview"]["links"].as_array().unwrap();
+    assert_eq!(links.len(), 2);
+    assert!(
+        links
+            .iter()
+            .all(|link| link["target_id"] == "M-alternative")
+    );
+    assert_eq!(state(&app, &cookie).await["plan"], saved);
+}
+
+#[tokio::test]
 async fn saved_coverage_queue_scenarios_targets_and_staleness() {
     let root = tempfile::tempdir().unwrap();
     let (app, state_handle) = app(root.path(), "");

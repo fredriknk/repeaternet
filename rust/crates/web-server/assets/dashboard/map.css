@@ -496,6 +496,8 @@
 
 .map-legend-grid i.legend-probe::before { width: 8px; height: 8px; border: 2px solid #233d70; border-radius: 50%; background: #fff; }
 .map-legend-grid i.legend-probe-link::before { height: 0; border-top: 3px dashed var(--map-strong); background: none; }
+.map-legend-grid i.legend-placement-site::before { width: 9px; height: 9px; border: 2px solid #263f3a; border-radius: 50%; background: #fff; }
+.map-legend-grid i.legend-placement-move::before { height: 0; border-top: 2px dashed #263f3a; background: none; }
 .map-probe-link { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-block: 4px; }
 .map-popup article canvas { max-width: 100%; height: 78px; }
 .client-map-icon,

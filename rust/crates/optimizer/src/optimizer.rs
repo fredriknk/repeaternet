@@ -25,6 +25,9 @@ mod bridges;
 mod path_search;
 #[path = "refine.rs"]
 mod refine;
+pub use refine::{
+    PlacementLink, PlacementMargin, PlacementPreview, PlacementRequest, PlacementSite,
+};
 
 const BACKBONE_LIMIT: usize = 64;
 const ROUTER_HEADROOM: usize = 2;

@@ -54,6 +54,7 @@ pub fn lookup(path: &str) -> Option<Response> {
         "/assets/app.js" => (JS, dashboard!("app.js")),
         "/assets/site_selection.js" => (JS, dashboard!("site_selection.js")),
         "/assets/mesh_mode.js" => (JS, dashboard!("mesh_mode.js")),
+        "/assets/placement.js" => (JS, dashboard!("placement.js")),
         "/assets/coverage_inspection.js" => (JS, dashboard!("coverage_inspection.js")),
         "/assets/coverage_raster.js" => (JS, dashboard!("coverage_raster.js")),
         "/assets/live_coverage.js" => (JS, dashboard!("live_coverage.js")),

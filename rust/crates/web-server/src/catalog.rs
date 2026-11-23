@@ -157,6 +157,7 @@ pub(crate) struct Session {
     pub snapshot_version: u64,
     pub job_id: Option<String>,
     pub route_job: Value,
+    pub placement_job: Option<crate::placement_http::Job>,
     pub route_result: Option<Value>,
     pub route_alternatives: Vec<crate::route_output::Alternative>,
     pub route_control: Option<Arc<crate::route_http::Control>>,
@@ -202,6 +203,7 @@ impl Session {
             snapshot_version: 0,
             job_id: None,
             route_job: json!({"state": state, "stage": stage, "done": 0, "total": 1}),
+            placement_job: None,
             route_result: None,
             route_alternatives: Vec::new(),
             route_control: None,
@@ -224,12 +226,17 @@ impl Session {
 
     pub fn calculations_active(&self) -> bool {
         job_active(Some(&self.route_job), &["queued", "running", "preparing"])
+            || self
+                .placement_job
+                .as_ref()
+                .is_some_and(crate::placement_http::Job::active)
             || job_active(self.coverage_terrain_job.as_ref(), &["queued", "preparing"])
             || job_active(self.coverage_job.as_ref(), &["queued", "running"])
     }
 
     pub fn invalidate_route(&mut self) {
         self.input_revision += 1;
+        self.placement_job = None;
         self.snapshot_version = 0;
         self.job_id = None;
         self.route_job = json!({"state": "idle", "stage": "Ready to plan", "done": 0, "total": 1});
