@@ -11,6 +11,43 @@ function section(start, end) {
   return app.slice(first, last);
 }
 
+test('removing search-found routers is one edit scoped to the current search', () => {
+  const site = (id, origin, kind = 'router') => ({ id, origin, kind, latitude: 60, longitude: 15 });
+  const route = [
+    site('A', 'optimized', 'endpoint_a'),
+    site('R1', 'optimized'),
+    site('R2', 'optimized'),
+    site('P1', 'manual'),
+    site('Hill', 'known'),
+  ];
+  const actions = [];
+  let locked = false;
+  const context = vm.createContext({
+    result: { job_id: 'first-search', route },
+    dismissedSearchRouters: null,
+    alternativeSelecting: false,
+    mapEditsLocked: () => locked,
+    validEndpointCoords: () => true,
+    mapPoint: site => [site.latitude, site.longitude],
+    recordEdit: () => actions.push('recordEdit'),
+    invalidate: () => actions.push('invalidate'),
+    scheduleCoverageCheck: () => actions.push('scheduleCoverageCheck'),
+  });
+  vm.runInContext(section('function isSearchRouterSite(', 'function syncSearchRouterCleanupControl('), context);
+
+  assert.equal(context.removeSearchRouters(['R1']), true);
+  assert.equal(context.searchRouterSites()[0].id, 'R2');
+  locked = true;
+  assert.equal(context.removeSearchRouters(['R2']), false);
+  locked = false;
+  assert.equal(context.removeSearchRouters(route.map(site => site.id)), true);
+  assert.deepEqual(Array.from(context.dismissedSearchRouters.ids), ['R1', 'R2']);
+  assert.deepEqual(actions, ['recordEdit', 'invalidate', 'scheduleCoverageCheck', 'recordEdit', 'invalidate', 'scheduleCoverageCheck']);
+
+  context.result = { job_id: 'next-search', route };
+  assert.deepEqual(Array.from(context.searchRouterSites(), site => site.id), ['R1', 'R2']);
+});
+
 test('applying blank router coordinates preserves the saved site, while zero is valid', () => {
   const element = () => ({
     dataset: {},

@@ -199,6 +199,10 @@
             <button id="add-router-coordinate" type="button" class="wide-button">Add router at coordinates</button>
           </details>
           <div id="manual-list" class="known-list"><p class="hint">No manually placed sites yet.</p></div>
+          <div id="search-router-section" hidden>
+            <h3>Search-found routers</h3>
+            <div id="search-router-list" class="known-list"></div>
+          </div>
             </section>
           </div>
           <div class="plan-step" data-step="radio-setup">
@@ -519,11 +523,12 @@
               <button type="button" data-place="router" aria-pressed="false">Add router</button>
               <button type="button" id="cancel-map-mode" hidden>Cancel</button>
             </div>
-            <div class="map-tool-group" role="group" aria-label="Map view and history">
+            <div class="map-tool-group" role="group" aria-label="Map view and plan edits">
               <button type="button" id="fit">Fit all</button>
               <button type="button" id="select-map-sites" aria-pressed="false" title="Select sites · Shift+click or Shift+drag">Select sites</button>
               <button type="button" id="undo" disabled>Undo</button>
               <button type="button" id="redo" disabled>Redo</button>
+              <button type="button" id="remove-search-routers" disabled>Remove found routers</button>
             </div>
             <div class="map-tool-group" role="group" aria-label="Map overlays">
               <label><input type="checkbox" id="show-candidates"> Candidates</label>

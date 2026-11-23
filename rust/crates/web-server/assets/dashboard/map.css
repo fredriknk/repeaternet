@@ -170,6 +170,7 @@
 .map-tools label input { margin: 0; accent-color: #176750; }
 .map-tools label:hover { background: #edf5ef; }
 .map-tools button[aria-pressed="true"] { color: #fff; background: #176750; }
+.map-tools #remove-search-routers { min-height: 36px; font-size: 13px; }
 .map-tools button:disabled, .map-popup button:disabled {
   color: #63746d;
   background: #f1f4f2;
@@ -451,6 +452,7 @@
 
 @media (max-width: 650px) {
   .map-tools button, .map-tools label { min-height: 35px; padding-inline: 6px; }
+  .map-tools #remove-search-routers { min-height: 44px; }
   .map-tool-group + .map-tool-group { padding-left: 4px; }
 }
 
