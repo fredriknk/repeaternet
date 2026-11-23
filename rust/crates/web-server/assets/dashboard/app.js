@@ -598,6 +598,7 @@ function showMapLinkSelection(title,point,opener,links,site){
     content.append(controls,body);
     renderLink(body);
     if(site)appendMapSiteFacts(content,site);
+    if(site?.kind==='search')content.append(searchRouterRemoveButton(site,()=>map.getContainer().focus({preventScroll:true})));
   },()=>controller.abort());
 }
 function showSiteInAnalysis(site){
