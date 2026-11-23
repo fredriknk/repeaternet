@@ -16,6 +16,7 @@ use crate::{
 const NODE_LIMIT: usize = 500;
 const PACKET_LIMIT: &str = "250";
 const OVERLAP_SECONDS: i64 = 15 * 60;
+const OBSERVER_REPORT_LIMIT: usize = 60;
 
 pub fn get(
     db: &Connection,
@@ -67,6 +68,25 @@ pub fn topology(
     records(&response, "edges")?;
     run.neighbors = db::save_snapshot(db, Snapshot::Neighbors, run.id, [("", &response)])?;
     nodes(db, client, max_pages, run, stopped)?;
+    let base = client.base_url().to_owned();
+    for (id, advertised) in db::observer_report_batch(db, &base, observers, OBSERVER_REPORT_LIMIT)?
+    {
+        let detail = match get(db, client, Endpoint::Observer(id), &[], stopped) {
+            Ok(detail) => detail,
+            Err(error)
+                if matches!(
+                    error.downcast_ref(),
+                    Some(ProviderError::Http { status: 404, .. })
+                ) =>
+            {
+                Value::Null
+            }
+            Err(error) => {
+                return Err(error).context("Fetching a CoreScope observer neighbor report");
+            }
+        };
+        db::save_observer_report(db, &base, id, advertised, &detail)?;
+    }
     Ok(())
 }
 

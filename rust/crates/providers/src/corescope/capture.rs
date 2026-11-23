@@ -23,6 +23,7 @@ pub enum Endpoint<'a> {
     Packets,
     Nodes,
     Observers,
+    Observer(&'a str),
     Graph,
     Neighbors(&'a str),
 }
@@ -129,6 +130,7 @@ impl CaptureClient {
                 Endpoint::Packets => segments.push("packets"),
                 Endpoint::Nodes => segments.push("nodes"),
                 Endpoint::Observers => segments.push("observers"),
+                Endpoint::Observer(id) => segments.extend(["observers", id]),
                 Endpoint::Graph => segments.extend(["analytics", "neighbor-graph"]),
                 Endpoint::Neighbors(key) => {
                     if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -141,7 +143,11 @@ impl CaptureClient {
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query);
         }
-        let retries = if neighbor.is_some() { 0 } else { self.retries };
+        let retries = if matches!(endpoint, Endpoint::Neighbors(_) | Endpoint::Observer(_)) {
+            0
+        } else {
+            self.retries
+        };
         for attempt in 0..=retries {
             if let Some(previous) = self.previous_request {
                 transport::wait(self.interval.saturating_sub(previous.elapsed()), cancelled)?;

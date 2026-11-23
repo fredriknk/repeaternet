@@ -2,13 +2,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Result, ensure};
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::{
     Bbox,
-    model::{Packet, number, observer_key, snapshot_json},
+    model::{Packet, number, observer_key, public_key, snapshot_json, string},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +67,7 @@ pub fn open(path: &Path, endpoint: &str) -> Result<Connection> {
         transaction.execute_batch(include_str!("watch_schema.sql"))?;
     }
     bind_endpoint(&transaction, endpoint)?;
+    transaction.execute_batch(include_str!("signal_schema.sql"))?;
     transaction.commit()?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     Ok(db)
@@ -231,12 +232,33 @@ pub fn save_page(
                 scope_name = COALESCE(?6, scope_name)
              WHERE endpoint = ?1 AND packet_id = ?2 AND observation_key = ?3",
         )?;
+        let mut insert_trace = transaction.prepare_cached(
+            "INSERT INTO trace_hops VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT DO NOTHING",
+        )?;
+        let mut save_signal = transaction.prepare_cached(
+            "INSERT INTO reception_signal VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT DO UPDATE SET radio = COALESCE(excluded.radio, radio),
+                                       score = COALESCE(excluded.score, score)",
+        )?;
         for packet in packets {
             let advert = packet.advert();
             let first_seen = packet
                 .first_seen()?
                 .to_rfc3339_opts(SecondsFormat::Millis, true);
             let receptions = packet.receptions();
+            if let Some(trace) = packet.trace_hops() {
+                insert_trace.execute(params![
+                    endpoint,
+                    packet.id,
+                    packet.hash,
+                    packet.trace_observer(),
+                    first_seen,
+                    trace.hash_size as i64,
+                    serde_json::to_string(&trace.path_hashes)?,
+                    serde_json::to_string(&trace.snr_values)?,
+                ])?;
+            }
             if receptions.iter().any(|reception| reception.id.is_some()) {
                 transaction.execute(
                     "DELETE FROM observations WHERE endpoint = ? AND packet_id = ?
@@ -288,6 +310,15 @@ pub fn save_page(
                     advert.as_ref().and_then(|value| value.name.as_deref()),
                 ])?;
                 added += inserted;
+                if reception.radio.is_some() || reception.score.is_some() {
+                    save_signal.execute(params![
+                        endpoint,
+                        packet.id,
+                        key,
+                        reception.radio,
+                        reception.score
+                    ])?;
+                }
                 if inserted == 0 {
                     enrich.execute(params![
                         endpoint,
@@ -316,6 +347,91 @@ pub fn save_page(
     )?;
     transaction.commit()?;
     Ok(added)
+}
+
+pub fn observer_report_batch<'a>(
+    db: &Connection,
+    endpoint: &str,
+    observers: &'a [Value],
+    limit: usize,
+) -> Result<Vec<(&'a str, DateTime<Utc>)>> {
+    let mut query = db.prepare(
+        "SELECT received_at FROM observer_neighbor_checkpoints WHERE endpoint = ? AND observer_id = ?",
+    )?;
+    let mut batch = Vec::new();
+    for observer in observers {
+        let Some(id) = string(observer, "id") else {
+            continue;
+        };
+        let Some(advertised) = string(observer, "last_neighbors_report_at")
+            .or_else(|| string(observer, "neighbors_report_at"))
+            .and_then(|time| time.parse::<DateTime<Utc>>().ok())
+        else {
+            continue;
+        };
+        let stored: Option<String> = query
+            .query_row(params![endpoint, observer_key(id)], |row| row.get(0))
+            .optional()?;
+        if stored
+            .and_then(|time| time.parse::<DateTime<Utc>>().ok())
+            .is_none_or(|time| advertised > time)
+        {
+            batch.push((id, advertised));
+        }
+    }
+    batch.sort_unstable_by_key(|&(id, advertised)| (advertised, id));
+    batch.truncate(limit);
+    Ok(batch)
+}
+
+pub fn save_observer_report(
+    db: &mut Connection,
+    endpoint: &str,
+    observer: &str,
+    advertised: DateTime<Utc>,
+    detail: &Value,
+) -> Result<()> {
+    let observer = observer_key(observer);
+    let transaction = db.transaction()?;
+    let mut checkpoint = advertised;
+    if let Some(report) = detail
+        .get("neighbor_report")
+        .filter(|report| !report.is_null())
+    {
+        let received_at = string(report, "received_at")
+            .ok_or_else(|| anyhow::anyhow!("CoreScope neighbor report has no received time"))?;
+        checkpoint = received_at.parse()?;
+        let mut insert = transaction.prepare_cached(
+            "INSERT INTO observer_neighbor_reports VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT DO NOTHING",
+        )?;
+        for neighbor in crate::model::records(report, "neighbors")? {
+            let Some(pubkey) = string(neighbor, "pubkey").and_then(public_key) else {
+                continue;
+            };
+            insert.execute(params![
+                endpoint,
+                observer,
+                received_at,
+                string(report, "reported_at"),
+                pubkey,
+                number(neighbor, "snr"),
+                neighbor["heard_secs_ago"].as_i64(),
+                string(neighbor, "status"),
+            ])?;
+        }
+    }
+    transaction.execute(
+        "INSERT INTO observer_neighbor_checkpoints VALUES (?, ?, ?)
+         ON CONFLICT DO UPDATE SET received_at = max(received_at, excluded.received_at)",
+        params![
+            endpoint,
+            observer,
+            checkpoint.to_rfc3339_opts(SecondsFormat::Nanos, true)
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 pub fn log_request(db: &Connection, endpoint: &str, neighbor: Option<&str>) -> Result<()> {

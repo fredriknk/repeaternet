@@ -20,6 +20,187 @@ fn sample() -> Value {
 }
 
 #[test]
+fn old_wal_database_upgrades_and_stores_only_trace_signal_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite3");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.pragma_update(None, "journal_mode", "WAL").unwrap();
+    old.execute_batch(include_str!("schema.sql")).unwrap();
+    old.execute_batch(include_str!("watch_schema.sql")).unwrap();
+    old.execute_batch(include_str!("instance_schema.sql"))
+        .unwrap();
+    let cursor = db::Cursor {
+        completed_until: Some(7),
+        ..Default::default()
+    };
+    old.execute("INSERT INTO capture_instance VALUES (1, 'fixture')", [])
+        .unwrap();
+    old.execute(
+        "INSERT INTO packet_cursor VALUES ('fixture', 7, NULL, 0, NULL)",
+        [],
+    )
+    .unwrap();
+    let mut db = db::open(&path, "fixture").unwrap();
+    assert_eq!(db::cursor(&db, "fixture").unwrap(), cursor);
+    assert_eq!(
+        old.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+
+    let time = "2026-01-02T03:04:05Z";
+    let raw = "270000000002F330AABBCCDD1122334401AB12CD34EF56";
+    let decoded =
+        json!({"pathData":"AB12CD34EF56","traceFlags":1,"snrValues":[12,-3.25],"tag":12345});
+    let page = packet_page(
+        json!({"total": 4, "limit": 5, "offset": 0, "packets": [
+            {"id":4, "hash":"fixture-hash", "first_seen":time, "observer_id":"fixture-observer",
+             "payload_type":9, "decoded_json":decoded.to_string(), "raw_hex":raw,
+             "observations":[{"id": 1, "radio":"869.618,62.5,8,8", "score":84}, {"id":2}]},
+            {"id":3, "hash":"fixture-hash", "first_seen":time, "payload_type":9,
+             "decoded_json":{"traceFlags":1}, "raw_hex":raw},
+            {"id":2, "hash":"fixture-hash", "first_seen":time, "payload_type":5, "raw_hex":raw},
+            {"id":1, "hash":"bad-trace", "first_seen":time, "payload_type":9,
+             "decoded_json":{"traceFlags":1,"pathData":"AB12","snrValues":[1,2]}, "raw_hex":raw}
+        ]}),
+        0,
+    )
+    .unwrap();
+    for _ in 0..2 {
+        db::save_page(&mut db, "fixture", cursor, cursor, &page.packets).unwrap();
+    }
+    let mut stmt = db
+        .prepare(
+            "SELECT packet_id, packet_hash, observer_id, hash_size, path_hashes, snr_values
+         FROM trace_hops ORDER BY packet_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                3,
+                "fixture-hash".into(),
+                None,
+                2,
+                r#"["ab12","cd34"]"#.into(),
+                "[-3.25,12.0]".into()
+            ),
+            (
+                4,
+                "fixture-hash".into(),
+                Some("fixture-observer".into()),
+                2,
+                r#"["ab12","cd34"]"#.into(),
+                "[12.0,-3.25]".into()
+            ),
+        ]
+    );
+    let signal = db
+        .query_row("SELECT radio, score FROM reception_signal", [], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .unwrap();
+    assert_eq!(signal, ("869.618,62.5,8,8".into(), 84));
+}
+
+#[test]
+fn observer_reports_are_bounded_incremental_and_allowlisted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = db::open(&dir.path().join("reports.sqlite3"), "fixture").unwrap();
+    let time = "2026-01-02T03:04:05Z";
+    let key = "AB".repeat(32);
+    let report = json!({"received_at":time,"reported_at":null,"neighbors":[
+        {"pubkey":key,"snr":-3.25,"heard_secs_ago":21,"status":"ok",
+         "name":"Example Name","role":"repeater","scopes":"Example Scope"}
+    ]});
+    let observers = [
+        json!({"id":"old-server","noise_floor":-119,"radio":"869.618,62.5,8,8",
+               "neighbor_report":report}),
+        json!({"id":"fixture-observer","last_neighbors_report_at":time}),
+        json!({"id":"empty-observer","neighbors_report_at":"2026-01-02T03:04:06Z"}),
+    ];
+    let run = db::Run::start(&db, "fixture", "snapshot").unwrap();
+    db::save_snapshot(
+        &mut db,
+        db::Snapshot::Observers,
+        run.id,
+        [("old-server", &observers[0])],
+    )
+    .unwrap();
+    let snapshot: String = db
+        .query_row("SELECT raw_json FROM observers_snapshot", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&snapshot).unwrap(),
+        json!({"id":"old-server","noise_floor":-119,"radio":"869.618,62.5,8,8"})
+    );
+    let first = db::observer_report_batch(&db, "fixture", &observers, 1).unwrap();
+    assert_eq!(first, [("fixture-observer", time.parse().unwrap())]);
+    for _ in 0..2 {
+        db::save_observer_report(
+            &mut db,
+            "fixture",
+            first[0].0,
+            first[0].1,
+            &json!({"neighbor_report":report}),
+        )
+        .unwrap();
+    }
+    let row = db.query_row(
+        "SELECT observer_id, received_at, reported_at, neighbor_pubkey, snr, heard_secs_ago, status
+         FROM observer_neighbor_reports", [], |row| Ok((
+            row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?, row.get::<_, f64>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?,
+        ))
+    ).unwrap();
+    assert_eq!(
+        row,
+        (
+            "fixture-observer".into(),
+            time.into(),
+            None,
+            key.to_ascii_lowercase(),
+            -3.25,
+            21,
+            "ok".into()
+        )
+    );
+    let remaining = db::observer_report_batch(&db, "fixture", &observers, 60).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].0, "empty-observer");
+    db::save_observer_report(
+        &mut db,
+        "fixture",
+        remaining[0].0,
+        remaining[0].1,
+        &json!({}),
+    )
+    .unwrap();
+    assert!(
+        db::observer_report_batch(&db, "fixture", &observers, 60)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn packets_allowlist_advert_fields_and_deduplicate_receptions() {
     let mut payload = sample();
     let rows = payload["packets"].as_array_mut().unwrap();
@@ -311,11 +492,15 @@ fn neighbor_batches_rotate_across_restarts_and_respect_the_rolling_day() {
 fn on8ar_snapshot_and_expanded_packets() {
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/on8ar.json")).unwrap();
     let nodes = fixture["nodes"]["nodes"].as_array().unwrap();
+    let mut observers = fixture["observers"].clone();
+    let observer = &mut observers["observers"][0];
+    observer["id"] = json!("fixture-observer");
+    let received_at = observer["neighbors_report_at"].clone();
     // v3.18 can hide rows after paging, so a short page with has_more
     // advances by the requested limit.
     let (base, server) = mock(vec![
         (200, "", fixture["stats"].clone()),
-        (200, "", fixture["observers"].clone()),
+        (200, "", observers),
         (200, "", fixture["graph"].clone()),
         (
             200,
@@ -326,6 +511,13 @@ fn on8ar_snapshot_and_expanded_packets() {
             200,
             "",
             json!({"nodes": [&nodes[1]], "total": 1, "has_more": false}),
+        ),
+        (
+            200,
+            "",
+            json!({"neighbor_report": {"received_at": received_at, "neighbors": [
+                {"pubkey": "cd".repeat(32), "snr": -4.25}
+            ]}}),
         ),
         (200, "", fixture["neighbors"].clone()),
         (200, "", fixture["packets"].clone()),
@@ -340,7 +532,19 @@ fn on8ar_snapshot_and_expanded_packets() {
         (topology.nodes, topology.observers, topology.neighbors),
         (2, 3, 1)
     );
-    topology.finish(&db, 5, false).unwrap();
+    assert_eq!(
+        db::requests_today(&db, &base, chrono::Utc::now().timestamp_millis()).unwrap(),
+        6
+    );
+    assert_eq!(
+        db.query_row("SELECT snr FROM observer_neighbor_reports", [], |row| row
+            .get::<_, f64>(
+            0
+        ))
+        .unwrap(),
+        -4.25
+    );
+    topology.finish(&db, client.requests(), false).unwrap();
 
     let bbox = "49.4,53.6,2.5,7.3".parse().unwrap();
     let mut neighbors = db::Run::start(&db, &base, "neighbors").unwrap();
@@ -393,9 +597,14 @@ fn on8ar_snapshot_and_expanded_packets() {
     assert_eq!(sender.len(), 64);
     let calls = server.join().unwrap();
     assert!(calls[4].0.contains("offset=500"));
-    let node = fixture["neighbors"]["node"].as_str().unwrap();
     assert!(
         calls[5]
+            .0
+            .starts_with("GET /api/observers/fixture-observer ")
+    );
+    let node = fixture["neighbors"]["node"].as_str().unwrap();
+    assert!(
+        calls[6]
             .0
             .starts_with(&format!("GET /api/nodes/{node}/neighbors "))
     );

@@ -21,6 +21,7 @@ pub struct Packet {
     pub observation_count: Option<i64>,
     pub scope_name: Option<String>,
     decoded_json: Option<Value>,
+    raw_hex: Option<Value>,
     observations: Option<Vec<Reception>>,
     #[serde(flatten)]
     representative: Reception,
@@ -39,14 +40,7 @@ impl Packet {
         if self.payload_type != Some(4) {
             return None;
         }
-        let decoded = self.decoded_json.as_ref()?;
-        let parsed;
-        let decoded = if let Some(raw) = decoded.as_str() {
-            parsed = serde_json::from_str::<Value>(raw).ok()?;
-            &parsed
-        } else {
-            decoded
-        };
+        let decoded = self.decoded()?;
         let key = decoded
             .get("pubKey")
             .and_then(Value::as_str)
@@ -54,12 +48,12 @@ impl Packet {
         let flags = decoded.get("flags");
         Some(Advert {
             key,
-            lat: number(decoded, "lat"),
-            lon: number(decoded, "lon"),
+            lat: number(&decoded, "lat"),
+            lon: number(&decoded, "lon"),
             flags: flags
                 .and_then(|value| value.get("raw").unwrap_or(value).as_u64())
                 .and_then(|raw| u8::try_from(raw).ok()),
-            name: string(decoded, "name").map(str::to_owned),
+            name: string(&decoded, "name").map(str::to_owned),
         })
     }
 
@@ -68,6 +62,96 @@ impl Packet {
             .as_deref()
             .filter(|observations| !observations.is_empty())
             .unwrap_or_else(|| std::slice::from_ref(&self.representative))
+    }
+
+    fn decoded(&self) -> Option<std::borrow::Cow<'_, Value>> {
+        let value = self.decoded_json.as_ref()?;
+        match value {
+            Value::String(raw) => serde_json::from_str(raw).ok().map(std::borrow::Cow::Owned),
+            _ => Some(std::borrow::Cow::Borrowed(value)),
+        }
+    }
+
+    pub fn trace_hops(&self) -> Option<TraceHops> {
+        if self.payload_type != Some(9) {
+            return None;
+        }
+        if let Some(decoded) = self.decoded()
+            && let Some(values) = decoded.get("snrValues").filter(|value| !value.is_null())
+        {
+            let snr = values
+                .as_array()?
+                .iter()
+                .map(Value::as_f64)
+                .collect::<Option<Vec<_>>>()?;
+            let flags = u8::try_from(decoded.get("traceFlags")?.as_u64()?).ok()?;
+            return TraceHops::new(flags, decoded.get("pathData")?.as_str()?, snr);
+        }
+        TraceHops::from_wire(self.raw_hex.as_ref()?.as_str()?)
+    }
+
+    pub fn trace_observer(&self) -> Option<String> {
+        self.representative.observer_id.as_deref().map(observer_key)
+    }
+}
+
+pub struct TraceHops {
+    pub hash_size: usize,
+    pub path_hashes: Vec<String>,
+    pub snr_values: Vec<f64>,
+}
+
+impl TraceHops {
+    /// MeshCore Mesh.cpp (onRecvPacket) matches the route hash at offset
+    /// `path_len * (1 << (flags & 3))` before appending that repeater's receive
+    /// SNR. Each row therefore measures the completed prefix of the payload
+    /// route, including the first hop from the originator. Packet.h and Mesh.cpp
+    /// use signed quarter-dB bytes. CoreScope decoder.go already divides by four
+    /// in decoded JSON, so only the wire fallback applies that conversion.
+    fn new(flags: u8, route: &str, snr_values: Vec<f64>) -> Option<Self> {
+        let hash_size = 1 << (flags & 3);
+        let width = 2 * hash_size;
+        if snr_values.is_empty()
+            || snr_values.len() > 63
+            || !route.len().is_multiple_of(width)
+            || snr_values.len() > route.len() / width
+            || !route.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let path_hashes = (0..snr_values.len())
+            .map(|i| route[i * width..(i + 1) * width].to_ascii_lowercase())
+            .collect();
+        Some(Self {
+            hash_size,
+            path_hashes,
+            snr_values,
+        })
+    }
+
+    fn from_wire(hex: &str) -> Option<Self> {
+        // Packet.cpp writeTo: header, optional transport codes, path count,
+        // signed SNR bytes, then the TRACE payload (tag, auth, flags, route).
+        if !hex.len().is_multiple_of(2) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let byte = |i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok();
+        let count_at = match byte(0)? & 0x3f {
+            0x26 => 1,
+            0x27 => 5,
+            _ => return None,
+        };
+        let count = usize::from(byte(count_at)?);
+        if count > 63 {
+            return None;
+        }
+        let snr_start = count_at + 1;
+        let flags_at = snr_start + count + 8;
+        let flags = byte(flags_at)?;
+        let snr = (snr_start..snr_start + count)
+            .map(|i| Some(f64::from(byte(i)? as i8) / 4.0))
+            .collect::<Option<Vec<_>>>()?;
+        Self::new(flags, hex.get((flags_at + 1) * 2..)?, snr)
     }
 }
 
@@ -82,6 +166,8 @@ pub struct Reception {
     pub observer_iata: Option<String>,
     pub rssi: Option<f64>,
     pub snr: Option<f64>,
+    pub radio: Option<String>,
+    pub score: Option<i64>,
     path_json: Option<Value>,
     #[serde(rename = "_parsedPath")]
     parsed_path: Option<Value>,
@@ -178,6 +264,7 @@ pub fn snapshot_json(value: &Value) -> String {
                             | "message"
                             | "messages"
                             | "channel_messages"
+                            | "neighbor_report"
                     )
                 });
                 fields.values_mut().for_each(scrub);
