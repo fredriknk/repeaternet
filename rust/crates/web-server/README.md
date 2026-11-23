@@ -21,8 +21,10 @@ and HTTP routes.
 
 ## Contracts and limits
 
-- The workspace cookie identifies a catalog workspace. The optional shared
-  access token gates dashboard access. The server serves embedded assets with
+- Projects are shared by every browser by default; the workspace cookie holds
+  each browser's active project. `--private-sessions` makes the cookie select a
+  private workspace instead. The optional shared access token gates dashboard
+  access. The server serves embedded assets with
   explicit media types. Rebuild to include asset changes.
 - The shared planner scheduler defaults to one worker with room for two
   outstanding jobs including the running job. Route search, terrain

@@ -246,8 +246,8 @@ impl FromRequestParts<AppState> for Workspace {
         parts: &mut Parts,
         app: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // The token authenticates access to the catalog. The existing random
-        // workspace cookie identifies this browser profile (including its tabs).
+        // The random workspace cookie identifies this browser profile (including
+        // its tabs): its private workspace, or its selection in the shared catalog.
         let browser = security::workspace(&parts.headers).ok_or_else(workspace_required)?;
         if !app.shared_projects {
             return Ok(Self::worker(&browser, ""));

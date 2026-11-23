@@ -393,11 +393,22 @@ fn duplicate_copies_only_saved_plan_and_terrain_with_file_mtimes() {
     for relative in outputs {
         assert!(!copy_path.join(relative).exists(), "{relative}");
     }
-    fs::write(copy_path.join(terrain[0]), b"edited").unwrap();
-    assert_eq!(
-        fs::read(path.join(terrain[0])).unwrap(),
-        terrain[0].as_bytes()
-    );
+    // Terrain is shared by hard link, not duplicated. The planner never
+    // rewrites a tile in place; replacing or removing the copy's tile (the
+    // only ways it changes terrain) leaves the original untouched.
+    for relative in terrain {
+        assert!(shares_bytes(
+            &path.join(relative),
+            &copy_path.join(relative)
+        ));
+    }
+    let replacement = copy_path.join("dtm/replacement.tmp");
+    fs::write(&replacement, b"edited").unwrap();
+    fs::rename(&replacement, copy_path.join(terrain[0])).unwrap();
+    fs::remove_file(copy_path.join(terrain[1])).unwrap();
+    for relative in &terrain[..2] {
+        assert_eq!(fs::read(path.join(relative)).unwrap(), relative.as_bytes());
+    }
 }
 
 #[test]
@@ -654,4 +665,20 @@ fn link_directory(target: &Path, link: &Path) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// True when `a` and `b` are the same file on disk (hard links). Flips one
+/// byte in place through `a`, reads it back through `b`, then restores it.
+fn shares_bytes(a: &Path, b: &Path) -> bool {
+    use std::io::{Seek, SeekFrom, Write};
+    let original = fs::read(a).unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(a).unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.write_all(&[original[0] ^ 0xff]).unwrap();
+    file.sync_all().unwrap();
+    let shared = fs::read(b).unwrap()[0] == original[0] ^ 0xff;
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.write_all(&original[..1]).unwrap();
+    file.sync_all().unwrap();
+    shared
 }

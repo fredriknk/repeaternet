@@ -671,11 +671,16 @@ fn validate_download(
     Ok(())
 }
 
-/// A generation of validated cache tiles copied to a private sibling directory.
+/// A generation of validated cache tiles placed in a private sibling directory.
 pub struct StagedGeneration(TempDir);
 
 impl StagedGeneration {
-    pub fn copy_from_cache(
+    /// Stage cache tiles for a project. Tiles are hard links into the shared
+    /// cache, so a project takes no extra disk space and keeps its terrain if
+    /// the cache entry is later replaced or cleared. Cache tiles are only ever
+    /// replaced by atomic rename, never rewritten in place, so a link never
+    /// changes under the project.
+    pub fn link_from_cache(
         generation_root: &Path,
         dtm: &[PathBuf],
         dom: &[PathBuf],
@@ -694,18 +699,7 @@ impl StagedGeneration {
             fs::create_dir(&output)?;
             for (i, source) in sources.iter().enumerate() {
                 transport::check(cancelled)?;
-                let mut source = fs::File::open(source)?;
-                let mut destination = fs::File::create(output.join(format!("tile-{i:04}.tif")))?;
-                let mut buffer = [0; 64 * 1024];
-                loop {
-                    transport::check(cancelled)?;
-                    let size = source.read(&mut buffer)?;
-                    if size == 0 {
-                        break;
-                    }
-                    destination.write_all(&buffer[..size])?;
-                }
-                destination.sync_all()?;
+                link_or_copy(source, &output.join(format!("tile-{i:04}.tif")), cancelled)?;
             }
         }
         transport::check(cancelled)?;
@@ -734,4 +728,29 @@ impl StagedGeneration {
         fs::rename(self.path(), &destination)?;
         Ok(destination)
     }
+}
+
+/// Hard-link a cache tile into a project, or copy it when linking is not
+/// possible (for example when `RF_PLANNER_CACHE_DIR` is on another volume).
+fn link_or_copy(source: &Path, target: &Path, cancelled: &dyn Fn() -> bool) -> Result<()> {
+    // Only link a plain file. On Unix `hard_link` may link a symlink itself,
+    // which the terrain reader and project deletion reject, so copy the bytes
+    // the symlink points to instead.
+    let plain = fs::symlink_metadata(source).is_ok_and(|meta| meta.file_type().is_file());
+    if plain && fs::hard_link(source, target).is_ok() {
+        return Ok(());
+    }
+    let mut source = fs::File::open(source)?;
+    let mut destination = fs::File::create_new(target)?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        transport::check(cancelled)?;
+        let size = source.read(&mut buffer)?;
+        if size == 0 {
+            break;
+        }
+        destination.write_all(&buffer[..size])?;
+    }
+    destination.sync_all()?;
+    Ok(())
 }

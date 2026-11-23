@@ -142,8 +142,12 @@ fn copy_tree(source: &Path, target: &Path, metadata: &Metadata) -> Result<()> {
         if metadata.is_dir() {
             copy_tree(&source, &target, &metadata)?;
         } else if metadata.is_file() {
-            io::copy(&mut File::open(&source)?, &mut File::create_new(&target)?)?;
-            copy_metadata(&target, &metadata)?;
+            // Terrain tiles are never rewritten in place, so a duplicate can
+            // share them by hard link. Copy only when linking is unavailable.
+            if fs::hard_link(&source, &target).is_err() {
+                io::copy(&mut File::open(&source)?, &mut File::create_new(&target)?)?;
+                copy_metadata(&target, &metadata)?;
+            }
         } else {
             return Err(Error::UnsafeStoragePath);
         }

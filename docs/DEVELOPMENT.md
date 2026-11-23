@@ -51,11 +51,13 @@ relative to the repository root.
 ## Process model
 
 Run one server process per data directory. The workspace registry, job
-scheduler and scalar RF caches live in that process. The registry serializes
-state access by workspace cookie on servers without a token. On a
-token-protected server, the catalog resolves legacy projects in their original
-directories. The workspace cookie maps each browser profile to its own saved
-selection. Each project has a runtime lock shared by all clients using it.
+scheduler and scalar RF caches live in that process. By default every browser
+shares one catalog, which resolves legacy projects in their original
+directories, and the workspace cookie maps each browser profile to its own saved
+selection. Each project has a runtime lock shared by all clients using it. With
+`--private-sessions` the registry instead serializes state access by workspace
+cookie and each browser profile has a private workspace. The access token only
+gates sign-in; it no longer decides whether projects are shared.
 Handlers capture project and job identity under the relevant lock, run blocking
 raster, network and search work on
 workers, then recheck identity before publishing. Planner jobs share a

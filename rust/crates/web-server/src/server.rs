@@ -20,33 +20,52 @@ mod project_http_tests;
 #[path = "route_http_tests.rs"]
 mod route_http_tests;
 
+/// How browsers map onto projects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sessions {
+    /// Every browser sees one shared project catalog (the default).
+    Shared,
+    /// Each browser profile gets its own private workspace, keyed by cookie.
+    Private,
+}
+
 pub fn router(
     store: ProjectStore,
     data_directory: &std::path::Path,
     token: &str,
+    sessions: Sessions,
     loopback_only: bool,
     trusted_proxy: Option<IpAddr>,
 ) -> Router {
     build_router(
         AppState::new(store, data_directory),
         token,
+        sessions,
         loopback_only,
         trusted_proxy,
     )
 }
 
+/// Older route tests were written when a token implied shared projects, so
+/// keep that mapping for them.
 #[cfg(test)]
 fn router_with_state(app: AppState, token: &str, loopback_only: bool) -> Router {
-    build_router(app, token, loopback_only, None)
+    let sessions = if token.is_empty() {
+        Sessions::Private
+    } else {
+        Sessions::Shared
+    };
+    build_router(app, token, sessions, loopback_only, None)
 }
 
 fn build_router(
     mut app: AppState,
     token: &str,
+    sessions: Sessions,
     loopback_only: bool,
     trusted_proxy: Option<IpAddr>,
 ) -> Router {
-    app.shared_projects = !token.is_empty();
+    app.shared_projects = sessions == Sessions::Shared;
     let security = security::Security::new(token, loopback_only, trusted_proxy);
     Router::new()
         .route("/", get(index))
@@ -97,6 +116,7 @@ mod tests {
             ProjectStore::new(data.join("projects.sqlite3"), data).unwrap(),
             data,
             token,
+            Sessions::Shared,
             true,
             None,
         )
@@ -314,7 +334,14 @@ mod tests {
         let store = ProjectStore::new(data.path().join("projects.sqlite3"), data.path()).unwrap();
         let trusted: SocketAddr = "127.0.0.2:5000".parse().unwrap();
         let direct: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        let app = router(store, data.path(), "proxy-token", true, Some(trusted.ip()));
+        let app = router(
+            store,
+            data.path(),
+            "proxy-token",
+            Sessions::Shared,
+            true,
+            Some(trusted.ip()),
+        );
         let forwarded = |method, path, peer| {
             request(method, path)
                 .extension(ConnectInfo(peer))

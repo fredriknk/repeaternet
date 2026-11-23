@@ -15,7 +15,10 @@ const FIXTURE_ID: &str = "00000000000000000002";
 
 fn open(root: &Path) -> (Router, ProjectStore) {
     let store = ProjectStore::new(root.join("projects.sqlite3"), root).unwrap();
-    (router(store.clone(), root, "", true, None), store)
+    (
+        router(store.clone(), root, "", Sessions::Private, true, None),
+        store,
+    )
 }
 
 async fn send(
@@ -64,6 +67,40 @@ async fn state(app: &Router, key: &str) -> Value {
 }
 
 #[tokio::test]
+async fn browsers_share_projects_by_default_without_a_token() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ProjectStore::new(root.path().join("projects.sqlite3"), root.path()).unwrap();
+    // A project saved by an older private-workspace server stays visible.
+    let legacy = store.create(A, "Drammen", &json!({})).unwrap();
+    let app = router(store.clone(), root.path(), "", Sessions::Shared, true, None);
+    let names = |state: Value| -> Vec<String> {
+        assert_eq!(state["projects"]["shared"], true);
+        state["projects"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(state(&app, B).await), ["Drammen"]);
+    expect(
+        &app,
+        B,
+        Method::POST,
+        "/api/projects",
+        Some(json!({"name": "Geilo"})),
+        StatusCode::OK,
+    )
+    .await;
+    // A fresh browser (new cookie) sees both projects and keeps its own selection.
+    let mut seen = names(state(&app, A).await);
+    seen.sort();
+    assert_eq!(seen, ["Drammen", "Geilo"]);
+    assert_eq!(state(&app, A).await["projects"]["active_id"], legacy.id);
+    assert_eq!(state(&app, B).await["projects"]["active_name"], "Geilo");
+}
+
+#[tokio::test]
 async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan() {
     let root = tempfile::tempdir().unwrap();
     let (local, store) = open(root.path());
@@ -83,7 +120,14 @@ async fn token_clients_share_legacy_projects_and_cannot_overwrite_a_newer_plan()
         1
     );
 
-    let app = router(store.clone(), root.path(), "lan-token", true, None);
+    let app = router(
+        store.clone(),
+        root.path(),
+        "lan-token",
+        Sessions::Shared,
+        true,
+        None,
+    );
     let cookie_a = format!("planner_access=lan-token; planner_workspace={A}");
     let cookie_b = format!("planner_access=lan-token; planner_workspace={B}");
     let request = |method, path: &str, cookie: &str| {
