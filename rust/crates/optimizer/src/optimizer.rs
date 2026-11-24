@@ -2,7 +2,7 @@ use crate::cache::CacheKey;
 use crate::candidates::{
     candidate_grid_spacing, dense_corridor_half_width_m, generate_with_access_pool, sample,
 };
-use crate::mesh_paint::{self, SiteMasks, MAX_PAINT_SITES};
+use crate::mesh_paint::{self, PaintCertification, SiteMasks, MAX_PAINT_SITES};
 use crate::parallel::{for_each_batched, worker_count};
 use crate::screening::screened_pairs;
 use crate::topology::solve_graph;
@@ -113,6 +113,7 @@ pub enum Stage {
     EvaluatingRfLinks,
     SearchingTopologies,
     MeasuringPaintCoverage,
+    CheckingPaintCoverage,
     ValidatingSolutionAlternatives,
     RefiningRouterPositions,
     PreparingSolutionProfiles,
@@ -128,6 +129,7 @@ impl Stage {
             Self::CheckingInteriorBridgeLinks => "Checking interior bridge links",
             Self::EvaluatingRfLinks => "Evaluating RF links",
             Self::MeasuringPaintCoverage => "Measuring handheld coverage",
+            Self::CheckingPaintCoverage => "Checking selected sites' handheld coverage",
             Self::SearchingTopologies => "Searching topologies",
             Self::ValidatingSolutionAlternatives => "Validating solution alternatives",
             Self::RefiningRouterPositions => "Refining router positions",
@@ -1094,7 +1096,7 @@ impl Search<'_, '_> {
             let pending = self.pending_pairs(&explored);
             if !pending.is_empty() {
                 self.validate_pairs(pending)?;
-                self.publish_certified(&explored)?;
+                self.publish_certified(&explored, None)?;
                 continue;
             }
             let mut alternatives = self.solve(self.settings)?;
@@ -1104,7 +1106,7 @@ impl Search<'_, '_> {
             let pending = self.pending_pairs(&alternatives);
             if !pending.is_empty() {
                 self.validate_pairs(pending)?;
-                self.publish_certified(&alternatives)?;
+                self.publish_certified(&alternatives, None)?;
                 continue;
             }
             if alternatives.is_empty()
@@ -1177,7 +1179,7 @@ impl Search<'_, '_> {
             let pending = self.pending_pairs(&alternatives);
             if !pending.is_empty() {
                 self.validate_pairs(pending)?;
-                self.publish_certified(&alternatives)?;
+                self.publish_certified(&alternatives, None)?;
                 continue;
             }
             self.refine_mesh(&mut alternatives)?;
@@ -1208,23 +1210,23 @@ impl Search<'_, '_> {
         self.screen(&terminals)?;
         let mut masks = SiteMasks::new();
         let count = self.sites.len();
+        let cell_count = paint.cells.len();
+        let target = paint.target_percent;
         self.hooks.notify(Stage::MeasuringPaintCoverage, 0, count);
         for (i, site) in self.sites.iter().enumerate() {
             if self.hooks.cancelled() {
                 return Ok(self.interrupted());
             }
-            let coverage = (paint.evaluate)(site)?;
-            if coverage.len() != paint.cells.len() {
-                return Err(OptimizationError::InvalidInput(
-                    "Coverage evaluation returned the wrong number of cells".into(),
-                ));
-            }
-            masks.insert(site.rf.id.clone(), mesh_paint::mask(coverage));
+            masks.insert(
+                site.rf.id.clone(),
+                mesh_paint::evaluate_mask(paint.evaluate, site, cell_count)?,
+            );
             self.hooks
                 .notify(Stage::MeasuringPaintCoverage, i + 1, count);
         }
         // Certification can change the graph. Re-run the cover search on the
         // corrected links without recomputing the per-site handheld coverage.
+        let mut certification = PaintCertification::new(paint);
         const ROUNDS: usize = 12;
         for round in 0..ROUNDS {
             if self.hooks.cancelled() {
@@ -1235,17 +1237,18 @@ impl Search<'_, '_> {
             let mut alternatives = mesh_paint::connect_cover(
                 &graph,
                 self.settings,
-                paint.cells.len(),
-                paint.target_percent,
+                cell_count,
+                target,
                 &masks,
                 &|| self.hooks.cancelled(),
             );
             let pending = self.pending_pairs(&alternatives);
             if !pending.is_empty() {
                 self.validate_pairs(pending)?;
-                self.publish_certified(&alternatives)?;
+                self.publish_certified(&alternatives, Some(&mut certification))?;
                 continue;
             }
+            self.certify_paint(&mut alternatives, &mut certification)?;
             self.restore_profiles(&mut alternatives)?;
             return Ok(if self.hooks.cancelled() {
                 self.interrupted()
@@ -1529,7 +1532,7 @@ impl Search<'_, '_> {
             &|| self.hooks.cancelled(),
             &self.seeds,
         )?;
-        self.publish_certified(&alternatives)
+        self.publish_certified(&alternatives, None)
     }
 
     fn pending_pairs(&self, alternatives: &[NetworkSolution]) -> BTreeSet<Pair> {
@@ -1687,7 +1690,28 @@ impl Search<'_, '_> {
         }
     }
 
-    fn publish_certified(&mut self, previous: &[NetworkSolution]) -> Result<(), OptimizationError> {
+    fn certify_paint(
+        &mut self,
+        alternatives: &mut [NetworkSolution],
+        certification: &mut PaintCertification<'_>,
+    ) -> Result<(), OptimizationError> {
+        let count = alternatives.len();
+        for (i, solution) in alternatives.iter_mut().enumerate() {
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
+            self.hooks.notify(Stage::CheckingPaintCoverage, i, count);
+            certification.certify(solution, &|| self.hooks.cancelled())?;
+        }
+        alternatives.sort_by(|a, b| mesh_paint::compare(b, a));
+        Ok(())
+    }
+
+    fn publish_certified(
+        &mut self,
+        previous: &[NetworkSolution],
+        paint: Option<&mut PaintCertification<'_>>,
+    ) -> Result<(), OptimizationError> {
         let reliability = self.settings.priority == OptimizationPriority::MaximumReliability;
         if (self.snapshot.is_some() && !reliability)
             || previous.is_empty()
@@ -1736,6 +1760,12 @@ impl Search<'_, '_> {
         }
         if certified.is_empty() || self.hooks.cancelled() {
             return Ok(());
+        }
+        if let Some(paint) = paint {
+            self.certify_paint(&mut certified, paint)?;
+            if self.hooks.cancelled() {
+                return Ok(());
+            }
         }
         if reliability {
             for solution in &certified {

@@ -203,6 +203,56 @@ fn request(sites: Vec<PlanningSite>) -> OptimizationRequest {
 }
 
 #[test]
+fn painted_mesh_verdict_rechecks_the_selected_sites() {
+    let terrain = Terrain {
+        resolution: 10.0,
+        ridges: &[],
+    };
+    let rf = strict_settings();
+    let candidates = CandidateSettings::default();
+    let cells = [
+        Point { x: 0.0, y: 500.0 },
+        Point {
+            x: 1_000.0,
+            y: 500.0,
+        },
+    ];
+    let mut west = site("West", 0.0, 0.0);
+    west.policy = RouterPolicy::Required;
+    let mut east = site("East", 1_000.0, 0.0);
+    east.policy = RouterPolicy::Required;
+    let verify = |solution: &OptimizationResult| {
+        assert!(solution.found());
+        for alternative in &solution.alternatives {
+            let report = alternative.paint_coverage.as_ref().unwrap();
+            assert_eq!(report.uncovered, [1]);
+            assert!(!report.target_met());
+        }
+    };
+    let mut snapshots = 0;
+    let result = RouteOptimizer::new(&terrain, &rf, &candidates)
+        .optimize_painted_mesh(
+            request(vec![west, east]),
+            PaintObjective {
+                cells: &cells,
+                target_percent: 100,
+                evaluate: &|_| Ok(vec![true, true]),
+                certify: &|site| Ok(vec![site.rf.id == "West", false]),
+            },
+            SearchHooks {
+                solution_progress: Some(&mut |snapshot| {
+                    verify(&snapshot);
+                    snapshots += 1;
+                }),
+                ..SearchHooks::default()
+            },
+        )
+        .unwrap();
+    verify(&result);
+    assert_eq!(snapshots, 1);
+}
+
+#[test]
 fn graph_retains_better_fresnel_prefix_after_later_margin_bottleneck() {
     let sites = ["A", "X", "Y", "M", "B"].map(|id| site(id, 0.0, 0.0));
     let mut links = [
