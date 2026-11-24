@@ -463,7 +463,7 @@ test('invalidating a certified route replaces its verdict until a current result
   const verdict = { dataset: {} }, layer = { clearLayers() {}, getLayers: () => [] };
   const context = vm.createContext({
     $: id => id === 'route-verdict' ? verdict : {},
-    result: { found: true, search_complete: true }, resultStale: false, resultStaleReason: '',
+    result: { found: true, search_complete: true }, routeMode: 'endpoints', resultStale: false, resultStaleReason: '',
     coverageCells: [], coverageCursor: 0, coverageStale: false, coverageComparison: null,
     coverageHeightOverrides: {}, inspectionRequest: 0, inspectionController: null,
     predictedCoverageLayer: layer, coverageDiffLayer: layer, inspectionLayer: layer, routeLayer: layer,
@@ -486,6 +486,14 @@ test('invalidating a certified route replaces its verdict until a current result
   context.result.found = false;
   context.renderRouteVerdict();
   assert.equal(verdict.hidden, true);
+});
+
+test('endpoint alternatives display positive sub-tenth-dB headroom', () => {
+  const context = vm.createContext({});
+  vm.runInContext(section('function endpointMarginText(', 'function endpointAlternativeMargin('), context);
+  assert.equal(context.endpointMarginText(0.0148), '<0.1 dB headroom');
+  assert.equal(context.endpointMarginText(0.1), '0.1 dB');
+  assert.equal(context.endpointMarginText(-1.25), '-1.3 dB');
 });
 
 test('coverage progress clears after the last cell page for calculations and saved runs', async () => {

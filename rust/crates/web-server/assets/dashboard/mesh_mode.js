@@ -277,7 +277,8 @@ function renderMeshPairs(pairs) {
   body.replaceChildren();
   for (const pair of pairs) {
     const row = document.createElement('tr');
-    for (const value of [pair.path.map(analysisSiteLabel).join(' → '), String(pair.hops), marginPill(pair.worst_margin_db)]) {
+    const path = pair.path.map(id => routeSiteLabel(id, {full: true})).join(' → ');
+    for (const value of [path, String(pair.hops), marginPill(pair.worst_margin_db)]) {
       const cell = document.createElement('td');
       cell.append(value);
       row.append(cell);
@@ -285,6 +286,33 @@ function renderMeshPairs(pairs) {
     body.append(row);
   }
   $('mesh-pairs').hidden = !pairs.length;
+}
+
+function syncMeshSearchFields() {
+  const painted = activeMeshPaint();
+  const margin = $('mesh-link-margin-setting'), paintBuffer = $('paint-search-buffer-setting');
+  if (margin) margin.hidden = painted;
+  if (paintBuffer) paintBuffer.hidden = !painted;
+  $('route-search-buffer-setting').hidden = painted;
+}
+
+function meshSearchLimit(snapshot) {
+  if (snapshot.search_limit_hint === 'hops') return ['maximum-hops', 'Maximum hops'];
+  if (snapshot.search_limit_hint === 'new_routers') return ['maximum-new-routers', 'Maximum new routers'];
+  return snapshot.paint_coverage ? ['paint-search-buffer', 'Paint search buffer']
+    : ['route-search-buffer', 'Mesh search buffer'];
+}
+
+function appendMeshSearchLimit(verdict, snapshot) {
+  const [id, label] = meshSearchLimit(snapshot);
+  const button = mapPopupButton('Review ' + label.toLowerCase(), () => {
+    setWorkspace('workspace-plan');
+    setPlanSection('search-setup');
+    const field = $(id), advanced = field.closest('details');
+    if (advanced) advanced.open = true;
+    field.focus();
+  });
+  verdict.append(` Try increasing ${label}.`, button);
 }
 
 function meshVerdict(snapshot, margin) {
@@ -297,7 +325,9 @@ function meshVerdict(snapshot, margin) {
     return `${coverage} ${target}${clients}${snapshot.search_complete ? '' : ' Search incomplete.'}`;
   }
   if (!snapshot.found) return `No solution connected all ${snapshot.client_count} clients within the search limits.`;
-  const verdict = `All ${snapshot.clients_connected} clients are connected. The weakest link has ${formatMetric(margin)} dB of margin.`;
+  const preferred = snapshot.mesh_minimum_link_margin_db;
+  const note = margin < preferred ? ` Below the preferred ${formatMetric(preferred)} dB.` : '';
+  const verdict = `All ${snapshot.clients_connected} clients are connected. The weakest link has ${formatMetric(margin)} dB of margin.${note}`;
   return snapshot.search_complete ? verdict : verdict + ' Search incomplete.';
 }
 

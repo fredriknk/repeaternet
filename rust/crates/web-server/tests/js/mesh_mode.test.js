@@ -73,4 +73,13 @@ test('mesh metrics use the largest hop count across all client pairs', () => {
   const metrics = context.meshMetricTiles(snapshot, 9, {label: 'Good', cls: 'good'});
   assert.deepEqual(Array.from(metrics, row => row[0]), ['3/3', '1', '9.0 dB', '2']);
   assert.match(context.meshVerdict(snapshot, 9), /All 3 clients are connected/);
+  assert.match(context.meshVerdict({...snapshot, mesh_minimum_link_margin_db: 10}, 9), /Below the preferred 10.0 dB/);
+});
+
+test('no-solution action identifies the diagnosed search field', () => {
+  const context = load();
+  assert.equal(context.meshSearchLimit({search_limit_hint: 'hops'})[0], 'maximum-hops');
+  assert.equal(context.meshSearchLimit({search_limit_hint: 'new_routers'})[0], 'maximum-new-routers');
+  assert.equal(context.meshSearchLimit({paint_coverage: {}})[0], 'paint-search-buffer');
+  assert.equal(context.meshSearchLimit({})[0], 'route-search-buffer');
 });

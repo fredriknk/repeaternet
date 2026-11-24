@@ -203,6 +203,59 @@ fn request(sites: Vec<PlanningSite>) -> OptimizationRequest {
 }
 
 #[test]
+fn mesh_minimum_margin_ranks_certified_alternatives_with_a_weaker_fallback() {
+    let terrain = Terrain {
+        resolution: 1.0,
+        ridges: &[],
+    };
+    let rf = strict_settings();
+    let sites = vec![
+        site("A", 0.0, 0.0),
+        site("B", 400.0, 0.0),
+        site("Weak", 200.0, 50.0),
+        site("West", 100.0, 0.0),
+        site("East", 300.0, 0.0),
+    ];
+    let mut fake = FakeRf::default();
+    for (a, b, db) in [
+        ("A", "Weak", 6.0),
+        ("Weak", "B", 6.0),
+        ("A", "West", 18.0),
+        ("West", "East", 18.0),
+        ("East", "B", 18.0),
+    ] {
+        fake.add(a, b, Some(db), Some(db));
+    }
+    let solve = |minimum, hops, routers| {
+        let settings = CandidateSettings {
+            mesh_minimum_link_margin_db: minimum,
+            maximum_hops: hops,
+            refine_radius_m: 0.0,
+            ..exhaustive_settings(routers)
+        };
+        RouteOptimizer::new(&terrain, &rf, &settings)
+            .with_link_evaluation(&fake)
+            .optimize_mesh(request(sites.clone()), SearchHooks::default())
+            .unwrap()
+    };
+    let result = solve(10.0, 3, 2);
+    assert_eq!(result.active_solution().unwrap().minimum_margin_db(), 18.0);
+    assert_eq!(result.alternatives[1].minimum_margin_db(), 6.0);
+    assert_eq!(solve(0.0, 3, 2).router_count(), 1);
+    assert_eq!(solve(18.0, 3, 2).router_count(), 2);
+    assert_eq!(solve(19.0, 3, 2).router_count(), 1);
+    assert_eq!(solve(10.0, 3, 1).router_count(), 1);
+    assert!(matches!(
+        solve(10.0, 1, 2).search_limit_hint,
+        Some(SearchLimitHint::Hops)
+    ));
+    assert!(matches!(
+        solve(10.0, 3, 0).search_limit_hint,
+        Some(SearchLimitHint::NewRouters)
+    ));
+}
+
+#[test]
 fn painted_mesh_verdict_rechecks_the_selected_sites() {
     let terrain = Terrain {
         resolution: 10.0,
@@ -236,6 +289,7 @@ fn painted_mesh_verdict_rechecks_the_selected_sites() {
             PaintObjective {
                 cells: &cells,
                 target_percent: 100,
+                distance_from_area: &|_| 0.0,
                 evaluate: &|_| Ok(vec![true, true]),
                 certify: &|site| Ok(vec![site.rf.id == "West", false]),
             },

@@ -9,7 +9,9 @@ pub const MAX_PAINT_SITES: usize = 512;
 const MAX_INSTALLATION_SITES: usize = 64;
 const MAX_SEEDS: usize = 8;
 const MAX_ADDITIONS: usize = 24;
-const MAX_ALTERNATIVES: usize = 4;
+const MAX_PER_BUDGET: usize = 3;
+const CERTIFICATION_POOL: usize = 8;
+pub(crate) const MAX_PAINT_ALTERNATIVES: usize = 4;
 
 type SiteCoverage<'a> = dyn Fn(&PlanningSite) -> Result<Vec<bool>, OptimizationError> + 'a;
 
@@ -17,6 +19,8 @@ pub struct PaintObjective<'a> {
     /// Projected cell centres, in the same order returned by the evaluator.
     pub cells: &'a [Point],
     pub target_percent: u8,
+    /// Distance in metres from the painted footprint to a projected site.
+    pub distance_from_area: &'a dyn Fn(Point) -> f64,
     /// A fast estimate for ranking the candidate pool.
     pub evaluate: &'a SiteCoverage<'a>,
     /// The coverage model used for the published verdict.
@@ -28,6 +32,7 @@ pub struct PaintCoverage {
     pub cell_count: usize,
     pub uncovered: Vec<usize>,
     pub target_percent: u8,
+    installation_distance_m: f64,
 }
 
 impl PaintCoverage {
@@ -52,6 +57,10 @@ impl<'a> PaintCertification<'a> {
         }
     }
 
+    pub(crate) fn objective(&self) -> &PaintObjective<'a> {
+        &self.paint
+    }
+
     pub(crate) fn certify(
         &mut self,
         solution: &mut NetworkSolution,
@@ -68,12 +77,17 @@ impl<'a> PaintCertification<'a> {
                 entry.insert(evaluate_mask(self.paint.certify, site, count)?);
             }
         }
-        solution.paint_coverage = Some(report(
+        let mut certified = report(
             &solution.sites,
             &self.masks,
             count,
             self.paint.target_percent,
-        ));
+        );
+        certified.installation_distance_m = solution
+            .paint_coverage
+            .as_ref()
+            .map_or(0.0, |coverage| coverage.installation_distance_m);
+        solution.paint_coverage = Some(certified);
         Ok(())
     }
 }
@@ -116,6 +130,7 @@ pub(crate) fn report(
     PaintCoverage {
         cell_count,
         target_percent,
+        installation_distance_m: 0.0,
         uncovered: (0..cell_count)
             .filter(|&i| covered[i / 64] & (1 << (i % 64)) == 0)
             .collect(),
@@ -134,17 +149,25 @@ fn covered_count(bits: &[u64]) -> usize {
 
 pub(crate) fn compare(a: &NetworkSolution, b: &NetworkSolution) -> Ordering {
     match (&a.paint_coverage, &b.paint_coverage) {
-        (Some(left), Some(right)) => left.target_met().cmp(&right.target_met()).then_with(|| {
-            if left.target_met() {
-                mesh::compare(a, b)
-            } else {
+        (Some(left), Some(right)) => left
+            .target_met()
+            .cmp(&right.target_met())
+            .then_with(|| {
+                if left.target_met() {
+                    Ordering::Equal
+                } else {
+                    right.uncovered.len().cmp(&left.uncovered.len())
+                }
+            })
+            .then_with(|| b.new_router_count().cmp(&a.new_router_count()))
+            .then_with(|| b.router_count().cmp(&a.router_count()))
+            .then_with(|| right.uncovered.len().cmp(&left.uncovered.len()))
+            .then_with(|| {
                 right
-                    .uncovered
-                    .len()
-                    .cmp(&left.uncovered.len())
-                    .then_with(|| mesh::compare(a, b))
-            }
-        }),
+                    .installation_distance_m
+                    .total_cmp(&left.installation_distance_m)
+            })
+            .then_with(|| mesh::compare(a, b)),
         _ => mesh::compare(a, b),
     }
 }
@@ -152,15 +175,21 @@ pub(crate) fn compare(a: &NetworkSolution, b: &NetworkSolution) -> Ordering {
 pub(crate) fn connect_cover(
     graph: &RoutingGraph<'_>,
     settings: &CandidateSettings,
-    cell_count: usize,
-    target: u8,
     masks: &SiteMasks,
+    paint: &PaintObjective<'_>,
     cancelled: &dyn Fn() -> bool,
 ) -> Vec<NetworkSolution> {
+    let cell_count = paint.cells.len();
+    let target = paint.target_percent;
     let terminals: BTreeSet<_> = (0..graph.sites.len())
         .filter(|&node| graph.sites[node].is_client() || graph.sites[node].is_required())
         .collect();
     let node_masks: Vec<_> = graph.sites.iter().map(|site| &masks[&site.rf.id]).collect();
+    let distance: Vec<_> = graph
+        .sites
+        .iter()
+        .map(|site| (paint.distance_from_area)(site.rf.position))
+        .collect();
     let assess = |nodes: &BTreeSet<usize>| {
         if cancelled()
             || nodes.len() > MAX_INSTALLATION_SITES
@@ -174,7 +203,13 @@ pub(crate) fn connect_cover(
         }
         let subset = graph.induced(&nodes.iter().copied().collect::<Vec<_>>());
         let mut solution = mesh::installation(&subset, settings.maximum_hops, true, cancelled)?;
-        solution.paint_coverage = Some(report(&solution.sites, masks, cell_count, target));
+        let mut coverage = report(&solution.sites, masks, cell_count, target);
+        coverage.installation_distance_m = nodes
+            .iter()
+            .filter(|&&node| graph.sites[node].needs_new_router())
+            .map(|&node| distance[node])
+            .sum();
+        solution.paint_coverage = Some(coverage);
         Some(solution)
     };
     let mut roots: Vec<_> = (0..graph.sites.len())
@@ -184,6 +219,7 @@ pub(crate) fn connect_cover(
         (
             Reverse(covered_count(node_masks[i])),
             graph.sites[i].needs_new_router(),
+            crate::graph::OrderedFloat(distance[i]),
             Reverse(graph.neighbors[i].len()),
             i,
         )
@@ -207,7 +243,7 @@ pub(crate) fn connect_cover(
         }
     }
     // Preserve the ordinary mesh search's hop-aware fallback as a seed.
-    for solution in mesh::connect_mesh(graph, settings, cancelled) {
+    for solution in mesh::explore(graph, settings, cancelled) {
         let ids: BTreeSet<_> = solution.sites.iter().map(|site| &site.rf.id).collect();
         seeds.insert(
             (0..graph.sites.len())
@@ -216,7 +252,7 @@ pub(crate) fn connect_cover(
         );
     }
 
-    let mut best = BTreeMap::new();
+    let mut best: BTreeMap<_, Vec<NetworkSolution>> = BTreeMap::new();
     for seed in seeds {
         if cancelled() {
             return Vec::new();
@@ -270,7 +306,12 @@ pub(crate) fn connect_cover(
                     .filter(|&&i| graph.sites[i].needs_new_router())
                     .count();
                 if gain > 0 && router_count + cost <= settings.maximum_new_routers {
-                    trials.push((path, gain, cost, node));
+                    let extra_distance = path
+                        .iter()
+                        .filter(|&&i| graph.sites[i].needs_new_router())
+                        .map(|&i| distance[i])
+                        .sum::<f64>();
+                    trials.push((path, gain, cost, node, extra_distance));
                 }
             }
             trials.sort_unstable_by(|a, b| {
@@ -278,13 +319,14 @@ pub(crate) fn connect_cover(
                     .cmp(&(a.2 == 0))
                     .then_with(|| (b.1 * a.2.max(1)).cmp(&(a.1 * b.2.max(1))))
                     .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| a.4.total_cmp(&b.4))
                     .then_with(|| a.3.cmp(&b.3))
             });
             let Some((next, trial)) =
                 trials
                     .into_iter()
                     .take(MAX_SEEDS)
-                    .find_map(|(path, _, _, _)| {
+                    .find_map(|(path, _, _, _, _)| {
                         let next = nodes.iter().copied().chain(path).collect();
                         assess(&next).map(|trial| (next, trial))
                     })
@@ -305,16 +347,21 @@ pub(crate) fn connect_cover(
                 nodes.insert(node);
             }
         }
-        let incumbent = best
-            .entry(solution.new_router_count())
-            .or_insert_with(|| solution.clone());
-        if compare(&solution, incumbent).is_gt() {
-            *incumbent = solution;
+        let budget = best.entry(solution.new_router_count()).or_default();
+        if !budget
+            .iter()
+            .any(|item| item.router_ids == solution.router_ids)
+        {
+            budget.push(solution);
+            budget.sort_unstable_by(|a, b| compare(b, a));
+            budget.truncate(MAX_PER_BUDGET);
         }
     }
-    let mut alternatives: Vec<_> = best.into_values().collect();
+    // Coarse coverage can misorder candidates. Send multiple installations
+    // at the same budget to the live-model check before picking a winner.
+    let mut alternatives: Vec<_> = best.into_values().flatten().collect();
     alternatives.sort_unstable_by(|a, b| compare(b, a));
-    alternatives.truncate(MAX_ALTERNATIVES);
+    alternatives.truncate(CERTIFICATION_POOL);
     alternatives
 }
 
@@ -372,9 +419,14 @@ mod tests {
         connect_cover(
             &RoutingGraph::new(&sites, &links).unwrap(),
             &settings,
-            4,
-            100,
             &masks,
+            &PaintObjective {
+                cells: &[Point { x: 500.0, y: 500.0 }; 4],
+                target_percent: 100,
+                distance_from_area: &|position| (position.x - 700.0).max(0.0),
+                evaluate: &|_| unreachable!(),
+                certify: &|_| unreachable!(),
+            },
             &|| false,
         )
     }
@@ -408,6 +460,23 @@ mod tests {
                 .uncovered,
             [2, 3]
         );
+    }
+
+    #[test]
+    fn equal_coverage_prefers_a_local_site_and_adequate_clients_prefer_no_router() {
+        let covered = [true; 4];
+        let none = [false; 4];
+        let sites = [
+            ("Alice", SiteKind::Client, none),
+            ("Bob", SiteKind::Client, none),
+            ("Local", SiteKind::Candidate, covered),
+            ("Remote", SiteKind::Candidate, covered),
+        ];
+        let links = [(0, 1), (0, 2), (1, 2), (0, 3), (1, 3)];
+        assert_eq!(solve(&sites, &links, 2)[0].router_ids, ["Local"]);
+        let mut with_clients = sites;
+        with_clients[0].2 = covered;
+        assert!(solve(&with_clients, &links, 2)[0].router_ids.is_empty());
     }
 
     #[test]

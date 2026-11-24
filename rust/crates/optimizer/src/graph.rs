@@ -96,6 +96,16 @@ impl<'a> RoutingGraph<'a> {
         Self::with_edges(nodes.iter().map(|&node| self.sites[node]).collect(), edges)
     }
 
+    pub(crate) fn minimum_margin(&self, minimum_db: f64) -> Self {
+        let edges = self
+            .edges
+            .iter()
+            .filter(|(_, link)| link.worst_margin_db() >= minimum_db)
+            .map(|(&pair, &link)| (pair, link))
+            .collect();
+        Self::with_edges(self.sites.clone(), edges)
+    }
+
     pub fn select_path(
         &self,
         source: &str,

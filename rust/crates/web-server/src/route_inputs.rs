@@ -307,6 +307,8 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
         ("maximum_neighbors_per_site", 1.0, 200.0),
         ("refine_radius_m", 0.0, 2000.0),
         ("maximum_road_distance_m", 10.0, 20_000.0),
+        ("paint_search_buffer_m", 1.0, 500_000.0),
+        ("mesh_minimum_link_margin_db", 0.0, 60.0),
     ] {
         if !(min..=max).contains(&n(key)) {
             return Err(ApiError::invalid(format!(
@@ -333,6 +335,8 @@ fn candidates(value: &Value) -> ApiResult<CandidateSettings> {
             "existing_and_proposed" => InfrastructurePolicy::ExistingAndProposed,
         }),
         corridor_width_m: n("corridor_width_m"),
+        paint_search_buffer_m: n("paint_search_buffer_m"),
+        mesh_minimum_link_margin_db: n("mesh_minimum_link_margin_db"),
         unrestricted_bounding_area: flag("unrestricted_bounding_area"),
         grid_spacing_m: n("grid_spacing_m"),
         cell_size_m: n("cell_size_m"),
@@ -681,7 +685,11 @@ fn without_legacy_setting<'a>(key: &str, value: &'a Value) -> std::borrow::Cow<'
 }
 
 pub(crate) fn terrain_candidates(plan: &Value, defaults: &Value) -> ApiResult<CandidateSettings> {
-    candidates(&merged(defaults, plan, "candidates")?)
+    let mut settings = candidates(&merged(defaults, plan, "candidates")?)?;
+    if crate::mesh_paint::uses_paint(plan) {
+        settings.corridor_width_m = settings.paint_search_buffer_m;
+    }
+    Ok(settings)
 }
 
 pub fn readiness_locations(plan: &Value, defaults: &Value) -> ApiResult<Vec<Location>> {
@@ -708,7 +716,10 @@ fn parse_with_scope(mut plan: Value, defaults: &Value, placement: bool) -> ApiRe
     let rf_payload = merged(defaults, &plan, "rf")?;
     let rf = rf(&rf_payload)?;
     let candidate_values = merged(defaults, &plan, "candidates")?;
-    let requested = candidates(&candidate_values)?;
+    let mut requested = candidates(&candidate_values)?;
+    if crate::mesh_paint::uses_paint(&plan) {
+        requested.corridor_width_m = requested.paint_search_buffer_m;
+    }
     let effort = match plan.get("search_effort").and_then(Value::as_str) {
         Some("quick") => SearchEffort::Quick,
         Some("balanced") => SearchEffort::Balanced,

@@ -110,6 +110,28 @@ impl MeshPaint {
             .collect()
     }
 
+    pub fn distance_from_area(&self, transform: &Transformer, point: Point) -> f64 {
+        let Ok(location) = transform.reverse(point) else {
+            return f64::INFINITY;
+        };
+        let latitude = location.latitude.to_radians();
+        let x = EARTH_RADIUS_M * location.longitude.to_radians() / CELL_M;
+        let y = EARTH_RADIUS_M * latitude.tan().asinh() / CELL_M;
+        // Measure to the nearest painted square, including gaps between strokes.
+        self.cells
+            .iter()
+            .map(|&[column, row]| {
+                let wrapped_dx = (x - f64::from(column) - 0.5).abs();
+                let world = std::f64::consts::TAU * EARTH_RADIUS_M / CELL_M;
+                let dx = (wrapped_dx.min(world - wrapped_dx) - 0.5).max(0.0);
+                let dy = ((y - f64::from(row) - 0.5).abs() - 0.5).max(0.0);
+                dx.hypot(dy)
+            })
+            .fold(f64::INFINITY, f64::min)
+            * CELL_M
+            * latitude.cos()
+    }
+
     pub fn handheld(plan: &Value) -> ApiResult<ClientRadioProfile> {
         let client = plan
             .pointer("/coverage/client")

@@ -54,6 +54,8 @@
   "candidates": {
     "infrastructure_policy": "existing_and_proposed",
     "corridor_width_m": 15000.0,
+    "paint_search_buffer_m": 3000.0,
+    "mesh_minimum_link_margin_db": 10.0,
     "unrestricted_bounding_area": false,
     "grid_spacing_m": 1000.0,
     "cell_size_m": 2000.0,
