@@ -301,11 +301,25 @@ pub(crate) fn historical_result(
         .is_some_and(|model| model != ROUTE_MODEL_VERSION))
         || (recorded_plan != Some(&plan_fingerprint(&project.plan, true))
             && recorded_plan != Some(&plan_fingerprint(&project.plan, false)))
-        || terrain
-            .fingerprint(directory, None)
+        || (crate::mesh_paint::uses_paint(&project.plan)
+            && summary_fields
+                .get("paint_coverage_model")
+                .and_then(Value::as_str)
+                != Some(crate::mesh_paint::PAINT_COVERAGE_MODEL))
+        || route_terrain_fingerprint(&project.plan, directory, terrain)
             .is_none_or(|current| summary_fields.get("terrain_fingerprint") != Some(&current));
     summary_fields.insert("stale".into(), json!(stale));
     Some(summary)
+}
+
+pub(crate) fn route_terrain_fingerprint(
+    plan: &Value,
+    directory: &Path,
+    terrain: &TerrainFiles,
+) -> Option<Value> {
+    let supplemental =
+        crate::mesh_paint::uses_paint(plan).then(|| TerrainFiles::read(directory, true));
+    terrain.fingerprint(directory, supplemental.as_ref())
 }
 
 pub(crate) fn route_inputs_changed(before: &Value, after: &Value) -> bool {
@@ -348,12 +362,7 @@ pub(crate) fn random_id<const N: usize>() -> Result<String, crate::api::ApiError
 fn write_canonical_json(output: &mut String, value: &Value, route_only: bool) {
     match value {
         Value::Object(fields) => {
-            let painted = route_only
-                && fields.get("mode").is_some_and(|v| v == "mesh")
-                && fields
-                    .get("mesh_paint")
-                    .and_then(|value| value["cells"].as_array())
-                    .is_some_and(|cells| !cells.is_empty());
+            let painted = route_only && crate::mesh_paint::uses_paint(value);
             let mut fields: Vec<_> = fields
                 .iter()
                 .filter(|(key, _)| {

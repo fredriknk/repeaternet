@@ -58,12 +58,18 @@ pub(crate) fn restore(
     if summary["route_model_version"] != ROUTE_MODEL_VERSION {
         return Ok(());
     }
+    if crate::mesh_paint::uses_paint(&project.plan)
+        && summary["paint_coverage_model"] != crate::mesh_paint::PAINT_COVERAGE_MODEL
+    {
+        return Ok(());
+    }
     let plan = catalog::plan_fingerprint(&project.plan, true);
     if summary["plan_fingerprint"].as_str() != Some(plan.as_str()) {
         return Ok(());
     }
     let terrain = TerrainFiles::read(directory, false);
-    let Some(fingerprint) = terrain.fingerprint(directory, None) else {
+    let Some(fingerprint) = catalog::route_terrain_fingerprint(&project.plan, directory, &terrain)
+    else {
         return Ok(());
     };
     if summary["terrain_fingerprint"] != fingerprint {
@@ -417,6 +423,7 @@ pub async fn start(
         *targets = crate::targets::normalize(targets).map_err(ApiError::invalid)?;
     }
     let inputs = route_inputs::parse(plan, &app.defaults)?;
+    let painted = inputs.paint.is_some();
     let (captured, outstanding) = workspace
         .clone()
         .run(app.clone(), move |app, key, session| {
@@ -433,7 +440,7 @@ pub async fn start(
                 ));
             }
             Ok((
-                TerrainContext::capture(app, key, session, false)?,
+                TerrainContext::capture(app, key, session, painted)?,
                 app.scheduler.reserve_job()?,
             ))
         })
@@ -746,12 +753,15 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
         let radio = crate::mesh_paint::MeshPaint::handheld(&inputs.plan)?.as_radio_budget();
         let measure =
             |site: &PlanningSite| paint.measure(&raster, site, &inputs.rf, &radio, &cells);
+        let certify =
+            |site: &PlanningSite| paint.certify(&raster, &transform, site, &inputs.rf, &radio);
         optimizer.optimize_painted_mesh(
             request,
             repeaternet_optimizer::PaintObjective {
                 cells: &cells,
                 target_percent: paint.target_percent(),
                 evaluate: &measure,
+                certify: &certify,
             },
             hooks,
         )
@@ -946,7 +956,8 @@ pub fn current<'a>(app: &AppState, key: &str, session: &'a Session) -> ApiResult
     let Some((plan, terrain)) = &session.route_identity else {
         return Err(ApiError::missing("No certified route is available yet"));
     };
-    let context = TerrainContext::capture(app, key, session, false)?;
+    let context =
+        TerrainContext::capture(app, key, session, result.get("paint_coverage").is_some())?;
     if &context.plan_fingerprint != plan || &context.fingerprint != terrain {
         return Err(ApiError::conflict(
             "The certified route belongs to older route inputs or terrain",

@@ -6,7 +6,11 @@ use std::{
 };
 
 use lru::LruCache;
-use repeaternet_coverage::live::ElevationLookup;
+use repeaternet_coverage::live::{self, ElevationLookup, LiveMode, PolarMargins, SweepGrid};
+use repeaternet_rf_core::{
+    RadioBudget, RfSettings, Site, TerminalClutter, calibration::TERMINAL_CLUTTER_RADIUS_M,
+    terminal_clutter_height_m,
+};
 use repeaternet_terrain::{Point, RasterTerrain, TerrainLayer, TerrainSource};
 
 use crate::{
@@ -146,6 +150,61 @@ pub(crate) struct LiveRaster<'a> {
 }
 
 impl LiveRaster<'_> {
+    pub fn sweep(
+        &self,
+        site: &Site,
+        rf: &RfSettings,
+        client: &RadioBudget,
+        mode: LiveMode,
+        grid: SweepGrid,
+    ) -> ApiResult<PolarMargins> {
+        let tiles = self.tiles(site.position, grid.sample_radius_m(), grid.resolution_m())?;
+        live::sweep(
+            &tiles,
+            site,
+            rf,
+            client,
+            mode,
+            grid,
+            self.raster.resolution_m(),
+        )
+        .map_err(terrain_invalid)
+    }
+
+    pub fn coverage_site(
+        &self,
+        mut site: Site,
+        rf: &RfSettings,
+        resolution_m: f64,
+    ) -> ApiResult<Option<Site>> {
+        let position = site.position;
+        let site_tiles = self.tiles(position, 0.0, resolution_m)?;
+        let (ground, surface) = if rf.clutter_loss_enabled && site_tiles.has_surface() {
+            let (ground, surface) = site_tiles.elevations(position);
+            (ground, Some(surface))
+        } else {
+            (site_tiles.ground(position), None)
+        };
+        if !ground.is_finite() {
+            return Ok(None);
+        }
+        site.ground_elevation_m = ground;
+        site.surface_elevation_m = surface;
+        site.clutter_height_m =
+            if site.terminal_clutter == TerminalClutter::P2108Dom && site_tiles.has_surface() {
+                let resolution_m = self.raster.resolution_m();
+                let tiles = self.tiles(position, TERMINAL_CLUTTER_RADIUS_M, resolution_m)?;
+                terminal_clutter_height_m(
+                    |point| Some((tiles.ground(point), tiles.surface(point)?)),
+                    position,
+                    resolution_m,
+                )
+            } else {
+                None
+            };
+        Ok(Some(site))
+    }
+
     pub fn tiles(&self, center: Point, radius: f64, resolution: f64) -> ApiResult<TileLookup> {
         let mut step = self.raster.resolution_m().max(5.0);
         let mut level = 0;

@@ -89,8 +89,8 @@ pub async fn start(
     }
     workspace.run(app, move |app, key, session| {
         ensure_idle(session)?;
-        let context = TerrainContext::capture(app, key, session, false)?;
         let project = active_project(&app.store, key, session)?;
+        let context = TerrainContext::capture(app, key, session, crate::mesh_paint::uses_paint(&project.plan))?;
         let inputs = route_inputs::parse_for_placement(project.plan, &app.defaults)?;
         let active = session.route_identity.as_ref()
             .filter(|(plan, terrain)| plan == &context.plan_fingerprint && terrain == &context.fingerprint)

@@ -3,7 +3,7 @@ use repeaternet_coverage::{
     live::{self, LiveMode, SweepGrid},
 };
 use repeaternet_optimizer::{OptimizationError, PaintCoverage, PlanningSite};
-use repeaternet_rf_core::{Point, RfSettings, TerrainSource};
+use repeaternet_rf_core::{Point, RfSettings, Site, SiteKind};
 use repeaternet_terrain::{LonLat, Transformer};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -11,6 +11,7 @@ use std::collections::HashSet;
 
 use crate::{
     api::{ApiError, ApiResult},
+    live_coverage_http::{default_floor, default_radius, default_resolution},
     live_terrain::LiveRaster,
     terrain_http::terrain_invalid,
 };
@@ -21,7 +22,14 @@ const MAX_INDEX: i32 = 80_149;
 const MAX_CELLS: usize = 1_024;
 const MAX_SPAN: u32 = 120;
 const SWEEP_STEP_M: f64 = 200.0;
-const SWEEP_RADIUS_M: f64 = 20_000.0;
+pub(crate) const PAINT_COVERAGE_MODEL: &str = "live-two-way-v1";
+
+pub(crate) fn uses_paint(plan: &Value) -> bool {
+    plan["mode"] == "mesh"
+        && plan["mesh_paint"]["cells"]
+            .as_array()
+            .is_some_and(|cells| !cells.is_empty())
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,13 +90,17 @@ impl MeshPaint {
         Ok(Self::read(plan)?.filter(|paint| !paint.cells.is_empty()))
     }
 
+    fn centres(&self) -> impl Iterator<Item = Point> + '_ {
+        self.cells.iter().map(|&[x, y]| Point {
+            x: (f64::from(x) + 0.5) * CELL_M,
+            y: (f64::from(y) + 0.5) * CELL_M,
+        })
+    }
+
     pub fn locations(&self) -> impl Iterator<Item = LonLat> + '_ {
-        self.cells.iter().map(|&[x, y]| LonLat {
-            longitude: ((f64::from(x) + 0.5) * CELL_M / EARTH_RADIUS_M).to_degrees(),
-            latitude: ((f64::from(y) + 0.5) * CELL_M / EARTH_RADIUS_M)
-                .sinh()
-                .atan()
-                .to_degrees(),
+        self.centres().map(|point| LonLat {
+            longitude: (point.x / EARTH_RADIUS_M).to_degrees(),
+            latitude: (point.y / EARTH_RADIUS_M).sinh().atan().to_degrees(),
         })
     }
 
@@ -124,9 +136,10 @@ impl MeshPaint {
             OptimizationError::InvalidInput(error.detail().to_owned())
         };
         let position = site.rf.position;
+        let max_radius = default_radius();
         if cells
             .iter()
-            .all(|&point| position.distance_to(point) > SWEEP_RADIUS_M)
+            .all(|&point| position.distance_to(point) > max_radius)
         {
             return Ok(vec![false; cells.len()]);
         }
@@ -134,25 +147,64 @@ impl MeshPaint {
             .iter()
             .map(|&point| position.distance_to(point))
             .fold(SWEEP_STEP_M, f64::max)
-            .min(SWEEP_RADIUS_M);
+            .min(max_radius);
         let grid = SweepGrid::new(radius, SWEEP_STEP_M)
             .map_err(|error| OptimizationError::InvalidInput(error.to_string()))?;
-        let terrain = raster
-            .tiles(position, grid.sample_radius_m(), SWEEP_STEP_M)
+        let margins = raster
+            .sweep(&site.rf, rf, client, LiveMode::TwoWay, grid)
             .map_err(error)?;
-        let margins = live::sweep(
-            &terrain,
-            &site.rf,
-            rf,
-            client,
-            LiveMode::TwoWay,
-            grid,
-            raster.raster.resolution_m(),
-        )
-        .map_err(|error| OptimizationError::InvalidInput(error.to_string()))?;
         Ok(cells
             .iter()
             .map(|&point| margins.margin_at_point(point) >= self.minimum_margin_db)
+            .collect())
+    }
+
+    pub fn certify(
+        &self,
+        terrain: &LiveRaster<'_>,
+        transform: &Transformer,
+        site: &PlanningSite,
+        rf: &RfSettings,
+        client: &repeaternet_rf_core::RadioBudget,
+    ) -> Result<Vec<bool>, OptimizationError> {
+        let error = |error: ApiError| OptimizationError::InvalidInput(error.detail().to_owned());
+        let resolution = default_resolution();
+        let location = transform
+            .reverse(site.rf.position)
+            .map_err(terrain_invalid)
+            .map_err(error)?;
+        let position = transform
+            .forward(location)
+            .map_err(terrain_invalid)
+            .map_err(error)?;
+        let live_site = Site {
+            kind: match site.rf.kind {
+                SiteKind::Candidate => SiteKind::Router,
+                kind => kind,
+            },
+            antenna_height_m: site.rf.antenna_height_m,
+            terminal_clutter: site.rf.terminal_clutter,
+            ..Site::new(&site.rf.id, position.x, position.y)
+        };
+        let Some(live_site) = terrain
+            .coverage_site(live_site, rf, resolution)
+            .map_err(error)?
+        else {
+            return Ok(vec![false; self.cells.len()]);
+        };
+        let grid = SweepGrid::new(default_radius(), resolution)
+            .map_err(terrain_invalid)
+            .map_err(error)?;
+        let polar = terrain
+            .sweep(&live_site, rf, client, LiveMode::TwoWay, grid)
+            .map_err(error)?;
+        let floor = default_floor();
+        let raster = live::resample(&polar, location, transform, floor)
+            .map_err(terrain_invalid)
+            .map_err(error)?;
+        Ok(self
+            .centres()
+            .map(|point| raster.margin_at_point(point, floor) >= self.minimum_margin_db)
             .collect())
     }
 

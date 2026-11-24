@@ -74,6 +74,10 @@ impl SweepGrid {
     pub fn sample_radius_m(self) -> f64 {
         self.samples_per_ray as f64 * self.step_m
     }
+
+    pub fn resolution_m(self) -> f64 {
+        self.step_m
+    }
 }
 
 /// Ray zero points north and the remaining rays run clockwise.
@@ -1083,6 +1087,45 @@ pub struct MercatorRaster {
     pub covered_fraction: f64,
     #[serde(skip)]
     pub pixels: Vec<u8>,
+}
+
+impl MercatorRaster {
+    /// Usable margin at a Web Mercator point, using the live map's interpolation.
+    pub fn margin_at_point(&self, point: Point, floor_db: f64) -> f64 {
+        let col = (point.x - self.origin_x) / self.pixel_size - 0.5;
+        let row = (self.origin_y - point.y) / self.pixel_size - 0.5;
+        if !(-0.5..=self.width as f64 - 0.5).contains(&col)
+            || !(-0.5..=self.height as f64 - 0.5).contains(&row)
+        {
+            return f64::NAN;
+        }
+        let pixel = |col, row| self.pixels[row * self.width + col];
+        let nearest = pixel(
+            (col.round() as usize).min(self.width - 1),
+            (row.round() as usize).min(self.height - 1),
+        );
+        if nearest < 2 {
+            return f64::NAN;
+        }
+        let decode = |code: u8| floor_db + f64::from(code.saturating_sub(3)) * MARGIN_STEP_DB;
+        let x = col.floor() as usize;
+        let y = row.floor() as usize;
+        let next_x = (x + 1).min(self.width - 1);
+        let next_y = (y + 1).min(self.height - 1);
+        let corners = [
+            pixel(x, y),
+            pixel(next_x, y),
+            pixel(x, next_y),
+            pixel(next_x, next_y),
+        ];
+        if corners.iter().any(|&code| code < 2) {
+            return decode(nearest);
+        }
+        let [a, b, c, d] = corners.map(decode);
+        let fx = (col - x as f64).clamp(0.0, 1.0);
+        let fy = (row - y as f64).clamp(0.0, 1.0);
+        (a * (1.0 - fx) + b * fx) * (1.0 - fy) + (c * (1.0 - fx) + d * fx) * fy
+    }
 }
 
 fn mercator_inverse(x: f64, y: f64) -> LonLat {

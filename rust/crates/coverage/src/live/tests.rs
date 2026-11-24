@@ -63,6 +63,64 @@ fn quantisation_reserves_state_codes_and_rounds_half_db() {
 }
 
 #[test]
+fn fine_two_way_coverage_finds_a_ridge_missed_by_the_coarse_sweep() {
+    struct Ridge;
+    impl ElevationLookup for Ridge {
+        fn ground(&self, point: Point) -> f64 {
+            if (point.y - 6_600_120.0).abs() < 20.0 {
+                80.0
+            } else {
+                0.0
+            }
+        }
+        fn surface(&self, _: Point) -> Option<f64> {
+            None
+        }
+        fn has_surface(&self) -> bool {
+            false
+        }
+    }
+    let transform = Transformer::new(TerrainCrs::from_epsg(25833).unwrap()).unwrap();
+    let site = Site::new("Router", 500_000.0, 6_600_000.0);
+    let centre = Point {
+        x: site.position.x,
+        y: site.position.y + 800.0,
+    };
+    let rf = RfSettings {
+        validation_mode: ValidationMode::StrictLos,
+        ..RfSettings::default()
+    };
+    let radio = ClientRadioProfile::default().as_radio_budget();
+    let predict = |step| {
+        sweep(
+            &Ridge,
+            &site,
+            &rf,
+            &radio,
+            LiveMode::TwoWay,
+            SweepGrid::new(1_000.0, step).unwrap(),
+            10.0,
+        )
+        .unwrap()
+    };
+    assert!(predict(200.0).margin_at_point(centre) >= 10.0);
+    let fine = predict(30.0);
+    assert!(fine.margin_at_point(centre) < 10.0);
+    let location = transform.reverse(site.position).unwrap();
+    let raster = resample(&fine, location, &transform, -20.0).unwrap();
+    let centre = transform.reverse(centre).unwrap();
+    assert!(
+        raster.margin_at_point(
+            Point {
+                x: MERCATOR_RADIUS * centre.longitude.to_radians(),
+                y: MERCATOR_RADIUS * centre.latitude.to_radians().tan().asinh(),
+            },
+            -20.0,
+        ) < 10.0
+    );
+}
+
+#[test]
 fn polar_interpolation_wraps_and_preserves_nearest_unknown_state() {
     let mut polar = PolarMargins {
         site: Point::default(),

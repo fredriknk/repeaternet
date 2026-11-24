@@ -174,9 +174,12 @@ to identify the outlined painted area and dashed uncovered patches.
 
 The paint tool uses fixed cells of roughly 125 m per side around Oslo.
 Keep a sketch to 1,024 cells and within 120 cells across in either
-direction. The planner checks cell centres with a coarse prediction and
-counts cells beyond its 20 km per-site range or with missing terrain as
-uncovered. Use live coverage for a closer look at the chosen sites.
+direction. The planner uses a coarse prediction to shortlist meshes, then
+checks each painted cell centre against the selected sites using the live
+two-way model at 30 m detail and a 20 km radius. Cells that no selected site
+reaches at the requested margin appear as dashed patches. To compare the
+verdict with live coverage, use those same display settings and show the
+selected sites.
 
 ### Terrain
 

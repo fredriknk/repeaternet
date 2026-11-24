@@ -17,7 +17,10 @@ pub struct PaintObjective<'a> {
     /// Projected cell centres, in the same order returned by the evaluator.
     pub cells: &'a [Point],
     pub target_percent: u8,
+    /// A fast estimate for ranking the candidate pool.
     pub evaluate: &'a SiteCoverage<'a>,
+    /// The coverage model used for the published verdict.
+    pub certify: &'a SiteCoverage<'a>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +38,59 @@ impl PaintCoverage {
 }
 
 pub(crate) type SiteMasks = BTreeMap<String, Vec<u64>>;
+
+pub(crate) struct PaintCertification<'a> {
+    paint: PaintObjective<'a>,
+    masks: SiteMasks,
+}
+
+impl<'a> PaintCertification<'a> {
+    pub(crate) fn new(paint: PaintObjective<'a>) -> Self {
+        Self {
+            paint,
+            masks: SiteMasks::new(),
+        }
+    }
+
+    pub(crate) fn certify(
+        &mut self,
+        solution: &mut NetworkSolution,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), OptimizationError> {
+        let count = self.paint.cells.len();
+        for site in &solution.sites {
+            if cancelled() {
+                return Ok(());
+            }
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                self.masks.entry(site.rf.id.clone())
+            {
+                entry.insert(evaluate_mask(self.paint.certify, site, count)?);
+            }
+        }
+        solution.paint_coverage = Some(report(
+            &solution.sites,
+            &self.masks,
+            count,
+            self.paint.target_percent,
+        ));
+        Ok(())
+    }
+}
+
+pub(crate) fn evaluate_mask(
+    evaluate: &SiteCoverage<'_>,
+    site: &PlanningSite,
+    count: usize,
+) -> Result<Vec<u64>, OptimizationError> {
+    let coverage = evaluate(site)?;
+    if coverage.len() != count {
+        return Err(OptimizationError::InvalidInput(
+            "Coverage evaluation returned the wrong number of cells".into(),
+        ));
+    }
+    Ok(mask(coverage))
+}
 
 pub(crate) fn mask(cells: Vec<bool>) -> Vec<u64> {
     cells

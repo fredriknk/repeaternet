@@ -308,6 +308,9 @@ pub fn summary(payload: &Value, plan: &str, terrain: &Value) -> Value {
         "route_model_version": ROUTE_MODEL_VERSION,
         "saved_at": crate::route_http::now(),
     });
+    if payload.get("paint_coverage").is_some() {
+        summary["paint_coverage_model"] = json!(crate::mesh_paint::PAINT_COVERAGE_MODEL);
+    }
     for key in [
         "found",
         "router_count",
