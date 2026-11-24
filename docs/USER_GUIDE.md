@@ -398,18 +398,22 @@ coordinates use latitude, longitude to six decimals.
   the map at the same zoom. You can also turn on **Select sites** and tap
   markers, or focus a marker and press **Shift+Enter**. Selected sites have a
   dashed outline. Use **Clear** or **Esc** to clear the selection.
-- Select two or more sites to edit their **Antenna height · m** and
-  **Antenna gain · dBi** on the map or at the top of **1 Route**. Fields marked
+- Select two or more sites to edit their **Antenna height · m** on the map or
+  at the top of **1 Route**. This includes mesh clients, which use shared
+  client radio settings for antenna gain. For other sites, the selection also
+  provides **Antenna gain · dBi**. Fields marked
   **Mixed** keep their individual values until you enter a value. **Apply
   changes** saves the fields you edited. The policy applies to existing
   routers. Changing the height or gain of a site found by search adds it as a
-  proposed router.
+  proposed router in its place and keeps the new router selected.
 - **Remove routers** removes the selected proposed and existing routers from the
   project. Endpoints and sites shown only in a search result stay on the map.
   One **Undo** reverses the entire bulk edit or removal.
 - On a square search-found marker such as R3, use the same context-menu
   shortcuts and choose **Pin R3 as P1** (the menu shows the next proposed router
   number). Adjust its settings and select **Pin router** to add it to your plan.
+  The proposed router replaces the search-found marker and takes its place in
+  the selection if it was selected.
   To remove one search-found router, choose **Remove** in its popup or in
   **Route → Routers → Search-found routers**.
 - Select at least one proposed or search-found router and another site, then
@@ -436,7 +440,7 @@ coordinates use latitude, longitude to six decimals.
   search result. A later search can find the same site again.
 - Thin dotted links show usable connections (0 dB or higher) to proposed
   routers, including optional routers outside the certified route. These links
-  update as you drag a marker and stay on the map after release.
+  update as you drag a marker and connect sites that are still on the map.
 - With live or saved coverage visible, right-click a location and choose
   **Analyse links from here**. The temporary handheld probe shows the predicted
   margin and distance to each usable site. Select **Show profile** for an

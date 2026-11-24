@@ -280,11 +280,13 @@ function renderPlacementPreview(panel) {
 
 function placementMoves(preview, resolve) {
   const moves = [];
+  const movedIds = new Set();
   for (const {id, moved, after} of preview.sites) {
     if (!moved) continue;
     const site = resolve(id);
-    if (!movablePlacementSite(site) || after?.length !== 2 || !after.every(Number.isFinite)) return null;
+    if (movedIds.has(id) || !movablePlacementSite(site) || after?.length !== 2 || !after.every(Number.isFinite)) return null;
     moves.push({site, after});
+    movedIds.add(id);
   }
   return moves;
 }
@@ -294,15 +296,12 @@ function commitPlacement(preview) {
   const moves = placementMoves(preview, findMapSite);
   if (!moves?.length) return false;
   const ids = new Map();
-  const pinned = [];
   for (const {site, after: [latitude, longitude]} of moves) {
     const router = site.kind === 'manual' ? manualRouters.find(item => item.id === site.id)
-      : pinSelectedSearchRouter(site);
+      : pinSearchRouter(site);
     Object.assign(router, {latitude, longitude});
     ids.set(site.id, router.id);
-    if (site.kind === 'search') pinned.push(site.id);
   }
-  if (pinned.length) dismissSearchRouterIds(pinned);
   commitManualRouterLocations('optimized router positions');
   selectionMessage = 'Router positions applied. Use Undo to restore.';
   siteSelection.replace([...siteSelection.ids].map(id => ids.get(id) || id));

@@ -216,13 +216,19 @@ function validateBulkSiteFields(sites, rawFields) {
   return {changes};
 }
 
-function pinSelectedSearchRouter(site) {
+function replaceSelectedSite(oldId, newId) {
+  siteSelection.replace([...siteSelection.ids].map(id => id === oldId ? newId : id));
+}
+
+function pinSearchRouter(site) {
+  if (dismissedSearchRouterIds().has(site.id)) return null;
   const router = {id:'M-' + randomId(), name:nextManualRouterName(), latitude:site.latitude,
     longitude:site.longitude, antenna_height_m:site.antenna_height_m, policy:'optional',
     terminal_clutter:site.terminal_clutter};
   const radio = rf.site_overrides?.[site.id];
   if (radio) saveSiteRadio(router.id, {...radio});
   manualRouters.push(router);
+  dismissSearchRouterIds([site.id]);
   return router;
 }
 
@@ -231,28 +237,38 @@ function updateSelectedSites(sites, changes) {
   let changed = false;
   for (const site of sites) {
     const height = changes.antenna_height_m, gain = changes.gain_dbi, policy = changes.policy;
-    if (site.kind === 'client') { selectedIds.push(site.id); continue; }
     const setHeight = height !== undefined && height !== site.antenna_height_m;
+    if (site.kind === 'client') {
+      const client = meshClients.find(client => client.id === site.id);
+      if (setHeight && client) {
+        client.antenna_height_m = height;
+        changed = true;
+      }
+      selectedIds.push(site.id);
+      continue;
+    }
     const setGain = gain !== undefined && gain !== site.gain_dbi;
     const setPolicy = site.kind === 'known' && policy !== undefined && policy !== site.policy;
     if (!setHeight && !setGain && !setPolicy) {
       selectedIds.push(site.id);
       continue;
     }
-    changed = true;
     if (site.kind === 'endpoint') {
       const radio = rf['endpoint_' + site.key];
       if (setHeight) radio.height_agl_m = height;
       if (setGain) radio.gain_dbi = gain;
+      changed = true;
       selectedIds.push(site.id);
       continue;
     }
     let router;
     if (site.kind === 'search') {
-      router = pinSelectedSearchRouter(site);
+      router = pinSearchRouter(site);
     } else {
       router = (site.kind === 'known' ? meshcoreRouters : manualRouters).find(router => router.id === site.id);
     }
+    if (!router) continue;
+    changed = true;
     if (setHeight) {
       router.antenna_height_m = height;
       if (site.kind === 'known') router.height_override = true;
@@ -297,6 +313,7 @@ function commitBulkSiteEdit(sites, changes, {remove = false} = {}) {
   recordEdit();
   invalidate(reason);
   if (!remove && sites.some(site => site.kind === 'endpoint')) buildSettings();
+  if (!remove && changes.antenna_height_m !== undefined && sites.some(site => site.kind === 'client')) renderMeshClients();
   renderManualRouters();
   renderMeshcoreRouters();
   siteSelection.replace(ids);
@@ -344,7 +361,7 @@ function renderSiteSelection() {
       button.dataset.selectionFocus = 'action-' + action.id;
       panel.append(button);
     }
-    if (sites.length > 1 && sites.some(site => site.kind !== 'client')) {
+    if (sites.length > 1) {
       forms.push(renderBulkSiteForm(panel, sites, rawFields, forms));
     }
   }
@@ -400,14 +417,15 @@ function renderBulkSiteForm(panel, sites, rawFields, forms) {
     };
   }
 
-  const editableSites = sites.filter(site => site.kind !== 'client');
-  if (editableSites.length) {
-    field('antenna_height_m', 'Antenna height · m', editableSites);
-    field('gain_dbi', 'Antenna gain · dBi', editableSites);
+  const gainSites = sites.filter(site => site.kind !== 'client');
+  field('antenna_height_m', 'Antenna height · m', sites);
+  if (gainSites.length) {
+    field('gain_dbi', 'Antenna gain · dBi', gainSites);
   }
   if (existing.length) field('policy', 'Existing router policy', existing, routerPolicyLabels);
   const notes = [];
-  if (existing.length < sites.length) notes.push('Policy applies to existing routers only.');
+  if (existing.length && existing.length < sites.length) notes.push('Policy applies to existing routers only.');
+  if (gainSites.length && gainSites.length < sites.length) notes.push('Antenna gain uses the shared client radio settings for mesh clients.');
   if (sites.some(site => site.kind === 'endpoint')) notes.push('Remove skips endpoints.');
   if (sites.some(site => site.kind === 'search')) notes.push('Remove skips search results.');
   if (sites.some(site => site.kind === 'search')) notes.push('Changing height or gain pins search sites as proposed routers.');

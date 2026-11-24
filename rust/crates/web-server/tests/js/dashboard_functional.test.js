@@ -24,11 +24,12 @@ test('removing search-found routers is one edit scoped to the current search', (
   let locked = false;
   const context = vm.createContext({
     result: { job_id: 'first-search', route },
-    dismissedSearchRouters: null,
+    dismissedSearchRouters: null, manualRouters: [],
     alternativeSelecting: false,
     mapEditsLocked: () => locked,
     validEndpointCoords: () => true,
     mapPoint: site => [site.latitude, site.longitude],
+    coordinateLabel: point => point.join(','),
     recordEdit: () => actions.push('recordEdit'),
     invalidate: () => actions.push('invalidate'),
     scheduleCoverageCheck: () => actions.push('scheduleCoverageCheck'),
@@ -46,6 +47,26 @@ test('removing search-found routers is one edit scoped to the current search', (
 
   context.result = { job_id: 'next-search', route };
   assert.deepEqual(Array.from(context.searchRouterSites(), site => site.id), ['R1', 'R2']);
+  context.manualRouters.push(route[3]);
+  assert.deepEqual(Array.from(context.searchRouterSites()), []);
+});
+
+test('dismissing a route site hides both the certified line and its hit area', () => {
+  const line = () => {
+    const visual = { style: {} }, hit = { style: {} };
+    return { visual, hit, getElement: () => visual, linkHit: { getElement: () => hit }, closeTooltip() {} };
+  };
+  const layers = [line(), line()];
+  const context = vm.createContext({
+    dismissedSearchRouterIds: () => new Set(['R2']),
+    result: { links: [{ source_id: 'A', target_id: 'R1' }, { source_id: 'R1', target_id: 'R2' }] },
+    routeLinkLayers: layers,
+  });
+  vm.runInContext(section('function linkTouchesSites(', "mapEditControl($('remove-search-routers'))"), context);
+  context.syncSearchRouterLinks('R1');
+  assert.ok(layers.every(({visual, hit}) => visual.style.display === 'none' && hit.style.display === 'none'));
+  context.syncSearchRouterLinks();
+  assert.deepEqual(layers.map(({visual, hit}) => [visual.style.display, hit.style.display]), [['', ''], ['none', 'none']]);
 });
 
 test('applying blank router coordinates preserves the saved site, while zero is valid', () => {
@@ -299,7 +320,7 @@ test('invalidating a certified route replaces its verdict until a current result
     routeLinkInspector: null, closeRouteLinkInspector() {},
     queueMicrotask() {}, refreshSiteSelection() {}, clearPlacementPreview() {},
     renderMeshPaint() {}, closeMapSelection() {}, clearTerrainEstimateReview() {}, invalidateCoverageEstimate() {}, setInteractionMode() {}, cancelActiveInspection() {},
-    updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {}, syncRoutedRouterMarkers() {},
+    updatePlanReadiness() {}, setCoverageStatus() {}, syncAnalysisBadge() {}, updateCoverageActions() {}, syncRoutedRouterMarkers() {}, pruneProposedMeshLinks() {},
   });
   vm.runInContext(section('function invalidate(', 'function updatePlanReadiness(') +
     section('function renderRouteVerdict(', 'function render(){'), context);

@@ -39,6 +39,7 @@ function placementFixture() {
     randomId: () => 'new', nextManualRouterName: () => 'P2',
     rf: {site_overrides: {R: {gain_dbi: 5}}},
     saveSiteRadio: (id, value) => { context.rf.site_overrides[id] = value; },
+    dismissedSearchRouterIds: () => new Set(dismissed),
     dismissSearchRouterIds: ids => dismissed.push(...ids),
     commitManualRouterLocations: () => calls.push('commit'),
   });
@@ -77,6 +78,11 @@ test('invalid or empty moves leave the plan and edit history intact', () => {
       {id, moved: true, after: [60.03, 10.04]},
     ]}), false);
   }
+  assert.equal(context.commitPlacement({sites: [
+    {id: 'R', moved: true, after: [60.01, 10.02]},
+    {id: 'R', moved: true, after: [60.03, 10.04]},
+  ]}), false);
+  assert.equal(context.manualRouters.length, 1);
   assert.equal(context.commitPlacement({sites: [{id: 'P', moved: false}]}), false);
   assert.equal(proposed.latitude, 60);
   assert.deepEqual(calls, []);

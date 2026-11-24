@@ -521,13 +521,26 @@ function proposedMeshSites(drag){
   for(const router of selectedKnownRouters()){
     if(router.policy!=='excluded')add(router,router.id,'router',router.height_override?router.antenna_height_m:routerHeight);
   }
-  for(const site of result?.route||[]){
-    if(['candidate','router'].includes(site.kind)&&!['manual','known'].includes(site.origin))add(site,site.id,site.kind,site.antenna_height_m);
+  for(const site of searchRouterSites()){
+    add(site,site.id,site.kind,site.antenna_height_m);
   }
   return sites;
 }
 function mapLinkPairId(a,b){
   return a<b?a+'|'+b:b+'|'+a;
+}
+function removeProposedMeshLink(id,pair){
+  pair.controller?.abort();
+  pair.line?.removeFrom(proposedMeshLinks.layer);
+  proposedMeshLinks.pairs.delete(id);
+}
+function pruneProposedMeshLinks(){
+  if(!proposedMeshLinks.pairs.size)return;
+  const sites=proposedMeshSites();
+  for(const [id,pair] of proposedMeshLinks.pairs){
+    const {source,target}=pair.wanted;
+    if(!sites.has(source.id)||!sites.has(target.id))removeProposedMeshLink(id,pair);
+  }
 }
 function syncProposedMeshLinks(){
   if(!proposedMeshLinks.layer)return;
@@ -562,10 +575,7 @@ function syncProposedMeshLinks(){
     }
   }
   for(const [id,pair] of proposedMeshLinks.pairs){
-    if(wanted.has(id))continue;
-    pair.controller?.abort();
-    pair.line?.removeFrom(proposedMeshLinks.layer);
-    proposedMeshLinks.pairs.delete(id);
+    if(!wanted.has(id))removeProposedMeshLink(id,pair);
   }
   pumpProposedMeshLinks();
 }
