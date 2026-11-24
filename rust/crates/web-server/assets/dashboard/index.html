@@ -113,6 +113,11 @@
       </form>
     </dialog>
     <main>
+      <nav class="mobile-destination-nav" aria-label="Mobile workspace destination">
+        <button type="button" data-mobile-destination="setup" aria-controls="planner-setup" aria-pressed="false">Setup</button>
+        <button type="button" data-mobile-destination="map" aria-controls="view-map" aria-pressed="true">Map</button>
+        <button type="button" data-mobile-destination="analysis" aria-controls="view-analysis" aria-pressed="false">Analysis</button>
+      </nav>
       <aside id="planner-setup">
         <nav class="workspace-nav" aria-label="Planning workspace">
           <button type="button" data-workspace-target="workspace-plan" aria-pressed="true"><span class="nav-step">1</span> Route</button>
@@ -525,11 +530,6 @@
         </div>
       </aside>
       <div class="workspace" id="workspace">
-        <nav class="mobile-destination-nav" aria-label="Mobile workspace destination">
-          <button type="button" data-mobile-destination="setup" aria-controls="planner-setup" aria-pressed="false">Setup</button>
-          <button type="button" data-mobile-destination="map" aria-controls="view-map" aria-pressed="true">Map</button>
-          <button type="button" data-mobile-destination="analysis" aria-controls="view-analysis" aria-pressed="false">Analysis</button>
-        </nav>
         <nav class="main-view-nav" role="tablist" aria-label="Main view">
           <button id="view-map-tab" type="button" role="tab" aria-selected="true" aria-controls="view-map" data-main-view-target="view-map">Map</button>
           <button id="view-analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="view-analysis" data-main-view-target="view-analysis">Analysis <span id="analysis-badge" hidden></span></button>
@@ -558,7 +558,7 @@
               <button type="button" data-place="b" aria-pressed="false">Set B</button>
               <button type="button" data-place="client" aria-pressed="false" hidden>Add client</button>
               <button type="button" data-place="router" aria-pressed="false">Add router</button>
-              <button type="button" id="paint-mesh-tool" aria-pressed="false" hidden>Paint coverage area</button>
+              <button type="button" id="paint-mesh-tool" aria-label="Paint coverage area" aria-pressed="false" hidden>Paint</button>
               <button type="button" id="cancel-map-mode" hidden>Cancel</button>
             </div>
             <div id="mesh-paint-map-controls" class="map-tool-group" role="group" aria-label="Coverage brush" hidden>

@@ -1,6 +1,24 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {paintBrush, paintRowRuns, readMeshPaint} = require('../../assets/dashboard/mesh_paint.js');
+const {paintBrush, paintRowRuns, paintOutlineRings, paintToolHint, readMeshPaint} = require('../../assets/dashboard/mesh_paint.js');
+
+test('paint outline removes shared edges and retains erased holes', () => {
+  const cells = Array.from({length: 9}, (_, index) => [index % 3, Math.floor(index / 3)]);
+  cells.splice(4, 1);
+  const rings = paintOutlineRings(cells);
+  const area = ring => ring.reduce((sum, [x, y], index) => {
+    const [nextX, nextY] = ring[(index + 1) % ring.length];
+    return sum + x * nextY - y * nextX;
+  }, 0) / 2;
+  assert.deepEqual(rings.map(ring => ring.length).sort((a, b) => a - b), [4, 12]);
+  assert.deepEqual(rings.map(area).sort((a, b) => a - b), [-1, 9]);
+  assert.deepEqual(paintOutlineRings([[0, 0], [1, 1]]).map(area), [1, 1]);
+});
+
+test('paint hint describes touch gestures and keeps the keyboard shortcut on desktop', () => {
+  assert.equal(paintToolHint('paint', true), 'Drag a finger to paint the coverage area');
+  assert.equal(paintToolHint('erase', false), 'Drag to erase, or press Enter to erase at the map centre');
+});
 
 test('brush interpolates fast drags and does not duplicate paint', () => {
   const from = [2.5, 1.5], to = [8.5, 1.5];

@@ -15,7 +15,7 @@ The layout has one owner per job. Put new features where users already look:
 
 | Area | Purpose | Contents |
 | --- | --- | --- |
-| Top bar (56 px, one row) | Which project am I in? | Brand, project select, **＋ New**, **⋯** project menu, save state |
+| Top bar (56 px on desktop) | Which project am I in? | Brand, project select, **＋ New**, **⋯** project menu, save state |
 | **⋯** project menu | Rare project operations | Rename, duplicate, recover, import/export plan file, **Data sources…**, archive, delete, archived list, cache |
 | Left panel tab **1 Route** | Define the problem | Accordion steps: Endpoints, Terrain, Routers, Radio, Search, then a sticky **Find repeater route** |
 | Left panel tab **2 Coverage** | Live handheld coverage of every site on the map | Live on/off, per-site list, Display, Sources & range, Handheld, Saved runs (fixed-grid runs for scenarios, targets and exports), sticky live status and **Recalculate coverage** |
@@ -137,8 +137,9 @@ The layout has one owner per job. Put new features where users already look:
   for example "Remove 6 DTM tiles (183 MiB)". Plan edits are not confirmed; they
   are undoable instead.
 - Save state is always visible in the top bar, and a failed save offers
-  **Retry save**. Flush pending autosaves before starting a job that locks
-  inputs.
+  **Retry save**. On narrow screens, give save feedback its own line so the
+  project selector and its actions can keep their width. Flush pending
+  autosaves before starting a job that locks inputs.
 - Switching project, alternative or view must never discard computed results or
   start an RF job by itself. Switching to a project without a result must clear
   every trace of the previous project's result (verdict, figures, badge, map
@@ -150,8 +151,11 @@ The layout has one owner per job. Put new features where users already look:
   - no horizontal page overflow;
   - the workspace's primary action is visible without scrolling the page;
   - the map is at least 320 px tall.
-- On mobile (≤ 650 px) there is one destination nav (Setup / Map / Analysis). Do
-  not show a second tab bar.
+- On mobile (≤ 650 px, or a coarse pointer at ≤ 900 × 500 px), use one destination
+  nav (Setup / Map / Analysis). Setup keeps its Route / Coverage / Scenarios
+  switcher so each planning workspace is directly reachable. Show that switcher
+  only in Setup. In short landscape layouts, place the destination nav beside
+  the workspace to preserve at least 320 px of map height.
 - Minimum text sizes:
   - 12 px for hints and table text;
   - 13 px for controls and summaries;

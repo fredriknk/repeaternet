@@ -146,7 +146,7 @@ mesh topology. Importing a plan restores its inputs for a fresh search.
 ### Paint a coverage area
 
 In **1 Route**, select **Mesh**. Choose **Paint coverage area** in the
-**Clients** step or on the map toolbar. Pick a brush size, then drag over
+**Clients** step or **Paint** on the map toolbar. Pick a brush size, then drag over
 the places where a handheld needs service. Use **Erase** to trim the
 area. With keyboard focus on the map, pan with the arrow keys and press
 Enter to use the brush at the map centre. Press Esc or choose **Cancel**
@@ -1027,11 +1027,16 @@ This history is separate from **Recover previous save**.
 
 ## Mobile layout
 
-At widths up to 650 px, the destination bar switches between **Setup**, **Map**
-and **Analysis**. **Setup** contains **1 Route**, **2 Coverage** and
-**3 Scenarios**. Choose **Map** to place sites or review layers and **Analysis**
-to read the result. Placement and inspection actions can switch destinations
-for you. Use the bar to return to setup after reading the map or analysis.
+On phones, the destination bar switches between **Setup**, **Map** and
+**Analysis**. Within **Setup**, switch directly between **1 Route**,
+**2 Coverage** and **3 Scenarios**. Choose **Map** to place sites or review
+layers and **Analysis** to read the result. Placement and inspection actions
+can switch destinations for you. The project bar shows whether changes are saved.
+
+On short landscape touch screens, the destination bar sits to the left of the
+workspace. Selected sites and the placement preview open beside the map,
+where you can scroll through the before-and-after margins and apply or discard
+the preview. In portrait, the selection panel opens below the map.
 
 | Setup | Map | Analysis |
 | --- | --- | --- |

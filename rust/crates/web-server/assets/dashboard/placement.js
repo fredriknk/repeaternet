@@ -186,15 +186,9 @@ function placementMapLabel(id) {
 
 function fitPlacementPreview(preview) {
   const mobile = mobileViewport.matches;
-  const legend = $('live-coverage-legend');
-  const bounds = map.getContainer().getBoundingClientRect();
-  const topPadding = mobile && legend.checkVisibility()
-    ? Math.min(legend.getBoundingClientRect().bottom - bounds.top + 20, bounds.height - 96) : 0;
   fitMapSites(false, {
     positions: preview.sites.flatMap(site => [site.before, site.after]),
-    topPadding,
     rightPadding: mobile ? 36 : $('map-site-selection').offsetWidth + 46,
-    bottomPadding: mobile ? 38 : 66,
     maxZoom: 16,
   });
 }

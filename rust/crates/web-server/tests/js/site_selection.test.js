@@ -41,6 +41,22 @@ test('selection actions can be registered and removed independently of selected 
   assert.deepEqual(seen, []);
 });
 
+test('overlapping touch targets use the closest centre and leave mouse clicks alone', () => {
+  function marker(x) {
+    const icon = {getBoundingClientRect: () => ({x, y: 0, width: 44, height: 44})};
+    return {getElement: () => icon};
+  }
+  const upper = marker(16), lower = marker(0);
+  const hits = [upper.getElement(), lower.getElement()];
+  const context = vm.createContext({upper, lower, document: {elementsFromPoint: () => hits}});
+  vm.runInContext(script + `\nselectableSiteMarkers.set(upper, 'upper').set(lower, 'lower');`, context);
+  assert.equal(context.nearestTappedSite(upper, {pointerType: 'touch', clientX: 22, clientY: 22}), lower);
+  assert.equal(context.nearestTappedSite(upper, {pointerType: 'mouse', clientX: 22, clientY: 22}), upper);
+  assert.equal(context.nearestTappedSite(upper, {pointerType: 'touch', clientX: 30, clientY: 22}), upper);
+  hits.pop();
+  assert.equal(context.nearestTappedSite(upper, {pointerType: 'touch', clientX: 22, clientY: 22}), upper);
+});
+
 test('bulk validation preserves untouched values and rejects invalid raw values', () => {
   const {bulkSharedValue, validateBulkSiteFields} = vm.runInNewContext(script + '\n({bulkSharedValue, validateBulkSiteFields})');
   const sites = [{kind:'endpoint', gain_dbi:2, antenna_height_m:3}, {kind:'known', gain_dbi:2, antenna_height_m:8}];
