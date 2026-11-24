@@ -235,7 +235,7 @@ aside { min-width: 0; min-height: 0; }
   font-size: 13px;
 }
 .site-selection-panel :is(button, input, select) { min-height: 36px; padding: 5px 8px; }
-@media (max-width: 650px) {
+@media (max-width: 650px), (max-width: 900px) and (max-height: 500px) and (pointer: coarse) {
   .site-selection-panel :is(button, input, select) { min-height: 44px; }
 }
 .help-disclosure { margin: 8px 0; padding: 0; border: 0; }
@@ -509,14 +509,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   #metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .shared-job-card { margin: 5px 8px; }
 }
-@media (max-width: 650px) {
+@media (max-width: 650px), (max-width: 900px) and (max-height: 500px) and (pointer: coarse) {
   .mobile-destination-nav { position: sticky; top: 0; z-index: 30; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding: 7px; background: #f8faf8; border-bottom: 1px solid var(--border); }
   .mobile-destination-nav button { min-height: 44px; color: var(--muted); background: transparent; border-color: transparent; font-weight: 650; }
   .mobile-destination-nav button[aria-pressed="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
-  main[data-mobile-destination="setup"] .main-view-nav, main[data-mobile-destination="setup"] .main-view-pane { display: none !important; }
+  .workspace > .main-view-nav, main[data-mobile-destination="setup"] .main-view-pane { display: none !important; }
   main[data-mobile-destination="map"] > aside, main[data-mobile-destination="analysis"] > aside { display: none !important; }
+}
+@media (max-width: 650px) {
+  .mobile-destination-nav { order: -2; }
+  .workspace-nav { top: 59px; }
   .coverage-section-nav { top: 0; margin-inline: -14px; grid-template-columns: repeat(4, minmax(72px, 1fr)); overflow-x: auto; }
-  .coverage-section-nav button { min-height: 44px; white-space: nowrap; }
+  .coverage-section-nav button { min-height: 44px; font-size: 13px; white-space: nowrap; }
 }
 
 #optional-plan-settings { grid-column: 1 / -1; }
@@ -662,10 +666,17 @@ main { height: calc(100dvh - 56px); }
   .app-bar .project-bar { display: flex; flex: 1 1 0; flex-wrap: wrap; }
   .app-bar .project-select-label { flex: 1 1 0; min-width: 0; }
   .project-save { flex: 1 0 100%; }
-  #retry-save { min-height: 44px; }
   .new-project-button { padding-inline: 9px; }
   .project-menu-actions { left: auto; right: 0; }
   main { height: auto; }
+}
+@media (max-width: 650px), (pointer: coarse) {
+  .app-bar :is(#project-select, .new-project-button, #retry-save, .project-menu-actions button) {
+    min-height: 44px;
+    font-size: 13px;
+  }
+  .project-menu > summary { width: 44px; min-height: 44px; }
+  .save-state { font-size: 13px; }
 }
 header.app-bar { z-index: 1100; }
 .app-bar .project-menu { margin: 0; padding: 0; border: 0; }
@@ -724,13 +735,33 @@ aside summary { font-size: 13px; }
 #alternatives .analysis-alternative-controls { grid-template-columns: minmax(260px, 480px) minmax(0, 1fr); }
 #exports:not([hidden]) { display: flex; flex-wrap: wrap; gap: 6px; }
 @media (max-width: 650px) {
-  .workspace > .main-view-nav { display: none; }
   .workspace { grid-template-rows: auto auto minmax(0, 1fr); }
-  .map-pane { height: calc(100dvh - 120px); min-height: 320px; }
+  .map-pane { height: calc(100dvh - 146px); min-height: 320px; }
   .analysis-pane { max-height: none; }
   .result-heading { flex-direction: column; }
   .result-actions { flex-wrap: wrap; }
   .alternative-table { font-size: 12px; }
+}
+@media (min-width: 651px) and (max-width: 900px) and (max-height: 500px) and (pointer: coarse) {
+  main {
+    grid-template-columns: 94px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 320px;
+  }
+  .mobile-destination-nav {
+    grid-area: 1 / 1 / -1;
+    position: static;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    border-right: 1px solid var(--border);
+  }
+  .mobile-destination-nav button { padding-inline: 4px; font-size: 13px; }
+  main > aside { grid-area: 2 / 2; }
+  main > .workspace { grid-area: 1 / 2 / -1; }
+  main[data-mobile-destination="setup"] > .workspace { grid-area: 1 / 2; }
+  .workspace > .shared-job-card { grid-area: 1 / 1; }
+  main[data-mobile-destination="setup"] .shared-job-card { position: static; }
+  .workspace-nav button, .coverage-section-nav button { min-height: 44px; font-size: 13px; }
 }
 .action-status.error { white-space: normal; overflow: visible; }
 @media (max-width: 650px) {

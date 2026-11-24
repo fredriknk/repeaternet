@@ -28,10 +28,16 @@ let pendingMapFit = null, mapHintTimer = null, mapContextPopup = null;
 let mapSelection = null, mapObjectPopup = null, endpointNames = {}, planExclusions;
 let labelledRoute = null, routeSiteLabels = new Map();
 const mapPane = $('view-map'), mapWrap = map.getContainer().parentElement;
-const mobileViewport=window.matchMedia('(max-width: 650px)');
+const mobileViewport=window.matchMedia('(max-width: 650px), (max-width: 900px) and (max-height: 500px) and (pointer: coarse)');
+const narrowMapViewport=window.matchMedia('(max-width: 650px)');
+const coarsePointer=window.matchMedia('(pointer: coarse)');
 const mapResizeObserver = new ResizeObserver(resizeMapViewport);
 mapResizeObserver.observe(mapPane);
 mapResizeObserver.observe(mapWrap);
+const mapTools = document.querySelector('.map-tools');
+new ResizeObserver(() => {
+  mapWrap.style.setProperty('--map-tools-bottom', `${mapTools.offsetTop + mapTools.offsetHeight}px`);
+}).observe(mapTools);
 const fallbackBasemaps = [
   {id:'osm',name:'OpenStreetMap',kind:'xyz',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',max_zoom:19,attribution:'© OpenStreetMap contributors',default:true},
   {id:'kartverket-topo',name:'Kartverket topo',kind:'xyz',url:'https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png',max_zoom:18,attribution:'© Kartverket',coverage:{type:'bbox',bbox:[4,57.9,31.3,71.3]}}
@@ -152,7 +158,7 @@ function bindMapWheelZoom(map){
     if(frame===undefined)frame=requestAnimationFrame(step);
   });
 }
-function fitMapSites(routeOnly=false,{positions,topPadding=0,rightPadding=36,bottomPadding=66,maxZoom=14}={}){
+function fitMapSites(routeOnly=false,{positions,rightPadding=36,maxZoom=14}={}){
   const dismissed=dismissedSearchRouterIds();
   const routePoints=(result?.route||[]).filter(site=>!dismissed.has(site.id)).map(mapPoint);
   const planPoints=[
@@ -162,7 +168,7 @@ function fitMapSites(routeOnly=false,{positions,topPadding=0,rightPadding=36,bot
   ];
   const points=positions??(routeOnly&&routePoints.length?[...routePoints,...paintBounds()]:[...planPoints,...routePoints]);
   const bounds=L.latLngBounds(points.filter(point=>!Array.isArray(point)||point.every(Number.isFinite)));
-  pendingMapFit={bounds,topPadding,rightPadding,bottomPadding,maxZoom};
+  pendingMapFit={bounds,rightPadding,maxZoom};
   if(!map.getSize().x&&!map.getSize().y&&map.getZoom()===undefined&&bounds.isValid()){
     map.setView(bounds.getCenter(),12);
   }
@@ -171,22 +177,44 @@ function fitMapSites(routeOnly=false,{positions,topPadding=0,rightPadding=36,bot
 function resizeMapViewport(){
   if(!mapPane.clientWidth||!mapPane.clientHeight)return;
   const top=mapPane.getBoundingClientRect().top+window.scrollY;
-  mapWrap.style.setProperty('--map-viewport-height',`${Math.max(240,window.innerHeight-top)}px`);
+  mapWrap.style.setProperty('--map-viewport-height',`${Math.max(320,window.innerHeight-top)}px`);
   map.invalidateSize({pan:mobileViewport.matches});
   applyPendingMapFit();
 }
 function applyPendingMapFit(){
   const container=map.getContainer();
   if(!pendingMapFit||!container.clientWidth||!container.clientHeight)return;
-  const {bounds,topPadding,rightPadding,bottomPadding,maxZoom}=pendingMapFit;
+  const {bounds,rightPadding,maxZoom}=pendingMapFit;
   pendingMapFit=null;
   if(!bounds.isValid())return;
-  const toolbarBottom=$('map-hint').hidden?document.querySelector('.map-tools').offsetHeight:document.querySelector('.map-top').offsetHeight;
+  const viewport=container.getBoundingClientRect();
+  const visibleBounds=selector=>[...mapWrap.querySelectorAll(selector)]
+    .filter(element=>element.checkVisibility({visibilityProperty:true}))
+    .map(element=>element.getBoundingClientRect());
+  const overlayBottom=rects=>Math.max(0,...rects.map(rect=>rect.bottom-viewport.top));
+  const toolbarBottom=overlayBottom(visibleBounds('.map-tools, #map-hint, .leaflet-top .leaflet-control'));
+  const legends=visibleBounds('.coverage-map-legend');
+  const legendTop=mapWrap.querySelector('.route-map-legend summary').getBoundingClientRect().top;
+  const bottom=viewport.bottom-legendTop+24;
+  const topPadding=overlay=>Math.max(28,Math.min(overlay+24,viewport.height-bottom-48));
   const labelSpace=[...clientMarkers.values()].reduce((width,marker)=>{
     const label=marker.getElement()?.querySelector('span');
     return Math.max(width,(label?.offsetWidth||0)+26);
   },36);
-  map.fitBounds(bounds,{paddingTopLeft:[36,Math.max(toolbarBottom+28,topPadding)],paddingBottomRight:[Math.max(rightPadding,labelSpace),bottomPadding],maxZoom,animate:false});
+  const left=28;
+  let top=topPadding(Math.max(toolbarBottom,overlayBottom(legends)));
+  let right=Math.max(rightPadding,narrowMapViewport.matches?28:labelSpace);
+  // On desktop a route can fit beside an expanded legend at a closer zoom.
+  if(!mobileViewport.matches&&legends.length){
+    const sideTop=topPadding(toolbarBottom);
+    const sideRight=Math.max(right,viewport.right-Math.min(...legends.map(rect=>rect.left))+24);
+    if(viewport.width-left-sideRight>=96&&
+      map.getBoundsZoom(bounds,false,[left+sideRight,sideTop+bottom])>map.getBoundsZoom(bounds,false,[left+right,top+bottom])){
+      top=sideTop;
+      right=sideRight;
+    }
+  }
+  map.fitBounds(bounds,{paddingTopLeft:[left,top],paddingBottomRight:[right,bottom],maxZoom,animate:false});
 }
 function setMapHint(message='',transient=false){
   const hint=$('map-hint');
@@ -412,6 +440,12 @@ function bindMapObject(layer,label,details,edit,selectSite){
     if(interactionMode==='browse')action(point,()=>layer.getElement());
   };
   layer.on('click',event=>{
+    // When touch targets overlap, a tap belongs to the closest site centre.
+    const site=event.siteResolved?layer:nearestTappedSite(layer,event.originalEvent);
+    if(site!==layer){
+      site.fire('click',{originalEvent:event.originalEvent,latlng:site.getLatLng(),siteResolved:true});
+      return;
+    }
     if(!selectSite?.(event.originalEvent))activate(details,event.latlng||keyboardPoint());
   });
   layer.on('contextmenu',event=>{
@@ -1088,7 +1122,7 @@ function setInteractionMode(next){
   const previous=interactionMode;
   interactionMode=next;
   syncPaintInteraction(previous,next);
-  const labels={'paint-mesh':'Drag to paint, or press Enter to paint at the map centre','erase-mesh':'Drag to erase, or press Enter to erase at the map centre','browse':'','place-a':'Click the map to place endpoint A','place-b':'Click the map to place endpoint B','place-client':'Click the map to place a client','place-router':'Click the map to place a proposed router','place-target':'Click the map to place a coverage target','draw-coverage-area':'Drawing coverage area · click polygon vertices','inspect-coverage':'Click a location to inspect predicted handheld access'};
+  const labels={'paint-mesh':paintToolHint('paint',coarsePointer.matches),'erase-mesh':paintToolHint('erase',coarsePointer.matches),'browse':'','place-a':'Click the map to place endpoint A','place-b':'Click the map to place endpoint B','place-client':'Click the map to place a client','place-router':'Click the map to place a proposed router','place-target':'Click the map to place a coverage target','draw-coverage-area':'Drawing coverage area · click polygon vertices','inspect-coverage':'Click a location to inspect predicted handheld access'};
   setMapHint(labels[next]);
   for(const button of document.querySelectorAll('.map-tools [data-place], #add-client-map')){
     button.setAttribute('aria-pressed',String(next===`place-${button.dataset.place}`));

@@ -79,6 +79,40 @@ function paintRowRuns(cells) {
   return runs;
 }
 
+function paintOutlineRings(cells) {
+  const edges = new Map();
+  // Counterclockwise cell edges cancel in pairs wherever two cells share a side.
+  function addEdge(from, to, direction) {
+    const key = `${from}:${direction}`;
+    const reverse = `${to}:${(direction + 2) % 4}`;
+    if (!edges.delete(reverse)) edges.set(key, {key, from, to, direction});
+  }
+  for (const [x, y] of cells) {
+    const corners = [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]];
+    corners.forEach((corner, direction) => addEdge(corner, corners[(direction + 1) % 4], direction));
+  }
+  const rings = [];
+  while (edges.size) {
+    const first = edges.values().next().value;
+    const ring = [];
+    let edge = first;
+    do {
+      ring.push(edge.from);
+      edges.delete(edge.key);
+      // Turn left first at a shared corner so diagonally touching cells stay distinct.
+      edge = [1, 0, 3].map(turn => `${edge.to}:${(edge.direction + turn) % 4}`)
+        .map(key => key === first.key ? first : edges.get(key)).find(Boolean);
+    } while (edge && edge !== first);
+    rings.push(ring);
+  }
+  return rings;
+}
+
+function paintToolHint(action, touch) {
+  return touch ? `Drag a finger to ${action} the coverage area`
+    : `Drag to ${action}, or press Enter to ${action} at the map centre`;
+}
+
 let meshPaint = paintDefaults();
 let paintLayer, paintStroke, paintOpener;
 let restorePaintDragging = false, restorePaintDoubleClick = false, restorePaintLegend = false;
@@ -113,10 +147,9 @@ function renderMeshPaint() {
   const coverage = result?.paint_coverage;
   const uncovered = routeMode === 'mesh' && coverage && !resultStale && !paintStroke ? coverage.uncovered_cells : [];
   function draw(cells, style) {
-    for (const [x, y, right] of paintRowRuns(cells)) {
-      L.rectangle([paintLatLng(x, y), paintLatLng(right, y + 1)],
-        {pane: 'paintMeshPane', interactive: false, weight: 1.5, ...style}).addTo(paintLayer);
-    }
+    if (!cells.length) return;
+    const rings = paintOutlineRings(cells).map(ring => ring.map(([x, y]) => paintLatLng(x, y)));
+    L.polygon(rings, {pane: 'paintMeshPane', interactive: false, weight: 1.5, ...style}).addTo(paintLayer);
   }
   draw(painted, {color: '#185f70', fillColor: '#61b9c5', fillOpacity: .18});
   draw(uncovered, {color: 'var(--map-invalid)', fillColor: '#e39479', fillOpacity: .36, dashArray: '4 3'});
@@ -289,4 +322,4 @@ function initMeshPaintControls() {
   });
 }
 
-if (typeof module !== 'undefined') module.exports = {paintBrush, paintRowRuns, readMeshPaint};
+if (typeof module !== 'undefined') module.exports = {paintBrush, paintRowRuns, paintOutlineRings, paintToolHint, readMeshPaint};

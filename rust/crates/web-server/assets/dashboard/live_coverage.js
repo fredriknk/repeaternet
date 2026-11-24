@@ -945,7 +945,7 @@ function bindLiveCoverageControls() {
     $('live-legend-body').hidden = !expanded;
   };
   // Keep the map usable on phones: the legend collapses at phone widths.
-  const phone = window.matchMedia('(max-width: 650px)');
+  const phone = mobileViewport;
   let autoCollapsed = false;
   const fitLegend = () => {
     const expanded = collapse.getAttribute('aria-expanded') === 'true';

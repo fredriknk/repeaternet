@@ -103,6 +103,23 @@ function selectableMarkers() {
   return [...selectableSiteMarkers].filter(([marker]) => !marker.getElement()?.hidden);
 }
 
+function nearestTappedSite(marker, event) {
+  if (!selectableSiteMarkers.has(marker) || !event ||
+      !(event.pointerType === 'touch' || event.sourceCapabilities?.firesTouchEvents)) return marker;
+  const hits = new Set(document.elementsFromPoint(event.clientX, event.clientY));
+  let nearest = marker, distance = Infinity;
+  for (const candidate of [marker, ...selectableSiteMarkers.keys()]) {
+    const icon = candidate.getElement();
+    if (!hits.has(icon)) continue;
+    const {x, y, width, height} = icon.getBoundingClientRect();
+    const offset = Math.hypot(event.clientX - x - width / 2, event.clientY - y - height / 2);
+    if (offset >= distance) continue;
+    nearest = candidate;
+    distance = offset;
+  }
+  return nearest;
+}
+
 // Call after replacing map layers so an ID can survive a marker re-render.
 function refreshSiteSelection() {
   const ids = siteSelection.ids;

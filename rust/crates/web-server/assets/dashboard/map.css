@@ -113,6 +113,22 @@
   .map-pane .map-wrap { max-height: var(--map-viewport-height, 100%); }
 }
 
+@media (min-width: 651px) and (max-width: 900px) and (max-height: 500px) and (pointer: coarse) {
+  .map-pane .map-wrap { min-height: 320px; }
+  .map-pane:has(#map-site-selection:not([hidden])) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(236px, 32%);
+  }
+  #map-site-selection {
+    position: static;
+    width: auto;
+    min-height: 0;
+    max-height: none;
+    margin: 6px;
+  }
+  .map-pane:has(.placement-preview-heading) #map-hint { display: none; }
+}
+
 .map-top {
   position: absolute;
   z-index: 450;
@@ -149,12 +165,12 @@
 }
 
 .map-tools button, .map-tools label {
-  min-height: 32px;
+  min-height: 36px;
   padding: 5px 8px;
   border: 1px solid transparent;
   border-radius: 5px;
   color: #24453d;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -252,10 +268,17 @@
 }
 
 .route-map-legend summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
   padding: 7px 10px;
   color: #24453d;
+  font-size: 13px;
   font-weight: 650;
 }
+.route-map-legend summary::before { content: "▸"; }
+.route-map-legend[open] summary::before { content: "▾"; }
 
 .map-legend-grid {
   display: grid;
@@ -451,12 +474,6 @@
 .map-popup button[aria-pressed="true"] { color: #fff; background: #443579; }
 .map-context-popup button { text-align: left; }
 
-@media (max-width: 650px) {
-  .map-tools button, .map-tools label { min-height: 35px; padding-inline: 6px; }
-  .map-tools #remove-search-routers { min-height: 44px; }
-  .map-tool-group + .map-tool-group { padding-left: 4px; }
-}
-
 /* Live coverage legend */
 .map-top .live-coverage-legend {
   position: static;
@@ -561,11 +578,55 @@
   border: 2px dashed var(--map-invalid);
   background: #e3947960;
 }
-@media (max-width: 650px) {
+@media (max-width: 650px), (pointer: coarse) {
+  .map-tools :is(button, label),
+  .map-tools #select-map-sites,
+  .map-tools #remove-search-routers,
   .map-tools #paint-mesh-tool,
   .map-tools #erase-mesh-tool,
   .map-tools #cancel-map-mode,
   #mesh-paint-map-controls label,
-  #mesh-paint-brush { min-height: 44px; }
+  #mesh-paint-brush,
+  .route-map-legend summary,
+  .live-legend-head button,
+  .live-legend-field select,
+  .route-link-inspector button,
+  .map-popup button,
+  .map-wrap .leaflet-control-layers label {
+    min-height: 44px;
+    min-width: 44px;
+    font-size: 13px;
+  }
+  #mesh-paint-map-controls select { margin-block: 0; }
+  #mesh-paint-map-controls label { padding-block: 0; border: 0; }
+  .live-legend-field.check-line { min-height: 44px; }
+  .map-wrap :is(.leaflet-control-zoom a, .leaflet-control-layers-toggle) {
+    width: 44px;
+    height: 44px;
+    line-height: 44px;
+  }
+  /* Leaflet translates icons to the site coordinate. Centre the larger hit box there. */
+  #map :is(.map-site, .site-marker) {
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0 !important;
+    translate: -50% -50%;
+  }
+  #map .site-marker { display: grid; place-items: center; }
+  #map :is(.map-site, .site-marker) { font-size: 13px; }
+  #map .map-site-dot::before { inset: 14px; }
+  #map .map-site-dot.is-excluded::before { inset: 16px; }
+  /* Name tags may overlap other sites, but leave their centres tappable. */
+  .client-map-icon span { pointer-events: none; }
   .map-wrap:has(#map.mesh-paint-active) .live-coverage-legend { display: none; }
+}
+@media (max-width: 650px), (max-width: 900px) and (max-height: 500px) and (pointer: coarse) {
+  .map-tools { gap: 2px; }
+  .map-tools :is(button, label) { padding-inline: 6px; }
+  .map-tool-group { display: contents; }
+}
+@media (max-width: 650px) {
+  .map-top { inset-inline: 8px; }
+  #map .leaflet-top { top: var(--map-tools-bottom, 0px); }
+  .map-top .coverage-map-legend { margin-right: 52px; }
 }
