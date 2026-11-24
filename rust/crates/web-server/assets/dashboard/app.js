@@ -203,7 +203,7 @@ function planWriteRequest(url, method){
 function showProjectConflict(message){
   setProjectSaveState(message,'conflict');
 }
-async function api(url, options={}){
+async function api(url, options={}, isCurrent=()=>true){
   const editingProject=loadedSharedProject;
   const writesPlan=planWriteRequest(url,options.method);
   if(editingProject&&(writesPlan||(!url.startsWith('/api/projects')&&url!=='/api/state'))){
@@ -220,7 +220,7 @@ async function api(url, options={}){
     error.status=response.status;error.issues=body.issues;
     if(editingProject&&editingProject===loadedSharedProject&&error.status===409&&error.message.includes('Reload the project')){
       error.projectConflict=true;
-      showProjectConflict(error.message);
+      if(isCurrent())showProjectConflict(error.message);
     }
     throw error;
   }
@@ -1663,7 +1663,19 @@ async function previewTerrainSources(snapshot,request=++terrainPreviewRequest){
   copy.hidden=false;
   setTerrainDomNote();
 }
-function scheduleCoverageCheck(){scheduleTerrainSourcePreview();clearTimeout(coverageTimer);terrainReadiness=null;updatePlanReadiness(null);coverageTimer=setTimeout(()=>updateTerrainCoverage(),350);}
+let terrainCheckSequence=0;
+function beginTerrainCheck(){
+  clearTimeout(coverageTimer);
+  const sequence=++terrainCheckSequence;
+  return ()=>sequence===terrainCheckSequence;
+}
+function scheduleCoverageCheck(){
+  scheduleTerrainSourcePreview();
+  beginTerrainCheck();
+  terrainReadiness=null;
+  updatePlanReadiness(null);
+  coverageTimer=setTimeout(()=>updateTerrainCoverage(),350);
+}
 function sourceJsonRequest(method,body){
   return {method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
 }
@@ -2144,7 +2156,20 @@ $('add-data-source').onclick=event=>openSourceEditor(null,event.currentTarget);
 $('cancel-data-source').onclick=closeSourceEditor;
 $('data-source-editor').onsubmit=submitSourceEditor;
 $('data-source-json-panel').querySelector('summary').onclick=toggleSourceJson;
-async function updateTerrainCoverage(requestPlan=plan()){coverageLayer.clearLayers();if(!terrainLoaded){$('coverage-note').textContent='Upload or prepare ground terrain to see coverage and check sites.';$('coverage-note').className='hint';return null;}try{const coverage=await api('/api/terrain/coverage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)});for(const polygon of coverage.dtm_outlines)L.polygon(polygon,{color:'#29805d',weight:1,fill:false}).addTo(coverageLayer);for(const polygon of coverage.dom_outlines)L.polygon(polygon,{color:'#4382b5',weight:1,dashArray:'5 4',fill:false}).addTo(coverageLayer);for(const gap of coverage.line_gaps){if(gap.length>1)L.polyline(gap,{color:'#c8463a',weight:4,dashArray:'4 6'}).addTo(coverageLayer);else if(gap.length)L.circleMarker(gap[0],{radius:5,color:'#c8463a',fillColor:'#e99a90',fillOpacity:.8}).addTo(coverageLayer);}for(const site of coverage.uncovered_sites)L.circleMarker([site.latitude,site.longitude],{radius:8,color:'#b52222',fillColor:'#ed7770',fillOpacity:.9}).bindTooltip(`${site.name}: ${site.reason==='no_data'?'terrain nodata':'outside terrain coverage'}`).addTo(coverageLayer);const missing=coverage.uncovered_sites.map(site=>site.name);$('coverage-note').textContent=missing.length?`Ground coverage missing at ${missing.join(', ')}. Add terrain tiles before searching.`:`Ground terrain covers selected sites${coverage.line_gaps.length?`; ${coverage.line_gaps.length} nodata gap(s) sampled along the direct corridor`:''}. ${coverage.surface_available?'Surface data loaded.':'Surface obstruction data unavailable — terrain only.'}`;$('coverage-note').className=missing.length?'hint error':'hint';if(coverage.paint_gaps)$('coverage-note').textContent+=' '+coverage.paint_gaps+' of '+coverage.paint_cells+' painted cells lack ground terrain.';if(!missing.length&&coverage.area_gaps)$('coverage-note').textContent+=' '+coverage.area_gaps+' of '+coverage.area_samples+' mesh area samples lack ground terrain.';return coverage;}catch(e){$('coverage-note').textContent=e.message;$('coverage-note').className='hint error';return null;}}
+function renderTerrainCoverage(coverage){
+  for(const polygon of coverage.dtm_outlines)L.polygon(polygon,{color:'#29805d',weight:1,fill:false}).addTo(coverageLayer);
+  for(const polygon of coverage.dom_outlines)L.polygon(polygon,{color:'#4382b5',weight:1,dashArray:'5 4',fill:false}).addTo(coverageLayer);
+  for(const gap of coverage.line_gaps){
+    if(gap.length>1)L.polyline(gap,{color:'#c8463a',weight:4,dashArray:'4 6'}).addTo(coverageLayer);
+    else if(gap.length)L.circleMarker(gap[0],{radius:5,color:'#c8463a',fillColor:'#e99a90',fillOpacity:.8}).addTo(coverageLayer);
+  }
+  for(const site of coverage.uncovered_sites)L.circleMarker([site.latitude,site.longitude],{radius:8,color:'#b52222',fillColor:'#ed7770',fillOpacity:.9}).bindTooltip(`${site.name}: ${site.reason==='no_data'?'terrain nodata':'outside terrain coverage'}`).addTo(coverageLayer);
+  const missing=coverage.uncovered_sites.map(site=>site.name),note=$('coverage-note');
+  note.textContent=missing.length?`Ground coverage missing at ${missing.join(', ')}. Add terrain tiles before searching.`:`Ground terrain covers selected sites${coverage.line_gaps.length?`; ${coverage.line_gaps.length} nodata gap(s) sampled along the direct corridor`:''}. ${coverage.surface_available?'Surface data loaded.':'Surface obstruction data unavailable — terrain only.'}`;
+  note.className=missing.length?'hint error':'hint';
+  if(coverage.paint_gaps)note.textContent+=' '+coverage.paint_gaps+' of '+coverage.paint_cells+' painted cells lack ground terrain.';
+  if(!missing.length&&coverage.area_gaps)note.textContent+=' '+coverage.area_gaps+' of '+coverage.area_samples+' mesh area samples lack ground terrain.';
+}
 function syncCoverageInputs(){if(!$('coverage-mode'))return;$('coverage-mode').value=coverageSettings.mode;$('coverage-area').value=coverageSettings.area_mode;$('coverage-cell-size').value=coverageSettings.cell_size_m;$('coverage-buffer').value=coverageSettings.area_buffer_m;$('coverage-profile-step').value=coverageSettings.profile_step_m;$('coverage-profile-limit').value=coverageSettings.maximum_profile_samples||4096;$('coverage-endpoints').checked=coverageSettings.include_endpoints;const c=coverageSettings.client;$('client-height').value=c.height_agl_m;$('client-tx').value=c.tx_power_dbm;$('client-gain').value=c.gain_dbi;$('client-feed').value=c.feed_loss_db;$('client-sensitivity').value=c.sensitivity_dbm;$('client-loss').value=c.miscellaneous_loss_db;syncCoverageAreaControls();renderCoverageArea();}
 function validateMeshBuffer(){
   const input=$('coverage-buffer');
@@ -2327,38 +2352,87 @@ async function loadSavedCoverageRun(jobId=$('coverage-active-run').value){
 }
 function updateHeightScenarioButtons(){const inputs=[...document.querySelectorAll('[data-height-source]')],changed=inputs.some(input=>Math.abs(Number(input.value)-Number(input.dataset.originalHeight))>.0001),ready=!!result?.found&&!resultStale&&!busy&&!coverageBusy;$('coverage-height-apply').disabled=!ready||!changed;$('coverage-height-run').disabled=!ready||!inputs.length;}
 function applyCoverageHeightPreset(value){for(const input of document.querySelectorAll('[data-height-source]'))input.value=String(value);updateHeightScenarioButtons();}
-const updateTerrainCoverageCore=updateTerrainCoverage;
+function terrainInputsChanged(error){
+  return error.status===409&&error.message==='The active project or route inputs changed during the request';
+}
+async function requestTerrainCoverage(requestPlan,routeOnly,isCurrent){
+  const url=routeOnly?'/api/terrain/coverage?route_only=true':'/api/terrain/coverage';
+  const options={method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)};
+  try{return await api(url,options,isCurrent);}
+  catch(error){if(!terrainInputsChanged(error))throw error;}
+
+  await saveQueue;
+  if(!isCurrent())return null;
+  const retryMessage='Terrain coverage could not be checked after the inputs changed. Start a search to check again.';
+  try{
+    if(saveState==='saving')await flushAutosave();
+  }catch{
+    throw Error('Terrain coverage will be checked after you retry saving the plan.');
+  }
+  if(!isCurrent())return null;
+  if(savedRevision<saveRevision)throw Error('Terrain coverage will be checked after you save the plan.');
+  try{return await api(url,options,isCurrent);}
+  catch(error){
+    if(terrainInputsChanged(error))throw Error(retryMessage);
+    throw error;
+  }
+}
 async function checkRouteTerrain(requestPlan){
   if(!terrainLoaded)return null;
-  const coverage=await api('/api/terrain/coverage?route_only=true',{
-    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPlan)
-  });
-  terrainReadiness=coverage;
-  updatePlanReadiness(coverage);
-  return coverage;
-}
-updateTerrainCoverage=async(requestPlan)=>{
-  if(!requestPlan){
-    if(!routeLocationsReady())return null;
-    requestPlan=plan();
-  }
-  const coverage=await updateTerrainCoverageCore(requestPlan);
-  if(coverage&&coverageTerrainLoaded){
-    await checkRouteTerrain(requestPlan).catch(()=>{terrainReadiness=null;updatePlanReadiness(null);});
-  }else{
+  // Keep an already scheduled map check. It also draws the terrain outlines.
+  const sequence=++terrainCheckSequence,isCurrent=()=>sequence===terrainCheckSequence;
+  const coverage=await requestTerrainCoverage(requestPlan,true,isCurrent);
+  if(isCurrent()){
     terrainReadiness=coverage;
     updatePlanReadiness(coverage);
   }
   return coverage;
-};
+}
+async function updateTerrainCoverage(requestPlan){
+  const isCurrent=beginTerrainCheck(),note=$('coverage-note');
+  coverageLayer.clearLayers();
+  if(!terrainLoaded){
+    note.textContent='Upload or prepare ground terrain to see coverage and check sites.';
+    note.className='hint';
+    terrainReadiness=null;
+    updatePlanReadiness(null);
+    return null;
+  }
+  if(!requestPlan&&!routeLocationsReady()){
+    note.textContent='Set the route locations to check ground terrain coverage.';
+    note.className='hint';
+    return null;
+  }
+  note.textContent='Checking terrain coverage…';
+  note.className='hint';
+  try{
+    const snapshot=requestPlan||plan();
+    const coverage=await requestTerrainCoverage(snapshot,false,isCurrent);
+    if(!isCurrent())return null;
+    renderTerrainCoverage(coverage);
+    const readiness=coverageTerrainLoaded?await requestTerrainCoverage(snapshot,true,isCurrent):coverage;
+    if(!isCurrent())return null;
+    terrainReadiness=readiness;
+    updatePlanReadiness(readiness);
+    return coverage;
+  }catch(error){
+    if(isCurrent()){
+      note.textContent=error.projectConflict?'Reload the project to check terrain coverage.':error.message;
+      note.className='hint error';
+      terrainReadiness=null;
+      updatePlanReadiness(null);
+    }
+    return null;
+  }
+}
 function setTargetStatus(message,error=false){$('coverage-target-summary').textContent=message;$('coverage-target-summary').className=error?'hint error':'hint';}
-async function saveCoverageTargets(features){const previous=coverageTargets;coverageTargets=features;try{const saved=await api('/api/coverage/targets',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'FeatureCollection',features})});coverageTargets=saved.targets.features;coverageTargetStates=new Map();coverageTargetStatesRunId=null;renderCoverageTargets();recordEdit();return coverageTargets;}catch(error){coverageTargets=previous;renderCoverageTargets();throw error;}}
+async function saveCoverageTargets(features){const previous=coverageTargets;coverageTargets=features;try{const saved=await api('/api/coverage/targets',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'FeatureCollection',features})});coverageTargets=saved.targets.features;resetCoverageTargetAssessment();renderCoverageTargets();recordEdit();return coverageTargets;}catch(error){coverageTargets=previous;renderCoverageTargets();throw error;}}
 async function placeCoverageTarget(latlng){setInteractionMode('browse');const name=await askActionDialog({title:'Name point target',copy:'The point will be saved to this project for assessment against a coverage run.',label:'Target name',value:'Coverage target',confirm:'Add target'});if(!name){setMapHint('Point target placement cancelled.',true);return;}await savePointCoverageTarget(latlng.lat,latlng.lng,name);}
 async function savePointCoverageTarget(latitude,longitude,name){if(String(latitude).trim()===''||String(longitude).trim()==='')throw Error('Enter both a latitude and longitude before adding a target.');const lat=Number(latitude),lon=Number(longitude),normalizedName=String(name||'').trim();if(!Number.isFinite(lat)||Math.abs(lat)>90||!Number.isFinite(lon)||Math.abs(lon)>180)throw Error('Enter a valid latitude (−90 to 90) and longitude (−180 to 180).');if(!normalizedName)throw Error('Enter a name for this target.');const feature={type:'Feature',id:'T-'+randomId(),geometry:{type:'Point',coordinates:[Number(lon.toFixed(7)),Number(lat.toFixed(7))]},properties:{name:normalizedName,minimum_margin_db:0,reference_id:null}};await saveCoverageTargets([...coverageTargets,feature]);setTargetStatus('Target saved. Assess it against a completed coverage run when ready.');return feature;}
 async function importCoverageTargets(event){const file=event.target.files?.[0];event.target.value='';if(!file)return;try{const form=new FormData();form.append('file',file);const imported=await api('/api/coverage/targets/import',{method:'POST',body:form});await saveCoverageTargets([...coverageTargets,...imported.features]);setTargetStatus(`${imported.features.length} target(s) imported and saved.`);}catch(error){setTargetStatus(error.message,true);}}
 let cachedCoverageRuns=[];
 let selectedCoverageTargetId=null;
-let coverageTargetStatesRunId=null;
+let coverageTargetAssessmentRunId=null,coverageTargetAssessmentRequest=0,coverageTargetReportRequest=0;
 let editingCoverageTargetId=null;
 let coverageFailureContextJobId=null;
 let coverageFailureRequest=0;
@@ -2407,7 +2481,7 @@ function renderComparisonRunMetrics(baseline,scenario){
 function updateCoverageActiveRunContext(){
   const run=activeCoverageRun(),display=coverageDisplayInfo||coverageJob,loaded=!!run&&display?.job_id===run.job_id;
   if(coverageFailureContextJobId!==(run?.job_id||null)){coverageFailureContextJobId=run?.job_id||null;coverageFailureRequest++;coverageFailurePending=false;$('failure-summary').textContent=run?`Failure analysis will use selected run ${run.job_id.slice(0,8)}.`:'Select a saved run before analyzing router failures.';}
-  if(coverageTargetStatesRunId&&coverageTargetStatesRunId!==run?.job_id){coverageTargetStates=new Map();coverageTargetStatesRunId=null;$('coverage-target-results').replaceChildren();}
+  if(coverageTargetAssessmentRunId&&coverageTargetAssessmentRunId!==run?.job_id)resetCoverageTargetAssessment();
   const context=run?`${coverageRunLabel(run)}${loaded?' · loaded on map':' · not loaded on map'}`:'No saved coverage run selected.';
   $('coverage-active-run-context').textContent=run?`Selected run · ${context}. This run is the shared context for exact inspection, target assessment and exports.`:'Select a saved run to use it for inspection, targets and exports.';
   $('coverage-target-run-summary').textContent=run?`Target assessment · ${context}. ${run.stale?'This run is stale and must be recalculated before assessment.':''}`:'Target assessment · choose a completed saved run in the Coverage workspace.';
@@ -2450,9 +2524,13 @@ async function runCoverageComparison(){
     $('coverage-compare-summary').textContent=`Baseline ${baseline.alternative_id} (${baseline.job_id.slice(0,8)}) → scenario ${scenario.alternative_id} (${scenario.job_id.slice(0,8)}). Scenario changes: ${assumptionChanges.join('; ')||'no source or height changes in the saved context'}. Shared client ${client?.height_agl_m??'—'} m AGL, ${baseline.effective_cell_size_m} m grid. Reference-connected: ${c.gained_reference_connected} gained · ${c.lost_reference_connected} lost · ${c.retained_reference_connected} retained; local: ${c.gained_local} gained · ${c.lost_local} lost; ${c.unknown} unknown · ${c.unresolved||0} unresolved. ${c.evaluated_cells} common evaluated samples · ${Number(report.approximate_sampled_area_km2).toFixed(2)} km² approximate sampled area.`;
   }catch(error){$('coverage-compare-summary').textContent=error.message;}finally{updateComparisonReferenceOptions(coverageRunMetadata.filter(item=>item.state==='complete'));}
 }
+let coverageRunListRequest=0;
 async function refreshCoverageRunSelectors(){
+  const request=++coverageRunListRequest,isCurrent=()=>request===coverageRunListRequest;
   try{
-    const response=await api('/api/coverage/jobs'),all=response.jobs||[],runs=all.filter(run=>run.state==='complete'),displayable=all.filter(run=>['complete','cancelled','interrupted'].includes(run.state)),active=$('coverage-active-run'),baseline=$('coverage-baseline-run'),scenario=$('coverage-scenario-run');
+    const response=await api('/api/coverage/jobs',{},isCurrent);
+    if(!isCurrent())return;
+    const all=response.jobs||[],runs=all.filter(run=>run.state==='complete'),displayable=all.filter(run=>['complete','cancelled','interrupted'].includes(run.state)),active=$('coverage-active-run'),baseline=$('coverage-baseline-run'),scenario=$('coverage-scenario-run');
     coverageRunMetadata=all;cachedCoverageRuns=all;comparisonRuns=runs;
     const oldActive=active.value,oldBaseline=baseline.value,oldScenario=scenario.value;
     active.replaceChildren();for(const run of displayable){const option=document.createElement('option');option.value=run.job_id;option.textContent=coverageRunLabel(run);active.append(option);}
@@ -2462,7 +2540,7 @@ async function refreshCoverageRunSelectors(){
     scenario.value=runs.some(run=>run.job_id===oldScenario)?oldScenario:(runs[0]?.job_id||'');
     $('coverage-load-run').disabled=!active.value||coverageBusy||coverageLoadingRun||busy;
     updateCoverageActiveRunContext();await refreshCoverageTargetReports();
-  }catch(error){$('coverage-compare-summary').textContent=error.message;}
+  }catch(error){if(isCurrent())$('coverage-compare-summary').textContent=error.message;}
 }
 function updateCoverageExportScenarios(baseline){
   const select=$('coverage-export-scenario'),previous=select.value;
@@ -2524,11 +2602,49 @@ function focusCoverageTarget(targetId){
 function editCoverageTarget(targetId){const feature=coverageTargets.find(item=>item.id===targetId);if(!feature||feature.geometry.type!=='Point')return;selectedCoverageTargetId=targetId;editingCoverageTargetId=targetId;renderCoverageTargets();$('coverage-target-edit-name').value=feature.properties.name;$('coverage-target-edit-margin').value=Number(feature.properties.minimum_margin_db||0);$('coverage-target-editor').hidden=false;$('coverage-target-edit-name').focus();}
 async function saveEditedCoverageTarget(){const feature=coverageTargets.find(item=>item.id===editingCoverageTargetId);if(!feature||feature.geometry.type!=='Point')return;const name=$('coverage-target-edit-name').value.trim(),margin=Number($('coverage-target-edit-margin').value);if(!name||name.length>120){setTargetStatus('Target name must contain 1–120 characters.',true);return;}if(!Number.isFinite(margin)||margin< -100||margin>100){setTargetStatus('Minimum margin must be between −100 and 100 dB.',true);return;}const updated=coverageTargets.map(item=>item.id===feature.id?{...item,properties:{...item.properties,name,minimum_margin_db:margin}}:item);try{await saveCoverageTargets(updated);selectedCoverageTargetId=feature.id;editingCoverageTargetId=null;$('coverage-target-editor').hidden=true;renderCoverageTargets();setTargetStatus(`${name} saved. Previous assessments were cleared because the target criterion changed.`);}catch(error){setTargetStatus(error.message,true);}}
 async function assessSavedTargets(){
-  const button=$('coverage-assess-targets'),run=activeCoverageRun();button.disabled=true;setTargetStatus('Assessing exact point/road links and saved area-grid samples…');
-  try{if(!run)throw Error('Select a completed coverage run in the Coverage workspace first.');if(run.state!=='complete'||run.stale)throw Error('Recalculate the selected stale or incomplete run before assessing targets.');const report=await api(`/api/coverage/jobs/${encodeURIComponent(run.job_id)}/targets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({road_spacing_m:Number($('coverage-road-spacing').value)})});coverageTargetStates=new Map(report.targets.map(item=>[item.id,item.state]));coverageTargetStatesRunId=run.job_id;renderCoverageTargets();const counts={pass:0,fail:0,unknown:0,unresolved:0,needs_finer_sampling:0,outside_analysed_area:0};for(const item of report.targets)counts[item.state]=(counts[item.state]||0)+1;setTargetStatus(`${counts.pass||0} pass · ${counts.fail||0} fail · ${counts.unresolved||0} unresolved · ${(counts.unknown||0)+(counts.needs_finer_sampling||0)+(counts.outside_analysed_area||0)} unknown or needs finer sampling · run ${run.job_id.slice(0,8)} · report ${report.report_id.slice(0,8)}.`);const results=$('coverage-target-results');results.replaceChildren();for(const item of report.targets){const row=document.createElement('div'),title=document.createElement('strong'),message=document.createElement('small'),focus=document.createElement('button');row.className='known-router';title.textContent=`${item.name} · ${item.state.replaceAll('_',' ')}`;message.textContent=item.message;focus.type='button';focus.className='router-focus';focus.textContent='Focus target';focus.onclick=()=>focusCoverageTarget(item.id);row.append(title,message,focus);results.append(row);}await refreshCoverageTargetReports();}catch(error){setTargetStatus(error.message,true);}finally{button.disabled=!coverageTargets.length||!activeCoverageRun()||busy||coverageBusy;}
+  const run=activeCoverageRun();
+  if(!run){setTargetStatus('Select a completed coverage run in the Coverage workspace first.',true);return;}
+  if(run.state!=='complete'||run.stale){setTargetStatus('Recalculate the selected stale or incomplete run before assessing targets.',true);return;}
+  const request=++coverageTargetAssessmentRequest;
+  const isCurrent=()=>request===coverageTargetAssessmentRequest&&activeCoverageRun()?.job_id===run.job_id;
+  const button=$('coverage-assess-targets');
+  coverageTargetAssessmentRunId=run.job_id;
+  button.disabled=true;
+  setTargetStatus('Assessing exact point/road links and saved area-grid samples…');
+  try{
+    const report=await api(`/api/coverage/jobs/${encodeURIComponent(run.job_id)}/targets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({road_spacing_m:Number($('coverage-road-spacing').value)})},isCurrent);
+    if(!isCurrent())return;
+    coverageTargetStates=new Map(report.targets.map(item=>[item.id,item.state]));
+    renderCoverageTargets();
+    const counts={pass:0,fail:0,unknown:0,unresolved:0,needs_finer_sampling:0,outside_analysed_area:0};
+    for(const item of report.targets)counts[item.state]=(counts[item.state]||0)+1;
+    setTargetStatus(`${counts.pass||0} pass · ${counts.fail||0} fail · ${counts.unresolved||0} unresolved · ${(counts.unknown||0)+(counts.needs_finer_sampling||0)+(counts.outside_analysed_area||0)} unknown or needs finer sampling · run ${run.job_id.slice(0,8)} · report ${report.report_id.slice(0,8)}.`);
+    const results=$('coverage-target-results');
+    results.replaceChildren();
+    for(const item of report.targets){
+      const row=document.createElement('div'),title=document.createElement('strong'),message=document.createElement('small'),focus=document.createElement('button');
+      row.className='known-router';title.textContent=`${item.name} · ${item.state.replaceAll('_',' ')}`;message.textContent=item.message;
+      focus.type='button';focus.className='router-focus';focus.textContent='Focus target';focus.onclick=()=>focusCoverageTarget(item.id);
+      row.append(title,message,focus);results.append(row);
+    }
+    await refreshCoverageTargetReports();
+  }catch(error){if(isCurrent())setTargetStatus(error.message,true);}
+  finally{if(isCurrent())button.disabled=!coverageTargets.length||!!activeCoverageRun()?.stale||busy||coverageBusy||switchingProject;}
+}
+function resetCoverageTargetAssessment(){
+  coverageTargetAssessmentRequest++;
+  coverageTargetAssessmentRunId=null;
+  coverageTargetStates=new Map();
+  $('coverage-target-results').replaceChildren();
+  setTargetStatus('Targets are project-specific and do not change the certified route.');
 }
 async function refreshCoverageTargetReports(){
-  const data=await api('/api/coverage/target-reports'),reports=data.reports||[],baselineSelect=$('coverage-target-baseline'),scenarioSelect=$('coverage-target-scenario'),oldBaseline=baselineSelect.value,oldScenario=scenarioSelect.value,activeId=$('coverage-active-run').value;coverageTargetReports=reports;
+  const request=++coverageTargetReportRequest,isCurrent=()=>request===coverageTargetReportRequest;
+  let data;
+  try{data=await api('/api/coverage/target-reports',{},isCurrent);}
+  catch(error){if(isCurrent())throw error;return;}
+  if(!isCurrent())return;
+  const reports=data.reports||[],baselineSelect=$('coverage-target-baseline'),scenarioSelect=$('coverage-target-scenario'),oldBaseline=baselineSelect.value,oldScenario=scenarioSelect.value,activeId=$('coverage-active-run').value;coverageTargetReports=reports;
   for(const select of [baselineSelect,scenarioSelect]){select.replaceChildren();for(const report of reports){const option=document.createElement('option');option.value=report.report_id;option.textContent=`${new Date(report.assessed_at*1000).toLocaleString()} · ${report.pass_count}/${report.target_count} pass · ${report.unresolved_count||0} unresolved · run ${report.coverage_job_id.slice(0,8)}`;select.append(option);}}
   const exportTarget=$('coverage-export-target-report'),oldExportTarget=exportTarget.value;exportTarget.replaceChildren();const noReport=document.createElement('option');noReport.value='';noReport.textContent='No target report';exportTarget.append(noReport);
   for(const report of reports.filter(item=>item.coverage_job_id===activeId)){const option=document.createElement('option');option.value=report.report_id;option.textContent=`${new Date(report.assessed_at*1000).toLocaleString()} · ${report.pass_count}/${report.target_count} pass · ${report.unresolved_count||0} unresolved`;exportTarget.append(option);}
@@ -2544,7 +2660,7 @@ function targetReportCompatibility(baseline,scenario){
   for(const key of ['target_fingerprint','terrain_fingerprint','radio_fingerprint','model_version','grid_compatibility','client_profile','profile_step_m','road_sample_spacing_m'])if(!sameJsonValue(baseline[key],scenario[key]))reasons.push(key==='target_fingerprint'?'Saved target names or criteria differ.':key==='terrain_fingerprint'?'Terrain differs.':key==='radio_fingerprint'?'RF or propagation settings differ.':key==='model_version'?'Coverage model differs.':key==='road_sample_spacing_m'?'Road sampling spacing differs.':'Grid, client or profile assumptions differ.');
   return [...new Set(reasons)];
 }
-let targetComparisonKey=null,targetComparisonPending=false;
+let targetComparisonKey=null,targetComparisonPending=false,targetComparisonRequest=0;
 function targetComparisonSelection(){
   return JSON.stringify({baseline_report_id:$('coverage-target-baseline').value,scenario_report_id:$('coverage-target-scenario').value});
 }
@@ -2558,16 +2674,17 @@ function updateTargetCompareButton(){
 }
 async function runCoverageTargetComparison(){
   const selection=targetComparisonSelection(),rows=$('coverage-target-comparison-results'),summary=$('coverage-target-compare-summary');
+  const request=++targetComparisonRequest,isCurrent=()=>request===targetComparisonRequest&&targetComparisonKey===selection;
   targetComparisonKey=selection;targetComparisonPending=true;updateTargetCompareButton();
   rows.replaceChildren();summary.textContent='Comparing saved target reports…';
   try{
-    const report=await api('/api/coverage/target-reports/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:selection});
-    if(targetComparisonKey!==selection)return;
+    const report=await api('/api/coverage/target-reports/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:selection},isCurrent);
+    if(!isCurrent())return;
     for(const item of report.targets){const row=document.createElement('div'),title=document.createElement('strong'),details=document.createElement('small'),focus=document.createElement('button');row.className='known-router';title.textContent=`${item.name} · ${item.change}`;details.textContent=`${item.baseline_state} → ${item.scenario_state}`;focus.type='button';focus.className='router-focus';focus.textContent='Focus target';focus.onclick=()=>focusCoverageTarget(item.id);row.append(title,details,focus);rows.append(row);}
     const baseline=coverageTargetReports.find(item=>item.report_id===$('coverage-target-baseline').value),scenario=coverageTargetReports.find(item=>item.report_id===$('coverage-target-scenario').value);
     summary.textContent=`${baseline?.coverage_job_id?.slice(0,8)||'baseline'} → ${scenario?.coverage_job_id?.slice(0,8)||'scenario'} · ${report.counts.improved} improved · ${report.counts.regressed} regressed · ${report.counts.unchanged} unchanged · ${report.counts.uncertain} uncertain.`;
-  }catch(error){if(targetComparisonKey===selection)summary.textContent=error.message;}
-  finally{targetComparisonPending=false;updateTargetCompareButton();}
+  }catch(error){if(isCurrent())summary.textContent=error.message;}
+  finally{if(request===targetComparisonRequest){targetComparisonPending=false;updateTargetCompareButton();}}
 }
 function updateCoverageTargetInputs(){
   $('coverage-add-target').onclick=()=>{if(busy||coverageBusy)return;setInteractionMode('place-target');};
@@ -2922,7 +3039,12 @@ async function flushAutosave(){
 }
 $('retry-save').onclick=async()=>{
   if(saveState!=='conflict'){
-    await autosaveNow().catch(()=>{});
+    const hadFocus=document.activeElement===$('retry-save');
+    try{
+      await autosaveNow();
+      void updateTerrainCoverage();
+    }catch{}
+    if(hadFocus&&document.activeElement===document.body) $('project-select').focus();
     return;
   }
   if(savedRevision<saveRevision&&!await askActionDialog({title:'Reload project?',copy:'Reloading discards your unsaved edits on this page.',confirm:'Reload project'}))return;
@@ -3122,6 +3244,7 @@ function loadRfSettings(saved){
 }
 $('save').onclick=()=>{try{const snapshot=plan();if(routeMode==='mesh'&&result?.mode==='mesh'&&result.found&&!resultStale)snapshot.mesh_topology=meshTopology(result);const blob=new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='route.webplan.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){status(e.message,true);}};
 function load(data){if((data.mode!=='mesh'&&(!Array.isArray(data.a)||!Array.isArray(data.b)))||!data.rf||!data.candidates)throw Error('Choose a RepeaterNet .webplan.json file');const paint=readMeshPaint(data.mesh_paint);loadPlanningMode(data);meshPaint=paint;rf=loadRfSettings(data.rf);endpointNames=clone(data.endpoint_names||{});
+  resetCoverageTargetAssessment();
   planExclusions=data.exclusions_wgs84;
   const dismissed=data.dismissed_search_routers;
   dismissedSearchRouters=typeof dismissed?.job_id==='string'&&Array.isArray(dismissed.ids)?clone(dismissed):null;
@@ -3156,7 +3279,29 @@ $('undo').onclick=()=>applyHistory(undoStack,redoStack);
 $('redo').onclick=()=>applyHistory(redoStack,undoStack);
 $('alternative-select').onchange=chooseAlternative;$('analysis-link-select').onchange=event=>profile(Number(event.target.value));
 $('import-plan').onclick=()=>{if(!busy&&!switchingProject)$('open').click();};
-$('open').onchange=async e=>{try{load(JSON.parse(await e.target.files[0].text()));clearSiteSelection();undoStack=[];redoStack=[];lastHistoryPlan=clone(plan());setHistoryButtons();scheduleAutosave();status('Plan opened and saved to this project. Upload matching terrain if needed.');}catch(e){status(e.message,true);}e.target.value='';};
+async function importPlan(event){
+  const file=event.target.files?.[0],projectId=projectInfo?.active_id;
+  event.target.value='';
+  if(!file||!projectId)return;
+  try{
+    const imported=JSON.parse(await file.text());
+    if(projectId!==projectInfo?.active_id||mapEditsLocked())return;
+    load(imported);
+    clearSiteSelection();
+    undoStack=[];redoStack=[];lastHistoryPlan=clone(plan());setHistoryButtons();
+  }catch(error){
+    status(error.message,true);
+    return;
+  }
+  scheduleAutosave();
+  const revision=saveRevision;
+  try{await autosaveNow(revision);}
+  catch{return;} // The shared save status already shows the error and recovery action.
+  if(projectId===projectInfo?.active_id&&saveRevision===revision&&savedRevision===revision){
+    status('Plan opened and saved to this project. Upload matching terrain if needed.');
+  }
+}
+$('open').onchange=importPlan;
 function emptyProjectPlan(){return {format:'repeaternet-web',version:1,mode:'endpoints',clients:[],a:[59.9139,10.7522],b:[59.95,10.85],rf:clone(baseRf),candidates:clone(baseCandidates),terrain:{...defaultTerrainOptions},coverage:clone(defaultCoverageSettings),coverage_targets:{type:'FeatureCollection',features:[]},search_effort:'balanced',known_routers:[],manual_routers:[]};}
 function showPlanSummary(data){const summary=data.projects?.previous_result;if(summary){const prefix=summary.stale?'Saved result is stale':'Last certified result';status(`${prefix}: ${summary.router_count} router(s), ${summary.alternatives?.length||0} alternative(s). Rerun to restore the full route and profiles.`);}else if(data.job.state==='interrupted'){status('Previous search was interrupted by restart. The saved inputs are ready to rerun.',true);}else status('Project ready. Changes save automatically.');}
 function showCertifiedRoute(saved){
@@ -3177,6 +3322,9 @@ async function restoreProjectResult(data){
 async function installProject(response){
   clearSiteSelection();
   if(loadedSharedProject)loadedSharedProject={id:response.id,revision:response.plan_revision};
+  coverageRunListRequest++;coverageTargetReportRequest++;targetComparisonRequest++;
+  targetComparisonPending=false;targetComparisonKey=null;coverageTargetReports=[];
+  updateTargetCompareButton();
   coverageTerrainCheck=null;coverageTerrainUnknownKey=null;setCoverageTerrainStatus('');
   for(const control of document.querySelectorAll('[data-project-transition-invalid]'))clearProjectTransitionError(control);
   setInteractionMode('browse');result=null;resultStale=false;resultStaleReason='';lastSnapshotVersion=0;activeJobId=null;activeJobKind=null;jobStartedAt=null;$('route-job-card').hidden=true;$('retry-job').hidden=true;coveragePollRequest++;coverageLoadRequest++;coverageLoadingRun=false;coverageJob=null;coverageDisplayInfo=null;coveragePreviewActive=false;coveragePreviewCells=[];coverageCells=[];coverageCursor=0;coverageStale=false;terrainReadiness=null;$('coverage-load-progress').hidden=true;$('coverage-result-progress').hidden=true;$('coverage-result-progress-copy').hidden=true;

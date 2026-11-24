@@ -529,7 +529,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .project-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
   .project-bar > label { grid-area: 1 / 1; }
   .project-bar > .project-menu { grid-area: 1 / 2; }
-  .project-bar > #project-storage { grid-column: 1 / -1; white-space: normal; }
   .project-bar > #project-transition-status { grid-column: 1 / -1; }
 }
 
@@ -585,8 +584,10 @@ header.app-bar {
 .project-menu-actions details { margin-top: 4px; padding-top: 6px; }
 .project-menu-actions summary { font-size: 13px; }
 .count-pill { display: inline-block; min-width: 20px; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: #e8ece9; color: var(--text); font-size: 11px; text-align: center; }
-.save-state { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.project-save { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.save-state { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .save-state[data-save-state="saved"]::before { content: "✓ "; }
+#retry-save { flex: 0 0 auto; }
 .app-bar .project-transition-status { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 main { height: calc(100dvh - 56px); }
 
@@ -655,14 +656,13 @@ main { height: calc(100dvh - 56px); }
 .coverage-empty-state p { margin: 0 0 10px; color: var(--text); font-size: 13px; }
 #coverage-export-controls { margin-top: 16px; }
 
-@media (max-width: 900px) {
-  .save-state { display: none; }
-}
 @media (max-width: 650px) {
   header.app-bar { height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px; padding: 8px 10px; }
   .app-bar .brand-name { display: none; }
-  .app-bar .project-bar { display: flex; flex: 1 1 0; }
-  .app-bar .project-select-label { flex: 1 1 auto; }
+  .app-bar .project-bar { display: flex; flex: 1 1 0; flex-wrap: wrap; }
+  .app-bar .project-select-label { flex: 1 1 0; min-width: 0; }
+  .project-save { flex: 1 0 100%; }
+  #retry-save { min-height: 44px; }
   .new-project-button { padding-inline: 9px; }
   .project-menu-actions { left: auto; right: 0; }
   main { height: auto; }
