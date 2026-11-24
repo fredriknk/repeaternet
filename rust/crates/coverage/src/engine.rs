@@ -23,7 +23,7 @@ use crate::{
     CoverageSettings, CoverageSourceResult, CoverageState, MapBounds, Rejection, MAX_SOURCES,
 };
 
-/// Preserve certified solution order, appending optional endpoints in candidate order.
+/// Preserve certified solution order, including mesh clients, and append optional A/B endpoints.
 pub fn select_sources(
     active_sites: &[Site],
     candidates: &[Site],
@@ -32,30 +32,29 @@ pub fn select_sources(
     settings.validate()?;
     let mut sources: Vec<_> = active_sites
         .iter()
-        .filter(|site| !is_endpoint(site.kind))
+        .filter(|site| !matches!(site.kind, SiteKind::EndpointA | SiteKind::EndpointB))
         .collect();
     let mut ids: HashSet<_> = sources.iter().map(|site| site.id.as_str()).collect();
-    if settings
-        .source_ids
-        .iter()
-        .any(|id| !ids.contains(id.as_str()))
-    {
+    if settings.source_ids.iter().any(|id| {
+        !sources
+            .iter()
+            .any(|site| site.id == *id && site.kind != SiteKind::Client)
+    }) {
         return Err(invalid(
             "Selected coverage sources are not in this route alternative; refresh the source list",
         ));
     }
     if settings.include_endpoints {
         for site in candidates {
-            if is_endpoint(site.kind) && ids.insert(&site.id) {
+            if matches!(site.kind, SiteKind::EndpointA | SiteKind::EndpointB)
+                && ids.insert(&site.id)
+            {
                 sources.push(site);
             }
         }
     }
     if !settings.source_ids.is_empty() {
-        sources.retain(|site| {
-            settings.source_ids.contains(&site.id)
-                || matches!(site.kind, SiteKind::EndpointA | SiteKind::EndpointB)
-        });
+        sources.retain(|site| settings.source_ids.contains(&site.id) || is_endpoint(site.kind));
     }
     if sources.is_empty() {
         return Err(invalid(

@@ -419,8 +419,12 @@
             </details>
           <div class="coverage-actions">
             <button id="coverage-preview" class="wide-button" disabled>Quick approximate preview</button>
-            <button id="coverage-inspect" class="wide-button">Inspect a map location</button>
+            <button id="coverage-inspect" class="wide-button" aria-pressed="false">Inspect a map location</button>
             <button id="coverage-terrain-download" class="wide-button" hidden>Download terrain for coverage area</button>
+          </div>
+          <div id="inspection-no-sources" class="coverage-empty-state" hidden>
+            <p id="inspection-no-sources-message">Location inspection needs a radio source. This direct route has only endpoints.</p>
+            <button id="inspection-include-endpoints" type="button" aria-describedby="inspection-no-sources-message">Include endpoints as sources</button>
           </div>
           </div>
         </section>
@@ -726,7 +730,7 @@
           </div>
           <section id="coverage-inspection" class="analysis-inspection" hidden aria-labelledby="inspection-title">
             <div class="inspection-heading"><div><h3 id="inspection-title" tabindex="-1">Location inspection</h3><p id="inspection-summary" class="hint"></p></div><button id="inspection-show-map" type="button">Show location on map</button></div>
-            <canvas id="inspection-chart" height="190" aria-label="Terrain and radio profile to the best serving router" role="img"></canvas>
+            <canvas id="inspection-chart" height="190" aria-label="Terrain and radio profile to the best radio source" role="img"></canvas>
             <details class="help-disclosure"><summary>Profile legend</summary><p>Brown: ground + curvature · Green: surface · Blue: line of sight · Orange: Fresnel clearance boundary.</p></details>
             <pre id="inspection-detail"></pre>
           </section>

@@ -540,6 +540,29 @@ fn source_order_endpoint_selection_and_height_scenario_are_immutable() {
 }
 
 #[test]
+fn source_selection_includes_mesh_clients_alongside_selected_routers() {
+    let client = Site {
+        kind: SiteKind::Client,
+        ..Site::new("CL-school", 500.0, 1050.0)
+    };
+    let excluded = router("R1", 0.0, 1000.0);
+    let selected = router("R2", 1800.0, 1000.0);
+    let settings = CoverageSettings {
+        source_ids: ids(&["R2"]),
+        ..CoverageSettings::default()
+    };
+    let active = [client, excluded, selected];
+    let sources = select_sources(&active, &active, &settings).unwrap();
+    assert_eq!(
+        sources
+            .iter()
+            .map(|site| site.id.as_str())
+            .collect::<Vec<_>>(),
+        ["CL-school", "R2"]
+    );
+}
+
+#[test]
 fn comparison_checks_legacy_manifest_and_rejects_stale_or_incomplete_runs() {
     let manifest = json!({
         "job_id": "b", "project_id": "p", "state": "complete", "terrain_fingerprint": "t",

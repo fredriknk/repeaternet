@@ -170,7 +170,7 @@ impl<T: TerrainSource + ?Sized> CoverageEvaluator<'_, T> {
                     .all(|row| row.result.rejection == Some(kind))
         };
         coverage.state = if all_rejected(Rejection::ProfileSampleLimit) {
-            coverage.message = Some("No candidate router profile fits the configured terrain-sample limit. Increase the profile step explicitly or raise the cap.".into());
+            coverage.message = Some("No candidate radio path fits the configured terrain-sample limit. Increase the profile step or raise the limit.".into());
             PointState::Unresolved
         } else if all_rejected(Rejection::UnknownTerrain) {
             coverage.message = Some("Ground is known here, but terrain data is missing along every candidate path; RF coverage is unknown.".into());
