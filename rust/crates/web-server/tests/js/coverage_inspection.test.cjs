@@ -6,6 +6,8 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname,
   '../../assets/dashboard/coverage_inspection.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '../../assets/dashboard/app.js'), 'utf8');
+const appFunction = name => appSource.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'))[0];
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -122,6 +124,64 @@ test('an aborted older poll cannot replace the newer point even if its response 
   assert.ok(h.events.includes('cancel:1'));
 });
 
+test('mesh clients stay selected when router sources are narrowed', () => {
+  const select = vm.runInNewContext(`(${appFunction('selectedCoverageSources')})`);
+  const sites = [
+    { id: 'CL-school', kind: 'client' }, { id: 'N506', kind: 'candidate' },
+    { id: 'R-other', kind: 'router' },
+  ];
+  assert.equal(select(sites, { include_endpoints: false, source_ids: ['N506'] })
+    .map(site => site.id).join(','), 'CL-school,N506');
+});
+
+test('a direct route offers one source repair before entering inspection', () => {
+  const h = harness();
+  const elements = new Map();
+  const focused = [];
+  Object.assign(h.context, {
+    $: id => {
+      if (!elements.has(id)) elements.set(id, { value: '', focus: () => focused.push(id) });
+      return elements.get(id);
+    },
+    result: {
+      found: true, active_alternative_id: 'direct',
+      route: [{ id: 'A', kind: 'endpoint_a' }, { id: 'B', kind: 'endpoint_b' }],
+    },
+    resultStale: false, interactionMode: 'browse',
+    busy: false, routePreflightBusy: false, coverageBusy: false,
+    coveragePreflightBusy: false, coverageLoadingRun: false, switchingProject: false,
+    coverageRouteReady: () => true,
+    updateCoverageTerrainAction() {},
+    setInteractionMode(mode) { h.context.interactionMode = mode; },
+  });
+  h.context.coverageSettings.source_ids = [];
+  h.context.coverageSettings.include_endpoints = false;
+  vm.runInContext(appFunction('selectedCoverageSources') + '\n' +
+    appFunction('updateCoverageActions'), h.context);
+  vm.runInContext(source.slice(source.indexOf("$('coverage-inspect').onclick"),
+    source.indexOf('let coverageProbe')), h.context);
+  const inspect = h.context.$('coverage-inspect');
+  const repair = h.context.$('inspection-include-endpoints');
+  const emptyState = h.context.$('inspection-no-sources');
+  const endpoints = h.context.$('coverage-endpoints');
+  endpoints.click = () => {
+    endpoints.checked = h.context.coverageSettings.include_endpoints = true;
+    h.context.updateCoverageActions();
+  };
+  h.context.updateCoverageActions();
+  assert.equal(inspect.hidden, true);
+  assert.equal(emptyState.hidden, false);
+  inspect.onclick();
+  assert.equal(h.context.interactionMode, 'browse');
+  repair.onclick();
+  assert.equal(emptyState.hidden, true);
+  assert.equal(inspect.hidden, false);
+  assert.equal(focused.at(-1), 'coverage-inspect');
+  inspect.onclick();
+  assert.equal(h.context.interactionMode, 'inspect-coverage');
+  assert.deepEqual(h.events, []);
+});
+
 test('profile-limit inspection renders unresolved paths without formatting missing margins', () => {
   const elements = new Map();
   const renderedMarkers = [];
@@ -136,6 +196,7 @@ test('profile-limit inspection renders unresolved paths without formatting missi
     },
     readCoverageInputs() {}, coveragePayload: () => ({}), autosaveNow: async () => {},
     invalidate() {}, coverageSettingsChanged() {}, coverageBusyState() {},
+    routeSiteLabel: () => 'R1',
     async installProject() {},
     setCoverageStatus(message) { statuses.push(message); },
     async api() { throw new Error('Unexpected API request'); },
@@ -161,4 +222,46 @@ test('profile-limit inspection renders unresolved paths without formatting missi
   assert.match(statuses.at(-1), /unresolved/i);
   assert.equal(renderedMarkers.length, 1);
   assert.equal(renderedMarkers[0].options.color, '#765497');
+});
+
+test('inspection summary, detail and map popup use site labels with IDs in tooltips', () => {
+  const h = harness();
+  const elements = new Map();
+  const popup = {
+    setLatLng() { return this; },
+    setContent(content) { this.content = content; return this; },
+    openOn() {},
+  };
+  Object.assign(h.context, {
+    $: id => {
+      if (!elements.has(id)) elements.set(id, { value: '' });
+      return elements.get(id);
+    },
+    document: { createElement: () => ({ append(...children) { this.children = children; } }) },
+    L: { circleMarker: () => ({ addTo() {} }), popup: () => popup },
+    map: {},
+    routeSiteLabel: id => ({ 'CL-school': 'Maridalen school', N506: 'R1' }[id] || id),
+  });
+  vm.runInContext(source.slice(source.indexOf('function renderCoverageInspection'),
+    source.indexOf('function drawCoverageInspectionProfile')), h.context);
+  const link = source_id => ({
+    source_id, distance_m: 700, downlink_margin_db: 35.5, uplink_margin_db: 33.5,
+    two_way_margin_db: 33.5, valid_two_way: true,
+  });
+  h.context.renderCoverageInspection({
+    state: 'evaluated', client: { height_agl_m: 1.5 }, ground_elevation_m: 255,
+    selected_source_id: 'CL-school', selected_source_component: 'CL-kirkeby',
+    selected_source_component_size: 2,
+    source_sites: [{ id: 'CL-kirkeby', kind: 'client', name: 'Kirkeby' }],
+    sources: [link('CL-school'), link('CL-kirkeby'), link('N506'), link('B')],
+  }, 60, 10);
+  const summary = elements.get('inspection-summary');
+  const detail = elements.get('inspection-detail');
+  assert.match(summary.textContent, /^Maridalen school .* component Kirkeby/);
+  assert.match(detail.textContent, /R1 · down.*\nB · down/);
+  assert.doesNotMatch(summary.textContent + detail.textContent, /CL-|N506/);
+  assert.match(summary.title, /CL-school\nCL-kirkeby/);
+  assert.match(detail.title, /N506/);
+  assert.equal(popup.content.children[0].textContent, 'Maridalen school');
+  assert.equal(popup.content.children[0].title, 'CL-school');
 });
