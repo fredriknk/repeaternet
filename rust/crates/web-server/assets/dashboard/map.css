@@ -333,6 +333,7 @@
   color: #fff;
   font: 700 12px/1 Inter, "Segoe UI", sans-serif;
 }
+.map-site[hidden] { display: none; }
 .map-site-content { display: contents; }
 .map-site-label { position: relative; z-index: 1; white-space: nowrap; }
 .map-site::before {

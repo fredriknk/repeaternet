@@ -30,6 +30,31 @@ function encode(header, codes) {
 }
 const code = db => 3 + Math.round((db + 20) * 2);
 
+test('proposed links exclude absent search sites and drop queued or drawn links to them', () => {
+  const router = {id: 'R1', kind: 'candidate', latitude: 60, longitude: 10, antenna_height_m: 3};
+  const pin = {id: 'P1', latitude: 60.1, longitude: 10.1, antenna_height_m: 4};
+  let present = [router];
+  const context = load({
+    rf: {router: {height_agl_m: 3}}, manualRouters: [pin],
+    validEndpointCoords: () => null, selectedKnownRouters: () => [],
+    searchRouterSites: () => present,
+  });
+  const sites = () => [...context.proposedMeshSites().keys()];
+  assert.deepEqual(sites(), ['P1', 'R1']);
+  const {pairs} = vm.runInContext('proposedMeshLinks', context);
+  const calls = [];
+  pairs.set('P1|R1', {
+    wanted: {source: pin, target: router},
+    controller: {abort: () => calls.push('aborted')},
+    line: {removeFrom: () => calls.push('removed')},
+  });
+  present = [];
+  assert.deepEqual(sites(), ['P1']);
+  context.pruneProposedMeshLinks();
+  assert.equal(pairs.size, 0);
+  assert.deepEqual(calls, ['aborted', 'removed']);
+});
+
 test('live coverage rasters decode margins and keep outside, unknown and below-floor codes apart', () => {
   const { decodeLiveCoverage } = load();
   const raster = decodeLiveCoverage(encode({ width: 2, height: 2 }, [0, 1, 2, code(12.5)]));

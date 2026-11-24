@@ -57,17 +57,21 @@ test('bulk validation preserves untouched values and rejects invalid raw values'
 
 function planFixture() {
   const calls = [];
+  const dismissed = new Set();
   const context = vm.createContext({
     rf: {endpoint_a:{height_agl_m:3, gain_dbi:6}, router:{gain_dbi:2}, site_overrides:{P1:{gain_dbi:8}}},
     meshcoreRouters: [{id:'K1'}], routerPolicies: new Map([['K1', 'optional']]),
     manualRouters: [{id:'P1', antenna_height_m:12, policy:'optional'}],
+    meshClients: [{id:'C1', antenna_height_m:3}, {id:'C2', antenna_height_m:3}],
     selectedManualRouterId: 'P1', selectedKnownRouterId: 'K1',
     randomId: () => 'new', nextManualRouterName: () => 'P2',
     routeMode: 'endpoints', mapEditsLocked: () => false, validEndpointCoords: () => [60, 10],
     recordEdit: () => calls.push('recordEdit'),
     invalidate: () => calls.push('invalidate'),
     scheduleCoverageCheck: () => calls.push('scheduleCoverageCheck'),
-    buildSettings() {}, renderManualRouters() {}, renderMeshcoreRouters() {}, status() {}, setMapHint() {},
+    buildSettings() {}, renderManualRouters() {}, renderMeshcoreRouters() {}, renderMeshClients() {}, status() {}, setMapHint() {},
+    dismissedSearchRouterIds: () => dismissed,
+    dismissSearchRouterIds: ids => ids.forEach(id => dismissed.add(id)),
     saveSiteRadio(id, profile) {
       if (profile) context.rf.site_overrides[id] = profile;
       else delete context.rf.site_overrides[id];
@@ -79,7 +83,7 @@ function planFixture() {
     {id:'K1', kind:'known', antenna_height_m:3, gain_dbi:2, policy:'optional'},
     {id:'P1', kind:'manual', antenna_height_m:12, gain_dbi:8, policy:'optional'}
   ];
-  return {context, calls, sites};
+  return {context, calls, sites, dismissed};
 }
 
 test('bulk edits update eligible sites with one undo and invalidation chain', () => {
@@ -95,12 +99,34 @@ test('bulk edits update eligible sites with one undo and invalidation chain', ()
 });
 
 test('editing the gain of a search site pins it at its original coordinates and height', () => {
-  const {context} = planFixture();
+  const {context, dismissed} = planFixture();
   const site = {id:'R1', kind:'search', latitude:60, longitude:10, antenna_height_m:12, gain_dbi:2};
   assert.deepEqual([...context.updateSelectedSites([site], {gain_dbi:0})], ['M-new']);
   assert.deepEqual(plain(context.manualRouters[1]), {id:'M-new', name:'P2', latitude:60, longitude:10,
     antenna_height_m:12, policy:'optional'});
   assert.equal(context.rf.site_overrides['M-new'].gain_dbi, 0);
+  assert.ok(dismissed.has('R1'));
+  assert.equal(context.pinSearchRouter(site), null);
+  assert.equal(context.manualRouters.length, 2);
+});
+
+test('replacing a selected search ID preserves the other selected sites', () => {
+  const {context} = planFixture();
+  const selection = vm.runInContext('siteSelection', context);
+  selection.replace(['R1', 'P1', 'K1']);
+  context.replaceSelectedSite('R1', 'P2');
+  context.replaceSelectedSite('R2', 'P3');
+  assert.deepEqual([...selection.ids], ['P2', 'P1', 'K1']);
+});
+
+test('bulk height changes the selected client with the routers in one edit', () => {
+  const {context, calls, sites} = planFixture();
+  context.routeMode = 'mesh';
+  context.commitBulkSiteEdit([...sites.slice(1), {id:'C1', kind:'client', antenna_height_m:3}],
+    {antenna_height_m:16, gain_dbi:4});
+  assert.deepEqual(context.meshClients, [{id:'C1', antenna_height_m:16}, {id:'C2', antenna_height_m:3}]);
+  assert.deepEqual([...vm.runInContext('siteSelection.ids', context)], ['K1', 'P1', 'C1']);
+  assert.deepEqual(calls, ['recordEdit', 'invalidate', 'scheduleCoverageCheck']);
 });
 
 test('bulk removal cleans up planned router settings while leaving endpoints and search sites', () => {

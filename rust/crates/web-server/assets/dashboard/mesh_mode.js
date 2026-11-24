@@ -170,13 +170,17 @@ function meshClientDescription(client) {
 
 function renderMeshClients() {
   const list = $('mesh-client-list'), editor = $('mesh-client-editor');
+  const restoreFocus = preserveMapSiteFocus();
   const focused = document.activeElement?.closest('[data-client-id]')?.dataset.clientId;
   editor.hidden = true;
   editor.replaceChildren();
   list.replaceChildren();
   for (const marker of clientMarkers.values()) marker.remove();
   clientMarkers.clear();
-  if (routeMode !== 'mesh') return;
+  if (routeMode !== 'mesh') {
+    restoreFocus();
+    return;
+  }
   for (const client of meshClients) {
     const row = document.createElement('li');
     row.dataset.clientId = client.id;
@@ -214,6 +218,7 @@ function renderMeshClients() {
     marker.addTo(map);
   }
   if (focused) focusMeshClient(focused);
+  restoreFocus();
 }
 
 function placeMeshClient(point) {
