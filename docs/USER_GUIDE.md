@@ -705,8 +705,9 @@ Open **Saved run area, sources and calculation** to set up a run:
   **Mesh buffer · m** (default 5,000 m), **Profile step · m** (default 200 m) and
   **Maximum profile samples** (default 4,096). A profile over the sample cap
   stays unresolved.
-- **Include endpoints as sources** and **Router sources** choose the sources.
-  Turn endpoints on for a direct route without repeaters.
+- **Router sources** chooses which routers to use. Mesh clients in the
+  certified mesh are always included. In A/B mode, **Include endpoints as
+  sources** adds both endpoints, including on a direct route without repeaters.
 - **Calculate saved run** shows the work estimate (a 4,096-cell budget by
   default, with hard limits of 16,384 cells, 64 sources and 250,000 cell/source
   evaluations). Confirm to start. **Cancel coverage** stops the job and can keep
@@ -732,15 +733,21 @@ radio and model match. A stored result is limited to 100 MiB.
 ## Location inspection
 
 For a saved run, select it in **Saved runs** and choose **Show saved run on map** first.
-Choose **Inspect a map location**, then click the location. You can also inspect
-with the current route and coverage settings before saving a run. The exact
+Choose **Inspect a map location**, then click the location or press Enter to
+inspect the map centre. You can inspect with the current route and coverage
+settings before saving a run. The exact
 point is evaluated using the relevant client assumptions and source heights.
 A grid cell nearby represents a different sample.
 
+Mesh clients can serve the inspected location even when the mesh has no
+routers. On a direct A/B route, choose **Include endpoints as sources** when
+prompted in **Saved runs**, then start inspection.
+
 **Analysis** opens the inspection result. Read the best source, distance,
-directional margins, two-way status and mesh component. The details list the
-other candidate links and their rejection reasons. Open **Profile legend** to
-interpret the terrain and Fresnel chart. The result states when the location is
+directional margins, two-way status and mesh component. The summary and details
+use the same site labels as the map. The details list the other candidate links
+and their rejection reasons. Open **Profile legend** to interpret the terrain
+and Fresnel chart. The result states when the location is
 outside the requested area, terrain is missing or the sample limit prevented an
 evaluation. **Show location on map** returns to the marker. **Stop inspecting
 locations** or **Cancel** exits inspection mode.

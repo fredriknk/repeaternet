@@ -11,6 +11,8 @@
 .coverage-empty-state{margin:12px 0;padding:12px;border:1px solid #e4c697;border-radius:9px;background:#fff8e9}
 .coverage-empty-state p{margin:0 0 8px;font-size:13px}
 .coverage-empty-state button{min-height:44px}
+.analysis-inspection #inspection-summary{font-size:13px}
+.analysis-inspection #inspection-detail{font-size:12px;color:var(--muted)}
 .coverage-check{display:flex;align-items:center;gap:7px;padding-top:20px}
 .coverage-check input{margin:0}
 .coverage-legend{margin:14px 0 6px;font-size:11px;color:#63766d}

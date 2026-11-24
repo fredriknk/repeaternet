@@ -1071,6 +1071,104 @@ async fn custom_crs_coverage_keeps_saved_footprints_and_limits_kartverket() {
 }
 
 #[tokio::test]
+async fn clients_only_mesh_supports_current_and_saved_location_inspection() {
+    let root = tempfile::tempdir().unwrap();
+    let (app, _) = app(root.path(), "");
+    let cookie = cookie(A);
+    let tile = include_bytes!("../../terrain/tests/fixtures/fallback.tif");
+    upload(&app, &cookie, "dtm", tile, StatusCode::OK).await;
+    let transform =
+        Transformer::new(repeaternet_terrain::TerrainCrs::from_epsg(25833).unwrap()).unwrap();
+    let point = |x| transform.reverse(Point { x, y: 6650850.0 }).unwrap();
+    let client = |id, name, x| {
+        let p = point(x);
+        json!({"id": id, "name": name, "latitude": p.latitude, "longitude": p.longitude, "antenna_height_m": 2.0})
+    };
+    let settings = json!({"area_buffer_m":20.0,"cell_size_m":50.0});
+    let plan = json!({
+        "mode": "mesh",
+        "clients": [client("CL-school", "Maridalen school", 500050.0), client("CL-kirkeby", "Kirkeby", 500290.0)],
+        "candidates": {"infrastructure_policy":"existing_only", "refine_radius_m":0},
+        "coverage": settings
+    });
+    api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/optimize",
+        plan,
+        StatusCode::OK,
+    )
+    .await;
+    let state = terminal(&app, &cookie).await;
+    assert_eq!(state["job"]["state"], "complete", "{state}");
+    let route = api(
+        &app,
+        &cookie,
+        Method::GET,
+        "/api/result",
+        Value::Null,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(route["found"], true, "{route}");
+    assert_eq!(route["router_count"], 0);
+    let request = json!({
+        "snapshot_version":route["snapshot_version"],
+        "alternative_id":route["active_alternative_id"],
+        "settings":settings
+    });
+    let job = api(
+        &app,
+        &cookie,
+        Method::POST,
+        "/api/coverage/jobs",
+        request.clone(),
+        StatusCode::OK,
+    )
+    .await;
+    let path = format!("/api/coverage/jobs/{}", job["job_id"].as_str().unwrap());
+    let saved = coverage_terminal(&app, &cookie, &path).await;
+    assert_eq!(saved["state"], "complete", "{saved}");
+    assert_eq!(saved["settings"]["include_endpoints"], false);
+    assert_eq!(saved["source_sites"].as_array().unwrap().len(), 2);
+    let location = point(500140.0);
+    let mut current_request = request;
+    current_request["latitude"] = json!(location.latitude);
+    current_request["longitude"] = json!(location.longitude);
+    let saved_request = json!({
+        "coverage_job_id": saved["job_id"],
+        "latitude": location.latitude, "longitude": location.longitude
+    });
+    for request in [current_request, saved_request] {
+        let job = api(
+            &app,
+            &cookie,
+            Method::POST,
+            "/api/coverage/inspect",
+            request,
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(job["source_count"], 2);
+        let path = format!("/api/coverage/inspect/{}", job["job_id"].as_str().unwrap());
+        let inspection = coverage_terminal(&app, &cookie, &path).await;
+        assert_eq!(inspection["state"], "complete", "{inspection}");
+        let result = &inspection["result"];
+        assert_eq!(result["state"], "evaluated");
+        assert_eq!(result["selected_source_component_size"], 2);
+        let mut names = result["source_sites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|site| site["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, ["Kirkeby", "Maridalen school"]);
+    }
+}
+
+#[tokio::test]
 async fn verified_python_runs_compare_without_a_live_route_until_terrain_changes() {
     let root = tempfile::tempdir().unwrap();
     let (app, handle) = app(root.path(), "");
