@@ -229,6 +229,18 @@ pub fn build(
             }
         }
         payload["mode"] = json!("mesh");
+        if !result.found() {
+            use repeaternet_optimizer::SearchLimitHint::{Hops, NewRouters};
+            payload["search_limit_hint"] = json!(match result.search_limit_hint {
+                Some(Hops) => "hops",
+                Some(NewRouters) => "new_routers",
+                None => "buffer",
+            });
+        }
+        if inputs.paint.is_none() {
+            payload["mesh_minimum_link_margin_db"] =
+                json!(inputs.candidates.mesh_minimum_link_margin_db);
+        }
         payload["client_count"] = json!(inputs.client_count);
         payload["clients_connected"] = json!(0);
         payload["new_router_count"] = json!(0);

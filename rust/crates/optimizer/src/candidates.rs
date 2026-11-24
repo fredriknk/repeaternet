@@ -137,7 +137,7 @@ pub(crate) fn generate(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(Vec<PlanningSite>, [usize; 2]), OptimizationError> {
     generate_grid(
-        terrain, bounds, anchors, settings, exclusions, filter, cancelled, false, None,
+        terrain, bounds, anchors, settings, exclusions, filter, cancelled, false, None, None,
     )
     .map(|(sites, counts, _)| (sites, counts))
 }
@@ -152,9 +152,19 @@ pub(crate) fn generate_with_access_pool(
     filter: Option<&SiteFilter<'_>>,
     cancelled: &dyn Fn() -> bool,
     mesh: Option<&MeshArea>,
+    paint_distance: Option<&dyn Fn(Point) -> f64>,
 ) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
     generate_grid(
-        terrain, bounds, anchors, settings, exclusions, filter, cancelled, true, mesh,
+        terrain,
+        bounds,
+        anchors,
+        settings,
+        exclusions,
+        filter,
+        cancelled,
+        true,
+        mesh,
+        paint_distance,
     )
 }
 
@@ -171,6 +181,7 @@ fn generate_grid(
     cancelled: &dyn Fn() -> bool,
     collect_access_pool: bool,
     mesh: Option<&MeshArea>,
+    paint_distance: Option<&dyn Fn(Point) -> f64>,
 ) -> Result<(Vec<PlanningSite>, [usize; 2], AccessPool), OptimizationError> {
     if settings.candidates_per_cell == 0 || cancelled() {
         return Ok((Vec::new(), [0; 2], Vec::new()));
@@ -333,11 +344,15 @@ fn generate_grid(
         site.quality = (site.ground - min) / span
             - site.slope.min(1.0) * 0.35
             - (obstruction / 20.0).min(1.0) * 0.25;
-        let key = if dense(site.point) {
-            (false, cell_key(site.point, settings.cell_size_m))
+        // Reserve local candidates separately so hillside sites in the same
+        // grid square cannot displace every candidate within the paint.
+        let key = if paint_distance.is_some_and(|distance| distance(site.point) == 0.0) {
+            (0, cell_key(site.point, settings.cell_size_m))
+        } else if dense(site.point) {
+            (1, cell_key(site.point, settings.cell_size_m))
         } else {
             (
-                true,
+                2,
                 cell_key(site.point, settings.cell_size_m * SPARSE_CELL_FACTOR),
             )
         };

@@ -22,7 +22,7 @@ pub use mesh_paint::{PaintCoverage, PaintObjective};
 pub use optimizer::{
     Cancellation, LinkEvaluation, OptimizationRequest, OptimizationResult, PlacementLink,
     PlacementMargin, PlacementPreview, PlacementRequest, PlacementSite, Progress, RouteOptimizer,
-    SearchHooks, SearchStatus, Stage,
+    SearchHooks, SearchLimitHint, SearchStatus, Stage,
 };
 pub use screening::{backbone_site_indices, screening_pair_indices};
 pub use topology::{select_active_solution_index, solve_topologies, ClientPaths, NetworkSolution};
@@ -154,6 +154,10 @@ impl SearchEffort {
 pub struct CandidateSettings {
     pub infrastructure_policy: InfrastructurePolicy,
     pub corridor_width_m: f64,
+    /// Candidate search buffer for an active painted area, in projected metres.
+    pub paint_search_buffer_m: f64,
+    /// Preferred minimum for the weakest certified link in a named-client mesh.
+    pub mesh_minimum_link_margin_db: f64,
     pub unrestricted_bounding_area: bool,
     pub grid_spacing_m: f64,
     pub cell_size_m: f64,
@@ -192,6 +196,8 @@ impl Default for CandidateSettings {
         Self {
             infrastructure_policy: InfrastructurePolicy::default(),
             corridor_width_m: 15_000.0,
+            paint_search_buffer_m: 3_000.0,
+            mesh_minimum_link_margin_db: 10.0,
             unrestricted_bounding_area: false,
             grid_spacing_m: 1_000.0,
             cell_size_m: 2_000.0,

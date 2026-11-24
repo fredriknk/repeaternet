@@ -11,6 +11,32 @@ pub fn connect_mesh(
     settings: &CandidateSettings,
     cancelled: &dyn Fn() -> bool,
 ) -> Vec<NetworkSolution> {
+    let mut solutions = explore(graph, settings, cancelled);
+    let minimum_db = settings.mesh_minimum_link_margin_db;
+    if minimum_db > 0.0
+        && solutions
+            .first()
+            .is_none_or(|best| best.minimum_margin_db() < minimum_db)
+        && !cancelled()
+    {
+        let mut by_budget = BTreeMap::new();
+        for solution in solutions.into_iter().chain(explore(
+            &graph.minimum_margin(minimum_db),
+            settings,
+            cancelled,
+        )) {
+            keep_best(&mut by_budget, solution);
+        }
+        solutions = by_budget.into_values().collect();
+    }
+    solutions
+}
+
+pub(crate) fn explore(
+    graph: &RoutingGraph<'_>,
+    settings: &CandidateSettings,
+    cancelled: &dyn Fn() -> bool,
+) -> Vec<NetworkSolution> {
     let (clients, routers): (Vec<_>, Vec<_>) =
         (0..graph.sites.len()).partition(|&node| graph.sites[node].is_client());
     if clients.len() < 2 || cancelled() {
@@ -128,6 +154,61 @@ pub fn connect_mesh(
     solutions.into_values().collect()
 }
 
+pub(crate) fn relaxation_hint(
+    graph: &RoutingGraph<'_>,
+    settings: &CandidateSettings,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<crate::SearchLimitHint> {
+    use crate::SearchLimitHint::{Hops, NewRouters};
+
+    // Probe the same screened sites, changing one limit at a time. This is a
+    // lead for the next search, since the new topology has yet to be certified.
+    let hops = graph.sites.len().saturating_sub(1);
+    let routers = graph
+        .sites
+        .iter()
+        .filter(|site| site.needs_new_router())
+        .count();
+    if settings.maximum_hops < hops
+        && !explore(
+            graph,
+            &CandidateSettings {
+                maximum_hops: hops,
+                ..settings.clone()
+            },
+            cancelled,
+        )
+        .is_empty()
+    {
+        return Some(Hops);
+    }
+    if settings.maximum_new_routers < routers
+        && !explore(
+            graph,
+            &CandidateSettings {
+                maximum_new_routers: routers,
+                ..settings.clone()
+            },
+            cancelled,
+        )
+        .is_empty()
+    {
+        return Some(NewRouters);
+    }
+    if settings.maximum_new_routers == 0
+        && settings.infrastructure_policy != crate::InfrastructurePolicy::ExistingOnly
+    {
+        // The generator is skipped at a zero budget. A one-hop mesh would
+        // still require direct client links even if candidate generation ran.
+        return Some(if settings.maximum_hops == 1 {
+            Hops
+        } else {
+            NewRouters
+        });
+    }
+    None
+}
+
 pub(crate) fn largest_hop_count(paths: &ClientPaths) -> usize {
     paths
         .values()
@@ -137,6 +218,52 @@ pub(crate) fn largest_hop_count(paths: &ClientPaths) -> usize {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
+#[test]
+fn dominance_prunes_extra_routers_but_keeps_an_improved_hop_count() {
+    use repeaternet_rf_core::{Site, SiteKind};
+
+    let solution = |count: usize, path: &[&str]| {
+        let router_ids: Vec<_> = (1..=count).map(|n| format!("R{n}")).collect();
+        let sites = router_ids
+            .iter()
+            .map(|id| {
+                let mut site = Site::new(id, 0.0, 0.0);
+                site.kind = SiteKind::Candidate;
+                crate::PlanningSite::from(site)
+            })
+            .collect();
+        NetworkSolution {
+            name: String::new(),
+            sites,
+            links: Vec::new(),
+            client_ids: vec!["A".into(), "B".into()],
+            router_ids,
+            client_paths: BTreeMap::from([(
+                ("A".into(), "B".into()),
+                vec![path.iter().map(|id| (*id).into()).collect()],
+            )]),
+            requested_path_count: 1,
+            achieved_path_count: 1,
+            diagnostics: Vec::new(),
+            paint_coverage: None,
+        }
+    };
+    let mut alternatives = vec![
+        solution(2, &["A", "R1", "R2", "B"]),
+        solution(3, &["A", "R1", "R2", "B"]),
+        solution(4, &["A", "R1", "B"]),
+    ];
+    prune_dominated(&mut alternatives);
+    assert_eq!(
+        alternatives
+            .iter()
+            .map(NetworkSolution::new_router_count)
+            .collect::<Vec<_>>(),
+        [2, 4]
+    );
+}
+
 pub(crate) fn compare(a: &NetworkSolution, b: &NetworkSolution) -> std::cmp::Ordering {
     b.new_router_count()
         .cmp(&a.new_router_count())
@@ -144,6 +271,46 @@ pub(crate) fn compare(a: &NetworkSolution, b: &NetworkSolution) -> std::cmp::Ord
         .then_with(|| largest_hop_count(&b.client_paths).cmp(&largest_hop_count(&a.client_paths)))
         .then_with(|| b.router_count().cmp(&a.router_count()))
         .then_with(|| b.router_ids.cmp(&a.router_ids))
+}
+
+pub(crate) fn compare_preferred(
+    a: &NetworkSolution,
+    b: &NetworkSolution,
+    minimum_db: f64,
+) -> std::cmp::Ordering {
+    (a.minimum_margin_db() >= minimum_db)
+        .cmp(&(b.minimum_margin_db() >= minimum_db))
+        .then_with(|| compare(a, b))
+}
+
+/// Prune after RF certification and position refinement, which can change
+/// both the margin and the topology used for a given router budget.
+pub(crate) fn prune_dominated(solutions: &mut Vec<NetworkSolution>) {
+    let metrics: Vec<_> = solutions
+        .iter()
+        .map(|solution| {
+            (
+                solution.new_router_count(),
+                solution.minimum_margin_db(),
+                largest_hop_count(&solution.client_paths),
+                solution.router_count(),
+            )
+        })
+        .collect();
+    let mut index = 0;
+    solutions.retain(|_| {
+        let (new, margin, hops, total) = metrics[index];
+        index += 1;
+        !metrics
+            .iter()
+            .any(|&(other_new, other_margin, other_hops, other_total)| {
+                other_new <= new
+                    && other_total <= total
+                    && (other_new < new || other_total < total)
+                    && other_margin >= margin
+                    && other_hops <= hops
+            })
+    });
 }
 
 fn keep_best(solutions: &mut BTreeMap<usize, NetworkSolution>, solution: NetworkSolution) {

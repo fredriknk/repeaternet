@@ -69,7 +69,7 @@ async function startPlacement(ids) {
     validate: value => placementRadius(value) === null ? 'Enter a move radius greater than 0 and at most 2,000 m.' : '',
     help: {
       title: 'How links are chosen',
-      copy: 'With a current route or mesh, only its links between selected sites count. Otherwise, all selected pairs within the configured link range count. The search improves the weakest link first, then the total margin.',
+      copy: 'With a current route or mesh, only its links between selected sites count. Otherwise, all selected pairs within the configured link range count. The preview offers moves only when they improve the weakest link.',
     },
     confirm: 'Run optimization',
   });
@@ -221,6 +221,26 @@ function placementMargin(margin) {
   return value;
 }
 
+function placementBottleneckSummary(preview, label) {
+  const anchors = new Set(preview.sites.filter(site => !site.movable).map(site => site.id));
+  const margin = (link, key) => link[key]?.db ?? -Infinity;
+  const fixedCount = link => Number(anchors.has(link.source_id)) + Number(anchors.has(link.target_id));
+  const weakest = preview.links.reduce((best, link) => !best || margin(link, 'before') < margin(best, 'before') ||
+    (margin(link, 'before') === margin(best, 'before') && fixedCount(link) > fixedCount(best)) ? link : best, null);
+  if (!weakest) return 'Weakest link unchanged.';
+  const before = margin(weakest, 'before');
+  const after = Math.min(...preview.links.map(link => margin(link, 'after')));
+  if (after > before) {
+    if (!Number.isFinite(before)) return `Weakest link in the preview has ${after.toFixed(1)} dB of margin.`;
+    if (after.toFixed(1) === before.toFixed(1)) return 'Weakest link improved by less than 0.1 dB.';
+    return `Weakest link improved from ${before.toFixed(1)} to ${after.toFixed(1)} dB.`;
+  }
+  const ids = [weakest.source_id, weakest.target_id];
+  const fixed = ids.filter(id => anchors.has(id)).map(label);
+  const limit = fixed.length === 2 ? ', both sites fixed' : fixed.length ? ' limited by ' + fixed[0] : '';
+  return `Weakest link unchanged (${ids.map(label).join('→')}${limit}).`;
+}
+
 function renderPlacementPreview(panel) {
   if (!placementPreview) return false;
   const {preview} = placementPreview;
@@ -228,9 +248,10 @@ function renderPlacementPreview(panel) {
   heading.className = 'placement-preview-heading';
   heading.tabIndex = -1;
   const moved = preview.sites.filter(site => site.moved);
+  const bottleneck = placementBottleneckSummary(preview, placementMapLabel);
   const summary = mapText('p', moved.length
-    ? `${moved.length} ${moved.length === 1 ? 'router' : 'routers'} would move · ${moved.map(site => placementMapLabel(site.id)).join(', ')}`
-    : 'No better position was found within this radius.');
+    ? `${bottleneck} ${moved.length} ${moved.length === 1 ? 'router' : 'routers'} would move · ${moved.map(site => placementMapLabel(site.id)).join(', ')}`
+    : bottleneck);
   const actions = document.createElement('div');
   actions.className = 'site-selection-actions';
   if (moved.length) {
@@ -268,7 +289,8 @@ function renderPlacementPreview(panel) {
   }
   const legend = mapText('p', 'Hollow circles mark proposed positions. Long dashes show each move. Coloured lines show predicted links.');
   legend.className = 'hint';
-  panel.append(heading, summary, actions, table, legend);
+  panel.append(heading, summary, actions, table);
+  if (moved.length) panel.append(legend);
   return true;
 }
 

@@ -688,6 +688,7 @@ aside summary { font-size: 13px; }
 
 /* ── Analysis: verdict, margin bands, alternatives table ───────────── */
 .route-verdict { margin: 10px 0 4px; padding: 10px 14px; border-radius: 10px; border: 1px solid #a9cdb8; background: #edf7f0; color: var(--text); font-size: 14px; font-weight: 550; line-height: 1.45; }
+.route-verdict button { display: block; margin-top: 6px; }
 .route-verdict::before { content: "✓ "; color: var(--state-success); font-weight: 800; }
 .route-verdict[data-state="warn"] { border-color: #e6c48a; background: #fff7e8; }
 .route-verdict[data-state="warn"]::before { content: "! "; color: #9a5b0b; }

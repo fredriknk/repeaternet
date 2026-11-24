@@ -22,27 +22,28 @@ test('paint hint describes touch gestures and keeps the keyboard shortcut on des
 
 test('brush interpolates fast drags and does not duplicate paint', () => {
   const from = [2.5, 1.5], to = [8.5, 1.5];
-  const cells = paintBrush([], from, to, 1, false);
+  const {cells} = paintBrush([], from, to, 1, false);
   assert.deepEqual(cells, Array.from({length: 7}, (_, index) => [index + 2, 1]));
-  assert.deepEqual(paintBrush(cells, to, from, 1, false), cells);
+  assert.deepEqual(paintBrush(cells, to, from, 1, false), {cells});
   assert.deepEqual(paintRowRuns(cells), [[2, 1, 9]]);
 });
 
 test('brush size controls the stamp and erasing can split a painted patch', () => {
-  assert.equal(paintBrush([], [0.5, 0.5], [0.5, 0.5], 5, false).length, 21);
-  const cells = paintBrush([], [0.5, 0.5], [4.5, 0.5], 1, false);
-  const erasing = paintBrush(cells, [2.5, -3.5], [2.5, 3.5], 1, true);
+  assert.equal(paintBrush([], [0.5, 0.5], [0.5, 0.5], 5, false).cells.length, 21);
+  const {cells} = paintBrush([], [0.5, 0.5], [4.5, 0.5], 1, false);
+  const {cells: erasing} = paintBrush(cells, [2.5, -3.5], [2.5, 3.5], 1, true);
   assert.deepEqual(paintRowRuns(erasing), [[0, 0, 2], [3, 0, 5]]);
   assert.equal(cells.length, 5);
 });
 
 test('painting rejects over-limit strokes without mutating the existing area', () => {
   const cells = [[0, 0]];
-  assert.equal(paintBrush(cells, [119.5, 0.5], [120.5, 0.5], 1, false), null);
+  assert.deepEqual(paintBrush(cells, [119.5, 0.5], [120.5, 0.5], 1, false), {limit: 'span'});
   assert.deepEqual(cells, [[0, 0]]);
-  assert.equal(paintBrush([], [0.5, 0.5], [1000.5, 0.5], 1, false), null);
+  assert.deepEqual(paintBrush([], [0.5, 0.5], [1000.5, 0.5], 1, false), {limit: 'span'});
+  assert.ok(paintBrush([], [0.5, 0.5], [119.5, 119.5], 1, false).cells.length);
   const full = Array.from({length: 1024}, (_, i) => [i % 32, Math.floor(i / 32)]);
-  assert.equal(paintBrush(full, [40.5, 0.5], [40.5, 0.5], 1, false), null);
+  assert.deepEqual(paintBrush(full, [40.5, 0.5], [40.5, 0.5], 1, false), {limit: 'count'});
 });
 
 test('saved painted cells round-trip without aliasing and invalid goals are rejected', () => {

@@ -127,16 +127,21 @@ around the clients and required routers, plus the search buffer. Every client
 pair must have a working path. Clients can use a direct link or relay through
 routers. Clients never relay for each other.
 
-The planner ranks installations by the fewest additional router sites it must
-find, then by the strongest weakest link and the smallest largest hop count
-between clients. It can use existing MeshCore routers and proposed routers
-you placed, subject to the infrastructure and site policies. The new-router
-limit counts sites added by the search. Maximum hops applies to each pair.
+In **1 Route → Search**, set **Minimum link margin** for a mesh without paint.
+The default is 10 dB, the start of the strong margin band. Connected meshes
+that meet the preference rank first. Within each group the planner favours
+fewer new routers, a stronger weakest link and a smaller largest hop count.
+Set the preference to 0 dB to rank all passing meshes by fewest new routers
+first. The new-router limit counts sites added by the search, and **Maximum
+hops** applies to each client pair.
 
 In **Analysis**, check whether all clients are connected, the number of new
 routers needed, the weakest link and the largest pair hop count. The
-**Client pairs** table shows each path and its weakest margin. Select an
-alternative or open a link profile as you would for an endpoint route. CSV
+**Client pairs** table shows each named path and its weakest margin. The
+alternatives omit installations that use more routers without gaining margin
+or reducing hops. If no mesh is found, use the verdict's **Review** button to
+open the suggested limit. Switching planning modes clears the displayed
+result. Select an alternative or open a link profile in **Analysis**. CSV
 includes the named sites on every mesh link, GeoJSON includes sites, links and
 pair paths, and plan JSON includes the client list and any current certified
 mesh topology. Importing a plan restores its inputs for a fresh search.
@@ -162,10 +167,15 @@ radio settings** opens the shared **2 Coverage → Handheld** settings.
 The project saves the painted area and target. You can switch to A/B and
 return to the same paint.
 
-Choose **Find mesh** to search with or without named clients. The planner
-tries to meet the target with as few new routers as it finds across the
-sampled sites. Every included router must belong to the connected mesh,
-and named clients must connect within the configured pairwise hop limit.
+Choose **Find mesh** to search with or without named clients. The default
+**Paint search buffer** is 3,000 m. Change it in **Search → Advanced search
+limits**. It applies around the painted area, named clients and required
+routers. When installations meet the target, the planner prefers fewer new
+routers. At the same router counts it favours more covered cells, then new
+sites closer to the painted cells. Connected clients
+that cover the area can satisfy the target on their own. Every included router
+must belong to the connected mesh, and named clients must connect within the
+configured pairwise hop limit.
 Review the predicted share in **Analysis**. If coverage falls short,
 the best connected result found shows the shortfall. Open **Map legend**
 to identify the outlined painted area and dashed uncovered patches.
@@ -174,7 +184,8 @@ to identify the outlined painted area and dashed uncovered patches.
 
 The paint tool uses fixed cells of roughly 125 m per side around Oslo.
 Keep a sketch to 1,024 cells and within 120 cells across in either
-direction. The planner uses a coarse prediction to shortlist meshes, then
+direction. The map names the limit reached when it rejects a stroke.
+The planner uses a coarse prediction to shortlist meshes, then
 checks each painted cell centre against the selected sites using the live
 two-way model at 30 m detail and a 20 km radius. Cells that no selected site
 reaches at the requested margin appear as dashed patches. To compare the
@@ -428,11 +439,12 @@ coordinates use latitude, longitude to six decimals.
   routers stay fixed and can anchor links. **How links are chosen** explains
   which selected links count. The search uses links between selected sites in
   the current route or mesh, or pairs within the configured link range before
-  a solution is available. It improves the weakest predicted margin first, then the
-  total margin, using the plan's terrain and road filter.
+  a solution is available. It searches for a higher weakest-link margin within
+  the radius, using the plan's terrain and road filter.
 - In **Placement preview**, hollow circles mark proposed positions and the table
-  shows the predicted margins before and after. Choose **Apply** to move the
-  routers or **Discard** to close the preview. Applying adds moved search-found
+  shows the predicted margins before and after. **Apply** is available when
+  the weakest link improves. The preview identifies the limiting link when
+  the weakest margin stays unchanged. Applying adds moved search-found
   sites as proposed routers, marks the previous route stale and refreshes live
   coverage. One **Undo** restores the entire edit.
 - Drag either endpoint or a proposed router to move it. Dragging a site on
@@ -537,6 +549,8 @@ margin across the network, weakest margin on the primary path, LOS-blocked hops
 and achieved versus requested independent paths. Independent paths share no
 intermediate router. A backup with a small margin can be the network bottleneck
 even when the primary route has margin to spare. The default path target is two.
+Passing endpoint alternatives below 5 dB are marked **marginal**. A passing
+margin smaller than one tenth of a decibel reads **<0.1 dB headroom**.
 
 ![Comparison table showing exact router counts, lengths, margins and achieved path counts](images/analysis-alternatives.png)
 

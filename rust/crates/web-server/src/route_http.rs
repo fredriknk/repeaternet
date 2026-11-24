@@ -760,6 +760,7 @@ fn compute(app: AppState, key: &str, job: Arc<Job>, prepared: Prepared) -> ApiRe
             repeaternet_optimizer::PaintObjective {
                 cells: &cells,
                 target_percent: paint.target_percent(),
+                distance_from_area: &|position| paint.distance_from_area(&transform, position),
                 evaluate: &measure,
                 certify: &certify,
             },

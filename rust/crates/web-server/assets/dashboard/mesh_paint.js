@@ -12,12 +12,12 @@ function paintCellKey(cell) {
   return cell.join(',');
 }
 
-function paintCellsFit(cells) {
-  if (cells.length > paintCellLimit) return false;
-  return [0, 1].every(axis => {
+function paintCellLimitHit(cells) {
+  if (cells.length > paintCellLimit) return 'count';
+  return [0, 1].some(axis => {
     const indices = cells.map(cell => cell[axis]);
-    return Math.max(...indices) - Math.min(...indices) < paintSpanLimit;
-  });
+    return Math.max(...indices) - Math.min(...indices) >= paintSpanLimit;
+  }) ? 'span' : null;
 }
 
 function readMeshPaint(value) {
@@ -25,7 +25,7 @@ function readMeshPaint(value) {
   const {cells, target_percent, minimum_margin_db} = value || {};
   if (!Array.isArray(cells) || !cells.every(cell => Array.isArray(cell) && cell.length === 2 &&
       cell.every(i => Number.isInteger(i) && i >= -paintMaxIndex - 1 && i <= paintMaxIndex)) ||
-      !paintCellsFit(cells) || new Set(cells.map(paintCellKey)).size !== cells.length ||
+      paintCellLimitHit(cells) || new Set(cells.map(paintCellKey)).size !== cells.length ||
       !Number.isInteger(target_percent) || target_percent < 1 || target_percent > 100 ||
       !Number.isFinite(minimum_margin_db) || minimum_margin_db < 0 || minimum_margin_db > 60) {
     throw Error('The painted area or its coverage settings are invalid.');
@@ -38,7 +38,9 @@ function readMeshPaint(value) {
 function paintBrush(cells, from, to, diameter, erase) {
   const radius = diameter / 2;
   const distance = Math.hypot(to[0] - from[0], to[1] - from[1]);
-  if (!erase && distance >= paintSpanLimit) return null;
+  if (!erase && Math.max(Math.abs(to[0] - from[0]), Math.abs(to[1] - from[1])) >= paintSpanLimit) {
+    return {limit: 'span'};
+  }
   const next = new Map(cells.map(cell => [paintCellKey(cell), cell]));
   const steps = Math.max(1, Math.ceil(distance * 2));
   // For long erase drags, test the already-painted cells against the segment.
@@ -66,7 +68,13 @@ function paintBrush(cells, from, to, diameter, erase) {
     }
   }
   const result = [...next.values()].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
-  return paintCellsFit(result) ? result : null;
+  const limit = paintCellLimitHit(result);
+  return limit ? {limit} : {cells: result};
+}
+
+function paintLimitMessage(limit) {
+  return limit === 'count' ? 'Paint limit reached. The area can contain up to 1,024 cells.'
+    : 'Paint span limit reached. The area can extend up to 120 cells across either axis.';
 }
 
 function paintRowRuns(cells) {
@@ -185,6 +193,7 @@ function editMeshPaint(next, keepMapMode = false) {
   if (mapEditsLocked() || routeMode !== 'mesh' || JSON.stringify(next) === JSON.stringify(meshPaint)) return;
   meshPaint = next;
   renderMeshPaintCount();
+  syncMeshSearchFields();
   recordEdit();
   invalidate('painted coverage', {keepMapMode});
   scheduleCoverageCheck();
@@ -272,13 +281,13 @@ function initMeshPaintControls() {
   mapEditControl($('mesh-paint-brush'));
   const apply = (cells, from, to) => paintBrush(cells, from, to, Number($('mesh-paint-brush').value), interactionMode === 'erase-mesh');
   function updateStroke(point) {
-    const cells = apply(paintStroke.cells, paintStroke.last, point);
+    const {cells, limit} = apply(paintStroke.cells, paintStroke.last, point);
     paintStroke.last = point;
     if (cells) {
       paintStroke.cells = cells;
       renderMeshPaint();
     } else {
-      setMapHint('Paint up to 1,024 cells within 120 cells across.');
+      setMapHint(paintLimitMessage(limit));
     }
   }
   container.addEventListener('pointerdown', event => {
@@ -316,9 +325,9 @@ function initMeshPaintControls() {
     if (!paintModeActive() || mapEditsLocked() || event.target !== container || !['Enter', ' '].includes(event.key)) return;
     event.preventDefault();
     const point = paintGridPoint(map.getCenter());
-    const cells = apply(meshPaint.cells, point, point);
+    const {cells, limit} = apply(meshPaint.cells, point, point);
     if (cells) editMeshPaint({...meshPaint, cells}, true);
-    else setMapHint('Paint up to 1,024 cells within 120 cells across.');
+    else setMapHint(paintLimitMessage(limit));
   });
 }
 

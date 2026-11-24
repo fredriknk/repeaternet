@@ -27,6 +27,18 @@ test('move radius checks the raw string and the search bounds', () => {
   assert.equal(placementRadius('2000'), 2000);
 });
 
+test('placement summary names an unchanged anchor link and compares the global minimum', () => {
+  const {placementBottleneckSummary} = vm.runInNewContext(scripts + '\n({placementBottleneckSummary})');
+  const link = (source_id, target_id, before, after) => ({source_id, target_id, before: {db: before}, after: {db: after}});
+  const sites = [{id: 'A', movable: false}, {id: 'R1', movable: true}, {id: 'R2', movable: true}];
+  assert.equal(placementBottleneckSummary({sites, links: [link('A', 'R1', 5.2, 5.2), link('R1', 'R2', 10, 20)]}, id => id),
+    'Weakest link unchanged (A→R1 limited by A).');
+  assert.equal(placementBottleneckSummary({sites: [...sites, {id: 'B', movable: false}], links: [link('A', 'B', 5.2, 5.2)]}, id => id),
+    'Weakest link unchanged (A→B, both sites fixed).');
+  assert.equal(placementBottleneckSummary({sites, links: [link('A', 'R1', 5.2, 5.9), link('R1', 'R2', 20, 10)]}, id => id),
+    'Weakest link improved from 5.2 to 5.9 dB.');
+});
+
 function placementFixture() {
   const calls = [];
   const dismissed = [];

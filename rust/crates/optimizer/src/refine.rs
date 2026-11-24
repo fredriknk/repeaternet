@@ -6,7 +6,7 @@ use crate::{link_is_clear, pair, NetworkSolution, SiteFilter, SiteOrigin};
 use repeaternet_rf_core::{
     LinkEvaluator, LinkResult, Point, RfError, Site, SiteKind, TerrainLayer, TerrainSource,
 };
-use std::{cmp::Reverse, collections::BTreeSet};
+use std::collections::BTreeSet;
 
 /// Ranking of a router position: clear hops first, then the weaker adjacent
 /// margin, then the weaker Fresnel clearance.
@@ -65,17 +65,15 @@ pub struct PlacementPreview {
 
 fn placement_score(
     margins: impl IntoIterator<Item = Option<PlacementMargin>>,
-) -> (Reverse<usize>, f64, f64) {
-    let (mut missing, mut weakest, mut sum) = (0, f64::INFINITY, 0.0);
-    for margin in margins {
-        if let Some(margin) = margin {
-            weakest = weakest.min(margin.db);
-            sum += margin.db;
-        } else {
-            missing += 1;
-        }
-    }
-    (Reverse(missing), weakest, sum)
+) -> Vec<crate::graph::OrderedFloat> {
+    let mut score: Vec<_> = margins
+        .into_iter()
+        .map(|margin| {
+            crate::graph::OrderedFloat(margin.map_or(f64::NEG_INFINITY, |margin| margin.db))
+        })
+        .collect();
+    score.sort_unstable();
+    score
 }
 
 impl RouteOptimizer<'_> {
@@ -178,9 +176,16 @@ impl RouteOptimizer<'_> {
             before.push(measure(&current[a], &current[b])?);
         }
         let mut margins = before.clone();
+        let baseline = placement_score(before.iter().copied());
+        let fixed_ceiling = links
+            .iter()
+            .zip(&before)
+            .filter(|&(&(a, b), _)| !movable.contains(&a) && !movable.contains(&b))
+            .map(|(_, margin)| margin.map_or(f64::NEG_INFINITY, |margin| margin.db))
+            .reduce(f64::min);
         let mut trials = vec![Vec::<Site>::new(); sites.len()];
         let total = MAX_ROUNDS * movable.len();
-        for round in 0..MAX_ROUNDS {
+        'rounds: for round in 0..MAX_ROUNDS {
             let mut moved = false;
             for (slot, &index) in movable.iter().enumerate() {
                 if hooks.cancelled() {
@@ -218,6 +223,11 @@ impl RouteOptimizer<'_> {
                     }
                 }
                 let mut best_score = placement_score(margins.iter().copied());
+                if fixed_ceiling
+                    .is_some_and(|ceiling| crate::graph::OrderedFloat(ceiling) == best_score[0])
+                {
+                    break 'rounds;
+                }
                 let mut best = None;
                 let mut trial_margins = margins.clone();
                 'positions: for trial in &trials[index] {
@@ -239,7 +249,9 @@ impl RouteOptimizer<'_> {
                             continue 'positions;
                         }
                         let margin = measure(trial, &current[other])?;
-                        if margin.is_none() && margins[edge].is_some() {
+                        if margins[edge]
+                            .is_some_and(|old| margin.is_none_or(|new| old.valid && !new.valid))
+                        {
                             continue 'positions;
                         }
                         trial_margins[edge] = margin;
@@ -262,6 +274,13 @@ impl RouteOptimizer<'_> {
         }
         if hooks.cancelled() {
             return Ok(None);
+        }
+        // Moving one router can raise just one of several tied bottlenecks.
+        // Keep those steps internally, but publish moves only if the global
+        // minimum ultimately rose.
+        if placement_score(margins.iter().copied())[0] <= baseline[0] {
+            current = sites.iter().map(|site| site.rf.clone()).collect();
+            margins.clone_from(&before);
         }
         hooks.notify(Stage::RefiningRouterPositions, total, total);
         let links = links
@@ -746,6 +765,60 @@ mod placement_tests {
             [(0, 1), (1, 2)]
         );
         assert_eq!(preview.sites[1], sites[1].rf);
+    }
+
+    #[test]
+    fn a_fixed_bottleneck_leaves_every_router_in_place() {
+        let sites = [
+            site("A", 0.0, SiteKind::EndpointA, false),
+            site("R1", 200.0, SiteKind::Candidate, true),
+            site("B", 1_500.0, SiteKind::EndpointB, false),
+        ];
+        let links = [(0, 1), (0, 2), (1, 2)];
+        let rf = RfSettings::default();
+        let preview = RouteOptimizer::new(&FlatTerrain, &rf, &CandidateSettings::default())
+            .optimize_placement(
+                PlacementRequest {
+                    sites: &sites,
+                    links: Some(&links),
+                    exclusions: &[],
+                    radius_m: 250.0,
+                },
+                SearchHooks::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(preview.sites[1], sites[1].rf);
+        assert!(preview.links.iter().all(|link| link.before == link.after));
+    }
+
+    #[test]
+    fn can_raise_separately_movable_links_that_start_at_the_same_minimum() {
+        let sites = [
+            site("A", 0.0, SiteKind::EndpointA, false),
+            site("R1", 500.0, SiteKind::Candidate, true),
+            site("R2", 1_000.0, SiteKind::Candidate, true),
+            site("B", 1_500.0, SiteKind::EndpointB, false),
+        ];
+        let links = [(0, 1), (2, 3)];
+        let rf = RfSettings::default();
+        let preview = RouteOptimizer::new(&FlatTerrain, &rf, &CandidateSettings::default())
+            .optimize_placement(
+                PlacementRequest {
+                    sites: &sites,
+                    links: Some(&links),
+                    exclusions: &[],
+                    radius_m: 250.0,
+                },
+                SearchHooks::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(preview.links[0].before, preview.links[1].before);
+        assert!(preview
+            .links
+            .iter()
+            .all(|link| link.after.unwrap().db > link.before.unwrap().db));
     }
 
     #[test]

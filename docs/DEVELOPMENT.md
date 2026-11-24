@@ -106,9 +106,11 @@ several roots and charging generated routers once per installation. It
 explores alternate subsets and prunes optional routers. Per-pair paths
 enforce the hop limit and stop expansion at intermediate clients. The step
 ranks the subsets it finds by new-router count, weakest link and maximum
-pair hop count. It does not guarantee a global minimum. The optimizer
-rechecks selected installations at certification resolution and refines
-each moved router against every incident link before restoring profiles.
+pair hop count. It also explores links meeting the preferred minimum when
+the least expensive mesh is weaker. The optimizer rechecks installations at
+certification resolution and refines each moved router against every incident
+link. Published alternatives put meshes meeting the preference first and
+discard dominated router counts. The search is heuristic.
 
 Mesh result payloads add names, connected client and new-router counts, and
 `client_pairs` with site IDs, hops and weakest margin for each pair. Alternative
@@ -123,8 +125,9 @@ EPSG:3857 grid with its origin at (0, 0). These are projected map units.
 `minimum_margin_db` accepts 0 to 60 dB. The server validates unique cells,
 a maximum of 1,024 cells, and an extent of up to 120 cells on either axis.
 Only a nonempty paint area in Mesh mode affects a search. The painted
-cell centres extend the buffered hull used for terrain and candidate
-planning. The route fingerprint then includes the paint and the radio
+cell centres extend the hull used for terrain and candidate planning. The
+paint buffer defaults to 3 km around the hull. The route fingerprint
+includes the paint and the radio
 parameters from `coverage.client`.
 
 The route job evaluates up to 512 sites against the cell centres using
@@ -139,9 +142,10 @@ preserving the covered share target or improving the shortfall. Every
 candidate installation has at most 64 sites and keeps clients from
 acting as relays. Client pairs still observe the configured hop limit.
 The job can certify up to 12 rounds of alternatives. It reuses the
-coverage masks when certification changes the graph and polls the
-existing cancellation hooks throughout. Coverage remains a coarse
-prediction and the site search is heuristic.
+coverage masks when certification changes the graph and compares several
+installations at the same router budget using the live two-way model. With
+equal router counts and covered share, fewer metres from the new sites to
+the painted cells rank higher. The site search is heuristic.
 
 The existing `POST /api/projects/autosave`, terrain estimate and preparation,
 `POST /api/terrain/coverage`, and `POST /api/optimize` flows accept the
@@ -164,9 +168,11 @@ and respect optional `exclusions_wgs84` plan polygons (lists of `[latitude, long
 
 The optimizer scans a terrain grid around each router's original position for
 up to four rounds. It reevaluates links incident to each trial position at the
-final RF sample step. Moves improve the weakest margin first and the total
-margin second, and preserve evaluable links. Missing profiles rank below RF
-results. The planner scheduler queues the job, `/api/state` exposes an active
+final RF sample step. Trial moves compare the sorted margins weakest
+first, which allows a move to resolve one of several tied bottlenecks. The
+published positions change only if the weakest margin improves. The search
+preserves evaluable links and passing validation. Missing profiles rank below
+RF results. The planner scheduler queues the job, `/api/state` exposes an active
 `placement_job`, `GET /api/optimize-placement/{id}` returns progress and the
 terminal preview, and `POST /api/cancel` accepts its job ID. Placement previews
 are held in memory and tied to the project inputs, terrain and route snapshot.

@@ -178,9 +178,16 @@ pub struct OptimizationResult {
     pub alternatives: Vec<NetworkSolution>,
     pub active_index: Option<usize>,
     pub diagnostics: Vec<String>,
+    pub search_limit_hint: Option<SearchLimitHint>,
     pub elapsed: Duration,
     pub search_complete: bool,
     pub status: SearchStatus,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SearchLimitHint {
+    Hops,
+    NewRouters,
 }
 
 impl OptimizationResult {
@@ -411,7 +418,21 @@ impl<'a> RouteOptimizer<'a> {
                 "Add a painted coverage area and a target share".into(),
             ));
         }
-        self.optimize_mode(request, hooks, true, Some(paint))
+        let buffer = self.settings.paint_search_buffer_m;
+        if !(1.0..=500_000.0).contains(&buffer) {
+            return Err(OptimizationError::InvalidInput(
+                "Paint search buffer must be between 1 and 500,000 m".into(),
+            ));
+        }
+        let settings = CandidateSettings {
+            corridor_width_m: buffer,
+            ..self.settings.clone()
+        };
+        RouteOptimizer {
+            settings: &settings,
+            ..*self
+        }
+        .optimize_mode(request, hooks, true, Some(paint))
     }
 
     fn optimize_mode(
@@ -446,6 +467,7 @@ impl<'a> RouteOptimizer<'a> {
             snapshot: None,
             certified_by_count: BTreeMap::new(),
             diagnostics: Vec::new(),
+            search_limit_hint: None,
             seeds: Vec::new(),
             mesh,
         };
@@ -464,7 +486,7 @@ impl<'a> RouteOptimizer<'a> {
             &search.rf,
             &|| search.hooks.cancelled(),
             mesh,
-            paint.as_ref().map_or(&[], |area| area.cells),
+            paint.as_ref(),
         )?;
         search.sites = sites;
         search.access_budget = access_budget;
@@ -556,8 +578,9 @@ impl<'a> RouteOptimizer<'a> {
         evaluation: &RfEvaluation<'_>,
         cancelled: &dyn Fn() -> bool,
         mesh: bool,
-        paint_cells: &[Point],
+        paint: Option<&PaintObjective<'_>>,
     ) -> Result<PreparedSites, OptimizationError> {
+        let paint_cells = paint.map_or(&[][..], |area| area.cells);
         let OptimizationRequest {
             clients,
             fixed_routers,
@@ -699,6 +722,7 @@ impl<'a> RouteOptimizer<'a> {
                     self.site_filter,
                     cancelled,
                     mesh_area.as_ref(),
+                    paint.map(|area| area.distance_from_area),
                 )?;
                 let mut clutter_heights = BTreeMap::new();
                 let mut configure_clutter = |site: &mut Site| {
@@ -888,6 +912,11 @@ fn steps(
 
 fn validate_search_settings(settings: &CandidateSettings) -> Result<(), OptimizationError> {
     validate_final_step(settings.final_sample_step_m)?;
+    if !(0.0..=60.0).contains(&settings.mesh_minimum_link_margin_db) {
+        return Err(OptimizationError::InvalidInput(
+            "Minimum link margin must be between 0 and 60 dB".into(),
+        ));
+    }
     if std::iter::once(settings.coarse_sample_step_m)
         .chain(settings.maximum_link_distance_m)
         .any(|value| !value.is_finite() || value <= 0.0)
@@ -1028,6 +1057,7 @@ struct Search<'a, 'b> {
     snapshot: Option<OptimizationResult>,
     certified_by_count: BTreeMap<usize, NetworkSolution>,
     diagnostics: Vec<String>,
+    search_limit_hint: Option<SearchLimitHint>,
     seeds: Vec<Vec<String>>,
 }
 
@@ -1175,6 +1205,10 @@ impl Search<'_, '_> {
             let graph = RoutingGraph::from_links(&self.sites, self.links.values())?;
             let mut alternatives =
                 crate::connect_mesh(&graph, self.settings, &|| self.hooks.cancelled());
+            if alternatives.is_empty() {
+                self.search_limit_hint =
+                    crate::mesh::relaxation_hint(&graph, self.settings, &|| self.hooks.cancelled());
+            }
             self.hooks.notify(Stage::SearchingTopologies, 1, 1);
             let pending = self.pending_pairs(&alternatives);
             if !pending.is_empty() {
@@ -1211,7 +1245,6 @@ impl Search<'_, '_> {
         let mut masks = SiteMasks::new();
         let count = self.sites.len();
         let cell_count = paint.cells.len();
-        let target = paint.target_percent;
         self.hooks.notify(Stage::MeasuringPaintCoverage, 0, count);
         for (i, site) in self.sites.iter().enumerate() {
             if self.hooks.cancelled() {
@@ -1237,11 +1270,14 @@ impl Search<'_, '_> {
             let mut alternatives = mesh_paint::connect_cover(
                 &graph,
                 self.settings,
-                cell_count,
-                target,
                 &masks,
+                certification.objective(),
                 &|| self.hooks.cancelled(),
             );
+            if alternatives.is_empty() {
+                self.search_limit_hint =
+                    crate::mesh::relaxation_hint(&graph, self.settings, &|| self.hooks.cancelled());
+            }
             let pending = self.pending_pairs(&alternatives);
             if !pending.is_empty() {
                 self.validate_pairs(pending)?;
@@ -1692,7 +1728,7 @@ impl Search<'_, '_> {
 
     fn certify_paint(
         &mut self,
-        alternatives: &mut [NetworkSolution],
+        alternatives: &mut Vec<NetworkSolution>,
         certification: &mut PaintCertification<'_>,
     ) -> Result<(), OptimizationError> {
         let count = alternatives.len();
@@ -1704,6 +1740,9 @@ impl Search<'_, '_> {
             certification.certify(solution, &|| self.hooks.cancelled())?;
         }
         alternatives.sort_by(|a, b| mesh_paint::compare(b, a));
+        let mut seen_budgets = BTreeSet::new();
+        alternatives.retain(|solution| seen_budgets.insert(solution.new_router_count()));
+        alternatives.truncate(mesh_paint::MAX_PAINT_ALTERNATIVES);
         Ok(())
     }
 
@@ -1841,15 +1880,20 @@ impl Search<'_, '_> {
 
     fn result(
         &self,
-        alternatives: Vec<NetworkSolution>,
+        mut alternatives: Vec<NetworkSolution>,
         search_complete: bool,
     ) -> OptimizationResult {
         let active_index = if self.mesh {
-            alternatives
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| mesh_paint::compare(a, b))
-                .map(|(index, _)| index)
+            if alternatives
+                .first()
+                .is_some_and(|solution| solution.paint_coverage.is_none())
+            {
+                crate::mesh::prune_dominated(&mut alternatives);
+                alternatives.sort_by(|a, b| {
+                    crate::mesh::compare_preferred(b, a, self.settings.mesh_minimum_link_margin_db)
+                });
+            }
+            (!alternatives.is_empty()).then_some(0)
         } else {
             select_active_solution_index(&alternatives, self.settings.priority)
         };
@@ -1879,6 +1923,7 @@ impl Search<'_, '_> {
             alternatives,
             active_index,
             diagnostics,
+            search_limit_hint: self.search_limit_hint,
             elapsed: self.started.elapsed(),
             search_complete,
             status: if search_complete {
@@ -1903,6 +1948,7 @@ impl Search<'_, '_> {
             alternatives: Vec::new(),
             active_index: None,
             diagnostics: vec!["Optimization cancelled".into()],
+            search_limit_hint: None,
             elapsed: self.started.elapsed(),
             search_complete: false,
             status: SearchStatus::Cancelled,

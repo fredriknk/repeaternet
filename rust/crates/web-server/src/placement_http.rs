@@ -309,7 +309,7 @@ fn optimize(
                 .map_err(terrain_invalid)?;
             let to = transform.reverse(new.position).map_err(terrain_invalid)?;
             Ok(
-                json!({"id": new.id, "moved": old.rf.position != new.position,
+                json!({"id": new.id, "movable": old.movable, "moved": old.rf.position != new.position,
             "before": [from.latitude, from.longitude], "after": [to.latitude, to.longitude]}),
             )
         })

@@ -338,6 +338,7 @@ mod tests {
             Some(&filter),
             &|| false,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(counts, [8, 9]);
@@ -423,6 +424,7 @@ mod tests {
             None,
             &|| false,
             None,
+            None,
         )
         .unwrap();
         let initial = generated.clone();
@@ -472,6 +474,7 @@ mod tests {
             &[],
             None,
             &|| false,
+            None,
             None,
         )
         .unwrap();
