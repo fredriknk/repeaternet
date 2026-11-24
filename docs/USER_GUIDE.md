@@ -70,7 +70,7 @@ Open **⋯** for project actions.
 | **Recover previous save** | Restores the previous saved plan revision and makes the current revision the recovery copy. This appears when a previous revision exists. |
 | **Export plan file** | Downloads a portable `route.webplan.json` with settings, sites, policies and targets. Terrain and computed results are separate. |
 | **Data sources…** | Manage the terrain providers and map layers available to all projects on this server. |
-| **Import plan file…** | Opens the plan JSON and autosaves its settings and sites in the current project. Import into a new project to keep both plans. Load matching terrain as needed. |
+| **Import plan file…** | Opens the plan JSON and saves its settings and sites in the current project. Wait for the save confirmation before reloading. If saving fails, the top bar offers **Retry save**. Import into a new project to keep both plans. Load matching terrain as needed. |
 | **Archive** | Removes the project from the active list and keeps its saved data. The dashboard switches to another project or creates a replacement. |
 | **Archived projects** → **Restore** | Returns an archived project to the active list and opens it. |
 | **Delete permanently…** | Deletes the selected project's stored data after confirmation. |
@@ -184,6 +184,9 @@ uncovered. Use live coverage for a closer look at the chosen sites.
 the selector describes which providers cover the route and which may fill gaps.
 Choose a specific provider to prefer it, then use **Fill gaps from other
 sources** to control whether the planner can use other providers as needed.
+
+If a terrain check overlaps a save and the route inputs change, the planner
+checks terrain again once the save finishes.
 
 Choose **Estimate terrain**. Review the tile count, effective resolution,
 space needed on the server, and sources. The download size counts only tiles

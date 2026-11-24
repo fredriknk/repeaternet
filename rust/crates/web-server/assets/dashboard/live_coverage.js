@@ -429,7 +429,7 @@ function syncLiveCoverage() {
     const key = liveCoverageKey(site);
     if (slot.key === key && (slot.loading || slot.error || (slot.raster && !slot.raster.preview))) continue;
     slot.controller?.abort();
-    slot.key = key; slot.error = ''; slot.loading = false;
+    slot.key = key; slot.error = ''; slot.loading = false; slot.retries = 0;
     const cached = liveCoverage.cache.get(key);
     if (cached) {
       liveCoverageCachePut(key, cached);
@@ -462,25 +462,27 @@ async function pumpLiveCoverage() {
 async function loadLiveCoverageSlot(slot) {
   const key = slot.key, controller = new AbortController();
   slot.controller = controller;
+  const current = () => !controller.signal.aborted && slot.controller === controller &&
+    slot.key === key && liveCoverage.slots.get(slot.slot) === slot && projectInfo?.active_id === slot.projectId;
   try {
     // The server reads radio settings from the saved plan, so save pending edits first.
     await flushAutosave().catch(() => {});
-    if (slot.key !== key || controller.signal.aborted) return;
+    if (!current()) return;
     const raster = await fetchLiveCoverage(liveCoverageRequest(slot.site, liveCoverage.settings.detail_m), controller.signal);
+    if (!current()) return;
     liveCoverageCachePut(key, raster);
     liveCoverage.noTerrain = '';
     slot.retries = 0;
-    if (slot.key !== key || liveCoverage.slots.get(slot.slot) !== slot) return;
     const previous = slot.raster;
     slot.raster = raster;
     slot.loading = false;
     redrawLiveCoverage(previous, raster);
   } catch (error) {
-    if (error.name === 'AbortError' || slot.key !== key) return;
+    if (error.name === 'AbortError' || !current()) return;
     // Radio settings or terrain changed while this site was calculated: try again.
     if (error.status === 409 && /changed during the request/i.test(error.message) && (slot.retries = (slot.retries || 0) + 1) <= 3) {
       setTimeout(() => {
-        if (liveCoverage.slots.get(slot.slot) !== slot || slot.key !== key) return;
+        if (liveCoverage.slots.get(slot.slot) !== slot || slot.key !== key || !slot.loading || slot.controller) return;
         liveCoverage.queue.push(slot);
         pumpLiveCoverage();
       }, 300 * slot.retries);
@@ -680,7 +682,8 @@ function bindLiveCoverageDrag(marker, describe) {
 
 async function requestLiveCoveragePreview() {
   const drag = liveCoverage.drag;
-  if (!drag || !liveCoverage.slots.has(drag.slot) || liveCoverage.previewBusy) return;
+  const slot = drag && liveCoverage.slots.get(drag.slot);
+  if (!slot || liveCoverage.previewBusy) return;
   const site = drag.describe(), latlng = drag.latlng;
   if (!site) return;
   liveCoverage.previewBusy = true;
@@ -689,8 +692,9 @@ async function requestLiveCoveragePreview() {
     const resolution = Math.min(500, Math.max(liveCoverage.settings.detail_m * 4, 120));
     const raster = await fetchLiveCoverage(liveCoverageRequest(preview, resolution));
     raster.preview = true;
-    const slot = liveCoverage.slots.get(site.slot);
-    if (slot && (liveCoverage.drag?.slot === site.slot || slot.loading)) {
+    const activeDrag = liveCoverage.drag;
+    if (liveCoverage.slots.get(site.slot) === slot && projectInfo?.active_id === slot.projectId &&
+        (activeDrag === drag || (!activeDrag && slot.loading))) {
       const previous = slot.raster;
       slot.raster = raster;
       liveCoverage.lastPreview = {latitude: latlng.lat, longitude: latlng.lng, raster};
@@ -702,7 +706,7 @@ async function requestLiveCoveragePreview() {
     liveCoverage.previewBusy = false;
   }
   const next = liveCoverage.drag;
-  if (next && next.slot === site.slot && !next.latlng.equals(latlng)) requestLiveCoveragePreview();
+  if (next && (next !== drag || !next.latlng.equals(latlng))) requestLiveCoveragePreview();
 }
 
 function liveCoverageProgress() {

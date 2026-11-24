@@ -18,6 +18,33 @@ function load(globals = {}) {
   return context;
 }
 
+test('a superseded live coverage slot cannot publish a raster or replace its cache entry', async () => {
+  const pending = [];
+  const context = load({
+    AbortController,
+    projectInfo: { active_id: 'project' },
+    flushAutosave: async () => {},
+  });
+  context.fetchLiveCoverage = () => new Promise(resolve => pending.push(resolve));
+  context.liveCoverageRequest = () => ({});
+  context.redrawLiveCoverage = () => {};
+  const slot = { slot: 'endpoint:b', key: 'current', projectId: 'project', loading: true };
+  context.liveCoverage.slots.set(slot.slot, slot);
+
+  const first = context.loadLiveCoverageSlot(slot);
+  await new Promise(setImmediate);
+  slot.controller.abort();
+  const second = context.loadLiveCoverageSlot(slot);
+  await new Promise(setImmediate);
+  const current = { id: 'current' };
+  pending[1](current);
+  await second;
+  pending[0]({ id: 'superseded' });
+  await first;
+  assert.equal(slot.raster, current);
+  assert.equal(context.liveCoverage.cache.get(slot.key), current);
+});
+
 /* Build an RNLC body with a 3857 raster whose west/north edge is at (0, 0). */
 function encode(header, codes) {
   const json = Buffer.from(JSON.stringify({ floor_db: -20, step_db: .5, origin_x: 0, origin_y: 0, pixel_size: 10, ...header }));

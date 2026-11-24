@@ -11,6 +11,156 @@ function section(start, end) {
   return app.slice(first, last);
 }
 
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+test('plan import confirms only after autosave succeeds and exposes failed saves', async () => {
+  const messages = [], elements = new Map();
+  let save = deferred(), started = deferred(), imported;
+  const context = vm.createContext({
+    $(id) {
+      if (!elements.has(id)) elements.set(id, { dataset: {} });
+      return elements.get(id);
+    },
+    async api(url, options) {
+      assert.equal(url, '/api/projects/autosave');
+      started.resolve(JSON.parse(options.body));
+      return save.promise;
+    },
+    projectInfo: { active_id: 'project' }, autosaveTimer: null, clone: structuredClone,
+    plan: () => imported, load: plan => { imported = plan; },
+    clearSiteSelection() {}, setHistoryButtons() {}, mapEditsLocked: () => false,
+    setTimeout: () => 1, clearTimeout() {}, status: message => messages.push(message),
+  });
+  vm.runInContext(
+    section('let saveRevision=', 'function renderProjects(') +
+    section('function formatBytes(', "$('retry-save').onclick") +
+    section('async function importPlan(', "$('open').onchange"), context);
+  const open = mode => context.importPlan({ target: { files: [{ text: async () => JSON.stringify({ mode }) }] } });
+
+  const first = open('mesh');
+  assert.equal((await started.promise).plan.mode, 'mesh');
+  assert.deepEqual(messages, []);
+  assert.equal(elements.get('project-storage').dataset.saveState, 'saving');
+  save.resolve({ has_previous_revision: true });
+  await first;
+  assert.match(messages.pop(), /^Plan opened and saved/);
+  assert.equal(elements.get('project-storage').dataset.saveState, 'saved');
+
+  save = deferred(); started = deferred();
+  const second = open('endpoints');
+  await started.promise;
+  save.reject(new Error('Connection interrupted'));
+  await second;
+  assert.deepEqual(messages, []);
+  assert.match(elements.get('project-storage').textContent, /^Save failed/);
+  assert.equal(elements.get('retry-save').hidden, false);
+  assert.equal(elements.get('retry-save').textContent, 'Retry save');
+});
+
+function terrainHarness(api, globals = {}) {
+  const note = {}, layers = [], readiness = [];
+  const context = vm.createContext({
+    api, coverageTimer: null, terrainLoaded: true, coverageTerrainLoaded: false,
+    saveQueue: Promise.resolve(), saveState: 'saved', savedRevision: 0, saveRevision: 0,
+    $: () => note, clearTimeout() {}, setTimeout: () => 1, scheduleTerrainSourcePreview() {},
+    updatePlanReadiness: report => readiness.push(report?.covered ?? null),
+    coverageLayer: { clearLayers() { layers.length = 0; } },
+    L: { circleMarker() { return { bindTooltip: label => ({ addTo() { layers.push(label); } }) }; } },
+    ...globals,
+  });
+  vm.runInContext(
+    section('let terrainCheckSequence=', 'function sourceJsonRequest(') +
+    section('function renderTerrainCoverage(', 'function syncCoverageInputs(') +
+    section('function terrainInputsChanged(', 'function setTargetStatus('), context);
+  return { context, note, layers, readiness };
+}
+
+function terrainReport(site = null) {
+  const uncovered_sites = site ? [{ name: site, latitude: 61, longitude: 10.82 }] : [];
+  return { covered: !site, dtm_outlines: [], dom_outlines: [], line_gaps: [], uncovered_sites };
+}
+
+test('terrain checks ignore responses superseded by a newer check or a scheduled edit', async () => {
+  const requests = [];
+  const { context, note, layers, readiness } = terrainHarness(() => {
+    const request = deferred();
+    requests.push(request);
+    return request.promise;
+  });
+  const outside = context.updateTerrainCoverage({ b: [61, 10.82] });
+  const inside = context.updateTerrainCoverage({ b: [60.11815, 10.82035] });
+  requests[1].resolve(terrainReport());
+  await inside;
+  requests[0].resolve(terrainReport('B'));
+  await outside;
+  assert.match(note.textContent, /^Ground terrain covers selected sites/);
+  assert.deepEqual(layers, []);
+  assert.deepEqual(readiness, [true]);
+
+  const waiting = context.updateTerrainCoverage({ b: [60.11815, 10.82035] });
+  context.scheduleCoverageCheck();
+  requests[2].reject(new Error('Superseded error'));
+  await waiting;
+  assert.doesNotMatch(note.textContent, /Superseded error/);
+  assert.deepEqual(readiness, [true, null]);
+});
+
+test('terrain conflict retries exactly once after the pending save and hides the API message', async () => {
+  const save = deferred(), requests = [];
+  const conflict = Object.assign(new Error('The active project or route inputs changed during the request'), { status: 409 });
+  const { context, note, readiness } = terrainHarness((url, options) => {
+    requests.push([url, options.body]);
+    throw conflict;
+  }, { saveQueue: save.promise });
+  const waiting = context.updateTerrainCoverage({ mode: 'mesh' });
+  await Promise.resolve();
+  assert.equal(requests.length, 1);
+  assert.match(note.textContent, /^Checking terrain/);
+  save.resolve();
+  await waiting;
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.doesNotMatch(note.textContent, /active project or route inputs/);
+  assert.equal(note.className, 'hint error');
+  assert.deepEqual(readiness, [null]);
+});
+
+test('a late target assessment cannot replace the selected run’s target results', async () => {
+  const requests = [], statuses = [], elements = new Map();
+  let active = { job_id: 'first-run', state: 'complete' };
+  const context = vm.createContext({
+    $(id) {
+      if (!elements.has(id)) elements.set(id, { value: '100', replaceChildren() {} });
+      return elements.get(id);
+    },
+    activeCoverageRun: () => active,
+    api() {
+      const request = deferred();
+      requests.push(request);
+      return request.promise;
+    },
+    coverageTargetAssessmentRequest: 0, coverageTargets: [{}],
+    busy: false, coverageBusy: false, switchingProject: false,
+    renderCoverageTargets() {}, refreshCoverageTargetReports() {},
+    setTargetStatus: message => statuses.push(message),
+  });
+  vm.runInContext(section('async function assessSavedTargets(', 'async function refreshCoverageTargetReports('), context);
+  const first = context.assessSavedTargets();
+  active = { job_id: 'second-run', state: 'complete' };
+  context.resetCoverageTargetAssessment();
+  const second = context.assessSavedTargets();
+  requests[1].resolve({ targets: [], report_id: 'latest-report' });
+  await second;
+  requests[0].reject(new Error('Old assessment failed'));
+  await first;
+  assert.match(statuses.at(-1), /run second-r · report latest-r/);
+  assert.equal(elements.get('coverage-assess-targets').disabled, false);
+});
+
 test('removing search-found routers is one edit scoped to the current search', () => {
   const site = (id, origin, kind = 'router') => ({ id, origin, kind, latitude: 60, longitude: 15 });
   const route = [
