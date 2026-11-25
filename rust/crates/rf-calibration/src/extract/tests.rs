@@ -24,6 +24,11 @@ fn core_snapshot(path: &Path, host: &str) -> Connection {
     ] {
         db.execute_batch(schema).unwrap();
     }
+    // Start with the legacy layout even after capture adds the optional tables.
+    db.execute_batch(
+        "DROP TABLE IF EXISTS trace_hops; DROP TABLE IF EXISTS observer_neighbor_reports;",
+    )
+    .unwrap();
     db.execute("INSERT INTO capture_instance VALUES (1, ?)", [host])
         .unwrap();
     db.execute(
@@ -393,4 +398,170 @@ fn corescope_attributes_only_flood_routes_and_flags_suspect_links() {
     assert!(!flags(60.01).contains(&"implausible_signal".to_string()));
     assert!(flags(60.04).contains(&"short_relay_prefix".to_string()));
     assert!(flags(62.00).contains(&"implausible_signal".to_string()));
+}
+
+#[test]
+fn corescope_extracts_flood_trace_and_observer_report_evidence() {
+    let work = tempfile::tempdir().unwrap();
+    let snapshots = work.path().join("snapshots");
+    let dataset = work.path().join("dataset");
+    fs::create_dir(&snapshots).unwrap();
+    fs::write(work.path().join("salt.txt"), "salt").unwrap();
+    let host = "https://meshview.example.test";
+    let db = core_snapshot(
+        &snapshots.join("corescope-capture-meshview.example.test.sqlite3"),
+        host,
+    );
+    db.execute_batch(
+        r#"
+        INSERT INTO nodes_snapshot VALUES
+          (1,'1970-01-01T00:00:01Z','11112222',60.06,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','11223344',50,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','22334455',60.09,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','22445566',51,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','33334455',60.11,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','33336677',60.12,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','44445555',62.1,10,'{}'),
+          (1,'1970-01-01T00:00:01Z','11119999',0,0,'{}');
+        INSERT INTO observers_snapshot VALUES
+          (1,'1970-01-01T00:00:01Z','44445555',62.1,10,
+           '{"radio":"869.617981,62.5,8,8","noise_floor":-80}');
+        CREATE TABLE trace_hops (
+          endpoint TEXT NOT NULL, packet_id INTEGER NOT NULL, packet_hash TEXT NOT NULL,
+          observer_id TEXT, timestamp TEXT NOT NULL, hash_size INTEGER NOT NULL,
+          path_hashes TEXT NOT NULL, snr_values TEXT NOT NULL,
+          PRIMARY KEY (endpoint, packet_id)) WITHOUT ROWID;
+        INSERT INTO trace_hops VALUES
+          ('test',1,'t1','BB','1970-01-01T00:00:10Z',1,'["11","22","bb"]','[90,-7,4]'),
+          ('test',2,'t2','BB','1970-01-01T00:00:11Z',2,'["1111","2233"]','[99,-6]'),
+          ('test',3,'t3','BB','1970-01-01T00:00:12Z',1,'["22","33"]','[99,-4]'),
+          ('test',4,'t4',NULL,'1970-01-01T00:00:13Z',-1,'["11","bb"]','[99,2]');
+        CREATE TABLE observer_neighbor_reports (
+          endpoint TEXT NOT NULL, observer_id TEXT NOT NULL, received_at TEXT NOT NULL,
+          reported_at TEXT, neighbor_pubkey TEXT NOT NULL, snr REAL, heard_secs_ago INTEGER,
+          status TEXT, PRIMARY KEY (endpoint, observer_id, received_at, neighbor_pubkey)) WITHOUT ROWID;
+        INSERT INTO observer_neighbor_reports VALUES
+          ('test','BB','1970-01-01T00:00:15Z','1970-01-01T00:00:13Z','11112222',-3,2,NULL),
+          ('test','bb','1970-01-01T00:00:16Z',NULL,'11112222',1,2,NULL),
+          ('test','BB','1970-01-01T00:00:17Z',NULL,'unknown-key',2,0,NULL),
+          ('test','BB','1970-01-01T00:00:18Z',NULL,'11112222',NULL,0,NULL);
+        "#,
+    ).unwrap();
+    for (i, hash, prefixes, path, route, payload) in [
+        (
+            1,
+            "relay",
+            r#"["1111","2233","4444"]"#,
+            r#"["11112222","22334455","44445555"]"#,
+            0,
+            4,
+        ),
+        (
+            2,
+            "relay",
+            r#"["1111","2233"]"#,
+            r#"["11112222","22334455"]"#,
+            1,
+            4,
+        ),
+        (
+            3,
+            "short",
+            r#"["11","2233"]"#,
+            r#"["11112222","22334455"]"#,
+            1,
+            0,
+        ),
+        (
+            4,
+            "ambiguous",
+            r#"["1111","3333"]"#,
+            r#"["11112222","33334455"]"#,
+            1,
+            0,
+        ),
+        (
+            5,
+            "mismatch",
+            r#"["1111","1122"]"#,
+            r#"["11112222","22334455"]"#,
+            1,
+            0,
+        ),
+        (
+            6,
+            "direct",
+            r#"["2233","1111"]"#,
+            r#"["22334455","11112222"]"#,
+            2,
+            4,
+        ),
+    ] {
+        db.execute(
+            "INSERT INTO observations(endpoint, packet_id, observation_key, packet_hash,
+                observer_id, first_seen, timestamp, path_prefixes, resolved_path, direction,
+                route_type, payload_type, sender_pubkey, rssi, snr)
+             VALUES (?1, ?2, 'rx', ?3, 'BB', '1970-01-01T00:00:10Z', '1970-01-01T00:00:10Z',
+                     ?4, ?5, 'rx', ?6, ?7, 'AA', -100, 0)",
+            params![host, i, hash, prefixes, path, route, payload],
+        )
+        .unwrap();
+    }
+    drop(db);
+    run(&snapshots, &dataset).unwrap();
+    let links: Vec<LinkRecord> = lines(&dataset.join("links.jsonl"));
+    let id = |raw| node_id("salt", "corescope", raw);
+    let find = |evidence, tx, rx| {
+        links
+            .iter()
+            .find(|l| l.evidence == evidence && l.tx.node == id(tx) && l.rx.node == id(rx))
+            .unwrap()
+    };
+    let relay = Evidence::CorescopeRelayHop;
+    assert_eq!(links.iter().filter(|l| l.evidence == relay).count(), 3);
+    let origin = find(relay, "AA", "11112222");
+    let middle = find(relay, "11112222", "22334455");
+    for link in [origin, middle] {
+        assert_eq!(link.n, 1);
+        assert!(link.snr_db.is_none() && link.rssi_dbm.is_none() && link.signal_dbm.is_none());
+        assert_eq!(link.detection.as_ref().unwrap().heard, 1);
+        assert_eq!(link.detection.as_ref().unwrap().opportunities, 0);
+        assert_eq!(link.radio.field_basis["sf"], "instance_observer_radio_mode");
+        assert_eq!(link.region, Region::Norway);
+    }
+    let distant = find(relay, "22334455", "44445555");
+    assert!(
+        distant
+            .flags
+            .iter()
+            .any(|flag| flag == "implausible_distance")
+    );
+    assert_eq!(distant.radio.field_basis["sf"], "observer_snapshot");
+    find(Evidence::CorescopeLastHop, "44445555", "BB");
+    let trace = find(Evidence::CorescopeTraceHop, "11112222", "22334455");
+    assert_eq!(trace.snr_db.as_ref().unwrap().median, -6.5);
+    assert_eq!(trace.n, 2); // Only one 11 -> 22 candidate pair was in range.
+    let trace_into_observer = find(Evidence::CorescopeTraceHop, "22334455", "BB");
+    assert_eq!(trace_into_observer.snr_db.as_ref().unwrap().median, 4.0);
+    assert_eq!(trace_into_observer.receiver_noise_floor_dbm, Some(-113.0));
+    let report = find(Evidence::CorescopeNeighborReport, "11112222", "BB");
+    assert_eq!(report.n, 2);
+    assert_eq!(report.snr_db.as_ref().unwrap().median, -1.0);
+    assert_eq!(report.first_ms, Some(11_000));
+    assert_eq!(report.last_ms, Some(14_000));
+    assert_eq!(report.source, "corescope:meshview.example.test");
+    let summary: Value =
+        serde_json::from_slice(&fs::read(dataset.join("summary.json")).unwrap()).unwrap();
+    let counts = &summary["sources"][0]["input_counts"];
+    assert_eq!(counts["relay_one_byte_prefix"], 1);
+    assert_eq!(counts["relay_ambiguous_prefix"], 1);
+    assert_eq!(counts["relay_unresolved"], 1);
+    assert_eq!(counts["trace_unresolved"], 1);
+    assert_eq!(counts["trace_invalid_route"], 1);
+    assert_eq!(counts["neighbor_report_invalid_time_or_snr"], 1);
+    assert!(
+        !fs::read_to_string(dataset.join("links.jsonl"))
+            .unwrap()
+            .contains("11112222")
+    );
 }

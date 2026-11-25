@@ -54,6 +54,7 @@ mod tests {
         let dst = tempfile::tempdir().unwrap();
         for name in [
             "corescope-capture.sqlite3",
+            "corescope-capture-meshview.example.sqlite3",
             "corescope-capture.backup-1.sqlite3",
             "projects.sqlite3",
         ] {
@@ -64,7 +65,13 @@ mod tests {
             .unwrap();
         }
         let copied = snapshot_all(src.path(), dst.path()).unwrap();
-        assert_eq!(copied, vec!["corescope-capture.sqlite3".to_string()]);
+        assert_eq!(
+            copied,
+            [
+                "corescope-capture-meshview.example.sqlite3",
+                "corescope-capture.sqlite3"
+            ]
+        );
         let c = Connection::open(dst.path().join("corescope-capture.sqlite3")).unwrap();
         let n: i64 = c
             .query_row("SELECT count(*) FROM t", [], |r| r.get(0))

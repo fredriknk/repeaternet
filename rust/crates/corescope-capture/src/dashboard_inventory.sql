@@ -1,20 +1,32 @@
-WITH latest AS (
+WITH RECURSIVE latest AS (
     SELECT id FROM capture_runs WHERE endpoint = ?1
       AND mode IN ('watch-topology', 'snapshot', 'run')
       AND status = 'complete' ORDER BY id DESC LIMIT 1
 ), nodes AS (
     SELECT pubkey, lat, lon, NULLIF(json_extract(raw_json, '$.name'), '') AS name
     FROM nodes_snapshot WHERE run_id = (SELECT id FROM latest)
-), valid_adverts AS (
-    SELECT sender_pubkey AS pubkey, advert_lat AS lat, advert_lon AS lon,
-           NULLIF(advert_name, '') AS name,
-           row_number() OVER (PARTITION BY sender_pubkey ORDER BY seen_unix DESC, packet_id DESC) AS priority
-    FROM observations
+), senders(pubkey) AS (
+    -- Step from sender to sender in the index instead of reading every advert.
+    SELECT min(sender_pubkey) FROM observations INDEXED BY observations_adverts
     WHERE endpoint = ?1 AND sender_pubkey IS NOT NULL
       AND advert_lat BETWEEN -90 AND 90 AND advert_lon BETWEEN -180 AND 180
       AND (advert_lat <> 0 OR advert_lon <> 0)
-), adverts AS (
-    SELECT pubkey, lat, lon, name FROM valid_adverts WHERE priority = 1
+    UNION ALL
+    SELECT (SELECT min(sender_pubkey) FROM observations INDEXED BY observations_adverts
+            WHERE endpoint = ?1 AND sender_pubkey > senders.pubkey AND sender_pubkey IS NOT NULL
+      AND advert_lat BETWEEN -90 AND 90 AND advert_lon BETWEEN -180 AND 180
+      AND (advert_lat <> 0 OR advert_lon <> 0))
+    FROM senders WHERE pubkey IS NOT NULL
+), adverts AS MATERIALIZED (
+    SELECT s.pubkey, o.advert_lat AS lat, o.advert_lon AS lon, NULLIF(o.advert_name, '') AS name
+    FROM senders s JOIN observations o ON o.endpoint = ?1
+      AND (o.packet_id, o.observation_key) = (
+        SELECT packet_id, observation_key FROM observations INDEXED BY observations_adverts
+        WHERE endpoint = ?1 AND sender_pubkey = s.pubkey AND sender_pubkey IS NOT NULL
+      AND advert_lat BETWEEN -90 AND 90 AND advert_lon BETWEEN -180 AND 180
+      AND (advert_lat <> 0 OR advert_lon <> 0)
+        ORDER BY seen_unix DESC, packet_id DESC LIMIT 1)
+    WHERE s.pubkey IS NOT NULL
 ), observers AS (
     SELECT observer_id, lat, lon, NULLIF(json_extract(raw_json, '$.name'), '') AS name,
            lower(COALESCE(json_extract(raw_json, '$.public_key'), json_extract(raw_json, '$.pubkey'))) AS pubkey

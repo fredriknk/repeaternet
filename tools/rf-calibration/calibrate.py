@@ -18,7 +18,7 @@ import json
 import math
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +40,7 @@ EXCLUDE_LINK_FLAGS = {
     "self_link",
     "radio_mismatch",
     "implausible_signal",
+    "implausible_distance",
 }
 EXCLUDE_ENDPOINT_FLAGS = {"default_position", "moved"}
 SNR_SATURATION_DB = 9.0
@@ -52,7 +53,17 @@ BLOCKS = {
     "corescope_signal": (PLANNER_BUDGET_DB, 4.0),
     "meshtastic_signal": (PLANNER_BUDGET_DB, 5.0),
     "meshtastic_snr": (0.0, math.inf),
+    "corescope_trace_snr": (0.0, math.inf),
+    "corescope_neighbor_snr": (0.0, math.inf),
 }
+RELAY = "corescope_relay_hop"
+CORE_SNR_BLOCKS = {
+    "corescope_trace_hop": "corescope_trace_snr",
+    "corescope_neighbor_report": "corescope_neighbor_snr",
+}
+NEW_EVIDENCE = (RELAY, *CORE_SNR_BLOCKS)
+SNR_BLOCKS = {"meshtastic_snr", *CORE_SNR_BLOCKS.values()}
+RELAY_ANCHORS = {"corescope_last_hop", "corescope_zero_hop", "corescope_non_detection"}
 
 ROLE_HEIGHT_PRIOR = {
     "repeater": 6.0,
@@ -105,6 +116,8 @@ def read_jsonl(path: Path):
 
 def link_block(rec: dict) -> str | None:
     ev = rec["evidence"]
+    if ev in CORE_SNR_BLOCKS:
+        return CORE_SNR_BLOCKS[ev] if rec.get("snr_db") else None
     if ev.startswith("corescope"):
         return "corescope_signal"
     if rec.get("signal_dbm"):
@@ -160,6 +173,7 @@ def build_observations(links: list[dict], nodes_meta: dict) -> tuple[list[dict],
             drops["no_signal"] += 1
             continue
         rx = rec["rx"]["node"]
+        evidence = rec["evidence"]
         sf = (rec.get("radio") or {}).get("sf")
         if noise_by_rx.get(rx):
             noise = float(np.median(noise_by_rx[rx]))
@@ -168,13 +182,17 @@ def build_observations(links: list[dict], nodes_meta: dict) -> tuple[list[dict],
         else:
             noise = DEFAULT_NOISE_DBM
         floor = noise + cm.detection_floor_snr(sf)
+        if evidence == RELAY:
+            receiver_noise = rec.get("receiver_noise_floor_dbm")
+            floor = (DEFAULT_NOISE_DBM if receiver_noise is None else receiver_noise) + cm.detection_floor_snr(sf)
         obs = {
             "link_id": rec["link_id"],
             "path_id": None,
             "tx": rec["tx"]["node"],
             "rx": rx,
             "block": block,
-            "evidence": rec["evidence"],
+            "evidence": evidence,
+            "floor": floor,
             "source": rec["source"],
             "region": rec["region"],
             "distance_m": rec["distance_m"],
@@ -194,6 +212,16 @@ def build_observations(links: list[dict], nodes_meta: dict) -> tuple[list[dict],
                 drops["non_detection_few_opportunities"] += 1
                 continue
             obs.update(y=float("nan"), cens=-1, bound=cm.non_detection_bound(floor, DEFAULT_SIGMA_T, m_eff))
+        elif evidence == RELAY:
+            obs.update(y=float("nan"), cens=1, bound=floor)
+        elif evidence in CORE_SNR_BLOCKS:
+            s = rec["snr_db"]
+            noise_floor = rec.get("receiver_noise_floor_dbm")
+            # Express known receivers' SNR on a common noise reference. The
+            # receive offset absorbs the noise contribution where it is unknown.
+            shift = 0.0 if noise_floor is None else float(noise_floor) - DEFAULT_NOISE_DBM
+            obs.update(y=float(s["median"]) + shift, cens=0, bound=float("nan"))
+            obs["sigma_t"] = max(s.get("mad") or 0.0, 1.0)
         elif block == "meshtastic_snr":
             s = rec["snr_db"]
             if s["median"] >= SNR_SATURATION_DB:
@@ -217,6 +245,8 @@ def build_observations(links: list[dict], nodes_meta: dict) -> tuple[list[dict],
                     obs["censoring_corrected"] = True
             obs.update(y=y, cens=0, bound=float("nan"), sigma_t=sigma_t)
         key = (obs["tx"], obs["rx"], block)
+        if evidence in NEW_EVIDENCE:
+            key += (evidence, rec["source"])
         prev = best.get(key)
         if prev is None or (obs["n"], obs["cens"] == 0) > (prev["n"], prev["cens"] == 0):
             if prev is not None:
@@ -231,7 +261,7 @@ def rx_role(rec: dict) -> str | None:
     role = rec["rx"].get("role")
     if role:
         return role
-    if rec["evidence"].startswith("corescope"):
+    if rec["evidence"] in RELAY_ANCHORS or rec["evidence"] == "corescope_neighbor_report":
         return "observer"
     return None
 
@@ -361,7 +391,7 @@ def priors_for(block_ix: dict, budget_sd_scale: float = 1.0) -> cm.Priors:
     )
 
 
-def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
+def evaluate_config(obs, grids_total, grids_excess, folds, args, evidence=None):
     node_ids = sorted({o["tx"] for o in obs} | {o["rx"] for o in obs})
     node_ix = {n: i for i, n in enumerate(node_ids)}
     block_names = sorted({o["block"] for o in obs})
@@ -390,14 +420,19 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
     c_folds, scale_folds = [], []
     fold_tx = np.array([folds[node_ids[i]] for i in d.tx])
     fold_rx = np.array([folds[node_ids[i]] for i in d.rx])
+    focus = np.array([evidence is None or o["evidence"] == evidence for o in obs])
+    relay = np.array([o["evidence"] == RELAY for o in obs])
+    floors = np.array([o["floor"] for o in obs])
     exc_prior = cm.interp_pl(grids_excess, h_prior[d.tx], h_prior[d.rx])
     # Fold pairs: test links whose endpoint folds are {k, j}; train on links that
     # touch neither fold, so no test node is seen in training.
+    min_train = 5 if evidence in CORE_SNR_BLOCKS else 20
     for k in range(args.folds):
         for j in range(k, args.folds):
             test = ((fold_tx == k) & (fold_rx == j)) | ((fold_tx == j) & (fold_rx == k))
             train = (fold_tx != k) & (fold_rx != k) & (fold_tx != j) & (fold_rx != j)
-            if test.sum() == 0 or (train & (d.cens == 0)).sum() < 20:
+            eligible = train if evidence == RELAY else train & (d.cens == 0)
+            if not test.any() or eligible.sum() < min_train:
                 continue
             dtr = d.subset(train)
             f_tr, _ = cm.fit_with_heights(dtr, grids_total[train], h_prior, pri, rounds=2)
@@ -413,12 +448,13 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
             mu_cv_scaled[test] = f_sc.c[d.block[test]] - pl_prior[test] + f_sc.beta[0] * exc_prior[test]
             sd_cv_scaled[test] = np.sqrt(f_sc.sigma**2 + f_sc.sigma_u**2 + f_sc.sigma_w**2)
 
-    observed = d.cens == 0
+    observed = (d.cens == 0) & focus
     out = {
-        "n_links": int(d.y.size),
+        "n_links": int(focus.sum()),
         "n_observed": int(observed.sum()),
         "n_non_detection": int((d.cens == -1).sum()),
-        "n_saturated": int((d.cens == 1).sum()),
+        "n_saturated": int(((d.cens == 1) & ~relay).sum()),
+        "n_detected_only": int(relay.sum()),
         "n_nodes": len(node_ids),
         "in_sample": {
             "c": dict(zip(block_names, f_in.c.tolist())),
@@ -438,14 +474,14 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
     log_scores = {}
     for b, bi in block_ix.items():
         sel = observed & (d.block == bi)
-        if b != "meshtastic_snr":
+        if b not in SNR_BLOCKS:
             out["as_configured"][b] = cm.summarize(d.y[sel] - mu_cfg[sel])
         tested = sel & np.isfinite(mu_cv)
         out["cv"][b] = cm.summarize(d.y[tested] - mu_cv[tested])
         out["cv_scaled"][b] = cm.summarize(d.y[tested] - mu_cv_scaled[tested])
-        # Held-out log score per link, including censored (never heard) links,
+        # Held-out log score per link, including both censoring directions,
         # under the predictive distribution for unseen nodes.
-        sel_all = (d.block == bi) & np.isfinite(mu_cv)
+        sel_all = focus & (d.block == bi) & np.isfinite(mu_cv)
         if sel_all.any():
             sub = d.subset(sel_all)
             per_link = np.full(d.y.size, np.nan)
@@ -458,8 +494,13 @@ def evaluate_config(obs, grids_total, grids_excess, folds, args, features):
             out["cv"][b]["n_scored"] = int(sel_all.sum())
         # Detection discrimination on held-out links: predicted margin over floor.
         nd = (d.cens == -1) & (d.block == bi) & np.isfinite(mu_cv)
-        if nd.any() and tested.any():
-            out["cv"][b]["auc_heard_vs_unheard"] = cm.auc(mu_cv[tested], mu_cv[nd] + (0.0))
+        heard = tested
+        scores = mu_cv
+        if evidence == RELAY:
+            heard = (d.cens != -1) & (d.block == bi) & np.isfinite(mu_cv)
+            scores = mu_cv - floors
+        if nd.any() and heard.any():
+            out["cv"][b]["auc_heard_vs_unheard"] = cm.auc(scores[heard], scores[nd])
             out["cv"][b]["n_unheard_tested"] = int(nd.sum())
     out["_arrays"] = {
         "log_scores": log_scores,
@@ -542,8 +583,18 @@ def main(argv=None) -> int:
             and not (extra & set(link.get("flags", [])))
         ]
         print(f"subset: kept {len(links)} of {before} link records", file=sys.stderr)
-    obs_all, drops = build_observations(links, nodes_meta)
-    wanted = {o["link_id"] for o in obs_all}
+    datasets = {}
+    legacy = [link for link in links if link["evidence"] not in NEW_EVIDENCE]
+    if not keep_ev or legacy:
+        datasets[None] = build_observations(legacy, nodes_meta)
+    for evidence in NEW_EVIDENCE:
+        if keep_ev and evidence not in keep_ev:
+            continue
+        relevant = {evidence} | (RELAY_ANCHORS if evidence == RELAY else set())
+        datasets[evidence] = build_observations(
+            [link for link in links if link["evidence"] in relevant], nodes_meta
+        )
+    wanted = {o["link_id"] for obs, _ in datasets.values() for o in obs}
     grids, path_of = load_predictions(work / "predictions", wanted)
     if not grids:
         raise SystemExit(f"no predictions for these links in {work / 'predictions'}")
@@ -554,89 +605,19 @@ def main(argv=None) -> int:
     results = {
         "links_file": str(links_path),
         "subset": {"evidence": sorted(keep_ev), "exclude_flags": sorted(extra)},
-        "drops": drops,
+        "drops": datasets.get(None, ([], {}))[1],
         "regions": {},
+        "evidence": {
+            evidence: {"drops": drops, "regions": {}}
+            for evidence, (_, drops) in datasets.items() if evidence is not None
+        },
     }
-    for region in regions:
-        robs_all = [o for o in obs_all if o["region"] == region]
-        if not robs_all:
-            continue
-        # Use links that every selected config predicts, so engines are compared
-        # on the same set.
-        ids = {o["link_id"] for o in robs_all}
-        rconfigs = []
-        for c in configs:
-            cov = len(ids & set(grids[c])) / len(ids)
-            if cov < 0.8:
-                print(f"[{region}] dropping {c}: covers {cov:.0%} of links", file=sys.stderr)
-            else:
-                rconfigs.append(c)
-        common = set.intersection(*[set(grids[c]) for c in rconfigs]) if rconfigs else set()
-        robs = [o for o in robs_all if o["link_id"] in common]
-        for o in robs:
-            o["path_id"] = path_of.get(o["link_id"])
-        pos = node_positions(robs)
-        folds = spatial_folds(pos, args.block_km, args.folds, args.seed)
-        reg = {
-            "n_candidates": len(robs_all),
-            "n_common": len(robs),
-            "time_sigma_db": time_variability(robs),
-            "configs": {},
-        }
-        ref_cfg = next((c for c in rconfigs if c.startswith(args.reference)), rconfigs[0])
-        for cfg in rconfigs:
-            tot = np.stack([edge_fill(grids[cfg][o["link_id"]][0]) for o in robs])
-            exc = np.stack([edge_fill(grids[cfg][o["link_id"]][1]) for o in robs])
-            if np.isnan(tot).any():
-                keep = ~np.isnan(tot).reshape(len(robs), -1).any(axis=1)
-                print(f"[{region}] {cfg}: {np.sum(~keep)} links with missing predictions", file=sys.stderr)
-            r = evaluate_config(robs, tot, exc, folds, args, features)
-            reg["configs"][cfg] = r
-            print(
-                f"[{region}] {cfg:55s} n={r['n_observed']:4d} insample sd={r['in_sample']['sigma']:.2f} "
-                f"cv={fmt_block(r['cv'])} cfg={fmt_block(r['as_configured'])}",
-                file=sys.stderr,
-            )
-        # Paired held-out log-score difference against the planner's current
-        # engine, per block. SE ignores clustering by node, so read it as a floor.
-        base = next((c for c in rconfigs if c.startswith(args.baseline)), None)
-        if base:
-            ba = reg["configs"][base]["_arrays"]
-            for cfg in rconfigs:
-                arr = reg["configs"][cfg]["_arrays"]
-                for b, ls in arr["log_scores"].items():
-                    if b not in ba["log_scores"]:
-                        continue
-                    diff = ls - ba["log_scores"][b]
-                    diff = diff[np.isfinite(diff)]
-                    if diff.size > 1:
-                        reg["configs"][cfg]["cv"][b]["delta_log_score"] = float(diff.mean())
-                        reg["configs"][cfg]["cv"][b]["delta_log_score_se"] = float(diff.std(ddof=1) / np.sqrt(diff.size))
-            reg["baseline_config"] = base
-        # Bins for the reference config, in-sample and CV.
-        ref = reg["configs"][ref_cfg]["_arrays"]
-        vgrid = np.stack([edge_fill(grids[ref_cfg][o["link_id"]][2]) for o in robs])
-        h = ref["h_fit"]
-        d = ref["d"]
-        vals = {
-            "distance_km": np.array([o["distance_m"] / 1000 for o in robs]),
-            "v_max": cm.interp_pl(vgrid, h[d.tx], h[d.rx]),
-            "delta_h_m": np.array([features.get(o["path_id"], {}).get("delta_h_m", np.nan) for o in robs]),
-            "terminal_clutter_m": np.array([terminal_clutter(features.get(o["path_id"])) for o in robs]),
-        }
-        reg["bins"] = {}
-        for cfg in rconfigs:
-            arr = reg["configs"][cfg]["_arrays"]
-            reg["bins"][cfg] = {
-                name: {
-                    "in_sample": bin_table(v, arr["res_in"], BINS[name]),
-                    "cv": bin_table(v, arr["err_cv"], BINS[name]),
-                    "as_configured": bin_table(v, arr["err_cfg"], BINS[name]),
-                }
-                for name, v in vals.items()
-            }
-        reg["reference_config"] = ref_cfg
-        results["regions"][region] = reg
+    for evidence, (obs_all, _) in datasets.items():
+        regional = results["regions"] if evidence is None else results["evidence"][evidence]["regions"]
+        for region in regions:
+            reg = evaluate_region(region, evidence, obs_all, grids, path_of, configs, args, features)
+            if reg is not None:
+                regional[region] = reg
 
     out_dir = work / args.report_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -650,6 +631,96 @@ def main(argv=None) -> int:
     tmp.replace(out_dir / "report.md")
     print(md)
     return 0
+
+
+def evaluate_region(region, evidence, obs_all, grids, path_of, configs, args, features):
+    robs_all = [o for o in obs_all if o["region"] == region]
+    candidates = [o for o in robs_all if evidence is None or o["evidence"] == evidence]
+    if not candidates:
+        return None
+    # Use links that every selected config predicts, so engines are compared
+    # on the same set.
+    ids = {o["link_id"] for o in candidates}
+    rconfigs = []
+    for c in configs:
+        cov = len(ids & set(grids[c])) / len(ids)
+        if cov < 0.8:
+            print(f"[{region}] dropping {c}: covers {cov:.0%} of links", file=sys.stderr)
+        else:
+            rconfigs.append(c)
+    common = set.intersection(*[set(grids[c]) for c in rconfigs]) if rconfigs else set()
+    robs = [o for o in robs_all if o["link_id"] in common]
+    focus = [o for o in robs if evidence is None or o["evidence"] == evidence]
+    reg = {
+        "n_candidates": len(candidates),
+        "n_common": len(focus),
+        "time_sigma_db": time_variability(focus),
+        "configs": {},
+    }
+    if evidence is not None:
+        reg["instances"] = dict(Counter(o["source"] for o in candidates))
+    if not focus:
+        return reg
+    for o in robs:
+        o["path_id"] = path_of.get(o["link_id"])
+    pos = node_positions(robs)
+    folds = spatial_folds(pos, args.block_km, args.folds, args.seed)
+    ref_cfg = next((c for c in rconfigs if c.startswith(args.reference)), rconfigs[0])
+    for cfg in rconfigs:
+        tot = np.stack([edge_fill(grids[cfg][o["link_id"]][0]) for o in robs])
+        exc = np.stack([edge_fill(grids[cfg][o["link_id"]][1]) for o in robs])
+        if np.isnan(tot).any():
+            keep = ~np.isnan(tot).reshape(len(robs), -1).any(axis=1)
+            print(f"[{region}] {cfg}: {np.sum(~keep)} links with missing predictions", file=sys.stderr)
+        r = evaluate_config(robs, tot, exc, folds, args, evidence=evidence)
+        reg["configs"][cfg] = r
+        print(
+            f"[{region}] {cfg:55s} n={r['n_observed']:4d} insample sd={r['in_sample']['sigma']:.2f} "
+            f"cv={fmt_block(r['cv'])} cfg={fmt_block(r['as_configured'])}",
+            file=sys.stderr,
+        )
+    # Paired held-out log-score difference against the planner's current
+    # engine, per block. SE ignores clustering by node, so read it as a floor.
+    base = next((c for c in rconfigs if c.startswith(args.baseline)), None)
+    if base:
+        ba = reg["configs"][base]["_arrays"]
+        for cfg in rconfigs:
+            arr = reg["configs"][cfg]["_arrays"]
+            for b, ls in arr["log_scores"].items():
+                if b not in ba["log_scores"]:
+                    continue
+                diff = ls - ba["log_scores"][b]
+                diff = diff[np.isfinite(diff)]
+                if diff.size > 1:
+                    reg["configs"][cfg]["cv"][b]["delta_log_score"] = float(diff.mean())
+                    reg["configs"][cfg]["cv"][b]["delta_log_score_se"] = float(diff.std(ddof=1) / np.sqrt(diff.size))
+        reg["baseline_config"] = base
+    if evidence is not None:
+        return reg
+    # Bins for the reference config, in-sample and CV.
+    ref = reg["configs"][ref_cfg]["_arrays"]
+    vgrid = np.stack([edge_fill(grids[ref_cfg][o["link_id"]][2]) for o in robs])
+    h = ref["h_fit"]
+    d = ref["d"]
+    vals = {
+        "distance_km": np.array([o["distance_m"] / 1000 for o in robs]),
+        "v_max": cm.interp_pl(vgrid, h[d.tx], h[d.rx]),
+        "delta_h_m": np.array([features.get(o["path_id"], {}).get("delta_h_m", np.nan) for o in robs]),
+        "terminal_clutter_m": np.array([terminal_clutter(features.get(o["path_id"])) for o in robs]),
+    }
+    reg["bins"] = {}
+    for cfg in rconfigs:
+        arr = reg["configs"][cfg]["_arrays"]
+        reg["bins"][cfg] = {
+            name: {
+                "in_sample": bin_table(v, arr["res_in"], BINS[name]),
+                "cv": bin_table(v, arr["err_cv"], BINS[name]),
+                "as_configured": bin_table(v, arr["err_cfg"], BINS[name]),
+            }
+            for name, v in vals.items()
+        }
+    reg["reference_config"] = ref_cfg
+    return reg
 
 
 def terminal_clutter(f: dict | None) -> float:
@@ -696,6 +767,8 @@ def render_markdown(res: dict) -> str:
             f"Within-link time variability (σ_t, links with n ≥ 10): {json.dumps(reg['time_sigma_db'])}."
         )
         lines.append("")
+        if not reg["configs"]:
+            continue
         lines.append(
             "Errors are measured minus predicted signal, in dB. Positive means the link is better than "
             "predicted, so the engine is pessimistic."
@@ -750,6 +823,43 @@ def render_markdown(res: dict) -> str:
                 lines.append(
                     f"| {fmt_edge(ins['lo'])}–{fmt_edge(ins['hi'])} | {ins['n']} | {fmtv(ins.get('bias'))} | "
                     f"{fmtv(ins.get('sd'))} | {cv['n']} | {fmtv(cv.get('bias'))} | {fmtv(cv.get('sd'))} |"
+                )
+            lines.append("")
+    titles = {
+        RELAY: "CoreScope relay detections",
+        "corescope_trace_hop": "CoreScope TRACE hop SNR",
+        "corescope_neighbor_report": "CoreScope observer neighbour SNR",
+    }
+    for evidence, report in res.get("evidence", {}).items():
+        lines.extend([f"## {titles[evidence]}", ""])
+        if report["drops"]:
+            lines.extend([f"Dropped observations ({json.dumps(report['drops'], sort_keys=True)}).", ""])
+        if not report["regions"]:
+            lines.extend(["No usable links.", ""])
+        for region, reg in report["regions"].items():
+            lines.extend([
+                f"### {region.title()}",
+                "",
+                f"{reg['n_common']} links predicted by every engine (of {reg['n_candidates']} usable).",
+                "",
+                ", ".join(f"{source} ({count})" for source, count in sorted(reg["instances"].items())),
+                "",
+            ])
+            if not reg["configs"]:
+                continue
+            lines.extend([
+                "| Config | Scored | CV bias (dB) | CV RMSE (dB) | CV log score | AUC heard |",
+                "|---|---:|---:|---:|---:|---:|",
+            ])
+            for cfg, result in reg["configs"].items():
+                cv = next(iter(result["cv"].values()))
+                score = cv.get("log_score")
+                auc = cv.get("auc_heard_vs_unheard")
+                score_text = "—" if score is None else f"{score:.3f}"
+                auc_text = "—" if auc is None else f"{auc:.2f}"
+                lines.append(
+                    f"| `{cfg}` | {cv.get('n_scored', 0)} | {fmtv(cv.get('bias'))} | "
+                    f"{fmtv(cv.get('rmse'))} | {score_text} | {auc_text} |"
                 )
             lines.append("")
     return "\n".join(lines)

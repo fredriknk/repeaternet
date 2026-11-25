@@ -88,6 +88,9 @@ pub fn start(
     })
 }
 
+/// Seconds between moves of the start of the day and week windows.
+const CUTOFF_STEP: i64 = 600;
+
 struct StateData {
     path: PathBuf,
     endpoint: String,
@@ -98,6 +101,9 @@ struct StateData {
 fn router(path: PathBuf, endpoint: &str, host: &str, bbox: Bbox) -> Result<Router> {
     let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(Duration::from_secs(5))?;
+    // Captures grow to several GiB and link medians read rows scattered across them.
+    db.pragma_update(None, "cache_size", -65_536)?;
+    db.pragma_update(None, "mmap_size", 1_i64 << 31)?;
     db.create_aggregate_function(
         "capture_median",
         1,
@@ -179,6 +185,8 @@ struct MapData {
 
 #[derive(Serialize)]
 struct Stats {
+    trace_hops: i64,
+    neighbor_report_rows: i64,
     receptions: i64,
     packets: i64,
     pairs: usize,
@@ -233,6 +241,8 @@ struct MapCache {
 
 #[derive(Clone, Copy, Default)]
 struct Totals {
+    trace_hops: i64,
+    neighbor_report_rows: i64,
     receptions: i64,
     packets: i64,
     pairs: usize,
@@ -245,9 +255,11 @@ struct Totals {
 
 fn load(state: &StateData, filters: Filters) -> Result<MapData> {
     let now = Utc::now().timestamp();
+    // A cutoff that moved with every page refresh would defeat the cache between polls.
+    let period = now / CUTOFF_STEP * CUTOFF_STEP;
     let cutoff = match filters.window {
-        Window::Day => Some(now / 60 * 60 - 86_400),
-        Window::Week => Some(now / 60 * 60 - 7 * 86_400),
+        Window::Day => Some(period - 86_400),
+        Window::Week => Some(period - 7 * 86_400),
         Window::All => None,
     };
     let mut reader = state
@@ -305,6 +317,8 @@ fn load(state: &StateData, filters: Filters) -> Result<MapData> {
         map: Arc::clone(&cache.map),
         stats: Stats {
             receptions: totals.receptions,
+            trace_hops: totals.trace_hops,
+            neighbor_report_rows: totals.neighbor_report_rows,
             packets: totals.packets,
             pairs: totals.pairs,
             located_pairs: totals.located_pairs,
@@ -409,15 +423,19 @@ fn layers(
     };
     totals.receptions = receptions;
     totals.packets = packets;
+    (totals.trace_hops, totals.neighbor_report_rows) = db.query_row(
+        "SELECT
+           (SELECT coalesce(sum(json_array_length(snr_values)), 0) FROM trace_hops WHERE endpoint = ?1),
+           (SELECT count(*) FROM observer_neighbor_reports WHERE endpoint = ?1)",
+        [endpoint],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     if let Some(previous) = previous_totals {
         totals.pairs = previous.pairs;
         totals.located_pairs = previous.located_pairs;
         totals.bbox_pairs = previous.bbox_pairs;
     } else {
-        let mut all = db.prepare_cached(
-            "SELECT last_hop, observer_id FROM measured_hops WHERE endpoint = ?
-             GROUP BY last_hop, observer_id",
-        )?;
+        let mut all = db.prepare_cached(include_str!("dashboard_pairs.sql"))?;
         let mut rows = all.query([endpoint])?;
         while let Some(row) = rows.next()? {
             totals.pairs += 1;

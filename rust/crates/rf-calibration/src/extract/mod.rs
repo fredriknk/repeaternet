@@ -1,6 +1,7 @@
 //! Build the measured-link dataset from capture snapshots.
 
 mod corescope;
+mod corescope_hops;
 mod meshtastic;
 mod model;
 mod privacy;
@@ -31,6 +32,9 @@ impl Evidence {
             Self::CorescopeLastHop => "corescope_last_hop",
             Self::CorescopeZeroHop => "corescope_zero_hop",
             Self::CorescopeNonDetection => "corescope_non_detection",
+            Self::CorescopeRelayHop => "corescope_relay_hop",
+            Self::CorescopeTraceHop => "corescope_trace_hop",
+            Self::CorescopeNeighborReport => "corescope_neighbor_report",
             Self::MeshtasticGatewayRx => "meshtastic_gateway_rx",
             Self::MeshtasticTraceroute => "meshtastic_traceroute",
             Self::MeshtasticNeighbor => "meshtastic_neighbor",
